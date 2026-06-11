@@ -16130,6 +16130,7 @@ export default function App(){
   const[shipModal,setShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  const[pickupEdit,setPickupEdit]=useState(null);// {shp, tracking_number, carrier, weight, dimensions, busy} — edit/relabel an awaiting-pickup package
   const[deliverModal,setDeliverModal]=useState(null);// deliver task whose item list / mark-delivered popup is open
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
@@ -17325,28 +17326,7 @@ export default function App(){
                     <div style={{marginLeft:'auto',display:'flex',gap:4}}>
                       {!shp.tracking_number&&!shp.label_url&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>No label</span>}
                       {!shp.label_url&&ssConnected&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={async(e)=>{
-                          const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.textContent='Creating...';
-                          try{
-                            const so2=shp.so;const c2=cust.find(cc=>cc.id===so2?.customer_id);
-                            if(!c2){nf('No customer found','error');btn.disabled=false;btn.textContent='Create Label';return}
-                            const weight=parseFloat(prompt('Box weight (lbs):','5'));if(!weight||isNaN(weight)){btn.disabled=false;btn.textContent='Create Label';return}
-                            const carrier2=prompt('Carrier (ups/fedex/usps):',shp.carrier||'ups');if(!carrier2){btn.disabled=false;btn.textContent='Create Label';return}
-                            nf('Creating ShipStation label...');
-                            const label=await createShipStationLabel(so2,c2,shp.items||[],weight,carrier2,'fedex_ground',{length:12,width:12,height:6});
-                            const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
-                            const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
-                            const labelDl=label.labelDownload||labelUrl2||null;
-                            const updatedShipments=(so2._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:label.trackingNumber||'',carrier:label.carrierCode||carrier2,label_url:labelDl,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost||0,tracking_url:label.trackingNumber?(/^1Z/i.test(label.trackingNumber)?'https://www.ups.com/track?tracknum='+label.trackingNumber:'https://www.fedex.com/fedextrack/?trknbr='+label.trackingNumber):''}:s);
-                            savSO({...so2,_shipments:updatedShipments,_tracking_number:label.trackingNumber||so2._tracking_number||'',_carrier:label.carrierCode||carrier2||so2._carrier||'',_shipping_cost:(safeNum(so2._shipping_cost||0)+(cost||0))||null});
-                            nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · $'+cost.toFixed(2):''));
-                            addWhAction({type:'label_created',soId:shp.soId,customer:shp.cName,tracking:label.trackingNumber||'',carrier:label.carrierCode||carrier2,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
-                            if(labelDl){
-                              if(labelDl.startsWith('data:application/pdf')){const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);iframe.src=labelDl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e2){const a2=document.createElement('a');a2.href=labelDl;a2.download='label.pdf';a2.click()}setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)}}
-                              else{const pw=window.open(labelDl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e2){}},1500)}
-                            }
-                          }catch(err){nf('Label creation failed: '+err.message,'error');btn.disabled=false;btn.textContent='Create Label'}
-                        }}>Create Label</button>}
+                        onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Create Label</button>}
                       {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           if(shp.label_url.startsWith('data:application/pdf')){
@@ -17356,12 +17336,7 @@ export default function App(){
                           } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                         }}>Print Label</button>}
                       <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
-                          const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
-                          const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
-                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?(/^1Z/i.test(tn)?'https://www.ups.com/track?tracknum='+tn:/^(94|93|92|91)\d{18,}/.test(tn)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn:'https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
-                          savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
-                        }}>Edit</button>
+                        onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           if(!window.confirm('Delete this shipment?'))return;
@@ -17849,6 +17824,122 @@ export default function App(){
         </div></div>}
 
       </>}
+
+      {/* ── PICKUP PACKAGE EDIT MODAL (renders on any warehouse tab) ── */}
+      {pickupEdit&&(()=>{
+        const pe=pickupEdit;
+        const liveSO=sos.find(s=>s.id===pe.shp.soId)||pe.shp.so;
+        const liveShp=(liveSO._shipments||[]).find(s=>s.id===pe.shp.id)||pe.shp;
+        const hasLabel=!!(liveShp.tracking_number||liveShp.label_url||liveShp.shipstation_shipment_id);
+        const shpUnits=(liveShp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+        const trackUrlFor=tn=>!tn?'':/^1Z/i.test(tn)?'https://www.ups.com/track?tracknum='+tn:/^(94|93|92|91)\d{18,}/.test(tn)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn:'https://www.fedex.com/fedextrack/?trknbr='+tn;
+        const printLabelDl=labelDl=>{
+          if(labelDl.startsWith('data:application/pdf')){const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);iframe.src=labelDl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e2){const a2=document.createElement('a');a2.href=labelDl;a2.download='label.pdf';a2.click()}setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)}}
+          else{const pw=window.open(labelDl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e2){}},1500)}
+        };
+        // Void the existing ShipStation label (refund) — non-fatal if it fails
+        const voidOldLabel=async()=>{
+          if(!liveShp.shipstation_shipment_id||!ssConnected)return;
+          try{await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:liveShp.shipstation_shipment_id})});nf('Old label voided in ShipStation')}
+          catch(err){nf('Could not void old label in ShipStation ('+err.message+') — clearing it locally; void it manually in ShipStation if needed','error')}
+        };
+        const clearLabelFields={tracking_number:'',tracking_url:'',label_url:null,shipstation_shipment_id:null,shipping_cost:0};
+        const soCostWithout=oldCost=>Math.max(0,safeNum(liveSO._shipping_cost||liveSO._shipstation_cost||0)-safeNum(oldCost));
+        return<div className="modal-overlay" onClick={()=>!pe.busy&&setPickupEdit(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:540}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#1e40af)',color:'white'}}>
+            <h2 style={{margin:0,color:'white'}}>📦 Edit Package — {pe.shp.cName}</h2>
+            <button className="modal-close" onClick={()=>!pe.busy&&setPickupEdit(null)} style={{color:'white'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:16}}>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>
+              SO <span style={{fontFamily:'monospace',color:'#1e40af',fontWeight:700}}>{pe.shp.soId}</span>
+              {shpUnits>0&&<> · {shpUnits} units</>}
+              {safeNum(liveShp.shipping_cost)>0&&<> · label cost ${safeNum(liveShp.shipping_cost).toFixed(2)}</>}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 140px',gap:10,marginBottom:10}}>
+              <div><label className="form-label" style={{fontSize:11}}>Tracking Number</label>
+                <input className="form-input" style={{fontSize:12,fontFamily:'monospace'}} placeholder="Enter manually or create a label below" value={pe.tracking_number}
+                  onChange={e=>setPickupEdit({...pe,tracking_number:e.target.value})}/></div>
+              <div><label className="form-label" style={{fontSize:11}}>Carrier</label>
+                <select className="form-select" style={{fontSize:12}} value={pe.carrier} onChange={e=>setPickupEdit({...pe,carrier:e.target.value})}>
+                  <option value="ups">UPS</option><option value="fedex">FedEx</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
+                </select></div>
+            </div>
+            <div style={{display:'flex',gap:10,alignItems:'flex-end',marginBottom:12,flexWrap:'wrap'}}>
+              <div><label className="form-label" style={{fontSize:11}}>Weight (lbs)</label>
+                <input className="form-input" type="number" min="0.1" step="0.5" style={{width:90,fontSize:12}} value={pe.weight}
+                  onChange={e=>setPickupEdit({...pe,weight:e.target.value})}/></div>
+              <div><label className="form-label" style={{fontSize:11}}>Box (in)</label>
+                <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                  <input className="form-input" type="number" min="1" placeholder="L" style={{width:60,fontSize:12,textAlign:'center'}} value={pe.dimensions.length}
+                    onChange={e=>setPickupEdit({...pe,dimensions:{...pe.dimensions,length:e.target.value}})}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>×</span>
+                  <input className="form-input" type="number" min="1" placeholder="W" style={{width:60,fontSize:12,textAlign:'center'}} value={pe.dimensions.width}
+                    onChange={e=>setPickupEdit({...pe,dimensions:{...pe.dimensions,width:e.target.value}})}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>×</span>
+                  <input className="form-input" type="number" min="1" placeholder="H" style={{width:60,fontSize:12,textAlign:'center'}} value={pe.dimensions.height}
+                    onChange={e=>setPickupEdit({...pe,dimensions:{...pe.dimensions,height:e.target.value}})}/>
+                </div></div>
+            </div>
+            {hasLabel&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:4}}>
+              This package already has a label/tracking. <strong>Void &amp; Create New Label</strong> replaces it (the old label is voided in ShipStation for a refund), or use <strong>Void &amp; Clear</strong> to just remove it.
+            </div>}
+            {(liveShp.items||[]).length>0&&<div style={{marginTop:8,fontSize:10,color:'#64748b'}}>
+              {(liveShp.items||[]).map((it,ii)=><span key={ii} style={{marginRight:8}}><strong>{it.sku}</strong> {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ')}</span>)}
+            </div>}
+          </div>
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {hasLabel&&<button className="btn btn-sm" disabled={pe.busy} style={{fontSize:11,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',fontWeight:700}}
+              onClick={async()=>{
+                if(!window.confirm('Void this label'+(liveShp.shipstation_shipment_id&&ssConnected?' in ShipStation':'')+' and clear tracking from this package? You can then create a new label.'))return;
+                setPickupEdit({...pe,busy:true});
+                await voidOldLabel();
+                const oldCost=safeNum(liveShp.shipping_cost||0);
+                const updatedShipments=(liveSO._shipments||[]).map(s=>s.id===pe.shp.id?{...s,...clearLabelFields}:s);
+                const firstShp=updatedShipments.find(s=>s.tracking_number);
+                const newCost=soCostWithout(oldCost);
+                savSO({...liveSO,_shipments:updatedShipments,_tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',_tracking_url:firstShp?.tracking_url||'',_shipping_cost:newCost||null,_shipstation_cost:newCost||null});
+                addWhAction({type:'label_voided',soId:pe.shp.soId,customer:pe.shp.cName,tracking:liveShp.tracking_number||'',carrier:liveShp.carrier||'',by:cu?.id||'warehouse'});
+                nf('Label cleared — you can now create a new one');
+                setPickupEdit({...pe,busy:false,tracking_number:''});
+              }}>🗑️ Void &amp; Clear Label</button>}
+            {ssConnected&&<button className="btn btn-sm" disabled={pe.busy} style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',fontWeight:700}}
+              onClick={async()=>{
+                const w=parseFloat(pe.weight);if(!w||w<=0){nf('Enter package weight before creating a label','error');return}
+                const d=pe.dimensions||{};if(!d.length||!d.width||!d.height){nf('Enter box dimensions (L × W × H) before creating a label','error');return}
+                if(!['ups','fedex','usps'].includes((pe.carrier||'').toLowerCase())){nf('Pick UPS, FedEx, or USPS to create a label','error');return}
+                const c2=cust.find(cc=>cc.id===liveSO?.customer_id);if(!c2){nf('No customer found','error');return}
+                if(hasLabel&&!window.confirm('This package already has a label. Void the old label and create a new one?'))return;
+                setPickupEdit({...pe,busy:true});
+                try{
+                  if(hasLabel)await voidOldLabel();
+                  nf('Creating ShipStation label...');
+                  const label=await createShipStationLabel(liveSO,c2,liveShp.items||[],w,pe.carrier,'fedex_ground',{length:d.length,width:d.width,height:d.height});
+                  const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                  const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                  const labelDl=label.labelDownload||labelUrl2||null;
+                  const oldCost=hasLabel?safeNum(liveShp.shipping_cost||0):0;
+                  const updatedShipments=(liveSO._shipments||[]).map(s=>s.id===pe.shp.id?{...s,tracking_number:label.trackingNumber||'',carrier:label.carrierCode||pe.carrier,label_url:labelDl,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost||0,weight:w,tracking_url:trackUrlFor(label.trackingNumber||'')}:s);
+                  const totCost=soCostWithout(oldCost)+(cost||0);
+                  savSO({...liveSO,_shipments:updatedShipments,_tracking_number:label.trackingNumber||liveSO._tracking_number||'',_carrier:label.carrierCode||pe.carrier||liveSO._carrier||'',_tracking_url:trackUrlFor(label.trackingNumber||'')||liveSO._tracking_url||'',_shipping_cost:totCost||null,_shipstation_cost:totCost||null});
+                  nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · $'+cost.toFixed(2):''));
+                  addWhAction({type:'label_created',soId:pe.shp.soId,customer:pe.shp.cName,tracking:label.trackingNumber||'',carrier:label.carrierCode||pe.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                  if(labelDl)printLabelDl(labelDl);
+                  setPickupEdit(null);
+                }catch(err){nf('Label creation failed: '+err.message,'error');setPickupEdit(p=>p?{...p,busy:false}:p)}
+              }}>🏷️ {hasLabel?'Void & Create New Label':'Create Label'}</button>}
+            <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+              <button className="btn btn-secondary btn-sm" disabled={pe.busy} style={{fontSize:11}} onClick={()=>setPickupEdit(null)}>Cancel</button>
+              <button className="btn btn-primary btn-sm" disabled={pe.busy} style={{fontSize:11}}
+                onClick={()=>{
+                  const tn=(pe.tracking_number||'').trim();
+                  const updatedShipments=(liveSO._shipments||[]).map(s=>s.id===pe.shp.id?{...s,tracking_number:tn,carrier:pe.carrier||s.carrier,weight:parseFloat(pe.weight)||s.weight,tracking_url:trackUrlFor(tn)}:s);
+                  savSO({...liveSO,_shipments:updatedShipments});
+                  nf('Shipment updated');setPickupEdit(null);
+                }}>✓ Save</button>
+            </div>
+          </div>
+        </div></div>})()}
 
       {/* ── MANUAL SHIP MODAL (renders on any warehouse tab) ── */}
       {manualShipModal&&<div className="modal-overlay" onClick={()=>setManualShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
@@ -18367,12 +18458,7 @@ export default function App(){
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
-                        const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
-                        const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
-                        const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?('https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
-                        savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
-                      }}>Edit</button>
+                      onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>{
                         if(!window.confirm('Delete this shipment?'))return;
