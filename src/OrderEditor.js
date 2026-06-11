@@ -217,6 +217,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
+    const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
+    const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
+    const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -6232,41 +6235,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
       // Inline Deco PO — built in the SAME modal & save as the product PO so the rep never loses the
       // in-progress PO form (qtys/prices live in uncontrolled inputs and die if we swap modals).
-      // Items offered mirror the standalone deco form (every SO item with sized qty); items on this
-      // product PO are pre-checked since those are usually what's headed to the decorator.
+      // Items offered mirror the standalone deco form (every SO item with sized qty); all start
+      // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
       const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
       const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
-      const podDefaultSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx));
-      const _podInitialQty=podItems.reduce((a,it)=>a+(podDefaultSel.has(it._idx)?Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0):0),0);
-      const _podInitialCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,'embroidery',{qty:_podInitialQty}):null;
-      const _recalcPod=()=>{
-        let qty=0;
-        podItems.forEach((it,i)=>{if(document.getElementById('pod-sel-'+i)?.checked)qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)});
-        const dt=document.getElementById('pod-type')?.value||'embroidery';
-        const price=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,dt,{qty}):null;
-        const qtyEl=document.getElementById('pod-total-qty');if(qtyEl)qtyEl.value=qty;
-        const ucEl=document.getElementById('pod-unit-cost');
-        if(ucEl&&(ucEl.dataset.auto==='1'||!ucEl.value||ucEl.value==='0'||ucEl.value==='0.00')&&price!==null){ucEl.value=price.toFixed(2);ucEl.dataset.auto='1'}
-        const uc=parseFloat(ucEl?.value)||0;
-        const expEl=document.getElementById('pod-expected-cost');if(expEl)expEl.value=(qty*uc).toFixed(2);
-      };
+      const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
+      // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
+      const podPoSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx));
+      const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podPoSel.has(idx);
+      const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
+      const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
+      const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty}):null;
+      const podUnitCost=podCost!==null?(parseFloat(podCost)||0):(podAutoCost!==null?podAutoCost:0);
+      const podExpectedCost=Math.round(podQty*podUnitCost*100)/100;
       // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
       const buildInlineDecoPO=()=>{
-        const decoType=document.getElementById('pod-type')?.value||'embroidery';
-        const returnDate=document.getElementById('pod-date')?.value||'';
-        const notes=document.getElementById('pod-notes')?.value||'';
-        const isDropShip=document.getElementById('pod-dropship')?.checked||false;
-        const itemIdxs=[];let totalQty=0;
-        podItems.forEach((it,i)=>{if(document.getElementById('pod-sel-'+i)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
-        if(itemIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
-        const unitCost=parseFloat(document.getElementById('pod-unit-cost')?.value)||0;
-        const expectedCost=Math.round(totalQty*unitCost*100)/100;
+        if(podSelIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
         return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
-          po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:decoType,
-          item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
-          notes,drop_ship:isDropShip||undefined,expected_date:returnDate,
+          po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
+          item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
+          notes:document.getElementById('pod-notes')?.value||'',
+          drop_ship:(document.getElementById('pod-dropship')?.checked||false)||undefined,
+          expected_date:document.getElementById('pod-date')?.value||'',
           status:'waiting',created_at:new Date().toLocaleDateString(),
           _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
       };
@@ -6283,7 +6276,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0)setShowPO('deco:'+sel);else setPoDecoInline({vendor:sel})}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0)setShowPO('deco:'+sel);else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -6295,32 +6288,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{padding:10}}>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
                 <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
-                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" id="pod-type" defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('pod-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcPod()}}>
+                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" value={podType} onChange={e=>{setPodType(e.target.value);setPodCost(null)}}>
                   <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
                 <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
               </div>
               <div style={{marginBottom:8}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer'}}><input type="checkbox" id="pod-dropship"/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
-                <span style={{color:'#94a3b8'}}>items on this {vn} PO are pre-checked</span>
+                <span style={{color:'#94a3b8'}}>mirrors the items selected on this {vn} PO — toggle any item to override</span>
                 <span style={{flex:1}}/>
-                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{podItems.forEach((_,i)=>{const el=document.getElementById('pod-sel-'+i);if(el)el.checked=true});_recalcPod()}}>Select All</button>
-                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{podItems.forEach((_,i)=>{const el=document.getElementById('pod-sel-'+i);if(el)el.checked=false});_recalcPod()}}>Deselect All</button>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=true});setPodOverrides(ov)}}>Select All</button>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov)}}>Deselect All</button>
               </div>
               <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
-                {podItems.map((it,i)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                {podItems.map((it,i)=>{const soQ=_soQty(it);const onPo=podPoSel.has(it._idx);
                   return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
-                    <input type="checkbox" id={'pod-sel-'+i} defaultChecked={podDefaultSel.has(it._idx)} style={{width:14,height:14}} onChange={_recalcPod}/>
+                    <input type="checkbox" checked={podChecked(it._idx)} style={{width:14,height:14}} onChange={()=>setPodOverrides(ov=>({...ov,[it._idx]:!podChecked(it._idx)}))}/>
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                     <strong style={{flex:1}}>{it.name}</strong>
+                    {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
                     <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
                   </div>})}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
-                <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" id="pod-total-qty" readOnly defaultValue={_podInitialQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
-                <div><label className="form-label" style={{fontSize:10}}>Unit Cost {_podInitialCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>}</label><input className="form-input" id="pod-unit-cost" type="number" step="0.01" defaultValue={_podInitialCost!==null?_podInitialCost.toFixed(2):''} placeholder="0.00" data-auto={_podInitialCost!==null?'1':'0'} style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>{e.target.dataset.auto='0';_recalcPod()}}/></div>
-                <div><label className="form-label" style={{fontSize:10}}>Expected Cost (qty × rate)</label><input className="form-input" id="pod-expected-cost" readOnly defaultValue={_podInitialCost!==null?(_podInitialQty*_podInitialCost).toFixed(2):'0.00'} style={{fontWeight:800,color:'#166534'}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" readOnly value={podQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Unit Cost {podCost===null?(podAutoCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>):<button type="button" style={{fontSize:9,padding:'0 6px',border:'1px solid #ddd6fe',background:'white',borderRadius:4,cursor:'pointer',color:'#7c3aed',fontWeight:700}} onClick={()=>setPodCost(null)}>↺ auto</button>}</label><input className="form-input" type="number" step="0.01" value={podCost!==null?podCost:(podAutoCost!==null?podAutoCost.toFixed(2):'')} placeholder="0.00" style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>setPodCost(e.target.value)}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Expected Cost (qty × rate)</label><input className="form-input" readOnly value={podExpectedCost.toFixed(2)} style={{fontWeight:800,color:'#166534'}}/></div>
               </div>
               <div style={{marginTop:8}}><label className="form-label" style={{fontSize:10}}>Notes / Instructions for Decorator</label><input className="form-input" id="pod-notes" placeholder="Thread colors, PMS colors, placement notes..."/></div>
             </div>
@@ -9857,12 +9851,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
               <div style={{display:'flex',alignItems:'center',gap:12}}>
-                <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
+                <button className="btn btn-secondary btn-sm" onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}}>&larr; Back</button>
                 <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
                 <button className="btn btn-sm" style={{background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
                   if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
                   const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setPoFullPage(null);nf('Deleted '+(dp.po_id||'decoration PO'));
+                  setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);nf('Deleted '+(dp.po_id||'decoration PO'));
                 }}>🗑 Delete PO</button>
                 <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
@@ -9875,7 +9869,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
               </div>
               <div style={{textAlign:'right'}}>
-                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
+                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}} title="Back to Sales Order">{soId}</span></div>
                 <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{dp.vendor||'—'}</strong></div>
                 {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
                 {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
@@ -9891,12 +9885,54 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>{(dp._bill_details||[]).length}</div></div>
               </div>
             </div>
-            {coveredItems.length>0&&<div className="card" style={{marginBottom:16}}>
-              <div className="card-header"><h2>Items covered (for price-list lookup and badges)</h2></div>
-              <div className="card-body"><div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
-              </div></div>
-            </div>}
+            {coveredItems.length>0&&(()=>{
+              // Item coverage stays editable after creation — decorators often get more styles added
+              // to a run later. qty + expected cost recompute from the new coverage; unit_cost and
+              // any applied bills are left alone.
+              const dpKey=dp.id||dp.po_id;
+              const editing=decoEditItems&&decoEditItems.decoPoId===dpKey;
+              const editQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const editableItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>editQty(it)>0||(dp.item_idxs||[]).includes(it._idx));
+              const newQty=editing?editableItems.reduce((a,it)=>a+(decoEditItems.sel[it._idx]?editQty(it):0),0):0;
+              const newExpected=Math.round(newQty*safeNum(dp.unit_cost)*100)/100;
+              return<div className="card" style={{marginBottom:16}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><h2>Items covered (for price-list lookup and badges)</h2>
+                {!editing?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};(dp.item_idxs||[]).forEach(ii=>{sel[ii]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>✎ Edit Items</button>
+                :<div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};editableItems.forEach(it=>{sel[it._idx]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>Select All</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setDecoEditItems(null)}>Cancel</button>
+                  <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+                    const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
+                    if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected};
+                    const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+                    setO(updated);onSave(updated);
+                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+                    setDecoEditItems(null);
+                    nf('🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
+                  }}>Save Items</button>
+                </div>}
+              </div>
+              <div className="card-body">
+                {!editing?<div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                  {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
+                </div>
+                :<>
+                  {editableItems.map(it=><div key={it._idx} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'#faf5ff',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+                    <input type="checkbox" checked={!!decoEditItems.sel[it._idx]} style={{width:14,height:14}} onChange={()=>setDecoEditItems(d=>({...d,sel:{...d.sel,[it._idx]:!d.sel[it._idx]}}))}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                    <strong style={{flex:1}}>{it.name}</strong>
+                    <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {editQty(it)}</span>
+                  </div>)}
+                  <div style={{display:'flex',justifyContent:'flex-end',gap:16,marginTop:8,paddingTop:8,borderTop:'1px dashed #e2e8f0',fontSize:13}}>
+                    <span style={{color:'#64748b'}}>Units: <strong style={{color:'#1e40af'}}>{newQty}</strong></span>
+                    <span style={{color:'#64748b'}}>× ${safeNum(dp.unit_cost).toFixed(2)}/unit</span>
+                    <span style={{color:'#64748b'}}>Expected: <strong style={{color:'#166534'}}>${newExpected.toFixed(2)}</strong></span>
+                  </div>
+                </>}
+              </div>
+            </div>})()}
             {dp.notes&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Notes</h2></div><div className="card-body"><div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{dp.notes}</div></div></div>}
             {(dp.tracking_numbers||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>
               <div className="card-header" style={{background:'#eff6ff'}}><h2 style={{color:'#1e40af'}}>Tracking Numbers</h2></div>
