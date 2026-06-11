@@ -42,6 +42,29 @@ const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)retu
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
 
+// Prominent In-House vs Drop Ship selector for every PO creation form. Replaces the easy-to-miss
+// checkbox: each PO must make this choice explicitly (neither is pre-selected — the rep picks one),
+// and the buttons spell out what the warehouse should expect — drop-ship POs never arrive at the
+// warehouse and are excluded from every receive/count-in flow. isDropShip: null = no choice yet,
+// false = in-house, true = drop ship.
+function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='Ships to NSA Warehouse — counted in & received',dsTitle='📦 Drop Ship PO',dsSub='Ships direct to customer — warehouse will NOT receive or count this in'}){
+  const inSel=isDropShip===false;const dsSel=isDropShip===true;const none=isDropShip==null;
+  const base={flex:1,padding:'10px 12px',borderRadius:8,cursor:'pointer',textAlign:'left',transition:'all 0.15s'};
+  return<div style={{marginBottom:12}}>
+    {none&&<div style={{fontSize:11,fontWeight:700,color:'#b45309',marginBottom:5}}>⚠️ Choose how this PO ships — required</div>}
+    <div style={{display:'flex',gap:8}}>
+      <button type="button" onClick={()=>onSelect(false)} style={{...base,border:inSel?'2px solid #2563eb':none?'2px dashed #cbd5e1':'1px solid #e2e8f0',background:inSel?'#eff6ff':'white',opacity:inSel||none?1:0.55}}>
+        <div style={{fontWeight:800,fontSize:13,color:inSel?'#1e40af':'#475569'}}>{inTitle}{inSel&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:'#2563eb'}}>✓ Selected</span>}</div>
+        <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{inSub}</div>
+      </button>
+      <button type="button" onClick={()=>onSelect(true)} style={{...base,border:dsSel?'2px solid #7c3aed':none?'2px dashed #cbd5e1':'1px solid #e2e8f0',background:dsSel?'#f5f3ff':'white',opacity:dsSel||none?1:0.55}}>
+        <div style={{fontWeight:800,fontSize:13,color:dsSel?'#6d28d9':'#475569'}}>{dsTitle}{dsSel&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:'#7c3aed'}}>✓ Selected</span>}</div>
+        <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{dsSub}</div>
+      </button>
+    </div>
+  </div>;
+}
+
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
@@ -274,6 +297,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
+    const[poDropShip,setPoDropShip]=useState(null);// product PO form — In-House(false) vs Drop Ship(true); null = rep hasn't chosen
+    const[dpoDropShip,setDpoDropShip]=useState(null);// standalone deco PO form — warehouse(false) vs drop ship(true); null = unchosen
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
@@ -282,6 +307,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
+    const[podDropShip,setPodDropShip]=useState(null);// inline deco PO — warehouse(false) vs drop ship(true); null = unchosen
     const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
@@ -6078,7 +6104,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
-          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDecoInline(null)}}>
+          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDropShip(null);setPoShipTo('warehouse');setPoDecoInline(null)}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
@@ -6109,7 +6135,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
                   <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:decoSel===dv?'#7c3aed':'#fff',color:decoSel===dv?'#fff':'#334155',border:'1px solid '+(decoSel===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer'}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
               </div>
-              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel)setShowPO('deco:'+decoSel)}}>Create Deco PO</button>
+              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel){setDpoDropShip(null);setShowPO('deco:'+decoSel)}}}>Create Deco PO</button>
             </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
@@ -6153,7 +6179,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
-            <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+            <DropShipToggle isDropShip={dpoDropShip} onSelect={setDpoDropShip}
+              inTitle='🏭 Return to Warehouse' inSub='Decorated goods come back to NSA — warehouse counts them in & receives'
+              dsTitle='📦 Drop Ship' dsSub='Decorator ships direct to school — warehouse will NOT receive or count this in'/>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Items covered by this PO</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
@@ -6180,11 +6208,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('')}}>Cancel</button>
             <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+              if(dpoDropShip==null){nf('Choose 🏭 Return to Warehouse or 📦 Drop Ship for this PO first','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
-              const isDropShip=document.getElementById('dpo-dropship-'+poId)?.checked||false;
+              const isDropShip=dpoDropShip;
               const itemIdxs=[];let totalQty=0;
               allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
               if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
@@ -6317,11 +6346,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
       const buildInlineDecoPO=()=>{
         if(podSelIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
+        if(podDropShip==null)return{error:'Choose 🏭 Return to Warehouse or 📦 Drop Ship for the deco PO'};
         return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
           po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
           item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
           notes:document.getElementById('pod-notes')?.value||'',
-          drop_ship:(document.getElementById('pod-dropship')?.checked||false)||undefined,
+          drop_ship:podDropShip||undefined,
           expected_date:document.getElementById('pod-date')?.value||'',
           status:'waiting',created_at:new Date().toLocaleDateString(),
           _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
@@ -6339,7 +6369,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0)setShowPO('deco:'+sel);else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(null);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(null)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -6355,7 +6385,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
                 <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
               </div>
-              <div style={{marginBottom:8}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer'}}><input type="checkbox" id="pod-dropship"/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+              <DropShipToggle isDropShip={podDropShip} onSelect={setPodDropShip}
+                inTitle='🏭 Return to Warehouse' inSub='Decorated goods come back to NSA — warehouse counts them in & receives'
+                dsTitle='📦 Drop Ship' dsSub='Decorator ships direct to school — warehouse will NOT receive or count this in'/>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
                 <span style={{color:'#94a3b8'}}>mirrors the items selected on this {vn} PO — toggle any item to override</span>
@@ -6410,7 +6442,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#1e40af',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
-          <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)} onChange={e=>{if(e.target.checked)setPoShipTo(addrs[0]?.id||'warehouse');else setPoShipTo('warehouse')}}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
+          <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(addrs[0]?.id||'warehouse'):'warehouse')}}
+            inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
+            dsSub='Ships direct to school/decorator — warehouse will NOT receive or count this in'/>
           {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
             // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
             // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
@@ -6449,16 +6483,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <strong style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${poOrderTotal.toFixed(2)}</strong></div>}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>Cancel</button>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null)}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null)}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
+            if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){nf(podRes.error,'error');return}
             _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
-            const isDropShip=document.getElementById('po-dropship-'+autoPoId)?.checked||false;
+            const isDropShip=poDropShip;
             const batchItems=[];let totalCost=0;
             poItems.forEach((pit,vi)=>{
               if(poExcluded[vi])return;
@@ -6506,7 +6541,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -6519,18 +6554,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(_poCreatingRef.current)return;
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+          if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){nf(podRes.error,'error');return}
           _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
           const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
-          const dropShipElId=preexistingPO?'po-dropship-preexisting':'po-dropship-'+autoPoId;
+          const isDropShip=poDropShip;
           // Save PO lines back to order items (immutable)
           const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
           const newPoLines=[];// {lineIdx,poIdx} pairs for the just-created PO so we can auto-open the modal
           poItems.forEach((pit,vi)=>{
             if(poExcluded[vi])return;
             const idx=pit._idx;if(idx==null)return;
-            const isDropShip=document.getElementById(dropShipElId)?.checked||false;
             const catProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
             const fallbackCost=safeNum(catProd?.nsa_cost??pit.nsa_cost);
             // Read PO qtys first so we can weight per-size prices
@@ -6566,7 +6601,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const counterBump=(preexistingPO?0:1)+(podRes?1:0);
           if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
           if(newPoLines.length>0&&!preexistingPO){
             const first=newPoLines[0];
