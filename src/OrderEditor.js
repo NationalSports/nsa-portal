@@ -216,6 +216,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
+    const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -6011,7 +6012,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
-          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({})}}>
+          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDecoInline(null)}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
@@ -6229,19 +6230,101 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
       const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawC=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
-      return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+      // Inline Deco PO — built in the SAME modal & save as the product PO so the rep never loses the
+      // in-progress PO form (qtys/prices live in uncontrolled inputs and die if we swap modals).
+      // Items offered mirror the standalone deco form (every SO item with sized qty); items on this
+      // product PO are pre-checked since those are usually what's headed to the decorator.
+      const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
+      // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
+      const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+      const podDefaultSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx));
+      const _podInitialQty=podItems.reduce((a,it)=>a+(podDefaultSel.has(it._idx)?Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0):0),0);
+      const _podInitialCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,'embroidery',{qty:_podInitialQty}):null;
+      const _recalcPod=()=>{
+        let qty=0;
+        podItems.forEach((it,i)=>{if(document.getElementById('pod-sel-'+i)?.checked)qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)});
+        const dt=document.getElementById('pod-type')?.value||'embroidery';
+        const price=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,dt,{qty}):null;
+        const qtyEl=document.getElementById('pod-total-qty');if(qtyEl)qtyEl.value=qty;
+        const ucEl=document.getElementById('pod-unit-cost');
+        if(ucEl&&(ucEl.dataset.auto==='1'||!ucEl.value||ucEl.value==='0'||ucEl.value==='0.00')&&price!==null){ucEl.value=price.toFixed(2);ucEl.dataset.auto='1'}
+        const uc=parseFloat(ucEl?.value)||0;
+        const expEl=document.getElementById('pod-expected-cost');if(expEl)expEl.value=(qty*uc).toFixed(2);
+      };
+      // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
+      const buildInlineDecoPO=()=>{
+        const decoType=document.getElementById('pod-type')?.value||'embroidery';
+        const returnDate=document.getElementById('pod-date')?.value||'';
+        const notes=document.getElementById('pod-notes')?.value||'';
+        const isDropShip=document.getElementById('pod-dropship')?.checked||false;
+        const itemIdxs=[];let totalQty=0;
+        podItems.forEach((it,i)=>{if(document.getElementById('pod-sel-'+i)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
+        if(itemIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
+        const unitCost=parseFloat(document.getElementById('pod-unit-cost')?.value)||0;
+        const expectedCost=Math.round(totalQty*unitCost*100)/100;
+        return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+          po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:decoType,
+          item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
+          notes,drop_ship:isDropShip||undefined,expected_date:returnDate,
+          status:'waiting',created_at:new Date().toLocaleDateString(),
+          _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
+      };
+      return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
         <div className="modal-body">
-          {/* Jump straight to an Outside Decoration PO without backing out to the vendor picker — lets you order the goods (and drop-ship them) and spin up a decorator PO from one place. */}
-          <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:8,marginBottom:12}}>
+          {/* Inline Outside Decoration PO — expands INSIDE this modal so the in-progress product PO
+              (uncontrolled qty/price inputs) survives, and both POs are created in one submit.
+              With no open product items there's nothing to pair with, so fall back to the standalone deco form. */}
+          {!poDecoInline?<div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:8,marginBottom:12}}>
             <span style={{fontSize:13}}>🎨</span>
             <span style={{fontSize:12,fontWeight:600,color:'#6d28d9',whiteSpace:'nowrap'}}>Also going to a decorator?</span>
             <select className="form-select" id="po-deco-jump" defaultValue="" style={{flex:1,fontSize:12,padding:'4px 6px'}}>
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(sel)setShowPO('deco:'+sel);else nf('Pick a decorator first','error')}}>Create Deco PO →</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0)setShowPO('deco:'+sel);else setPoDecoInline({vendor:sel})}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
+          :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
+              <span style={{fontSize:13}}>🎨</span>
+              <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>Deco PO — {poDecoInline.vendor}</span>
+              <span style={{fontSize:11,color:'#6d28d9',flex:1}}>created together with this {vn} PO</span>
+              <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>setPoDecoInline(null)}>✕ Remove</button>
+            </div>
+            <div style={{padding:10}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
+                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" id="pod-type" defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('pod-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcPod()}}>
+                  <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
+                <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
+              </div>
+              <div style={{marginBottom:8}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer'}}><input type="checkbox" id="pod-dropship"/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
+                <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
+                <span style={{color:'#94a3b8'}}>items on this {vn} PO are pre-checked</span>
+                <span style={{flex:1}}/>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{podItems.forEach((_,i)=>{const el=document.getElementById('pod-sel-'+i);if(el)el.checked=true});_recalcPod()}}>Select All</button>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{podItems.forEach((_,i)=>{const el=document.getElementById('pod-sel-'+i);if(el)el.checked=false});_recalcPod()}}>Deselect All</button>
+              </div>
+              <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
+                {podItems.map((it,i)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                  return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+                    <input type="checkbox" id={'pod-sel-'+i} defaultChecked={podDefaultSel.has(it._idx)} style={{width:14,height:14}} onChange={_recalcPod}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                    <strong style={{flex:1}}>{it.name}</strong>
+                    <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
+                  </div>})}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" id="pod-total-qty" readOnly defaultValue={_podInitialQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Unit Cost {_podInitialCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>}</label><input className="form-input" id="pod-unit-cost" type="number" step="0.01" defaultValue={_podInitialCost!==null?_podInitialCost.toFixed(2):''} placeholder="0.00" data-auto={_podInitialCost!==null?'1':'0'} style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>{e.target.dataset.auto='0';_recalcPod()}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Expected Cost (qty × rate)</label><input className="form-input" id="pod-expected-cost" readOnly defaultValue={_podInitialCost!==null?(_podInitialQty*_podInitialCost).toFixed(2):'0.00'} style={{fontWeight:800,color:'#166534'}}/></div>
+              </div>
+              <div style={{marginTop:8}}><label className="form-label" style={{fontSize:10}}>Notes / Instructions for Decorator</label><input className="form-input" id="pod-notes" placeholder="Thread colors, PMS colors, placement notes..."/></div>
+            </div>
+          </div>}
           {o._posHydrated===false&&<div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>⚠️ Existing POs for this order didn't finish loading</div>
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Creating a PO now could duplicate one that already exists. Reload the page so the current POs load first, then create the PO.</div>
@@ -6309,11 +6392,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <strong style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${poOrderTotal.toFixed(2)}</strong></div>}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>Cancel</button>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
+            const podRes=poDecoInline?buildInlineDecoPO():null;
+            if(podRes&&podRes.error){nf(podRes.error,'error');return}
             _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=document.getElementById('po-dropship-'+autoPoId)?.checked||false;
@@ -6361,9 +6446,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
             // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
-            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);setPOCounter(c=>c+1);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
+            // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
+            const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -6371,11 +6457,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(BATCH_NOTIFY_VENDORS.includes(batchKey)&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
               setBatchReadyPopup({vendorKey:batchKey,vendorName:batchConfig.name,total:newBatchTotal,threshold:batchConfig.threshold,batchPOs:[...pendingBatches,bp],count:pendingBatches.length+1});
             }
-          }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
+          }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
           if(_poCreatingRef.current)return;
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+          const podRes=poDecoInline?buildInlineDecoPO():null;
+          if(podRes&&podRes.error){nf(podRes.error,'error');return}
           _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
           const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
           const dropShipElId=preexistingPO?'po-dropship-preexisting':'po-dropship-'+autoPoId;
@@ -6414,18 +6502,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
             }
           });
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
+          const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
           setO(updated);onSave(updated);
-          if(!preexistingPO)setPOCounter(c=>c+1);
+          // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
+          const counterBump=(preexistingPO?0:1)+(podRes?1:0);
+          if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')');
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
           if(newPoLines.length>0&&!preexistingPO){
             const first=newPoLines[0];
             const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
             setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
           }
-        }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}</div>
+        }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}</div>
       </div></div>})()}
 
       {/* Batch threshold popup — fires after Add-to-Batch when a BATCH_NOTIFY_VENDORS queue
