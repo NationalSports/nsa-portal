@@ -279,6 +279,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
+    const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
+    const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
+    const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
+    const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -6074,7 +6078,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
-          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({})}}>
+          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDecoInline(null)}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
@@ -6292,19 +6296,92 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
       const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawC=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
-      return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+      // Inline Deco PO — built in the SAME modal & save as the product PO so the rep never loses the
+      // in-progress PO form (qtys/prices live in uncontrolled inputs and die if we swap modals).
+      // Items offered mirror the standalone deco form (every SO item with sized qty); all start
+      // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
+      const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
+      // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
+      const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+      const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
+      // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
+      const podPoSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx));
+      const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podPoSel.has(idx);
+      const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
+      const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
+      const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty}):null;
+      const podUnitCost=podCost!==null?(parseFloat(podCost)||0):(podAutoCost!==null?podAutoCost:0);
+      const podExpectedCost=Math.round(podQty*podUnitCost*100)/100;
+      // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
+      const buildInlineDecoPO=()=>{
+        if(podSelIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
+        return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+          po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
+          item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
+          notes:document.getElementById('pod-notes')?.value||'',
+          drop_ship:(document.getElementById('pod-dropship')?.checked||false)||undefined,
+          expected_date:document.getElementById('pod-date')?.value||'',
+          status:'waiting',created_at:new Date().toLocaleDateString(),
+          _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
+      };
+      return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
         <div className="modal-body">
-          {/* Jump straight to an Outside Decoration PO without backing out to the vendor picker — lets you order the goods (and drop-ship them) and spin up a decorator PO from one place. */}
-          <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:8,marginBottom:12}}>
+          {/* Inline Outside Decoration PO — expands INSIDE this modal so the in-progress product PO
+              (uncontrolled qty/price inputs) survives, and both POs are created in one submit.
+              With no open product items there's nothing to pair with, so fall back to the standalone deco form. */}
+          {!poDecoInline?<div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:8,marginBottom:12}}>
             <span style={{fontSize:13}}>🎨</span>
             <span style={{fontSize:12,fontWeight:600,color:'#6d28d9',whiteSpace:'nowrap'}}>Also going to a decorator?</span>
             <select className="form-select" id="po-deco-jump" defaultValue="" style={{flex:1,fontSize:12,padding:'4px 6px'}}>
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(sel)setShowPO('deco:'+sel);else nf('Pick a decorator first','error')}}>Create Deco PO →</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0)setShowPO('deco:'+sel);else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
+          :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
+              <span style={{fontSize:13}}>🎨</span>
+              <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>Deco PO — {poDecoInline.vendor}</span>
+              <span style={{fontSize:11,color:'#6d28d9',flex:1}}>created together with this {vn} PO</span>
+              <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>setPoDecoInline(null)}>✕ Remove</button>
+            </div>
+            <div style={{padding:10}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
+                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" value={podType} onChange={e=>{setPodType(e.target.value);setPodCost(null)}}>
+                  <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
+                <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
+              </div>
+              <div style={{marginBottom:8}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer'}}><input type="checkbox" id="pod-dropship"/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
+                <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
+                <span style={{color:'#94a3b8'}}>mirrors the items selected on this {vn} PO — toggle any item to override</span>
+                <span style={{flex:1}}/>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=true});setPodOverrides(ov)}}>Select All</button>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov)}}>Deselect All</button>
+              </div>
+              <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
+                {podItems.map((it,i)=>{const soQ=_soQty(it);const onPo=podPoSel.has(it._idx);
+                  return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+                    <input type="checkbox" checked={podChecked(it._idx)} style={{width:14,height:14}} onChange={()=>setPodOverrides(ov=>({...ov,[it._idx]:!podChecked(it._idx)}))}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                    <strong style={{flex:1}}>{it.name}</strong>
+                    {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
+                    <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
+                  </div>})}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" readOnly value={podQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Unit Cost {podCost===null?(podAutoCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>):<button type="button" style={{fontSize:9,padding:'0 6px',border:'1px solid #ddd6fe',background:'white',borderRadius:4,cursor:'pointer',color:'#7c3aed',fontWeight:700}} onClick={()=>setPodCost(null)}>↺ auto</button>}</label><input className="form-input" type="number" step="0.01" value={podCost!==null?podCost:(podAutoCost!==null?podAutoCost.toFixed(2):'')} placeholder="0.00" style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>setPodCost(e.target.value)}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Expected Cost (qty × rate)</label><input className="form-input" readOnly value={podExpectedCost.toFixed(2)} style={{fontWeight:800,color:'#166534'}}/></div>
+              </div>
+              <div style={{marginTop:8}}><label className="form-label" style={{fontSize:10}}>Notes / Instructions for Decorator</label><input className="form-input" id="pod-notes" placeholder="Thread colors, PMS colors, placement notes..."/></div>
+            </div>
+          </div>}
           {o._posHydrated===false&&<div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>⚠️ Existing POs for this order didn't finish loading</div>
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Creating a PO now could duplicate one that already exists. Reload the page so the current POs load first, then create the PO.</div>
@@ -6372,11 +6449,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <strong style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${poOrderTotal.toFixed(2)}</strong></div>}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>Cancel</button>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null)}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
+            const podRes=poDecoInline?buildInlineDecoPO():null;
+            if(podRes&&podRes.error){nf(podRes.error,'error');return}
             _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=document.getElementById('po-dropship-'+autoPoId)?.checked||false;
@@ -6424,9 +6503,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
             // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
-            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);setPOCounter(c=>c+1);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
+            // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
+            const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -6434,11 +6514,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(BATCH_NOTIFY_VENDORS.includes(batchKey)&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
               setBatchReadyPopup({vendorKey:batchKey,vendorName:batchConfig.name,total:newBatchTotal,threshold:batchConfig.threshold,batchPOs:[...pendingBatches,bp],count:pendingBatches.length+1});
             }
-          }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
+          }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
           if(_poCreatingRef.current)return;
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+          const podRes=poDecoInline?buildInlineDecoPO():null;
+          if(podRes&&podRes.error){nf(podRes.error,'error');return}
           _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
           const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
           const dropShipElId=preexistingPO?'po-dropship-preexisting':'po-dropship-'+autoPoId;
@@ -6477,18 +6559,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
             }
           });
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
+          const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
           setO(updated);onSave(updated);
-          if(!preexistingPO)setPOCounter(c=>c+1);
+          // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
+          const counterBump=(preexistingPO?0:1)+(podRes?1:0);
+          if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')');
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
           if(newPoLines.length>0&&!preexistingPO){
             const first=newPoLines[0];
             const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
             setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
           }
-        }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}</div>
+        }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}</div>
       </div></div>})()}
 
       {/* Batch threshold popup — fires after Add-to-Batch when a BATCH_NOTIFY_VENDORS queue
@@ -9861,12 +9946,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
               <div style={{display:'flex',alignItems:'center',gap:12}}>
-                <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
+                <button className="btn btn-secondary btn-sm" onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}}>&larr; Back</button>
                 <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
                 <button className="btn btn-sm" style={{background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
                   if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
                   const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setPoFullPage(null);nf('Deleted '+(dp.po_id||'decoration PO'));
+                  setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);nf('Deleted '+(dp.po_id||'decoration PO'));
                 }}>🗑 Delete PO</button>
                 <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
@@ -9879,7 +9964,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
               </div>
               <div style={{textAlign:'right'}}>
-                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
+                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}} title="Back to Sales Order">{soId}</span></div>
                 <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{dp.vendor||'—'}</strong></div>
                 {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
                 {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
@@ -9895,12 +9980,54 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>{(dp._bill_details||[]).length}</div></div>
               </div>
             </div>
-            {coveredItems.length>0&&<div className="card" style={{marginBottom:16}}>
-              <div className="card-header"><h2>Items covered (for price-list lookup and badges)</h2></div>
-              <div className="card-body"><div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
-              </div></div>
-            </div>}
+            {coveredItems.length>0&&(()=>{
+              // Item coverage stays editable after creation — decorators often get more styles added
+              // to a run later. qty + expected cost recompute from the new coverage; unit_cost and
+              // any applied bills are left alone.
+              const dpKey=dp.id||dp.po_id;
+              const editing=decoEditItems&&decoEditItems.decoPoId===dpKey;
+              const editQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const editableItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>editQty(it)>0||(dp.item_idxs||[]).includes(it._idx));
+              const newQty=editing?editableItems.reduce((a,it)=>a+(decoEditItems.sel[it._idx]?editQty(it):0),0):0;
+              const newExpected=Math.round(newQty*safeNum(dp.unit_cost)*100)/100;
+              return<div className="card" style={{marginBottom:16}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><h2>Items covered (for price-list lookup and badges)</h2>
+                {!editing?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};(dp.item_idxs||[]).forEach(ii=>{sel[ii]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>✎ Edit Items</button>
+                :<div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};editableItems.forEach(it=>{sel[it._idx]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>Select All</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setDecoEditItems(null)}>Cancel</button>
+                  <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+                    const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
+                    if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected};
+                    const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+                    setO(updated);onSave(updated);
+                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+                    setDecoEditItems(null);
+                    nf('🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
+                  }}>Save Items</button>
+                </div>}
+              </div>
+              <div className="card-body">
+                {!editing?<div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                  {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
+                </div>
+                :<>
+                  {editableItems.map(it=><div key={it._idx} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'#faf5ff',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+                    <input type="checkbox" checked={!!decoEditItems.sel[it._idx]} style={{width:14,height:14}} onChange={()=>setDecoEditItems(d=>({...d,sel:{...d.sel,[it._idx]:!d.sel[it._idx]}}))}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                    <strong style={{flex:1}}>{it.name}</strong>
+                    <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {editQty(it)}</span>
+                  </div>)}
+                  <div style={{display:'flex',justifyContent:'flex-end',gap:16,marginTop:8,paddingTop:8,borderTop:'1px dashed #e2e8f0',fontSize:13}}>
+                    <span style={{color:'#64748b'}}>Units: <strong style={{color:'#1e40af'}}>{newQty}</strong></span>
+                    <span style={{color:'#64748b'}}>× ${safeNum(dp.unit_cost).toFixed(2)}/unit</span>
+                    <span style={{color:'#64748b'}}>Expected: <strong style={{color:'#166534'}}>${newExpected.toFixed(2)}</strong></span>
+                  </div>
+                </>}
+              </div>
+            </div>})()}
             {dp.notes&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Notes</h2></div><div className="card-body"><div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{dp.notes}</div></div></div>}
             {(dp.tracking_numbers||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>
               <div className="card-header" style={{background:'#eff6ff'}}><h2 style={{color:'#1e40af'}}>Tracking Numbers</h2></div>
