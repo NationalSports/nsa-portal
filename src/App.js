@@ -8630,7 +8630,7 @@ export default function App(){
   </>);
 
   // JOBS LIST
-  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyOnly:false});
+  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'});
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
@@ -8642,7 +8642,7 @@ export default function App(){
     {name:'Art Awaiting Approval',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'waiting_approval',itemSt:'all',dueBefore:'',search:''}},
     {name:'All Active',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''}},
   ];
-  const[savedJobFilters,setSavedJobFilters]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_job_filters');if(s){const parsed=JSON.parse(s);if(Array.isArray(parsed)&&parsed.length>0)return parsed.map(f=>({...f,filters:{...f.filters,itemSt:f.filters.itemSt||'all'}}))}}catch(e){}return _defaultSavedFilters});
+  const[savedJobFilters,setSavedJobFilters]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_job_filters');if(s){const parsed=JSON.parse(s);if(Array.isArray(parsed)&&parsed.length>0)return parsed.map(f=>({...f,filters:{...f.filters,itemSt:f.filters.itemSt||'all',readyF:f.filters.readyF||(f.filters.readyOnly?'ready':'all')}}))}}catch(e){}return _defaultSavedFilters});
   const _saveSavedFilters=(fn)=>{setSavedJobFilters(prev=>{const next=typeof fn==='function'?fn(prev):fn;try{localStorage.setItem('nsa_saved_job_filters',JSON.stringify(next))}catch(e){}return next})};
 
   function rJobs(){
@@ -8674,8 +8674,12 @@ export default function App(){
     // True production readiness per the floor's rule: art finalized (incl. production files) AND
     // every garment picked/received — and the job hasn't already started running.
     const _isReadyToRun=j=>(_normSt(j.prod_status)==='hold')&&isJobReady(j,j.so);
+    // The complement: queued (on hold) but NOT ready yet — still waiting on art, production
+    // files, or goods. This is the "what's coming" pipeline view.
+    const _isNotReadyYet=j=>(_normSt(j.prod_status)==='hold')&&!isJobReady(j,j.so);
     if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(_normSt(j.prod_status)));
-    if(jf.readyOnly)fj=fj.filter(_isReadyToRun);
+    if(jf.readyF==='ready')fj=fj.filter(_isReadyToRun);
+    else if(jf.readyF==='not_ready')fj=fj.filter(_isNotReadyYet);
     const jfRepId=jf.rep==='_me_'?cu?.id:jf.rep;
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
@@ -8737,7 +8741,7 @@ export default function App(){
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
           <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#64748b'}}><span>Due by:</span><input type="date" className="form-input" style={{width:130,padding:'3px 6px',fontSize:11}} value={jf.dueBefore} onChange={e=>setJF('dueBefore',e.target.value)}/></div>
-          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||(jf.itemSt||'all')!=='all'||jf.dueBefore||jf.readyOnly)&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyOnly:false})}>Clear</button>}
+          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||(jf.itemSt||'all')!=='all'||jf.dueBefore||(jf.readyF||'all')!=='all')&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'})}>Clear</button>}
         </div>
         {/* Row 2: Production Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
@@ -8745,9 +8749,12 @@ export default function App(){
           {STATUSES.map(([id,label])=>{const active=jf.statuses.includes(id);const ct=allJobs.filter(j=>_normSt(j.prod_status)===id).length;
             return<button key={id} title={id==='hold'?'Queued for production (hold status). Being on hold does NOT mean the job is ready to run — use the ✅ Ready for Prod chip for that.':undefined} style={chipStyle(active,SC[id])}
               onClick={()=>toggleStatus(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
-          {(()=>{const ct=allJobs.filter(_isReadyToRun).length;const active=!!jf.readyOnly;
+          {(()=>{const ct=allJobs.filter(_isReadyToRun).length;const active=jf.readyF==='ready';
             return<button title="Truly ready to run: artwork finalized with production files attached AND every garment picked or received — and not started yet. A job is NOT ready for production until both are done." style={{...chipStyle(active,{c:'#166534',bg:'#dcfce7'}),marginLeft:10,fontWeight:700}}
-              onClick={()=>setJF('readyOnly',!jf.readyOnly)}>✅ Ready for Prod <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})()}
+              onClick={()=>setJF('readyF',jf.readyF==='ready'?'all':'ready')}>✅ Ready for Prod <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})()}
+          {(()=>{const ct=allJobs.filter(_isNotReadyYet).length;const active=jf.readyF==='not_ready';
+            return<button title="What's coming: jobs queued (on hold) that are NOT ready to run yet — still waiting on art, production files, or goods. The Prod Ready column shows what each one is waiting on." style={{...chipStyle(active,{c:'#d97706',bg:'#fef3c7'}),fontWeight:700}}
+              onClick={()=>setJF('readyF',jf.readyF==='not_ready'?'all':'not_ready')}>⏳ Not Ready <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})()}
         </div>
         {/* Row 3: Art Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
@@ -8769,7 +8776,7 @@ export default function App(){
           {savedJobFilters.map((sf,i)=>{const isActive=activeSavedFilterIdx===i;
             return<span key={i} style={{display:'inline-flex',alignItems:'center',gap:0}}><button style={{fontSize:10,padding:'2px 8px',borderRadius:'10px 0 0 10px',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),borderRight:'none',
               background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#fff':'#7c3aed',cursor:'pointer',fontWeight:600}}
-              onClick={()=>{setActiveSavedFilterIdx(i);_setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all'})}}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),
+              onClick={()=>{setActiveSavedFilterIdx(i);_setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all',readyF:sf.filters.readyF||(sf.filters.readyOnly?'ready':'all')})}}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),
               background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#c4b5fd':'#c4b5fd',cursor:'pointer',lineHeight:1}}
               onClick={()=>{if(window.confirm('Remove saved filter "'+sf.name+'"?'))_saveSavedFilters(prev=>prev.filter((_,j)=>j!==i))}}>×</button></span>})}
           <button style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',color:'#94a3b8',cursor:'pointer'}}
