@@ -6398,6 +6398,13 @@ export default function App(){
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
+      // Calculate already-shipped units for this SO (shared by the no-deco item loop and the job loop)
+      const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+        soShippedByItem[key]=(soShippedByItem[key]||0)+szQty;
+      })});
+      // Running tally per sku|color so duplicate no-deco lines don't each subtract the full shipped qty
+      const soShipConsumed={};
 
       safeItems(so).forEach((item,ii)=>{
         const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
@@ -6440,8 +6447,14 @@ export default function App(){
               deliverDate,deliverDaysOut,holdUntil,itemIdx:ii,_dkey:dkey,itemIdxs:[ii],
               desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
           } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
-            shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
-              desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
+            // Subtract already-shipped units so shipped/cleared no-deco items leave the queue
+            const key=item.sku+'|'+(item.color||'');
+            const used=soShipConsumed[key]||0;
+            const applyShipped=Math.min(totalOrdered,Math.max(0,(soShippedByItem[key]||0)-used));
+            soShipConsumed[key]=used+applyShipped;
+            const remainUnits=totalOrdered-applyShipped;
+            if(remainUnits>0)shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              desc:item.sku+' · '+item.name,units:remainUnits,shipMethod:dest,shipPref:pref});
           }
         }
       });
@@ -6451,11 +6464,6 @@ export default function App(){
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       const deliverDateReady=shipPref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
       const allJobs=safeJobs(so);
-      // Calculate already-shipped units for this SO
-      const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
-        soShippedByItem[key]=(soShippedByItem[key]||0)+szQty;
-      })});
       allJobs.forEach(j=>{
         if(j.prod_status==='completed'||j.prod_status==='shipped'){
           // Calculate remaining unshipped units for this job
@@ -16173,6 +16181,8 @@ export default function App(){
   _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,setSOs,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
+  // Clear-shipment modal: {grp, soMap, reason, custom, note} — marks remaining units shipped with a memo (no label)
+  const[clearShipModal,setClearShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
   const[pickupEdit,setPickupEdit]=useState(null);// {shp, tracking_number, carrier, weight, dimensions, busy} — edit/relabel an awaiting-pickup package
@@ -16244,6 +16254,35 @@ export default function App(){
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
+    // Remaining (unshipped) items across a soMap — shared by Create Shipment and Clear/Mark-Shipped
+    const whRemainingItems=(soMap)=>{
+      const allItems=[];const seen=new Set();
+      Object.entries(soMap).forEach(([soId,so])=>{
+        // Calculate already-shipped quantities per SKU+color for this SO
+        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
+          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
+        })});
+        // Merge duplicate items by SKU+color before building available items
+        const mergedByKey={};const mergedOrder=[];
+        safeItems(so).forEach((item,iIdx)=>{
+          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
+          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
+          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
+        });
+        mergedOrder.forEach(m=>{
+          const key=soId+'|'+m.sku+'|'+(m.color||'');
+          if(seen.has(key))return;
+          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};
+          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
+          if(qty<=0)return;
+          seen.add(key);
+          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
+        });
+      });
+      return allItems;
+    };
     const tabs=[
       {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'Ready for Deco',icon:'🎨',count:fDeco.length,color:'#7c3aed'},
@@ -17261,33 +17300,12 @@ export default function App(){
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
                       // Build ship modal with remaining (unshipped) items from SOs
-                      const allItems=[];const seen=new Set();
-                      Object.entries(grp.soMap).forEach(([soId,so])=>{
-                        // Calculate already-shipped quantities per SKU+color for this SO
-                        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-                          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
-                          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
-                        })});
-                        // Merge duplicate items by SKU+color before building available items
-                        const mergedByKey={};const mergedOrder=[];
-                        safeItems(so).forEach((item,iIdx)=>{
-                          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
-                          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
-                          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
-                        });
-                        mergedOrder.forEach(m=>{
-                          const key=soId+'|'+m.sku+'|'+(m.color||'');
-                          if(seen.has(key))return;
-                          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};
-                          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
-                          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                          if(qty<=0)return;
-                          seen.add(key);
-                          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
-                        });
-                      });
+                      const allItems=whRemainingItems(grp.soMap);
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
+                  <button title="Clear from Ready to Ship without creating a label — marks remaining units as shipped (rep pickup, ShipStation, etc.)"
+                    className="btn btn-sm" style={{fontSize:10,background:'#0f766e',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
                       // Quick packing slip for entire group
@@ -17507,7 +17525,8 @@ export default function App(){
                     <span style={{fontSize:11,fontWeight:800,color:'#166534'}}>{shp.cName}</span>
                     <span style={{fontSize:10,fontFamily:'monospace',color:'#1e40af'}}>{shp.soId}</span>
                     {shp.tracking_number?<span style={{fontSize:10,fontFamily:'monospace',color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3}}>{shp.tracking_number}</span>
-                      :<span style={{fontSize:10,color:'#d97706'}}>No tracking</span>}
+                      :shp.clear_memo?null:<span style={{fontSize:10,color:'#d97706'}}>No tracking</span>}
+                    {shp.clear_memo&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:'#ccfbf1',color:'#0f766e',fontWeight:700}}>✓ {shp.clear_memo}</span>}
                     {shp.carrier&&<span style={{fontSize:9,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
                     {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
                     <span style={{marginLeft:'auto',fontSize:9,color:'#94a3b8'}}>{shp.pickup_date||shp.ship_date||shp.created_at||''}</span>
@@ -17892,6 +17911,96 @@ export default function App(){
             </div>
           </div>
         </div></div>}
+
+        {/* ── CLEAR SHIPMENT MODAL — mark remaining units shipped with a memo (no label/tracking) ── */}
+        {clearShipModal&&(()=>{
+          const remaining=whRemainingItems(clearShipModal.soMap);
+          const totUnits=remaining.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
+          const reasons=['Picked up by rep','Shipped via ShipStation','Customer picked up','Other'];
+          const reasonIcon={'Picked up by rep':'🚗','Shipped via ShipStation':'🛒','Customer picked up':'🏫','Other':'✏️'};
+          const isOther=clearShipModal.reason==='Other';
+          const memoBase=isOther?(clearShipModal.custom||'').trim():clearShipModal.reason;
+          const note=(clearShipModal.note||'').trim();
+          const memo=memoBase+(note?' — '+note:'');
+          const soIds=[...clearShipModal.grp.soIds];
+          return<div className="modal-overlay" onClick={()=>setClearShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560,maxHeight:'90vh',overflow:'auto'}}>
+            <div className="modal-header" style={{background:'linear-gradient(135deg,#0f766e,#14b8a6)',color:'white'}}>
+              <h2 style={{margin:0,color:'white'}}>✓ Clear Shipment — {clearShipModal.grp.cName}</h2>
+              <button className="modal-close" onClick={()=>setClearShipModal(null)} style={{color:'white'}}>×</button>
+            </div>
+            <div className="modal-body" style={{padding:16}}>
+              <div style={{fontSize:12,color:'#475569',marginBottom:12,lineHeight:1.5}}>
+                This marks everything left on <strong>{soIds.join(', ')}</strong> as <strong>shipped</strong> and clears it from Ready to Ship — no label or tracking is created. Use it when the order already went out another way.
+              </div>
+              <div style={{display:'flex',gap:10,flexWrap:'wrap',padding:'8px 12px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8,marginBottom:14,fontSize:12}}>
+                <span><strong style={{color:'#0f766e'}}>{soIds.length}</strong> order{soIds.length!==1?'s':''}</span>
+                <span><strong style={{color:'#0f766e'}}>{remaining.length}</strong> item{remaining.length!==1?'s':''}</span>
+                <span><strong style={{color:'#0f766e'}}>{totUnits}</strong> units remaining</span>
+              </div>
+              <div style={{fontSize:12,fontWeight:800,color:'#0f172a',marginBottom:6}}>How was it handled?</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                {reasons.map(r=><button key={r} onClick={()=>setClearShipModal({...clearShipModal,reason:r})}
+                  style={{fontSize:11,padding:'6px 12px',borderRadius:8,fontWeight:700,cursor:'pointer',
+                    border:clearShipModal.reason===r?'2px solid #0f766e':'1px solid #cbd5e1',
+                    background:clearShipModal.reason===r?'#ccfbf1':'white',
+                    color:clearShipModal.reason===r?'#0f766e':'#475569'}}>{reasonIcon[r]} {r}</button>)}
+              </div>
+              {isOther&&<input className="form-input" autoFocus placeholder="How was this shipped / cleared?" value={clearShipModal.custom}
+                style={{fontSize:12,marginBottom:8}}
+                onChange={e=>setClearShipModal({...clearShipModal,custom:e.target.value})}/>}
+              <input className="form-input" placeholder="Optional note (rep name, reference #, …)" value={clearShipModal.note}
+                style={{fontSize:12}}
+                onChange={e=>setClearShipModal({...clearShipModal,note:e.target.value})}/>
+            </div>
+            <div className="modal-footer" style={{display:'flex',gap:8}}>
+              <button className="btn btn-primary" disabled={isOther&&!memoBase} style={{background:'#0f766e',borderColor:'#0f766e',fontWeight:800,opacity:isOther&&!memoBase?0.5:1}}
+                onClick={()=>{
+                  if(isOther&&!memoBase){nf('Enter a memo for how this was handled','error');return}
+                  const shipDate=new Date().toLocaleDateString();const nowStr=new Date().toLocaleString();
+                  let clearedUnits=0;let shpIdx=0;
+                  Object.entries(clearShipModal.soMap).forEach(([soId,so])=>{
+                    const soItems=remaining.filter(it=>it.soId===soId);
+                    const soUnits=soItems.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
+                    let allShipments=so._shipments||[];
+                    if(soItems.length>0){
+                      shpIdx++;
+                      // Pre-marked as picked up so it lands in Shipped, not Awaiting Pickup
+                      allShipments=[...allShipments,{
+                        id:'SHP-'+Date.now()+'-C'+shpIdx,
+                        tracking_number:'',carrier:'',ship_date:shipDate,tracking_url:'',
+                        label_url:null,shipstation_shipment_id:null,shipping_cost:0,
+                        items:soItems.map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
+                        notes:memo,cleared:true,clear_memo:memo,
+                        carrier_picked_up:true,pickup_date:nowStr,
+                        created_by:cu?.id||'',created_at:nowStr
+                      }];
+                    }
+                    // Move completed jobs to shipped once all their units are covered by shipments
+                    const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
+                      const key=it.sku+'|'+(it.color||'');shippedByItem[key]=(shippedByItem[key]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                    })});
+                    const origJobs=safeJobs(so);
+                    const updatedJobs=origJobs.map(jj=>{
+                      if(jj.prod_status!=='completed')return jj;
+                      const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                      return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
+                    });
+                    const jobsChanged=updatedJobs.some((jj,ji)=>jj!==origJobs[ji]);
+                    if(soItems.length===0&&!jobsChanged)return;// nothing to clear on this SO
+                    const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                    savSO({...so,jobs:updatedJobs,_shipments:allShipments,
+                      _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
+                      _ship_date:shipDate,updated_at:nowStr});
+                    addWhAction({type:'cleared',soId,customer:clearShipModal.grp.cName,name:memo,qty:soUnits,by:cu?.id||'warehouse'});
+                    clearedUnits+=soUnits;
+                  });
+                  nf('✅ Cleared — '+clearedUnits+' unit'+(clearedUnits!==1?'s':'')+' marked shipped ('+memo+')');
+                  setClearShipModal(null);
+                }}>✓ Mark Shipped & Clear{totUnits>0?' ('+totUnits+' units)':''}</button>
+              <button className="btn btn-secondary" onClick={()=>setClearShipModal(null)}>Cancel</button>
+            </div>
+          </div></div>;
+        })()}
 
       </>}
 
@@ -18742,8 +18851,8 @@ export default function App(){
               <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>Editing Action</span>
               <select style={{fontSize:11,padding:'2px 6px',border:'1px solid #e2e8f0',borderRadius:4}} defaultValue={a.type}
                 onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next)}}>
-                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco','delivered','manual_ship'].map(t=>
-                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[t]}</option>)}
+                {['pulled','shipped','cleared','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco','delivered','manual_ship'].map(t=>
+                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',cleared:'Cleared (Marked Shipped)',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[t]}</option>)}
               </select>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
@@ -18842,12 +18951,12 @@ export default function App(){
             onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
             onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=isEditing?'#fffbeb':i%2===0?'#fafbfc':'white'}}>
             <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-              background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
-              {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
+              background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='cleared'?'#ccfbf1':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
+              {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='cleared'?'✓':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
+                <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='cleared'?'#0f766e':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',cleared:'Cleared (Marked Shipped)',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
                 <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
               </div>
