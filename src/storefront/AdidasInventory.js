@@ -982,7 +982,7 @@ export default function AdidasInventory() {
 
   const toggleSize = (s) => setSizeSel((sel) => sel.includes(s) ? sel.filter((x) => x !== s) : [...sel, s]);
   const toggleColor = (f) => setColorSel((sel) => {
-    const next = sel.includes(f) ? sel.filter((x) => x !== f) : (sel.length < 3 ? [...sel, f] : sel);
+    const next = sel.includes(f) ? sel.filter((x) => x !== f) : (sel.length < 5 ? [...sel, f] : sel);
     saveJson('nsa_adidas_team_colors', next);
     return next;
   });
@@ -1045,7 +1045,7 @@ export default function AdidasInventory() {
                 <>
                   <div className="ai-colorpop">
                     <div style={{ fontSize: 11.5, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-                      Pick up to 3 — shows gear featuring your colors
+                      Pick up to 5 — shows gear featuring your colors
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
                       {facets.colors.map((f) => (
