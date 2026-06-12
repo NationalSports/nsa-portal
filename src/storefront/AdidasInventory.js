@@ -77,33 +77,47 @@ async function copyText(t) {
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
 const normCategory = (c) => CATEGORY_ALIASES[c] || c || 'Other';
 
+// Fine-grained color families — Navy vs Royal (and Gold vs Yellow, Maroon vs
+// Red) are different team colors, so they're first-class here even though the
+// import's color_category lumps them together.
 const COLOR_DOTS = {
-  Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Red: '#C8102E', Orange: '#EA580C',
-  Yellow: '#EAB308', Green: '#15803D', Blue: '#2563EB', Purple: '#6D28D9', Pink: '#EC4899',
-  Brown: '#7C4A21', Other: '#CBD5E1',
+  Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC',
+  Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6',
+  Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C',
+  Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D',
+  Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21', Other: '#CBD5E1',
 };
 const COLOR_FAMILIES = Object.keys(COLOR_DOTS);
-// Fallback when products.color_category is empty: classify from the color
-// string, scanning the first colorway segment before the whole string.
-const FAMILY_RULES = [
-  ['Black', /BLACK/], ['White', /WHITE|CREAM|IVORY/],
+// Per-segment classification: "Maroon/White" tags BOTH Maroon and White, so
+// team-color matching sees every color a colorway features. Order matters —
+// Navy/Royal before Blue, Maroon before Red, Gold before Yellow.
+const SEGMENT_RULES = [
+  ['Navy', /NAVY/], ['Royal', /ROYAL/], ['Maroon', /MAROON|BURGUNDY|CARDINAL/],
+  ['Gold', /GOLD/], ['Black', /BLACK/], ['White', /WHITE|CREAM|IVORY/],
   ['Grey', /GREY|GRAY|SILVER|CHARCOAL|HEATHER|ONIX|CARBON|GRANITE/],
-  ['Red', /\bRED\b|SCARLET|CRIMSON|BURGUNDY|MAROON|CARDINAL/],
-  ['Orange', /ORANGE|AMBER/], ['Yellow', /YELLOW|GOLD|LEMON|SOLAR/],
-  ['Green', /GREEN|FOREST|MINT|OLIVE/], ['Blue', /BLUE|NAVY|ROYAL|AQUA|TEAL|SKY|INDIGO/],
-  ['Purple', /PURPLE|VIOLET|REGAL/], ['Pink', /PINK|MAGENTA|ROSE|FUCHSIA/],
-  ['Brown', /BROWN|KHAKI|TAN\b|EARTH/],
+  ['Red', /\bRED\b|SCARLET|CRIMSON/], ['Orange', /ORANGE|AMBER/],
+  ['Yellow', /YELLOW|LEMON|SOLAR/], ['Green', /GREEN|FOREST|MINT|OLIVE/],
+  ['Blue', /BLUE|AQUA|TEAL|SKY|INDIGO/], ['Purple', /PURPLE|VIOLET|REGAL/],
+  ['Pink', /PINK|MAGENTA|ROSE|FUCHSIA/], ['Brown', /BROWN|KHAKI|TAN\b|EARTH/],
 ];
-const COLOR_CATEGORY_ALIASES = { 'Light Grey': 'Grey', 'Vegas Gold': 'Yellow', Royal: 'Blue' };
-function colorFamily(colorCategory, colorStr) {
-  const cc = COLOR_CATEGORY_ALIASES[colorCategory] || colorCategory;
-  if (cc && COLOR_DOTS[cc]) return cc;
-  const s = String(colorStr || '').toUpperCase();
-  const first = s.split('/')[0];
-  for (const part of [first, s]) {
-    for (const [fam, re] of FAMILY_RULES) if (re.test(part)) return fam;
+const COLOR_CATEGORY_ALIASES = { 'Light Grey': 'Grey', 'Vegas Gold': 'Gold' };
+const segFamily = (seg) => {
+  const s = seg.toUpperCase();
+  for (const [fam, re] of SEGMENT_RULES) if (re.test(s)) return fam;
+  return null;
+};
+// → { primary (for the display dot), tags (Set of every featured color) }
+function classifyColor(colorCategory, colorStr) {
+  const segs = String(colorStr || '').split('/').map((s) => s.trim()).filter(Boolean);
+  const tags = new Set();
+  for (const seg of segs) { const f = segFamily(seg); if (f) tags.add(f); }
+  let primary = segs.length ? segFamily(segs[0]) : null;
+  if (!primary) {
+    const cc = COLOR_CATEGORY_ALIASES[colorCategory] || colorCategory;
+    primary = COLOR_DOTS[cc] ? cc : (tags.size ? [...tags][0] : 'Other');
   }
-  return 'Other';
+  tags.add(primary);
+  return { primary, tags };
 }
 
 // Gender from adidas naming conventions: leading W/M token, Youth / Y token,
@@ -183,10 +197,6 @@ function Styles() {
         .ai-modal-bg{position:fixed;inset:0;background:rgba(15,18,26,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:4vh 14px;overflow-y:auto}
         .ai-modal{background:#fff;border-radius:16px;max-width:860px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.35);margin-bottom:6vh}
         .ai-cwrow{display:flex;gap:14px;padding:14px 0;border-top:1px solid #EEF0F3;align-items:flex-start}
-        .ai-chipbtn{position:relative;display:inline-flex;align-items:center;gap:4px;border:1px solid #E2E5EA;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;background:#FAFBFC;white-space:nowrap;cursor:pointer;font-family:inherit;transition:border-color .12s,background .12s}
-        .ai-chipbtn:hover{border-color:#191919;background:#fff}
-        .ai-chipbtn b{font-weight:700}
-        .ai-chipbtn .ai-inlist{position:absolute;top:-7px;right:-7px;background:#191919;color:#fff;border-radius:999px;font-size:10px;font-weight:700;min-width:16px;height:16px;display:flex;align-items:center;justify-content:center;padding:0 4px}
         .ai-iconbtn{border:1px solid #E2E5EA;background:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer;color:#3A4150;font-family:inherit;transition:border-color .12s}
         .ai-iconbtn:hover{border-color:#191919}
         .ai-fab{position:fixed;right:18px;bottom:18px;z-index:40;background:#191919;color:#fff;border:none;border-radius:999px;padding:13px 22px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 10px 28px rgba(15,26,56,.3);display:flex;align-items:center;gap:8px;transition:transform .15s}
@@ -198,6 +208,17 @@ function Styles() {
         .ai-qbtn{border:1px solid #D8DCE2;background:#fff;border-radius:6px;width:26px;height:26px;font-size:14px;font-weight:700;cursor:pointer;color:#3A4150;line-height:1}
         .ai-qbtn:hover{border-color:#191919}
         .ai-toast{position:fixed;bottom:84px;left:50%;transform:translateX(-50%);background:#191919;color:#fff;border-radius:999px;padding:9px 20px;font-size:13.5px;font-weight:600;z-index:70;box-shadow:0 10px 28px rgba(0,0,0,.3);white-space:nowrap;animation:ai-toast-in .18s ease}
+        .ai-colorpop{position:absolute;top:calc(100% + 6px);left:0;z-index:20;background:#fff;border:1px solid #E2E5EA;border-radius:12px;padding:12px;box-shadow:0 18px 44px rgba(15,26,56,.18);width:280px}
+        .ai-swatch{display:flex;align-items:center;gap:7px;border:1px solid #E2E5EA;background:#FAFBFC;border-radius:8px;padding:6px 8px;font-size:12.5px;font-weight:600;cursor:pointer;color:#3A4150;font-family:inherit;transition:border-color .12s}
+        .ai-swatch:hover{border-color:#191919}
+        .ai-swatch.on{border-color:#191919;background:#191919;color:#fff}
+        .ai-sizecell{display:flex;flex-direction:column;align-items:center;gap:3px;border:1px solid #E2E5EA;border-radius:8px;padding:5px 4px 4px;background:#FAFBFC;width:54px}
+        .ai-sizecell.inbound{border-color:#F0DCC0;background:#FFFBF3}
+        .ai-sizecell .lbl{font-size:11.5px;font-weight:700;line-height:1}
+        .ai-sizecell .avail{font-size:10.5px;font-weight:700;line-height:1}
+        .ai-qtyin{width:44px;border:1px solid #D8DCE2;border-radius:6px;padding:3px 2px;font-size:12.5px;font-weight:700;text-align:center;font-family:inherit;outline:none;background:#fff}
+        .ai-qtyin:focus{border-color:#191919}
+        .ai-qtyin:not(:placeholder-shown){border-color:#191919;background:#191919;color:#fff}
         @keyframes ai-toast-in{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       `}</style>
     </>
@@ -296,15 +317,56 @@ function StyleCard({ st, matchCws, onOpen }) {
   );
 }
 
+// One size = one cell: label, available count, and an order-qty input that
+// writes straight into the order list (0/blank removes the line).
+function SizeCell({ size, avail, inbound, qty, onQty }) {
+  return (
+    <div className={'ai-sizecell' + (inbound ? ' inbound' : '')}>
+      <span className="lbl">{sizeLabel(size)}</span>
+      <span className="avail" style={{ color: inbound ? '#92580B' : avail >= 24 ? '#15803D' : '#B45309' }}
+        title={inbound ? `Projected ${fmtQty(avail)} available ${fmtDate(inbound)}` : `${fmtQty(avail)} available now`}>
+        {fmtQty(avail)}
+      </span>
+      <input className="ai-qtyin" placeholder="0" inputMode="numeric" aria-label={`Order quantity, size ${sizeLabel(size)}`}
+        value={qty || ''} onChange={(e) => onQty(parseInt(e.target.value.replace(/\D/g, '')) || 0)} />
+    </div>
+  );
+}
+
 // ── Style detail modal (per-colorway stock + inbound dates) ──────────
-// Size chips are buttons: tapping adds that SKU+size to the order list.
-function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
+function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
+  const [alertFor, setAlertFor] = useState(null); // sku with the restock-alert form open
+  const [alertEmail, setAlertEmail] = useState(() => (loadJson(COACH_KEY, {}).email || ''));
+  const [alertSize, setAlertSize] = useState('');
+  const [alertBusy, setAlertBusy] = useState(false);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
   }, [onClose]);
+
+  const submitAlert = async (cw) => {
+    if (alertBusy || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(alertEmail.trim())) return;
+    setAlertBusy(true);
+    try {
+      const res = await fetch('/.netlify/functions/catalog-stock-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand: 'adidas', email: alertEmail.trim(), sku: cw.sku, size: alertSize || null, style_name: st.name, color: cw.color || cw.family }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d.error || 'Could not save the alert');
+      saveJson(COACH_KEY, { ...loadJson(COACH_KEY, {}), email: alertEmail.trim() });
+      notify(`We'll email you when ${alertSize ? sizeLabel(alertSize) : 'it'} is back`);
+      setAlertFor(null);
+    } catch (e) {
+      notify(e.message);
+    } finally {
+      setAlertBusy(false);
+    }
+  };
 
   const share = async () => {
     const url = `${window.location.origin}/adidas?style=${encodeURIComponent(st.colorways[0].sku)}`;
@@ -340,7 +402,7 @@ function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
           </div>
         )}
         <div style={{ padding: '0 24px 6px', fontSize: 12, color: '#6A7180' }}>
-          Tap a size to add it to your order list — quantities can be adjusted there.
+          Type quantities under the sizes you need — they go straight onto your order list.
         </div>
         <div style={{ padding: '0 24px 22px' }}>
           {cws.map((cw) => {
@@ -351,6 +413,8 @@ function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
               (incoming[s.fd] = incoming[s.fd] || []).push(s);
             }
             const dates = Object.keys(incoming).sort().slice(0, 3);
+            const hasOOS = cw.sizes.some((s) => !s.q);
+            const oosSizes = cw.sizes.filter((s) => !s.q);
             return (
               <div key={cw.sku} className="ai-cwrow" style={matchSet.has(cw.sku) ? undefined : { opacity: .55 }}>
                 <div style={{ width: 76, height: 76, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
@@ -362,20 +426,33 @@ function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
                     <span style={{ fontWeight: 700, fontSize: 14.5 }}>{cw.color || cw.family}</span>
                     <span style={{ fontSize: 12, color: '#6A7180', fontFamily: 'monospace' }}>{cw.sku}</span>
                     <button className="ai-iconbtn" onClick={async () => { if (await copyText(cw.sku)) notify(`SKU ${cw.sku} copied`); }} title="Copy SKU">Copy SKU</button>
+                    {hasOOS && (
+                      <button className="ai-iconbtn" onClick={() => { setAlertFor(alertFor === cw.sku ? null : cw.sku); setAlertSize(''); }} title="Email me when out-of-stock sizes return">
+                        🔔 Restock alert
+                      </button>
+                    )}
                     {fmtPrice(cw.price) && <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 'auto' }}>{fmtPrice(cw.price)}</span>}
                   </div>
-                  <div className="ai-chipgrid" style={{ marginTop: 8 }}>
-                    {inStock.length > 0 ? inStock.map((s) => {
-                      const n = qtyInList(cw.sku, s.size);
-                      return (
-                        <button key={s.size} className="ai-chipbtn" title={`${fmtQty(s.q)} available — tap to add`}
-                          onClick={() => onAdd(st, cw, s.size, null)}>
-                          {sizeLabel(s.size)} <b style={{ color: s.q >= 24 ? '#15803D' : '#B45309' }}>{fmtQty(s.q)}</b>
-                          {n > 0 && <span className="ai-inlist">{n}</span>}
-                        </button>
-                      );
-                    }) : (
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#B45309' }}>Out of stock</span>
+                  {alertFor === cw.sku && (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 8, background: '#F7F8FB', border: '1px solid #E6E8EC', borderRadius: 10, padding: '8px 10px' }}>
+                      <select className="ai-input" style={{ width: 'auto', padding: '6px 8px', fontSize: 12.5 }} value={alertSize} onChange={(e) => setAlertSize(e.target.value)} aria-label="Size to watch">
+                        <option value="">Any size</option>
+                        {oosSizes.map((s) => <option key={s.size} value={s.size}>{sizeLabel(s.size)}</option>)}
+                      </select>
+                      <input className="ai-input" style={{ flex: '1 1 150px', padding: '6px 10px', fontSize: 13 }} placeholder="you@school.org" type="email"
+                        value={alertEmail} onChange={(e) => setAlertEmail(e.target.value)} />
+                      <button className="ai-iconbtn" style={{ padding: '7px 14px', fontSize: 12.5, background: '#191919', color: '#fff', borderColor: '#191919' }}
+                        disabled={alertBusy} onClick={() => submitAlert(cw)}>
+                        {alertBusy ? 'Saving…' : 'Email me'}
+                      </button>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                    {inStock.length > 0 ? inStock.map((s) => (
+                      <SizeCell key={s.size} size={s.size} avail={s.q} inbound={null}
+                        qty={qtyInList(cw.sku, s.size)} onQty={(n) => onSetQty(st, cw, s.size, n, null)} />
+                    )) : (
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#B45309', alignSelf: 'center' }}>Out of stock</span>
                     )}
                   </div>
                   {dates.length > 0 && (
@@ -383,17 +460,10 @@ function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
                       {dates.map((d) => (
                         <div key={d} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                           <span style={{ fontSize: 11.5, fontWeight: 700, color: '#3A4150', whiteSpace: 'nowrap' }}>Inbound {fmtDate(d)}:</span>
-                          {incoming[d].map((s) => {
-                            const n = qtyInList(cw.sku, s.size);
-                            return (
-                              <button key={s.size} className="ai-chipbtn" style={{ borderColor: '#F0DCC0', background: '#FFFBF3', color: '#92580B' }}
-                                title={`Projected ${fmtQty(s.fq)} available ${fmtDate(d)} — tap to add`}
-                                onClick={() => onAdd(st, cw, s.size, d)}>
-                                {sizeLabel(s.size)} <b>{fmtQty(s.fq)}</b>
-                                {n > 0 && <span className="ai-inlist">{n}</span>}
-                              </button>
-                            );
-                          })}
+                          {incoming[d].map((s) => (
+                            <SizeCell key={s.size} size={s.size} avail={s.fq} inbound={d}
+                              qty={qtyInList(cw.sku, s.size)} onQty={(n) => onSetQty(st, cw, s.size, n, d)} />
+                          ))}
                         </div>
                       ))}
                     </div>
@@ -409,7 +479,7 @@ function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
 }
 
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, removeLine, clearList, onClose, notify }) {
+function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, onClose, notify }) {
   const [coach, setCoach] = useState(() => loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' }));
   const [notes, setNotes] = useState('');
   const [state, setState] = useState('idle'); // idle | sending | sent | error
@@ -446,7 +516,7 @@ function OrderDrawer({ list, updateLine, removeLine, clearList, onClose, notify 
           coach_phone: coach.phone.trim(),
           team_name: coach.team.trim(),
           notes: notes.trim(),
-          lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound })),
+          lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
         }),
       });
       const d = await res.json().catch(() => ({}));
@@ -483,7 +553,7 @@ function OrderDrawer({ list, updateLine, removeLine, clearList, onClose, notify 
             <div style={{ flex: 1, overflowY: 'auto', padding: '6px 20px' }}>
               {list.length === 0 && (
                 <p style={{ fontSize: 14, color: '#6A7180', padding: '22px 0', textAlign: 'center' }}>
-                  Your list is empty — open a style and tap sizes to add them.
+                  Your list is empty — open a style and type quantities under the sizes you need.
                 </p>
               )}
               {list.map((l, i) => (
@@ -494,6 +564,13 @@ function OrderDrawer({ list, updateLine, removeLine, clearList, onClose, notify 
                       {l.color} · {sizeLabel(l.size)} · <span style={{ fontFamily: 'monospace' }}>{l.sku}</span>
                       {l.inbound && <span style={{ color: '#92580B', fontWeight: 600 }}> · inbound {fmtDate(l.inbound)}</span>}
                     </div>
+                    <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 4, color: l.decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
+                      value={l.decoration || ''} onChange={(e) => setDecoration(i, e.target.value)} aria-label="Decoration">
+                      <option value="">Blank (no decoration)</option>
+                      <option>Screen print</option>
+                      <option>Embroidery</option>
+                      <option>Heat press</option>
+                    </select>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 'none' }}>
                     <button className="ai-qbtn" onClick={() => updateLine(i, l.qty - 1)} aria-label="Decrease">−</button>
@@ -555,7 +632,25 @@ export default function AdidasInventory() {
   const [category, setCategory] = useState('All');
   const [gender, setGender] = useState('All');
   const [sport, setSport] = useState('All');
-  const [color, setColor] = useState('All');
+  const [colorSel, setColorSel] = useState(() => loadJson('nsa_adidas_team_colors', []));
+  const [colorOpen, setColorOpen] = useState(false);
+  const colorRef = React.useRef(null);
+  // Outside-click close. (A fixed backdrop doesn't work here: the sticky bar's
+  // backdrop-filter makes it the containing block for fixed descendants.)
+  useEffect(() => {
+    if (!colorOpen) return;
+    const h = (e) => {
+      if (!colorRef.current || colorRef.current.contains(e.target)) return;
+      setColorOpen(false);
+      // Swallow the click that follows this mousedown so closing the popover
+      // doesn't also activate whatever sits underneath (e.g. open a card).
+      const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 400);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [colorOpen]);
   const [sizeSel, setSizeSel] = useState([]);
   const [strongOnly, setStrongOnly] = useState(false);
   const [includeIncoming, setIncludeIncoming] = useState(false);
@@ -579,16 +674,22 @@ export default function AdidasInventory() {
   const mutateList = useCallback((fn) => {
     setList((prev) => { const next = fn(prev); saveJson(LIST_KEY, next); return next; });
   }, []);
-  const addLine = useCallback((st, cw, size, inbound) => {
+  // Set an exact quantity for a SKU+size (qty inputs in the style modal);
+  // 0 removes the line.
+  const setLineQty = useCallback((st, cw, size, qty, inbound) => {
+    const n = Math.max(0, Math.min(9999, qty));
     mutateList((prev) => {
       const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
-      if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: l.qty + 1 } : l));
-      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: 1, price: cw.price || 0, inbound: inbound || null }];
+      if (n === 0) return i >= 0 ? prev.filter((_, j) => j !== i) : prev;
+      if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: n } : l));
+      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: n, price: cw.price || 0, inbound: inbound || null, decoration: null }];
     });
-    notify(`Added ${sizeLabel(size)} — ${st.name}`);
-  }, [mutateList, notify]);
+  }, [mutateList]);
   const updateLine = useCallback((i, qty) => {
     mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
+  }, [mutateList]);
+  const setDecoration = useCallback((i, deco) => {
+    mutateList((prev) => prev.map((l, j) => (j === i ? { ...l, decoration: deco || null } : l)));
   }, [mutateList]);
   const removeLine = useCallback((i) => mutateList((prev) => prev.filter((_, j) => j !== i)), [mutateList]);
   const clearList = useCallback(() => mutateList(() => []), [mutateList]);
@@ -635,10 +736,12 @@ export default function AdidasInventory() {
           sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
           const inStock = new Set(sizes.filter((s) => s.q > 0).map((s) => s.size));
           const cat = normCategory(p.category);
+          const colorInfo = classifyColor(p.color_category, p.color);
           const cw = {
             sku: p.sku,
             color: p.color || '',
-            family: colorFamily(p.color_category, p.color),
+            family: colorInfo.primary,
+            tags: colorInfo.tags,
             img: p.image_front_url || p.image_back_url || '',
             price: Number(p.retail_price) || 0,
             sizes,
@@ -690,13 +793,15 @@ export default function AdidasInventory() {
   }, []);
 
   // Colorway-level filters: a style shows if ANY colorway passes all of them.
+  // Team colors: a colorway matches when it features ANY selected color —
+  // so picking Maroon + Gold surfaces Maroon/White, Gold/Maroon, plain Maroon…
   const cwMatcher = useCallback((cw) => {
-    if (color !== 'All' && cw.family !== color) return false;
+    if (colorSel.length && !colorSel.some((c) => cw.tags.has(c))) return false;
     if (sizeSel.length && !sizeSel.every((s) => cw.inStock.has(s))) return false;
     if (strongOnly && !cw.strongRun) return false;
     if (cw.units === 0 && !(includeIncoming && cw.hasIncoming)) return false;
     return true;
-  }, [color, sizeSel, strongOnly, includeIncoming]);
+  }, [colorSel, sizeSel, strongOnly, includeIncoming]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -710,8 +815,13 @@ export default function AdidasInventory() {
       if (!matchCws.length) continue;
       out.push({ st, matchCws });
     }
+    // With team colors picked, float styles whose colorways hit more of them
+    if (colorSel.length) {
+      const score = ({ matchCws }) => Math.max(...matchCws.map((c) => colorSel.filter((x) => c.tags.has(x)).length));
+      out.sort((a, b) => score(b) - score(a));
+    }
     return out;
-  }, [styles, search, category, gender, sport, cwMatcher]);
+  }, [styles, search, category, gender, sport, cwMatcher, colorSel]);
 
   // Facet options (with counts under everything-but-this-facet filtering kept
   // simple: counts reflect the full availability mode, not cross-facets)
@@ -724,18 +834,18 @@ export default function AdidasInventory() {
       genders[st.gender] = (genders[st.gender] || 0) + 1;
       if (st.sport) sports[st.sport] = (sports[st.sport] || 0) + 1;
       for (const c of st.colorways) {
-        if (c.units > 0 || (includeIncoming && c.hasIncoming)) colors[c.family] = 1;
+        if (c.units > 0 || (includeIncoming && c.hasIncoming)) c.tags.forEach((t) => { colors[t] = 1; });
       }
     }
     return {
       categories: Object.keys(cats).sort().map((c) => ({ v: c, n: cats[c] })),
       genders: ["Men's", "Women's", 'Youth', 'Unisex'].filter((g) => genders[g]).map((g) => ({ v: g, n: genders[g] })),
       sports: Object.keys(sports).sort().map((s) => ({ v: s, n: sports[s] })),
-      colors: COLOR_FAMILIES.filter((f) => colors[f]),
+      colors: COLOR_FAMILIES.filter((f) => colors[f] && f !== 'Other'),
     };
   }, [styles, includeIncoming]);
 
-  useEffect(() => { setShown(PAGE_SIZE); }, [search, category, gender, sport, color, sizeSel, strongOnly, includeIncoming]);
+  useEffect(() => { setShown(PAGE_SIZE); }, [search, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming]);
 
   // Deep link: /adidas?style=<sku> opens that style's detail view (Share button)
   useEffect(() => {
@@ -747,8 +857,13 @@ export default function AdidasInventory() {
   }, [styles]);
 
   const toggleSize = (s) => setSizeSel((sel) => sel.includes(s) ? sel.filter((x) => x !== s) : [...sel, s]);
-  const clearFilters = () => { setSearch(''); setCategory('All'); setGender('All'); setSport('All'); setColor('All'); setSizeSel([]); setStrongOnly(false); };
-  const hasFilters = search || category !== 'All' || gender !== 'All' || sport !== 'All' || color !== 'All' || sizeSel.length || strongOnly;
+  const toggleColor = (f) => setColorSel((sel) => {
+    const next = sel.includes(f) ? sel.filter((x) => x !== f) : (sel.length < 3 ? [...sel, f] : sel);
+    saveJson('nsa_adidas_team_colors', next);
+    return next;
+  });
+  const clearFilters = () => { setSearch(''); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); };
+  const hasFilters = search || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly;
 
   const openData = openStyle && visible.find((v) => v.st.key === openStyle);
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
@@ -771,7 +886,7 @@ export default function AdidasInventory() {
           <p style={{ margin: '8px 0 0', fontSize: 14, color: '#C3C8D0', maxWidth: 780, lineHeight: 1.5 }}>
             Every style we carry, with a live look at what's in the adidas warehouse right now — by color and size —
             and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
-            Tap sizes to build an order list and send it to your rep — they'll follow up with a formal estimate.
+            Open a style, type the quantities you need per size, and send the list to your rep — they'll follow up with a formal estimate.
           </p>
         </div>
       </header>
@@ -795,10 +910,35 @@ export default function AdidasInventory() {
               <option value="All">All sports</option>
               {facets.sports.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
             </select>
-            <select className="ai-select" value={color} onChange={(e) => setColor(e.target.value)} aria-label="Color">
-              <option value="All">All colors</option>
-              {facets.colors.map((f) => <option key={f} value={f}>{f}</option>)}
-            </select>
+            <div style={{ position: 'relative' }} ref={colorRef}>
+              <button className={'ai-filterbtn' + (colorSel.length ? ' on' : '')} style={{ padding: '8px 13px', borderRadius: 10, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                onClick={() => setColorOpen((v) => !v)} aria-label="Team colors">
+                {colorSel.length
+                  ? <>{colorSel.map((f) => <span key={f} className="ai-dot" style={{ background: COLOR_DOTS[f], borderColor: 'rgba(255,255,255,.5)' }} />)} Team colors</>
+                  : 'Team colors'} ▾
+              </button>
+              {colorOpen && (
+                <>
+                  <div className="ai-colorpop">
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                      Pick up to 3 — shows gear featuring your colors
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
+                      {facets.colors.map((f) => (
+                        <button key={f} className={'ai-swatch' + (colorSel.includes(f) ? ' on' : '')} onClick={() => toggleColor(f)}>
+                          <span className="ai-dot" style={{ background: COLOR_DOTS[f], width: 17, height: 17 }} />{f}
+                        </button>
+                      ))}
+                    </div>
+                    {colorSel.length > 0 && (
+                      <button className="ai-filterbtn" style={{ marginTop: 10, width: '100%', fontSize: 12.5 }} onClick={() => { setColorSel([]); saveJson('nsa_adidas_team_colors', []); }}>
+                        Clear colors
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
             <span style={{ fontSize: 13, color: '#6A7180', fontWeight: 600, marginLeft: 'auto' }}>
               {loading ? 'Loading…' : `${visible.length} style${visible.length === 1 ? '' : 's'}`}
             </span>
@@ -863,7 +1003,7 @@ export default function AdidasInventory() {
           st={openData ? openData.st : openFallback}
           matchSet={new Set((openData ? openData.matchCws : openFallback.colorways).map((c) => c.sku))}
           onClose={() => setOpenStyle(null)}
-          onAdd={addLine}
+          onSetQty={setLineQty}
           qtyInList={qtyInList}
           notify={notify}
         />
@@ -882,6 +1022,7 @@ export default function AdidasInventory() {
         <OrderDrawer
           list={list}
           updateLine={updateLine}
+          setDecoration={setDecoration}
           removeLine={removeLine}
           clearList={clearList}
           onClose={() => setDrawerOpen(false)}

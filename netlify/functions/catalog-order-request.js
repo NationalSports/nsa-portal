@@ -26,6 +26,7 @@ exports.handler = async (event) => {
     if (!coach_name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(coach_email)) {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Name and a valid email are required' }) };
     }
+    const DECOS = ['Screen print', 'Embroidery', 'Heat press'];
     const lines = rawLines
       .map((l) => ({
         sku: String(l.sku || '').slice(0, 40),
@@ -35,6 +36,7 @@ exports.handler = async (event) => {
         qty: Math.max(1, Math.min(9999, parseInt(l.qty) || 0)),
         price: Math.max(0, Number(l.price) || 0),
         inbound: l.inbound ? String(l.inbound).slice(0, 12) : null,
+        decoration: DECOS.includes(l.decoration) ? l.decoration : null,
       }))
       .filter((l) => l.sku && l.size);
     if (!lines.length) {
@@ -71,7 +73,7 @@ exports.handler = async (event) => {
     const rowsHtml = lines.map((l) => `
       <tr>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;font-family:monospace">${esc(l.sku)}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${esc(l.name)}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${esc(l.name)}${l.decoration ? `<div style="font-size:11px;color:#2563eb;font-weight:600">+ ${esc(l.decoration)}</div>` : ''}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${esc(l.color)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center">${esc(l.size)}${l.inbound ? `<div style="font-size:11px;color:#b45309">inbound ${esc(l.inbound)}</div>` : ''}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center;font-weight:700">${l.qty}</td>
@@ -108,8 +110,8 @@ exports.handler = async (event) => {
         </div>
       </div>`;
 
-    const csv = ['sku,item,color,size,qty,retail_price,inbound']
-      .concat(lines.map((l) => [l.sku, l.name, l.color, l.size, l.qty, l.price || '', l.inbound || ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
+    const csv = ['sku,item,color,size,qty,retail_price,inbound,decoration']
+      .concat(lines.map((l) => [l.sku, l.name, l.color, l.size, l.qty, l.price || '', l.inbound || '', l.decoration || ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
       .join('\n');
 
     const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -133,6 +135,50 @@ exports.handler = async (event) => {
         headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: `Bearer ${sbKey}` },
         body: JSON.stringify({ emailed: true }),
       }).catch(() => {});
+    }
+
+    // 3. Confirmation copy to the coach (best-effort — never fails the request)
+    try {
+      await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+        body: JSON.stringify({
+          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          to: [{ email: coach_email, name: coach_name }],
+          replyTo: { email: REP_EMAIL },
+          subject: `We got your order request — ${lines.length} item${lines.length === 1 ? '' : 's'}, ${totalUnits} units`,
+          htmlContent: `
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:680px;margin:0 auto">
+              <div style="background:#191919;color:white;padding:18px 22px;border-radius:8px 8px 0 0">
+                <h2 style="margin:0;font-size:17px">Thanks, ${esc(coach_name)} — your request is in</h2>
+              </div>
+              <div style="background:white;padding:20px 22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px">
+                <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 14px">
+                  Your National Sports Apparel rep has your list${team_name ? ` for <strong>${esc(team_name)}</strong>` : ''} and will
+                  follow up with a formal estimate at your team pricing. Here's what you sent:
+                </p>
+                <table style="width:100%;border-collapse:collapse;font-size:13px">
+                  <tr style="background:#f8fafc;color:#64748b;font-weight:600;text-align:left">
+                    <th style="padding:6px 10px">SKU</th><th style="padding:6px 10px">Item</th><th style="padding:6px 10px">Color</th>
+                    <th style="padding:6px 10px;text-align:center">Size</th><th style="padding:6px 10px;text-align:center">Qty</th><th style="padding:6px 10px;text-align:right">Retail</th>
+                  </tr>
+                  ${rowsHtml}
+                  <tr>
+                    <td colspan="4" style="padding:8px 10px;font-weight:700;text-align:right">Total</td>
+                    <td style="padding:8px 10px;text-align:center;font-weight:700">${totalUnits}</td>
+                    <td style="padding:8px 10px;text-align:right;font-weight:700">${estTotal ? '$' + estTotal.toFixed(2) : '—'}</td>
+                  </tr>
+                </table>
+                <p style="font-size:12px;color:#94a3b8;margin-top:14px">
+                  Retail prices are list-price reference only — your estimate will show your team pricing.
+                  Reply to this email to reach your rep with changes or questions.
+                </p>
+              </div>
+            </div>`,
+        }),
+      });
+    } catch (e) {
+      console.error('[catalog-order-request] coach confirmation failed:', e.message);
     }
 
     if (!requestId && !emailed) {

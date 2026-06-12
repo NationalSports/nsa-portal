@@ -38,3 +38,8 @@
 # clears itself even when nobody has the portal open.
 [functions."ups-pickup-sync"]
   schedule = "0 13 * * *"
+
+# Catalog back-in-stock alerts — daily at 14:00 UTC (~6-7 AM PT), after the
+# overnight Cowork inventory sync. Emails coaches whose watched sizes landed.
+[functions."catalog-stock-alert-check"]
+  schedule = "0 14 * * *"
