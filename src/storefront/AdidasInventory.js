@@ -174,29 +174,57 @@ function deriveSport(name) {
   return null;
 }
 
-// ── Search: every word must match somewhere (name, SKU, color, category,
-// sport, gender), with light aliasing so coach vocabulary works — "soccer
-// ball" finds category-Ball/sport-Soccer items whose names never say it.
-const SEARCH_ALIASES = {
-  tee: 'tees', tshirt: 'tees', shirt: 'tees',
-  hoodie: 'hoods', hoody: 'hoods', sweatshirt: 'hoods', sweater: 'hoods', fleece: 'hoods',
-  shoe: 'footwear', cleat: 'footwear', sneaker: 'footwear', turf: 'footwear',
-  hat: 'hats', cap: 'hats', beanie: 'hats',
-  jacket: 'outerwear', coat: 'outerwear', windbreaker: 'outerwear',
-  bag: 'bags', backpack: 'bags', sock: 'socks',
-  women: "women's", womens: "women's", woman: "women's", ladies: "women's", female: "women's",
-  men: "men's", mens: "men's", man: "men's",
-  kid: 'youth', kids: 'youth', boys: 'youth', girls: 'youth', junior: 'youth',
-  navy: 'navy', maroon: 'maroon', // pass-through: colors live in the haystack already
+// ── Search: structured query compiler ────────────────────────────────
+// Tokens that name a product type / sport / gender / color become hard
+// constraints on those fields ("soccer ball" = sport:Soccer + category:Ball),
+// so description text can't pull in jerseys whose copy mentions "ball".
+// Unclassified tokens text-match name/SKU/color/description as before.
+const CATEGORY_TOKENS = {
+  ball: 'Ball', jersey: 'Jersey', tee: 'Tees', tshirt: 'Tees', shirt: 'Tees',
+  hood: 'Hoods', hoodie: 'Hoods', sweatshirt: 'Hoods', fleece: 'Hoods',
+  polo: 'Polos', short: 'Shorts', pant: 'Pants', jogger: 'Pants', tight: 'Pants',
+  sock: 'Socks', hat: 'Hats', cap: 'Hats', beanie: 'Hats', visor: 'Hats',
+  bag: 'Bags', backpack: 'Bags', duffel: 'Bags',
+  shoe: 'Footwear', cleat: 'Footwear', sneaker: 'Footwear', footwear: 'Footwear', turf: 'Footwear',
+  crew: 'Crew', jacket: 'Outerwear', coat: 'Outerwear', vest: 'Outerwear', windbreaker: 'Outerwear',
+  zip: '1/4 Zips',
 };
-function searchMatch(hay, q) {
+const SPORT_TOKENS = {
+  soccer: 'Soccer', football: 'Football', baseball: 'Baseball / Softball', softball: 'Baseball / Softball',
+  basketball: 'Basketball', volleyball: 'Volleyball', golf: 'Golf',
+  running: 'Running / Track', track: 'Running / Track', training: 'Training & Sideline', sideline: 'Training & Sideline',
+};
+const GENDER_TOKENS = {
+  women: "Women's", woman: "Women's", ladies: "Women's", female: "Women's",
+  men: "Men's", man: "Men's",
+  youth: 'Youth', kid: 'Youth', boy: 'Youth', girl: 'Youth', junior: 'Youth',
+};
+const COLOR_TOKENS = Object.fromEntries(COLOR_FAMILIES.map((f) => [f.toLowerCase(), f]));
+const singular = (t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t);
+function compileSearch(q) {
   const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
-  return tokens.every((t) => {
-    const forms = [t];
-    if (t.length > 3 && t.endsWith('s')) forms.push(t.slice(0, -1)); // plural tolerance
-    if (SEARCH_ALIASES[t]) forms.push(SEARCH_ALIASES[t]);
-    return forms.some((f) => hay.includes(f));
+  const checks = tokens.map((raw) => {
+    const t = singular(raw);
+    if (CATEGORY_TOKENS[t]) {
+      // category match, or the literal word in name/SKU (catches miscategorized items)
+      const cat = CATEGORY_TOKENS[t];
+      return (st) => st.category === cat || st.coreText.includes(t);
+    }
+    if (SPORT_TOKENS[t]) {
+      const sp = SPORT_TOKENS[t];
+      return (st) => st.sport === sp || st.fullText.includes(t);
+    }
+    if (GENDER_TOKENS[t]) {
+      const g = GENDER_TOKENS[t];
+      return (st) => st.gender === g || (g === "Men's" && st.gender === 'Unisex') || st.coreText.includes(t);
+    }
+    if (COLOR_TOKENS[t]) {
+      const fam = COLOR_TOKENS[t];
+      return (st) => st.colorways.some((c) => c.tags.has(fam)) || st.coreText.includes(t);
+    }
+    return (st) => st.fullText.includes(raw) || (raw !== t && st.fullText.includes(t));
   });
+  return (st) => checks.every((fn) => fn(st));
 }
 
 // Fetch pages in parallel waves of 6 — the dataset is ~35 pages now and
@@ -991,7 +1019,8 @@ export default function AdidasInventory() {
           const prices = st.colorways.map((c) => c.price).filter(Boolean);
           st.priceMin = prices.length ? Math.min(...prices) : 0;
           st.priceMax = prices.length ? Math.max(...prices) : 0;
-          st.searchText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + (st.description || '') + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
+          st.coreText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
+          st.fullText = st.coreText + ' ' + (st.description || '').toLowerCase();
         }
         grouped.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
         setStyles(grouped);
@@ -1025,12 +1054,13 @@ export default function AdidasInventory() {
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const matchQ = q ? compileSearch(q) : null;
     const out = [];
     for (const st of styles) {
       if (category !== 'All' && st.category !== category) continue;
       if (gender !== 'All' && st.gender !== gender) continue;
       if (sport !== 'All' && st.sport !== sport) continue;
-      if (q && !searchMatch(st.searchText, q)) continue;
+      if (matchQ && !matchQ(st)) continue;
       const matchCws = st.colorways.filter(cwMatcher);
       if (!matchCws.length) continue;
       out.push({ st, matchCws });
