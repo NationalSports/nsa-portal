@@ -6281,6 +6281,121 @@ export default function App(){
     if(eEst?.id===estId){setEEst(null);setEEstC(null)}
   };
 
+  // ── Coach estimate requests (public /adidas catalog → rep workflow) ──
+  // Requests land in catalog_order_requests via the catalog-order-request
+  // Netlify function; here they become a dashboard inbox + auto-created rep
+  // TODOs, and one click seeds a real estimate from the requested lines.
+  const[catReqs,setCatReqs]=useState([]);
+  const[catReqOpen,setCatReqOpen]=useState(false);
+  const[catReqCustSel,setCatReqCustSel]=useState({});
+  const[catReqSearch,setCatReqSearch]=useState({});
+  useEffect(()=>{if(!supabase)return;let on=true;
+    const load=()=>supabase.from('catalog_order_requests').select('*').not('status','in','(done,dismissed)').order('created_at',{ascending:false}).limit(200).then(r=>{if(on&&!r.error&&Array.isArray(r.data))setCatReqs(r.data)});
+    load();const t=setInterval(load,5*60*1000);return()=>{on=false;clearInterval(t)};
+  },[]);
+  // Auto-create a TODO per new request (idempotent: deterministic id + upsert; todo_id
+  // written back). Assigned to the matched customer's primary rep, else whoever loads first.
+  useEffect(()=>{if(!supabase||!cu?.id||!catReqs.length)return;
+    catReqs.filter(r=>!r.todo_id&&r.status==='new').slice(0,20).forEach(r=>{
+      const match=r.customer_id?cust.find(c2=>c2.id===r.customer_id):cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()));
+      const rep=match?REPS.find(x=>x.id===match.primary_rep_id&&x.is_active!==false):null;
+      const todoId='todo-catreq-'+String(r.id).slice(0,8);
+      const lines=Array.isArray(r.lines)?r.lines:[];
+      const todo={id:todoId,title:'📥 Estimate request — '+(r.coach_name||'Coach')+(r.team_name?' ('+r.team_name+')':''),description:'From the adidas catalog: '+lines.length+' line'+(lines.length===1?'':'s')+', '+lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0)+' units.'+(r.notes?' Notes: '+r.notes:'')+' Review it from Dashboard → Estimate Requests.',created_by:cu.id,assigned_to:rep?.id||cu.id,so_id:null,customer_id:match?.id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+      setAssignedTodos(prev=>prev.some(t=>t.id===todoId)?prev:[todo,...prev]);
+      _dbSavingGuard(()=>supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(rr=>{if(rr.error)console.error('[DB] catreq todo:',rr.error.message)}));
+      supabase.from('catalog_order_requests').update({todo_id:todoId,customer_id:r.customer_id||match?.id||null}).eq('id',r.id).then(()=>{});
+      setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,todo_id:todoId,customer_id:x.customer_id||match?.id||null}:x));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[catReqs.length,cust.length,cu?.id]);
+  // Seed a draft estimate from a request: lines grouped by SKU, sizes→qty map,
+  // adidas tier pricing when the product is in the catalog (mirrors newE's logic).
+  const estFromCatReq=(r)=>{
+    const c=cust.find(x=>x.id===(catReqCustSel[r.id]||r.customer_id));
+    if(!c){nf('Match a customer first — search by name on the request','error');return}
+    const lines=Array.isArray(r.lines)?r.lines:[];
+    const bySku={};lines.forEach(l=>{(bySku[l.sku]=bySku[l.sku]||[]).push(l)});
+    const mk=c.catalog_markup||1.65;
+    const items=Object.entries(bySku).map(([sku,ls])=>{
+      const p=prod.find(x=>x.sku===sku);
+      const sizes={};ls.forEach(l=>{sizes[l.size]=(sizes[l.size]||0)+(safeNum(l.qty)||0)});
+      const decoNotes=[...new Set(ls.map(l=>l.decoration).filter(Boolean))];
+      const notes=[decoNotes.length?'Decoration requested: '+decoNotes.join(', '):null,ls.some(l=>l.inbound)?'Some sizes inbound at adidas — confirm delivery dates':null].filter(Boolean).join(' · ');
+      if(p){const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group))):rQ(repCost*mk);
+        return{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||Object.keys(sizes))],_colors:p._colors||null,sizes,decorations:[],_is_clearance:p.is_clearance||false,notes}}
+      return{product_id:null,sku,name:ls[0].name||sku,brand:'Adidas',vendor_id:null,color:ls[0].color||'',nsa_cost:0,retail_price:safeNum(ls[0].price),unit_sell:safeNum(ls[0].price),available_sizes:Object.keys(sizes),sizes,decorations:[],is_custom:true,notes}});
+    const e=newE(c,null,items);
+    const upd={status:'estimate_created',estimate_id:e.id,customer_id:c.id,reviewed_by:cu.id,reviewed_at:new Date().toISOString()};
+    setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,...upd}:x));
+    if(supabase)supabase.from('catalog_order_requests').update(upd).eq('id',r.id).then(()=>{});
+    if(r.todo_id)completeTodo(r.todo_id);
+    setCatReqOpen(false);
+    nf('Estimate '+e.id+' built from '+(r.coach_name||'coach')+"'s request");
+  };
+  const dismissCatReq=(r)=>{
+    if(!window.confirm('Dismiss this request from '+(r.coach_name||'coach')+'? It will leave the inbox.'))return;
+    setCatReqs(prev=>prev.filter(x=>x.id!==r.id));
+    if(supabase)supabase.from('catalog_order_requests').update({status:'dismissed',reviewed_by:cu.id,reviewed_at:new Date().toISOString()}).eq('id',r.id).then(()=>{});
+    if(r.todo_id)completeTodo(r.todo_id);
+  };
+  const renderCatReqCard=()=>catReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
+    <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <h2>📥 Estimate Requests ({catReqs.filter(r=>r.status==='new').length} new)</h2>
+      <button className="btn btn-sm btn-primary" onClick={()=>setCatReqOpen(true)}>Review</button>
+    </div>
+    <div className="card-body" style={{padding:0,maxHeight:240,overflow:'auto'}}>
+      {catReqs.slice(0,8).map(r=>{const c2=cust.find(x=>x.id===r.customer_id);const lines=Array.isArray(r.lines)?r.lines:[];const units=lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);
+        return<div key={r.id} style={{padding:'9px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',display:'flex',gap:8,alignItems:'center'}} onClick={()=>setCatReqOpen(true)}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:600}}>{r.coach_name}{r.team_name?' · '+r.team_name:''}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{lines.length} line{lines.length===1?'':'s'} · {units} units · {c2?c2.name:'no customer match yet'}{r.estimate_id?' · '+r.estimate_id:''}</div>
+          </div>
+          <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:r.status==='new'?'#fef3c7':'#dcfce7',color:r.status==='new'?'#92400e':'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{r.status==='new'?'NEW':String(r.status).replace(/_/g,' ').toUpperCase()}</span>
+        </div>})}
+    </div>
+  </div>;
+  const renderCatReqModal=()=>catReqOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCatReqOpen(false)}>
+    <div style={{background:'white',borderRadius:14,maxWidth:880,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
+      <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
+        <h2 style={{margin:0,fontSize:17}}>📥 Coach Estimate Requests</h2>
+        <button style={{marginLeft:'auto',border:'none',background:'#f1f5f9',borderRadius:8,width:30,height:30,cursor:'pointer',fontWeight:700}} onClick={()=>setCatReqOpen(false)}>✕</button>
+      </div>
+      <div style={{padding:'8px 22px 20px'}}>
+        {catReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
+        {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+          const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
+          return<div key={r.id} style={{border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12}}>
+            <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
+              <span style={{fontWeight:700,fontSize:14}}>{r.coach_name}</span>
+              {r.team_name&&<span style={{fontSize:12,color:'#475569'}}>{r.team_name}</span>}
+              <a href={'mailto:'+r.coach_email} style={{fontSize:12}}>{r.coach_email}</a>
+              {r.coach_phone&&<span style={{fontSize:12,color:'#64748b'}}>{r.coach_phone}</span>}
+              <span style={{fontSize:11,color:'#94a3b8',marginLeft:'auto'}}>{r.created_at?new Date(r.created_at).toLocaleString():''}</span>
+            </div>
+            {r.notes&&<div style={{fontSize:12,color:'#475569',marginTop:6,background:'#f8fafc',borderRadius:8,padding:'6px 10px'}}>“{r.notes}”</div>}
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,marginTop:10}}>
+              <thead><tr style={{textAlign:'left',color:'#64748b'}}><th style={{padding:'4px 6px'}}>SKU</th><th style={{padding:'4px 6px'}}>Item</th><th style={{padding:'4px 6px'}}>Color</th><th style={{padding:'4px 6px'}}>Size</th><th style={{padding:'4px 6px',textAlign:'right'}}>Qty</th><th style={{padding:'4px 6px'}}>Deco</th><th style={{padding:'4px 6px'}}>Retail</th></tr></thead>
+              <tbody>{lines.map((l,i)=><tr key={i} style={{borderTop:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontFamily:'monospace'}}>{l.sku}</td><td style={{padding:'4px 6px'}}>{l.name}</td><td style={{padding:'4px 6px'}}>{l.color}</td><td style={{padding:'4px 6px'}}>{l.size}{l.inbound?<span style={{color:'#b45309'}}> (inbound {l.inbound})</span>:''}</td><td style={{padding:'4px 6px',textAlign:'right',fontWeight:700}}>{l.qty}</td><td style={{padding:'4px 6px'}}>{l.decoration||'—'}</td><td style={{padding:'4px 6px'}}>{l.price?'$'+l.price:'—'}</td></tr>)}</tbody>
+            </table>
+            <div style={{display:'flex',gap:8,alignItems:'center',marginTop:12,flexWrap:'wrap'}}>
+              {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
+              :<div style={{position:'relative'}}>
+                <input placeholder="Match customer…" value={q} onChange={e=>setCatReqSearch(s=>({...s,[r.id]:e.target.value}))} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:220}}/>
+                {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280}}>
+                  {sugg.map(c2=><div key={c2.id} style={{padding:'7px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:c2.id}));setCatReqSearch(s=>({...s,[r.id]:''}));if(supabase)supabase.from('catalog_order_requests').update({customer_id:c2.id}).eq('id',r.id).then(()=>{});setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:c2.id}:x))}}>{c2.name}{c2.alpha_tag?' ('+c2.alpha_tag+')':''}</div>)}
+                </div>}
+              </div>}
+              {est2?<button className="btn btn-sm btn-secondary" onClick={()=>{setEEst(est2);setEEstC(cust.find(x=>x.id===est2.customer_id));setPg('estimates');setCatReqOpen(false)}}>Open {est2.id}</button>
+              :<button className="btn btn-sm btn-primary" onClick={()=>estFromCatReq(r)}>Build Estimate</button>}
+              <button className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:8}} onClick={()=>dismissCatReq(r)}>Dismiss</button>
+              {r.status!=='new'&&!est2&&<span style={{fontSize:11,color:'#166534',fontWeight:600}}>{String(r.status).replace(/_/g,' ')}</span>}
+            </div>
+          </div>})}
+      </div>
+    </div>
+  </div>;
+
   // Mark an assigned TODO complete from anywhere (e.g. the open-tasks banner on a sales order).
   // Mirrors the dashboard's _todoComplete: optimistic local update + snapshot sync + DB write.
   const completeTodo = (id) => {
@@ -6844,6 +6959,8 @@ export default function App(){
       </div>
     </div>})()}
     </>})()}
+    {renderCatReqCard()}
+    {renderCatReqModal()}
     {/* Assigned Tasks for Admin */}
     {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -6941,6 +7058,8 @@ export default function App(){
       </div>
     </div>})()}
     </>})()}
+    {renderCatReqCard()}
+    {renderCatReqModal()}
     {/* Assigned Todos Card — always visible for reps */}
     {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
