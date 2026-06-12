@@ -10,7 +10,7 @@
  *  - garmentsNeedingMockCheck surfaces those garments + the prior mock to confirm/redo.
  */
 
-const { skusMissingMockups, garmentsNeedingMockCheck, mockGroupForGarment } = require('../safeHelpers');
+const { skusMissingMockups, garmentsNeedingMockCheck, resolveMockLink, mockLinkDependents } = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
 const makeCase = (artFile, item = { sku: 'A2009', color: 'White' }) => {
@@ -83,8 +83,8 @@ describe('skusMissingMockups — stale job snapshot after a line-item swap', () 
   });
 });
 
-describe('mock groups — rep links a subset of garments to share one mockup', () => {
-  // Three polos on one embroidery design; the rep can link some of them.
+describe('mock links — "use the same mockup as that garment"', () => {
+  // Three polos on one embroidery design; garments can be linked to another's mock.
   const threePoloSO = (art) => ({
     items: [
       { sku: 'P1', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
@@ -102,59 +102,75 @@ describe('mock groups — rep links a subset of garments to share one mockup', (
     ],
   });
 
-  test('default (no groups) keeps per-garment behavior — every un-mocked garment is missing', () => {
+  test('default (no links) keeps per-garment behavior — every un-mocked garment is missing', () => {
     const art = { id: 'af0', item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, mockup_files: [] };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P2', 'P3']);
   });
 
-  test('a group with a shared mock satisfies all its members, regardless of their own per-item mocks', () => {
+  test("linked garments are satisfied by the source garment's mock", () => {
     const art = {
       id: 'af1',
-      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black', 'P3|Black'], files: [{ url: 'http://x/shared.png' }] }],
-      item_mockups: {}, mockup_files: [],
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' },
+      mockup_files: [],
     };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
   });
 
-  test('a group with NO file yet blocks exactly its members (under their live sku)', () => {
-    const art = { id: 'af2', mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [] }], item_mockups: {}, mockup_files: [] };
-    // P1, P2 grouped-but-empty → missing; P3 ungrouped + no mock → missing too
+  test('a link to a source with NO mock blocks the linked garment AND the source', () => {
+    const art = { id: 'af2', item_mockups: {}, mock_links: { 'P2|Black': 'P1|Black' }, mockup_files: [] };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
   });
 
-  test('a subset group: grouped members satisfied by the group mock, ungrouped garment still needs its own', () => {
+  test('a partial link: linked garment satisfied, the unlinked one still needs its own mock', () => {
     const art = {
       id: 'af3',
-      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [{ url: 'http://x/shared.png' }] }],
-      item_mockups: {}, mockup_files: [],
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black' },
+      mockup_files: [],
     };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P3']);
   });
 
-  test("a grouped garment's own per-item mock is ignored — the group is the source of truth", () => {
-    // P1 has its own mock but is in an empty group → still missing (group decides).
+  test("a linked garment's own per-item mock is ignored — the source decides", () => {
+    // P2 has its own mock but is linked to P1 which has none → P2 still missing.
     const art = {
       id: 'af4',
-      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [] }],
-      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, mockup_files: [],
+      item_mockups: { 'P2|Black': [{ url: 'http://x/p2.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black' },
+      mockup_files: [],
     };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
   });
 
-  test('garmentsNeedingMockCheck never flags a grouped garment', () => {
+  test('source lookup accepts the legacy bare-sku bucket', () => {
+    const art = { id: 'af5', item_mockups: { P1: [{ url: 'http://x/p1.png' }] }, mock_links: { 'P2|Black': 'P1|Black' }, mockup_files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P3']);
+  });
+
+  test('garmentsNeedingMockCheck never flags a linked garment', () => {
     const art = {
-      id: 'af5',
-      mock_groups: [{ id: 'g1', members: ['P2|Black', 'P3|Black'], files: [{ url: 'http://x/shared.png' }] }],
-      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 in per-garment mode
+      id: 'af6',
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 as reuse candidates
+      mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' },
     };
     expect(garmentsNeedingMockCheck(threePoloJob(art), threePoloSO(art))).toEqual([]);
   });
 
-  test('mockGroupForGarment finds the group across anchor art files and returns null when ungrouped', () => {
-    const art = { id: 'af6', mock_groups: [{ id: 'g1', members: ['P1|Black'], files: [] }] };
-    expect(mockGroupForGarment([art], 'P1', 'Black')?.id).toBe('g1');
-    expect(mockGroupForGarment([art], 'P3', 'Black')).toBeNull();
-    expect(mockGroupForGarment([null, undefined, art], 'P1', 'Black')?.id).toBe('g1');
+  test('resolveMockLink follows chains, guards cycles, and returns null when unlinked', () => {
+    const art = { id: 'af7', mock_links: { 'P3|Black': 'P2|Black', 'P2|Black': 'P1|Black' } };
+    expect(resolveMockLink([art], 'P3', 'Black')).toBe('P1|Black'); // chain flattened on read
+    expect(resolveMockLink([art], 'P2', 'Black')).toBe('P1|Black');
+    expect(resolveMockLink([art], 'P1', 'Black')).toBeNull();
+    const cyc = { id: 'af8', mock_links: { 'A|X': 'B|X', 'B|X': 'A|X' } };
+    expect(resolveMockLink([cyc], 'A', 'X')).toBe('B|X'); // terminates, last distinct hop
+    expect(resolveMockLink([null, undefined, art], 'P2', 'Black')).toBe('P1|Black');
+  });
+
+  test('mockLinkDependents lists the garments pointing at a source', () => {
+    const art = { id: 'af9', mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' } };
+    expect(mockLinkDependents([art], 'P1', 'Black').sort()).toEqual(['P2|Black', 'P3|Black']);
+    expect(mockLinkDependents([art], 'P2', 'Black')).toEqual([]);
   });
 });
 
