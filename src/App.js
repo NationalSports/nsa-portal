@@ -6046,7 +6046,7 @@ export default function App(){
     nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=isAU(product.brand);const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
+    if(product){const au=isAU(product.brand)&&!String(product.id||'').startsWith('ssa-');const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
@@ -6543,7 +6543,7 @@ export default function App(){
       const sizes={};ls.forEach(l=>{sizes[l.size]=(sizes[l.size]||0)+(safeNum(l.qty)||0)});
       const decoNotes=[...new Set(ls.map(l=>l.decoration).filter(Boolean))];
       const notes=[decoNotes.length?'Decoration requested: '+decoNotes.join(', '):null,ls.some(l=>l.inbound)?'Some sizes inbound at adidas — confirm delivery dates':null].filter(Boolean).join(' · ');
-      if(p){const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group,p.category))):rQ(repCost*mk);
+      if(p){const au=(p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance')&&!String(p.id||'').startsWith('ssa-');const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group,p.category))):rQ(repCost*mk);
         return{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||Object.keys(sizes))],_colors:p._colors||null,sizes,decorations:[],_is_clearance:p.is_clearance||false,notes}}
       return{product_id:null,sku,name:ls[0].name||sku,brand:'Adidas',vendor_id:null,color:ls[0].color||'',nsa_cost:0,retail_price:safeNum(ls[0].price),unit_sell:safeNum(ls[0].price),available_sizes:Object.keys(sizes),sizes,decorations:[],is_custom:true,notes}});
     const e=newE(c,null,items);
@@ -7343,8 +7343,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
       <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
       <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button>
-      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button>
-      <button className="btn btn-secondary" onClick={()=>setCoachAcctsOpen(true)}>🎽 Coach Accounts</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button></div></div>
     {renderCoachAcctsModal()}
     </>}
 
@@ -7448,7 +7447,6 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
       {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task to CSR</button>}
-      <button className="btn btn-secondary" onClick={()=>setCoachAcctsOpen(true)}>🎽 Coach Accounts</button>
     </div></div>
     {renderCoachAcctsModal()}
     </>}
