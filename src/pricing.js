@@ -12,6 +12,14 @@ export const rT=v=>Math.round(v*10)/10;
 const _TIER_STD={A:0.40,B:0.35,C:0.30};
 const _TIER_LOCKERROOM={A:0.35,B:0.30,C:0.25};
 export const auTierDisc=(tier,pricingGroup)=>{const tbl=pricingGroup==='lockerroom'?_TIER_LOCKERROOM:_TIER_STD;return tbl[tier]!=null?tbl[tier]:tbl.B;};
+// ── Brands that auto-calc cost off retail (MSRP) instead of cost×markup ──
+// Agron is an Adidas bag distributor — its product ships on the Adidas contract, so it
+// prices identically to Adidas (cost = retail × 0.5 × 0.75).
+export const isAdidasPriced=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='agron'};
+export const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'||l==='agron'};
+// Auto cost from retail. Apparel/OSFA: Adidas/Agron ×0.5×0.75 (0.375), UA/NB ×0.5×0.85 (0.425).
+// Footwear: Adidas/Agron ×0.55×0.75 (0.4125), UA/NB ×0.55×0.85 (0.4675).
+export const auCostMult=(brand,isFootwear)=>{const adi=isAdidasPriced(brand);return isFootwear?(adi?0.55*0.75:0.55*0.85):(adi?0.375:0.425)};
 export const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 
