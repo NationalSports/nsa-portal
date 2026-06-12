@@ -131,20 +131,30 @@ export const skusMissingMockups = (job, so) => {
   const missing = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
-    const decoArtIds = it ? [...new Set(safeDecos(it)
+    // Skip job items whose live SO line no longer exists (deleted or reindexed). The
+    // mockup screen drops these too (App.js itemDetails: `if(!it)return null`), so
+    // gating on a garment that can't be shown or mocked would deadlock approval.
+    if (!it) return;
+    const decoArtIds = [...new Set(safeDecos(it)
       .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
-      .map(d => d.art_file_id))] : [];
+      .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
     const artFiles = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
-    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU
-    // across colors. Older data may use a plain SKU key — accept either.
-    const mColor = gi?.color || it?.color || '';
-    const mockKey = (gi?.sku || '') + '|' + mColor;
+    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
+    // colors. Older data may use a plain SKU key — accept either. Read sku/color from
+    // the LIVE SO line, not the job snapshot: a line item's product can be swapped
+    // (e.g. A325 → A515) without rebuilding so.jobs, leaving gi.sku stale. The mockup
+    // screen keys off it.sku/it.color (App.js itemDetails), so the gate must check the
+    // same garment — otherwise it reports a phantom SKU (A325) as missing while the
+    // artist sees and mocks the real one (A515).
+    const mSku = it?.sku || gi?.sku || '';
+    const mColor = it?.color || gi?.color || '';
+    const mockKey = mSku + '|' + mColor;
     const perSku = artFiles.flatMap(a => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
-      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[gi?.sku]);
+      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
     });
     if (perSku.length > 0) return;
     // Only fall back to the shared mockup_files/files bucket for art that carries NO
@@ -158,7 +168,7 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
-    if (gi?.sku) missing.push(gi.sku);
+    if (mSku) missing.push(mSku);
   });
   return missing;
 };
@@ -197,19 +207,22 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
   const out = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
-    const decoArtIds = it ? [...new Set(safeDecos(it)
+    if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
+    const decoArtIds = [...new Set(safeDecos(it)
       .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
-      .map(d => d.art_file_id))] : [];
+      .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
     const artFilesForItem = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
     if (artFilesForItem.length === 0) return;
-    const mColor = gi?.color || it?.color || '';
-    const mockKey = (gi?.sku || '') + '|' + mColor;
+    // Live SO line drives sku/color (the job snapshot can go stale on a product swap).
+    const mSku = it?.sku || gi?.sku || '';
+    const mColor = it?.color || gi?.color || '';
+    const mockKey = mSku + '|' + mColor;
     // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, or a
     // color-way sub-key of this garment (sku|color|cwid).
-    const isOwnKey = k => k === mockKey || k === gi?.sku || k.startsWith(mockKey + '|');
+    const isOwnKey = k => k === mockKey || k === mSku || k.startsWith(mockKey + '|');
     // Each art file on the garment that lacks its OWN mock but carries prior mocks from other
     // garments needs a check — list them all, so a garment decorated by two designs (e.g. a
     // front and a back) shows both.
@@ -242,7 +255,7 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
       artFiles.push({ art_file_id: a.id, art_name: a.name || a.title || '', groups });
     });
     if (artFiles.length === 0) return;
-    out.push({ sku: gi?.sku || '', color: mColor, name: gi?.name || it?.name || '', artFiles });
+    out.push({ sku: mSku, color: mColor, name: it?.name || gi?.name || '', artFiles });
   });
   return out;
 };

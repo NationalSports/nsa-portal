@@ -51,6 +51,38 @@ describe('skusMissingMockups — garment-aware reuse', () => {
   });
 });
 
+describe('skusMissingMockups — stale job snapshot after a line-item swap', () => {
+  // Repro for the reported bug: a line item's product was swapped (A325 → A515) but
+  // so.jobs was never rebuilt, so job.items[].sku still says A325 while the live SO
+  // line — and its approved mock — are A515. The gate must follow the live line.
+  test('a swapped item satisfied by a mock on its LIVE sku is not reported missing', () => {
+    const art = { id: 'af1', item_mockups: { 'A515|Black': [{ url: 'http://x/a515.png' }] }, mockup_files: [] };
+    const so = {
+      items: [{ sku: 'A515', color: 'Black', decorations: [{ kind: 'art', art_file_id: 'af1' }] }],
+      art_files: [art],
+    };
+    const job = { _art_ids: ['af1'], art_file_id: 'af1', items: [{ item_idx: 0, sku: 'A325', color: 'Black/White' }] };
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+
+  test('a genuinely un-mocked swapped item is reported under its LIVE sku, not the stale one', () => {
+    const art = { id: 'af2', item_mockups: { 'TEE-1|Royal': [{ url: 'http://x/royal.png' }] }, mockup_files: [] };
+    const so = {
+      items: [{ sku: 'A515', color: 'Black', decorations: [{ kind: 'art', art_file_id: 'af2' }] }],
+      art_files: [art],
+    };
+    const job = { _art_ids: ['af2'], art_file_id: 'af2', items: [{ item_idx: 0, sku: 'A325', color: 'Black/White' }] };
+    expect(skusMissingMockups(job, so)).toEqual(['A515']);
+  });
+
+  test('a job item whose live SO line was deleted is skipped, not reported missing', () => {
+    const art = { id: 'af3', item_mockups: { 'A2009|White': [{ url: 'http://x/w.png' }] }, mockup_files: [] };
+    const so = { items: [], art_files: [art] }; // the line at item_idx 0 no longer exists
+    const job = { _art_ids: ['af3'], art_file_id: 'af3', items: [{ item_idx: 0, sku: 'A325', color: 'Black' }] };
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
 describe('garmentsNeedingMockCheck', () => {
   test('flags a garment whose art was approved on another garment, with the prior mock', () => {
     const art = {
