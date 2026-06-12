@@ -8,9 +8,7 @@
 import React, { useState } from 'react';
 import { Icon, SearchSelect, ProductPicker } from './components';
 import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
-import { rQ, auTierDisc } from './pricing';
-
-const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
+import { rQ, auTierDisc, isAU } from './pricing';
 
 const initialAi = () => ({
   inputMode: 'text', parseMode: 'order', combineNameNum: false, text: '', images: [], url: '',

@@ -366,6 +366,10 @@ export const FOOTWEAR_SIZES=['4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','
 // Default shoe run — 7 through 12 including half sizes (the bulk of team-shoe sell-through).
 // Staff can +Size for outliers (6, 13, 14…). Kept tight so grids stay readable.
 export const FOOTWEAR_DEFAULT_SIZES=['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
+// Numeric waist sizes for shorts/pants (even inches 26–54)
+export const NUMERIC_SIZES=['26','28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
+// Default waist run for new numeric products
+export const NUMERIC_DEFAULT_SIZES=['28','30','32','34','36','38','40'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',

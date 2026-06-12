@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useMemo, useEffect } from 'react';
-import { auTierDisc, dP, calcOrderTotals } from './pricing';
+import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady } from './businessLogic';
 import { SZ_ORD } from './constants';
 
@@ -576,7 +576,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const addItemToEst=(p)=>{
     const cc=newEst.customer_id?custObj(newEst.customer_id):null;
     const mk=cc?.catalog_markup||1.65;
-    const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';
+    const au=isAU(p.brand);
     const retail=+p.retail_price||0;
     const repCost=+(p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost)||0;
     const sell=au?rQ(retail*(1-auTierDisc(cc?.adidas_ua_tier||'B',p.pricing_group))):rQ(repCost*mk);

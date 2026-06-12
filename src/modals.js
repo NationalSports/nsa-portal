@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
@@ -469,7 +469,8 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
   React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
-  const sizePool=isFw?FOOTWEAR_SIZES:APPAREL_SIZES;
+  const isNumeric=!isFw&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
+  const sizePool=isFw?FOOTWEAR_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES);
   const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
