@@ -96,6 +96,16 @@ const MERCH_PRIORITY = {
   Orange: 1.5, Gold: 1.5, Yellow: 1.5, Pink: 1, Brown: 1, Red: 0.5,
 };
 const POP_EVERY = 5; // a red pop after every N staple cards
+// Crowd favorites get a fixed boost in the default browse order.
+const POPULAR_RULES = [
+  [/PREGAME/, 300], [/FLEECE/, 260], [/1\/4 ZIP|QUARTER ZIP/, 220],
+];
+const POPULAR_CATEGORIES = { '1/4 Zips': 220, Hoods: 150, Tees: 80 };
+const popScore = (st) => {
+  const n = st.name.toUpperCase();
+  for (const [re, s] of POPULAR_RULES) if (re.test(n)) return s;
+  return POPULAR_CATEGORIES[st.category] || 0;
+};
 // Per-segment classification: "Maroon/White" tags BOTH Maroon and White, so
 // team-color matching sees every color a colorway features. Order matters —
 // Navy/Royal before Blue, Maroon before Red, Gold before Yellow.
@@ -222,6 +232,7 @@ function Styles() {
         .ai-swatch.on{border-color:#191919;background:#191919;color:#fff}
         .ai-sizecell{display:flex;flex-direction:column;align-items:center;gap:3px;border:1px solid #E2E5EA;border-radius:8px;padding:5px 4px 4px;background:#FAFBFC;width:54px}
         .ai-sizecell.inbound{border-color:#F0DCC0;background:#FFFBF3}
+        .ai-sizecell.inhouse{border-color:#BBE3C8;background:#F2FBF5}
         .ai-sizecell .lbl{font-size:11.5px;font-weight:700;line-height:1}
         .ai-sizecell .avail{font-size:10.5px;font-weight:700;line-height:1}
         .ai-qtyin{width:44px;border:1px solid #D8DCE2;border-radius:6px;padding:3px 2px;font-size:12.5px;font-weight:700;text-align:center;font-family:inherit;outline:none;background:#fff}
@@ -315,6 +326,9 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen }) {
         {gb && (
           <span className="ai-badge" style={{ position: 'absolute', top: 10, left: 10, background: gb.bg, color: gb.fg }}>{st.gender}</span>
         )}
+        {matchCws.some((c) => c.inHouseUnits > 0) && (
+          <span className="ai-badge" style={{ position: 'absolute', bottom: 10, left: 10, background: '#DCFCE7', color: '#166534' }}>In house — ships now</span>
+        )}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
@@ -342,12 +356,16 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen }) {
 
 // One size = one cell: label, available count, and an order-qty input that
 // writes straight into the order list (0/blank removes the line).
-function SizeCell({ size, avail, inbound, qty, onQty }) {
+function SizeCell({ size, avail, inbound, ih, qty, onQty }) {
+  const title = inbound
+    ? `Projected ${fmtQty(avail)} available ${fmtDate(inbound)}`
+    : ih
+      ? `${fmtQty(ih)} in house at NSA (ships now)${avail - ih > 0 ? ` + ${fmtQty(avail - ih)} at adidas` : ''}`
+      : `${fmtQty(avail)} available now`;
   return (
-    <div className={'ai-sizecell' + (inbound ? ' inbound' : '')}>
+    <div className={'ai-sizecell' + (inbound ? ' inbound' : '') + (ih ? ' inhouse' : '')}>
       <span className="lbl">{sizeLabel(size)}</span>
-      <span className="avail" style={{ color: inbound ? '#92580B' : avail >= 24 ? '#15803D' : '#B45309' }}
-        title={inbound ? `Projected ${fmtQty(avail)} available ${fmtDate(inbound)}` : `${fmtQty(avail)} available now`}>
+      <span className="avail" style={{ color: inbound ? '#92580B' : ih ? '#166534' : avail >= 24 ? '#15803D' : '#B45309' }} title={title}>
         {fmtQty(avail)}
       </span>
       <input className="ai-qtyin" placeholder="0" inputMode="numeric" aria-label={`Order quantity, size ${sizeLabel(size)}`}
@@ -429,15 +447,16 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
         </div>
         <div style={{ padding: '0 24px 22px' }}>
           {cws.map((cw) => {
-            const inStock = cw.sizes.filter((s) => s.q > 0);
+            const availNow = (s) => (s.q || 0) + (s.ih || 0);
+            const inStock = cw.sizes.filter((s) => availNow(s) > 0);
             const incoming = {};
             for (const s of cw.sizes) {
-              if (s.q > 0 || !s.fd || !s.fq) continue;
+              if (availNow(s) > 0 || !s.fd || !s.fq) continue;
               (incoming[s.fd] = incoming[s.fd] || []).push(s);
             }
             const dates = Object.keys(incoming).sort().slice(0, 3);
-            const hasOOS = cw.sizes.some((s) => !s.q);
-            const oosSizes = cw.sizes.filter((s) => !s.q);
+            const hasOOS = cw.sizes.some((s) => !availNow(s));
+            const oosSizes = cw.sizes.filter((s) => !availNow(s));
             return (
               <div key={cw.sku} className="ai-cwrow" style={matchSet.has(cw.sku) ? undefined : { opacity: .55 }}>
                 <div style={{ width: 76, height: 76, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
@@ -470,9 +489,14 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
                       </button>
                     </div>
                   )}
+                  {cw.inHouseUnits > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 700, color: '#166534' }}>
+                      🏠 {fmtQty(cw.inHouseUnits)} units in house at NSA — ships now
+                    </div>
+                  )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                     {inStock.length > 0 ? inStock.map((s) => (
-                      <SizeCell key={s.size} size={s.size} avail={s.q} inbound={null}
+                      <SizeCell key={s.size} size={s.size} avail={availNow(s)} inbound={null} ih={s.ih || 0}
                         qty={qtyInList(cw.sku, s.size)} onQty={(n) => onSetQty(st, cw, s.size, n, null)} />
                     )) : (
                       <span style={{ fontSize: 12.5, fontWeight: 600, color: '#B45309', alignSelf: 'center' }}>Out of stock</span>
@@ -725,10 +749,10 @@ export default function AdidasInventory() {
     let alive = true;
     (async () => {
       try {
-        const [prods, inv] = await Promise.all([
+        const [prods, inv, inHouseRows] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('sku,name,color,color_category,category,retail_price,image_front_url,image_back_url,description')
+            .select('id,sku,name,color,color_category,category,retail_price,image_front_url,image_back_url,description')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -737,6 +761,13 @@ export default function AdidasInventory() {
             .from('adidas_inventory')
             .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
             .or('stock_qty.gt.0,future_delivery_qty.gt.0')
+            .order('id')),
+          // NSA's own warehouse stock — these ship immediately and rank first,
+          // even when adidas no longer carries the SKU (e.g. HI0707).
+          fetchAllPages(() => supabase
+            .from('product_inventory')
+            .select('product_id,size,quantity')
+            .gt('quantity', 0)
             .order('id')),
         ]);
         if (!alive) return;
@@ -747,17 +778,34 @@ export default function AdidasInventory() {
           (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
           if (r.last_synced && (!synced || r.last_synced > synced)) synced = r.last_synced;
         }
+        const inHouseByPid = {};
+        for (const r of inHouseRows) {
+          (inHouseByPid[r.product_id] = inHouseByPid[r.product_id] || {})[r.size] =
+            (inHouseByPid[r.product_id]?.[r.size] || 0) + (r.quantity || 0);
+        }
 
         // Build colorways, then group into styles by cleaned name.
         const seen = new Set();
         const styleMap = new Map();
         for (const p of prods) {
           if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
-          const sizes = bySku[p.sku];
-          if (!sizes) continue; // no Cowork data — can't vouch for availability
+          const inHouse = inHouseByPid[p.id] || null;
+          const sizes = bySku[p.sku] || [];
+          // No Cowork data AND nothing in-house — can't vouch for availability
+          if (!sizes.length && !inHouse) continue;
           seen.add(p.sku);
+          // Merge NSA warehouse stock into the size list: ih rides alongside
+          // the adidas qty, and in-house-only sizes get their own entry.
+          if (inHouse) {
+            for (const [size, qty] of Object.entries(inHouse)) {
+              const ex = sizes.find((s) => s.size === size);
+              if (ex) ex.ih = qty;
+              else sizes.push({ size, q: 0, fd: null, fq: null, ih: qty });
+            }
+          }
           sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-          const inStock = new Set(sizes.filter((s) => s.q > 0).map((s) => s.size));
+          const availNow = (s) => (s.q || 0) + (s.ih || 0);
+          const inStock = new Set(sizes.filter((s) => availNow(s) > 0).map((s) => s.size));
           const cat = normCategory(p.category);
           const colorInfo = classifyColor(p.color_category, p.color);
           const cw = {
@@ -769,11 +817,12 @@ export default function AdidasInventory() {
             price: Number(p.retail_price) || 0,
             sizes,
             inStock,
-            units: sizes.reduce((a, s) => a + (s.q > 0 ? s.q : 0), 0),
-            hasIncoming: sizes.some((s) => !s.q && s.fd && s.fq),
+            units: sizes.reduce((a, s) => a + availNow(s), 0),
+            inHouseUnits: sizes.reduce((a, s) => a + (s.ih || 0), 0),
+            hasIncoming: sizes.some((s) => !availNow(s) && s.fd && s.fq),
             strongRun: cat === 'Footwear'
               ? [...inStock].length >= 8
-              : STRONG_SIZES.every((sz) => sizes.some((s) => s.size === sz && s.q >= STRONG_MIN)),
+              : STRONG_SIZES.every((sz) => sizes.some((s) => s.size === sz && availNow(s) >= STRONG_MIN)),
           };
           const displayName = p.name.replace(/^adidas\s+/i, '');
           const key = displayName.toUpperCase() + '|' + cat;
@@ -797,6 +846,7 @@ export default function AdidasInventory() {
         const grouped = [...styleMap.values()];
         for (const st of grouped) {
           st.colorways.sort((a, b) => b.units - a.units);
+          st.inHouseUnits = st.colorways.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
           const prices = st.colorways.map((c) => c.price).filter(Boolean);
           st.priceMin = prices.length ? Math.min(...prices) : 0;
           st.priceMax = prices.length ? Math.max(...prices) : 0;
@@ -844,13 +894,24 @@ export default function AdidasInventory() {
       out.sort((a, b) => score(b) - score(a));
       return out;
     }
-    // Default merchandising order: Black/Navy/Grey staples lead (stable sort
-    // keeps category-then-name within each band, imageless styles sink), and
-    // after every few cards a style with an imaged RED colorway is pulled
-    // forward as a color pop — its card cover is forced to the red colorway.
-    const lead = ({ matchCws }) => Math.max(...matchCws.map((c) => MERCH_PRIORITY[c.family] ?? 1));
-    const hasImg = ({ st }) => st.colorways.some((c) => c.img);
-    out.sort((a, b) => (lead(b) - lead(a)) || (hasImg(b) - hasImg(a)));
+    // Default merchandising order (stable sort keeps category/name ties):
+    // NSA in-house stock first (ships now — move what we own), then crowd
+    // favorites (Pregame / Fleece / 1/4 Zips), then stock depth, then
+    // Black/Navy/Grey staple colors; imageless styles sink. After every few
+    // cards a style with an imaged RED colorway is pulled forward as a color
+    // pop — its card cover is forced to the red colorway.
+    const score = (v) => {
+      const ih = v.matchCws.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
+      const units = v.matchCws.reduce((a, c) => a + c.units, 0);
+      let s = 0;
+      if (ih > 0) s += 1000 + Math.min(ih, 500) / 5;
+      s += popScore(v.st);
+      s += Math.min(units, 2000) / 20;
+      s += Math.max(...v.matchCws.map((c) => MERCH_PRIORITY[c.family] ?? 1)) * 10;
+      if (!v.st.colorways.some((c) => c.img)) s -= 500;
+      return s;
+    };
+    out.sort((a, b) => score(b) - score(a));
     const isRedCand = (v) => v.matchCws.some((c) => c.family === 'Red' && c.img);
     const used = new Set();
     const mixed = [];
@@ -1083,6 +1144,7 @@ export default function AdidasInventory() {
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
           Availability reflects the adidas B2B warehouse and is updated automatically — quantities are not guaranteed until ordered.
           “Inbound” dates are adidas's projected delivery dates for restocks.
+          “In house” stock is on the shelf at National Sports Apparel and ships immediately.
           <span style={{ display: 'block', marginTop: 6, color: '#C3C8D0', fontWeight: 600 }}>
             National Sports Apparel · nationalsportsapparel.com
           </span>
