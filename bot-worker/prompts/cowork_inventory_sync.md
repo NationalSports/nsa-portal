@@ -68,6 +68,33 @@ one-time-per-SKU grab: once filled, skip. Footwear and hats especially are
 missing images today. The /adidas coach catalog shows the description in the
 style detail view.
 
+## Full-range discovery (beyond our catalog)
+
+The sync's reach is the **entire adidas range visible on Cowork**, not just
+SKUs already in our `products` table:
+
+1. Enumerate Cowork's full available range (category/listing pages or the
+   search/materials API — whatever enumerates every orderable material).
+2. For SKUs **already in `products`**: sync stock as below, and backfill
+   images/descriptions per the backfill rules (fill empties only).
+3. For SKUs **not in `products`**: create the product row, then sync its
+   inventory like any other. New-row conventions (mirror existing adidas rows):
+   - `id`: `p-<epoch-ms>-<n>` · `vendor_id`: `v1` · `brand`: `Adidas` · `is_active`: true
+   - `name`: "Adidas " + style name; SKU ending **W** → append women's
+     designation, ending **Y** → youth (same rules as the catalog discover)
+   - `color`, `category` (map to the portal's category list: Tees, Jersey,
+     Hoods, Shorts, Pants, Polos, 1/4 Zips, Footwear, Hats, Bags, Socks,
+     Sport Accessories, Outerwear, Crew, Ball, Accessories, Other)
+   - `retail_price`: Cowork list/retail price · `nsa_cost`: retail × 0.375
+     (the standard 50% × 75% rule), unless Cowork shows our actual wholesale —
+     then use that
+   - `available_sizes`: the size run from the size map · `image_front_url`,
+     `description`: from the product page
+   - Never overwrite an existing product row from discovery — discovery only
+     **creates missing** rows.
+4. Report each run: SKUs discovered/created, so new items can be sanity-checked
+   (they go live on the public /adidas catalog as soon as stock rows exist).
+
 ## Per SKU
 
 1. Default call. For each size: `stock_qty = sizes[code].inventory`, and
