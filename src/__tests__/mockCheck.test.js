@@ -10,7 +10,7 @@
  *  - garmentsNeedingMockCheck surfaces those garments + the prior mock to confirm/redo.
  */
 
-const { skusMissingMockups, garmentsNeedingMockCheck } = require('../safeHelpers');
+const { skusMissingMockups, garmentsNeedingMockCheck, sharedMockFiles } = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
 const makeCase = (artFile, item = { sku: 'A2009', color: 'White' }) => {
@@ -80,6 +80,71 @@ describe('skusMissingMockups — stale job snapshot after a line-item swap', () 
     const so = { items: [], art_files: [art] }; // the line at item_idx 0 no longer exists
     const job = { _art_ids: ['af3'], art_file_id: 'af3', items: [{ item_idx: 0, sku: 'A325', color: 'Black' }] };
     expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
+describe('shared one-mock-for-all designs (shared_mockup flag)', () => {
+  // Three different polos, same design — one mock in the shared bucket covers all.
+  const threePoloSO = (art) => ({
+    items: [
+      { sku: 'P1', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+      { sku: 'P2', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+      { sku: 'P3', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+    ],
+    art_files: [art],
+  });
+  const threePoloJob = (art) => ({
+    _art_ids: [art.id], art_file_id: art.id,
+    items: [
+      { item_idx: 0, sku: 'P1', color: 'Black' },
+      { item_idx: 1, sku: 'P2', color: 'Black' },
+      { item_idx: 2, sku: 'P3', color: 'Black' },
+    ],
+  });
+
+  test('one shared-bucket mock satisfies every garment, even with per-item mocks present elsewhere on the art', () => {
+    const art = {
+      id: 'af1', shared_mockup: true,
+      mockup_files: [{ url: 'http://x/shared.png' }],
+      // Lingering per-item mock from before the flag was turned on must not break the others
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  });
+
+  test('flag on with an existing per-garment mock but empty shared bucket: that mock becomes THE mock', () => {
+    // The A515 case: artist mocked one garment, then flipped the design to shared.
+    const art = { id: 'af2', shared_mockup: true, mockup_files: [], item_mockups: { 'P2|Black': [{ url: 'http://x/p2.png' }] } };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  });
+
+  test('flag on but NO mock anywhere still blocks every garment', () => {
+    const art = { id: 'af3', shared_mockup: true, mockup_files: [], item_mockups: {}, files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P1', 'P2', 'P3']);
+  });
+
+  test('flag off keeps garment-aware behavior (mock on one garment does not satisfy the others)', () => {
+    const art = { id: 'af4', shared_mockup: false, mockup_files: [], item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] } };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P2', 'P3']);
+  });
+
+  test('garmentsNeedingMockCheck does not flag garments on a shared design with a mock', () => {
+    const art = {
+      id: 'af5', shared_mockup: true,
+      mockup_files: [{ url: 'http://x/shared.png' }],
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 without the flag
+    };
+    expect(garmentsNeedingMockCheck(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  });
+
+  test('sharedMockFiles precedence: shared bucket, else first per-garment bucket (not flattened), else files', () => {
+    expect(sharedMockFiles({ mockup_files: [{ url: 'http://x/b.png' }], item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] } }))
+      .toEqual([{ url: 'http://x/b.png' }]);
+    expect(sharedMockFiles({ mockup_files: [], item_mockups: { 'P1|Black': [], 'P2|Black': [{ url: 'http://x/p2.png' }], 'P3|Black': [{ url: 'http://x/p3.png' }] } }))
+      .toEqual([{ url: 'http://x/p2.png' }]);
+    expect(sharedMockFiles({ mockup_files: [], item_mockups: {}, files: [{ url: 'http://x/art.ai' }] }))
+      .toEqual([{ url: 'http://x/art.ai' }]);
+    expect(sharedMockFiles({})).toEqual([]);
   });
 });
 
