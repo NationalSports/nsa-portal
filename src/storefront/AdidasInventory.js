@@ -199,15 +199,19 @@ function searchMatch(hay, q) {
   });
 }
 
+// Fetch pages in parallel waves of 6 — the dataset is ~35 pages now and
+// serial paging made first load crawl. Stops at the first short page.
 async function fetchAllPages(buildQuery) {
   const out = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await buildQuery().range(from, from + 999);
-    if (error) throw error;
-    out.push(...(data || []));
-    if (!data || data.length < 1000) break;
+  for (let wave = 0; ; wave++) {
+    const starts = Array.from({ length: 6 }, (_, i) => (wave * 6 + i) * 1000);
+    const results = await Promise.all(starts.map((from) => buildQuery().range(from, from + 999)));
+    for (const r of results) {
+      if (r.error) throw r.error;
+      out.push(...(r.data || []));
+      if (!r.data || r.data.length < 1000) return out;
+    }
   }
-  return out;
 }
 
 function Styles() {
