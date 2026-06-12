@@ -56,7 +56,8 @@ exports.handler = async (event) => {
         if (i > 0) await new Promise(function(r) { setTimeout(r, 1100); });
 
         var ssRes = await fetch('https://api.ssactivewear.com/V2/Products?style=' + encodeURIComponent(sku), {
-          headers: { 'Authorization': 'Basic ' + ssAuth, 'Accept': 'application/json' }
+          // S&S's firewall 403s the Node runtime's default User-Agent
+          headers: { 'Authorization': 'Basic ' + ssAuth, 'Accept': 'application/json', 'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)' }
         });
 
         if (!ssRes.ok) { errors.push({ sku: sku, error: 'HTTP ' + ssRes.status }); continue; }

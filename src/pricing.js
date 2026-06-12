@@ -9,9 +9,11 @@ export const rT=v=>Math.round(v*10)/10;
 // ── Adidas/UA/NB tier discount off retail ──
 // Standard schedule is A=40% / B=35% / C=30% off. Items imported from Lockerroom
 // (products.pricing_group === 'lockerroom') use a reduced schedule: A=35% / B=30% / C=25%.
+// Footwear discounts 5% less than apparel at each tier (A=35% / B=30% / C=25%).
 const _TIER_STD={A:0.40,B:0.35,C:0.30};
 const _TIER_LOCKERROOM={A:0.35,B:0.30,C:0.25};
-export const auTierDisc=(tier,pricingGroup)=>{const tbl=pricingGroup==='lockerroom'?_TIER_LOCKERROOM:_TIER_STD;return tbl[tier]!=null?tbl[tier]:tbl.B;};
+const _TIER_FOOTWEAR={A:0.35,B:0.30,C:0.25};
+export const auTierDisc=(tier,pricingGroup,category)=>{const tbl=category==='Footwear'?_TIER_FOOTWEAR:(pricingGroup==='lockerroom'?_TIER_LOCKERROOM:_TIER_STD);return tbl[tier]!=null?tbl[tier]:tbl.B;};
 // ── Brands that auto-calc cost off retail (MSRP) instead of cost×markup ──
 // Agron is an Adidas bag distributor — its product ships on the Adidas contract, so it
 // prices identically to Adidas (cost = retail × 0.5 × 0.75).
