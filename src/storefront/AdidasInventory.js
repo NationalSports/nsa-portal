@@ -173,6 +173,31 @@ function deriveSport(name) {
   return null;
 }
 
+// ── Search: every word must match somewhere (name, SKU, color, category,
+// sport, gender), with light aliasing so coach vocabulary works — "soccer
+// ball" finds category-Ball/sport-Soccer items whose names never say it.
+const SEARCH_ALIASES = {
+  tee: 'tees', tshirt: 'tees', shirt: 'tees',
+  hoodie: 'hoods', hoody: 'hoods', sweatshirt: 'hoods', sweater: 'hoods', fleece: 'hoods',
+  shoe: 'footwear', cleat: 'footwear', sneaker: 'footwear', turf: 'footwear',
+  hat: 'hats', cap: 'hats', beanie: 'hats',
+  jacket: 'outerwear', coat: 'outerwear', windbreaker: 'outerwear',
+  bag: 'bags', backpack: 'bags', sock: 'socks',
+  women: "women's", womens: "women's", woman: "women's", ladies: "women's", female: "women's",
+  men: "men's", mens: "men's", man: "men's",
+  kid: 'youth', kids: 'youth', boys: 'youth', girls: 'youth', junior: 'youth',
+  navy: 'navy', maroon: 'maroon', // pass-through: colors live in the haystack already
+};
+function searchMatch(hay, q) {
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  return tokens.every((t) => {
+    const forms = [t];
+    if (t.length > 3 && t.endsWith('s')) forms.push(t.slice(0, -1)); // plural tolerance
+    if (SEARCH_ALIASES[t]) forms.push(SEARCH_ALIASES[t]);
+    return forms.some((f) => hay.includes(f));
+  });
+}
+
 async function fetchAllPages(buildQuery) {
   const out = [];
   for (let from = 0; ; from += 1000) {
@@ -889,7 +914,7 @@ export default function AdidasInventory() {
           const prices = st.colorways.map((c) => c.price).filter(Boolean);
           st.priceMin = prices.length ? Math.min(...prices) : 0;
           st.priceMax = prices.length ? Math.max(...prices) : 0;
-          st.searchText = (st.name + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color).join(' ')).toLowerCase();
+          st.searchText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
         }
         grouped.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
         setStyles(grouped);
@@ -928,7 +953,7 @@ export default function AdidasInventory() {
       if (category !== 'All' && st.category !== category) continue;
       if (gender !== 'All' && st.gender !== gender) continue;
       if (sport !== 'All' && st.sport !== sport) continue;
-      if (q && !st.searchText.includes(q)) continue;
+      if (q && !searchMatch(st.searchText, q)) continue;
       const matchCws = st.colorways.filter(cwMatcher);
       if (!matchCws.length) continue;
       out.push({ st, matchCws });
