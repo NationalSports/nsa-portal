@@ -88,6 +88,14 @@ const COLOR_DOTS = {
   Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21', Other: '#CBD5E1',
 };
 const COLOR_FAMILIES = Object.keys(COLOR_DOTS);
+// Default merchandising: dark/neutral team staples lead the grid (and pick
+// the card cover image); Red is held out and sprinkled in as color pops.
+const MERCH_PRIORITY = {
+  Black: 6, Navy: 5, Grey: 4, White: 3,
+  Royal: 2.5, Blue: 2.5, Maroon: 2, Green: 2, Purple: 2,
+  Orange: 1.5, Gold: 1.5, Yellow: 1.5, Pink: 1, Brown: 1, Red: 0.5,
+};
+const POP_EVERY = 5; // a red pop after every N staple cards
 // Per-segment classification: "Maroon/White" tags BOTH Maroon and White, so
 // team-color matching sees every color a colorway features. Order matters —
 // Navy/Royal before Blue, Maroon before Red, Gold before Yellow.
@@ -273,8 +281,23 @@ function ImageBox({ img, alt, height }) {
 }
 
 // ── Style card (one per item; colorways summarized) ──────────────────
-function StyleCard({ st, matchCws, onOpen }) {
-  const cover = matchCws.find((c) => c.img) || st.colorways.find((c) => c.img);
+function StyleCard({ st, matchCws, colorSel, popColor, onOpen }) {
+  // Cover image: a forced pop color wins, then the coach's picked team
+  // colors, then staple colors (Black/Navy/Grey) so the default grid reads
+  // dark-neutral with red pops.
+  const pickCover = (cws) => {
+    let best = null, bs = -1;
+    for (const c of cws) {
+      if (!c.img) continue;
+      let s = MERCH_PRIORITY[c.family] ?? 1;
+      if (popColor && c.family === popColor) s += 20;
+      if (colorSel && colorSel.includes(c.family)) s += 10;
+      else if (colorSel && colorSel.some((x) => c.tags.has(x))) s += 5;
+      if (s > bs) { bs = s; best = c; }
+    }
+    return best;
+  };
+  const cover = pickCover(matchCws) || pickCover(st.colorways);
   const price = st.priceMin === st.priceMax
     ? fmtPrice(st.priceMin)
     : `${fmtPrice(st.priceMin)}–${fmtPrice(st.priceMax)}`;
@@ -819,8 +842,32 @@ export default function AdidasInventory() {
     if (colorSel.length) {
       const score = ({ matchCws }) => Math.max(...matchCws.map((c) => colorSel.filter((x) => c.tags.has(x)).length));
       out.sort((a, b) => score(b) - score(a));
+      return out;
     }
-    return out;
+    // Default merchandising order: Black/Navy/Grey staples lead (stable sort
+    // keeps category-then-name within each band, imageless styles sink), and
+    // after every few cards a style with an imaged RED colorway is pulled
+    // forward as a color pop — its card cover is forced to the red colorway.
+    const lead = ({ matchCws }) => Math.max(...matchCws.map((c) => MERCH_PRIORITY[c.family] ?? 1));
+    const hasImg = ({ st }) => st.colorways.some((c) => c.img);
+    out.sort((a, b) => (lead(b) - lead(a)) || (hasImg(b) - hasImg(a)));
+    const isRedCand = (v) => v.matchCws.some((c) => c.family === 'Red' && c.img);
+    const used = new Set();
+    const mixed = [];
+    for (let i = 0; i < out.length; i++) {
+      if (used.has(i)) continue;
+      mixed.push(out[i]);
+      if (mixed.length % POP_EVERY === 0) {
+        for (let j = i + 1; j < out.length; j++) {
+          if (!used.has(j) && isRedCand(out[j])) {
+            used.add(j);
+            mixed.push({ ...out[j], popColor: 'Red' });
+            break;
+          }
+        }
+      }
+    }
+    return mixed;
   }, [styles, search, category, gender, sport, cwMatcher, colorSel]);
 
   // Facet options (with counts under everything-but-this-facet filtering kept
@@ -985,8 +1032,8 @@ export default function AdidasInventory() {
         {!loading && !error && (
           <>
             <div className="ai-grid">
-              {visible.slice(0, shown).map(({ st, matchCws }) => (
-                <StyleCard key={st.key} st={st} matchCws={matchCws} onOpen={() => setOpenStyle(st.key)} />
+              {visible.slice(0, shown).map(({ st, matchCws, popColor }) => (
+                <StyleCard key={st.key} st={st} matchCws={matchCws} colorSel={colorSel} popColor={popColor} onOpen={() => setOpenStyle(st.key)} />
               ))}
             </div>
             {visible.length > shown && (
