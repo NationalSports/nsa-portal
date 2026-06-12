@@ -873,7 +873,13 @@ export default function AdidasInventory() {
   const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
   // Team price for a colorway under the coach's adidas/UA tier (null when anonymous)
   const yourPriceFn = useCallback(
-    (cw) => (coach && cw.price ? rQ(cw.price * (1 - auTierDisc(coach.tier, cw.pricing_group, cw.category))) : null),
+    (cw) => {
+      if (!coach) return null;
+      // Items with a flat catalog sell price (e.g. S&S = cost x 1.65) don't use
+      // the adidas tier discount — same price for every tier.
+      if (cw.sell != null) return cw.sell;
+      return cw.price ? rQ(cw.price * (1 - auTierDisc(coach.tier, cw.pricing_group, cw.category))) : null;
+    },
     [coach],
   );
 
@@ -920,7 +926,7 @@ export default function AdidasInventory() {
         const [prods, inv, inHouseRows] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('id,sku,name,color,color_category,category,retail_price,pricing_group,image_front_url,image_back_url,description')
+            .select('id,sku,name,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -983,6 +989,7 @@ export default function AdidasInventory() {
             tags: colorInfo.tags,
             img: p.image_front_url || p.image_back_url || '',
             price: Number(p.retail_price) || 0,
+            sell: p.catalog_sell_price != null ? Number(p.catalog_sell_price) : null,
             pricing_group: p.pricing_group || null,
             category: cat,
             sizes,

@@ -106,7 +106,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const sku = (r.sku_guess || '').trim();
       const catMatch = findCatMatch(sku, r.product_id);
       const brand = catMatch?.brand || r.brand || '';
-      const au = isAU(brand);
+      const au = isAU(brand) && !String(catMatch?.id||'').startsWith('ssa-');
       const cost = catMatch?.nsa_cost || r.vendor_price || 0;
       const retail = catMatch?.retail_price || r.vendor_retail || 0;
       const sell = au
@@ -184,7 +184,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const catMatch = p.product_id ? (products || []).find(pr => pr.id === p.product_id) :
         (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
       const brand = catMatch?.brand || p.brand || '';
-      const au = isAU(brand);
+      const au = isAU(brand) && !String(catMatch?.id||'').startsWith('ssa-');
       const cost = catMatch?.nsa_cost || p.vendor_price || 0;
       const retail = catMatch?.retail_price || p.vendor_retail || 0;
       const sell = au

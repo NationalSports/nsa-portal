@@ -98,6 +98,9 @@ exports.handler = async () => {
           const cost = Number(r0.customerPrice) || Number(r0.piecePrice) || 0;
           const map = Number(r0.mapPrice) || 0;
           const img = r0.colorFrontImage || r0.styleImage || '';
+          // MAP can arrive as a 0.01 placeholder when unset — treat <= $1 as missing
+          // and fall back to keystone (cost x 2) so retail is never bogus.
+          const retail = map > 1 ? map : (cost > 0 ? Math.round(cost * 2) : 0);
           prodRows.push({
             id: 'ssa-' + sku,
             vendor_id: vendorId,
@@ -106,8 +109,10 @@ exports.handler = async () => {
             brand: 'Adidas',
             color: r0.colorName || colorCode,
             category: mapCategory(st.title, st.baseCategory),
-            retail_price: map > 0 ? map : Math.round(cost * 2),
+            retail_price: retail,
             nsa_cost: cost,
+            // S&S coaches pay cost x 1.65 (flat markup, no adidas tier discount)
+            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
             is_active: true,
             available_sizes: sizes,
             image_front_url: img ? SS_CDN + img : null,
