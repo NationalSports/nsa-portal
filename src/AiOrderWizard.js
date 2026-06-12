@@ -112,7 +112,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const cost = catMatch?.nsa_cost || r.vendor_price || 0;
       const retail = catMatch?.retail_price || r.vendor_retail || 0;
       const sell = au
-        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group, catMatch?.category)))
         : rQ(cost * mk);
       // One row = one garment unit. Build size counts plus parallel
       // numbers/names arrays (same index = same player) keyed by size, the
@@ -190,7 +190,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const cost = catMatch?.nsa_cost || p.vendor_price || 0;
       const retail = catMatch?.retail_price || p.vendor_retail || 0;
       const sell = au
-        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group, catMatch?.category)))
         : rQ(cost * mk);
       const szKeys = Object.keys(p.sizes || {});
       return {

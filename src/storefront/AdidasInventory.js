@@ -873,7 +873,7 @@ export default function AdidasInventory() {
   const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
   // Team price for a colorway under the coach's adidas/UA tier (null when anonymous)
   const yourPriceFn = useCallback(
-    (cw) => (coach && cw.price ? rQ(cw.price * (1 - auTierDisc(coach.tier, cw.pricing_group))) : null),
+    (cw) => (coach && cw.price ? rQ(cw.price * (1 - auTierDisc(coach.tier, cw.pricing_group, cw.category))) : null),
     [coach],
   );
 
@@ -984,6 +984,7 @@ export default function AdidasInventory() {
             img: p.image_front_url || p.image_back_url || '',
             price: Number(p.retail_price) || 0,
             pricing_group: p.pricing_group || null,
+            category: cat,
             sizes,
             inStock,
             units: sizes.reduce((a, s) => a + availNow(s), 0),

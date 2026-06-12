@@ -5825,7 +5825,7 @@ export default function App(){
     nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
@@ -6322,7 +6322,7 @@ export default function App(){
       const sizes={};ls.forEach(l=>{sizes[l.size]=(sizes[l.size]||0)+(safeNum(l.qty)||0)});
       const decoNotes=[...new Set(ls.map(l=>l.decoration).filter(Boolean))];
       const notes=[decoNotes.length?'Decoration requested: '+decoNotes.join(', '):null,ls.some(l=>l.inbound)?'Some sizes inbound at adidas — confirm delivery dates':null].filter(Boolean).join(' · ');
-      if(p){const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group))):rQ(repCost*mk);
+      if(p){const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group,p.category))):rQ(repCost*mk);
         return{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||Object.keys(sizes))],_colors:p._colors||null,sizes,decorations:[],_is_clearance:p.is_clearance||false,notes}}
       return{product_id:null,sku,name:ls[0].name||sku,brand:'Adidas',vendor_id:null,color:ls[0].color||'',nsa_cost:0,retail_price:safeNum(ls[0].price),unit_sell:safeNum(ls[0].price),available_sizes:Object.keys(sizes),sizes,decorations:[],is_custom:true,notes}});
     const e=newE(c,null,items);
@@ -6402,30 +6402,38 @@ export default function App(){
   const[coachAcctsOpen,setCoachAcctsOpen]=useState(false);
   const[coachAccts,setCoachAccts]=useState(null);
   const[coachForm,setCoachForm]=useState({email:'',name:'',customer_id:null,q:''});
-  const[coachColorEdit,setCoachColorEdit]=useState({});
   const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
+  const CATALOG_COLOR_HEX={Black:'#191919',White:'#FFFFFF',Grey:'#9AA1AC',Navy:'#1B2A4A',Royal:'#2148C7',Blue:'#3B82F6',Red:'#C8102E',Maroon:'#6B1F2A',Orange:'#EA580C',Gold:'#C9A227',Yellow:'#EAB308',Green:'#15803D',Purple:'#6D28D9',Pink:'#EC4899',Brown:'#7C4A21'};
   const loadCoachAccts=()=>{if(!supabase)return;supabase.from('coach_accounts').select('*').order('created_at',{ascending:false}).then(r=>{if(!r.error)setCoachAccts(r.data||[]);else{setCoachAccts([]);nf('Coach accounts: '+r.error.message,'error')}})};
   useEffect(()=>{if(coachAcctsOpen)loadCoachAccts()},[coachAcctsOpen]);// eslint-disable-line react-hooks/exhaustive-deps
+  const sendCoachInvite=async(email,name,custId)=>{
+    const c2=cust.find(c=>c.id===custId);
+    try{const r=await fetch('/.netlify/functions/coach-invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,name,team:c2?.name||''})});
+      const d=await r.json().catch(()=>({}));
+      nf(d.emailed?('📧 Invite emailed to '+email):('Account saved — invite email could not send'+(d.error?' ('+d.error+')':'')),d.emailed?'success':'error');
+    }catch(e){nf('Account saved — invite email failed to send','error')}
+  };
   const createCoachAcct=async()=>{
     const em=(coachForm.email||'').trim().toLowerCase();
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em))return nf('Valid email required','error');
     if(!coachForm.customer_id)return nf('Pick a customer for this coach','error');
-    const{error}=await supabase.from('coach_accounts').insert([{email:em,name:(coachForm.name||'').trim()||null,customer_id:coachForm.customer_id}]);
+    const nm=(coachForm.name||'').trim();
+    const{error}=await supabase.from('coach_accounts').insert([{email:em,name:nm||null,customer_id:coachForm.customer_id}]);
     if(error)return nf((error.message||'').includes('duplicate')?'That email already has an account':error.message,'error');
-    nf('Coach account created — '+em+' can now sign in on the catalog');
+    await sendCoachInvite(em,nm,coachForm.customer_id);
     setCoachForm({email:'',name:'',customer_id:null,q:''});loadCoachAccts();
   };
   const toggleCoachAcct=async(a)=>{const ns=a.status==='active'?'disabled':'active';const{error}=await supabase.from('coach_accounts').update({status:ns}).eq('id',a.id);if(error)return nf(error.message,'error');setCoachAccts(prev=>(prev||[]).map(x=>x.id===a.id?{...x,status:ns}:x))};
-  const saveSchoolColors=async(custId)=>{
-    const txt=coachColorEdit[custId]??'';
-    const arr=txt.split(',').map(s=>s.trim()).filter(Boolean).map(s=>s[0].toUpperCase()+s.slice(1).toLowerCase());
-    const bad=arr.filter(c=>!CATALOG_COLOR_FAMILIES.includes(c));
-    if(bad.length)return nf('Unknown colors: '+bad.join(', ')+'. Valid: '+CATALOG_COLOR_FAMILIES.join(', '),'error');
-    const{error}=await supabase.from('customers').update({school_colors:arr.length?arr:null}).eq('id',custId);
-    if(error)return nf(error.message,'error');
-    setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:arr}:c));
-    setCoachColorEdit(s=>({...s,[custId]:undefined}));
-    nf('School colors saved');
+  // School colors are picked from the catalog's fixed families (no typing) and
+  // saved immediately to the customer. They pre-load the coach's color filter.
+  const toggleSchoolColor=async(custId,fam)=>{
+    const c2=cust.find(c=>c.id===custId);
+    const cur=Array.isArray(c2?.school_colors)?c2.school_colors:[];
+    const next=cur.includes(fam)?cur.filter(x=>x!==fam):(cur.length<5?[...cur,fam]:cur);
+    if(next===cur)return nf('Up to 5 colors','error');
+    setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:next}:c));
+    const{error}=await supabase.from('customers').update({school_colors:next.length?next:null}).eq('id',custId);
+    if(error){nf(error.message,'error');setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:cur}:c))}
   };
   const renderCoachAcctsModal=()=>coachAcctsOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCoachAcctsOpen(false)}>
     <div style={{background:'white',borderRadius:14,maxWidth:820,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
@@ -6453,17 +6461,24 @@ export default function App(){
       <div style={{padding:'6px 22px 18px'}}>
         {coachAccts===null&&<div className="empty" style={{padding:20}}>Loading…</div>}
         {coachAccts&&coachAccts.length===0&&<div className="empty" style={{padding:20}}>No coach accounts yet</div>}
-        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const colorsTxt=coachColorEdit[a.customer_id]??((c2&&Array.isArray(c2.school_colors)?c2.school_colors:[]).join(', '));
-          return<div key={a.id} style={{borderBottom:'1px solid #f1f5f9',padding:'10px 0',display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',opacity:a.status==='active'?1:.55}}>
-            <div style={{flex:'1 1 220px',minWidth:0}}>
+        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const sc=(c2&&Array.isArray(c2.school_colors))?c2.school_colors:[];
+          return<div key={a.id} style={{borderBottom:'1px solid #f1f5f9',padding:'10px 0',display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap',opacity:a.status==='active'?1:.55}}>
+            <div style={{flex:'1 1 200px',minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700}}>{a.name||a.email}</div>
               <div style={{fontSize:11,color:'#64748b'}}>{a.email} · {c2?c2.name:a.customer_id}{c2?.adidas_ua_tier?' · Tier '+c2.adidas_ua_tier:''}</div>
             </div>
-            <div style={{display:'flex',gap:6,alignItems:'center'}}>
-              <input placeholder="School colors (e.g. Maroon, Gold)" value={colorsTxt} onChange={e=>setCoachColorEdit(s=>({...s,[a.customer_id]:e.target.value}))} style={{padding:'5px 9px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:210}}/>
-              {coachColorEdit[a.customer_id]!=null&&<button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'4px 10px'}} onClick={()=>saveSchoolColors(a.customer_id)}>Save</button>}
+            <div style={{flex:'1 1 300px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.3,marginBottom:4}}>School colors {sc.length?'('+sc.length+'/5)':'— click to set'}</div>
+              <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                {CATALOG_COLOR_FAMILIES.map(fam=>{const on=sc.includes(fam);return<button key={fam} title={fam} onClick={()=>toggleSchoolColor(a.customer_id,fam)} style={{display:'inline-flex',alignItems:'center',gap:3,border:'1px solid '+(on?'#191919':'#e2e8f0'),background:on?'#191919':'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'2px 7px',fontSize:10,fontWeight:600,cursor:'pointer'}}>
+                  <span style={{width:10,height:10,borderRadius:'50%',background:CATALOG_COLOR_HEX[fam],border:'1px solid rgba(0,0,0,.15)',display:'inline-block',flexShrink:0}}/>{fam}
+                </button>})}
+              </div>
             </div>
-            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:a.status==='active'?'#fef2f2':'#f0fdf4',color:a.status==='active'?'#dc2626':'#166534',border:'1px solid '+(a.status==='active'?'#fecaca':'#bbf7d0'),borderRadius:8}} onClick={()=>toggleCoachAcct(a)}>{a.status==='active'?'Disable':'Re-enable'}</button>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8}} onClick={()=>sendCoachInvite(a.email,a.name||'',a.customer_id)}>Resend invite</button>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:a.status==='active'?'#fef2f2':'#f0fdf4',color:a.status==='active'?'#dc2626':'#166534',border:'1px solid '+(a.status==='active'?'#fecaca':'#bbf7d0'),borderRadius:8}} onClick={()=>toggleCoachAcct(a)}>{a.status==='active'?'Disable':'Re-enable'}</button>
+            </div>
           </div>})}
       </div>
     </div>
