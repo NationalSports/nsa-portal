@@ -30,6 +30,44 @@ size S returns 0 today and 41 for 2026-07-19.) Read-only — no calendar clickin
 Note: this projection can be **lower** than current stock, and far-out dates may
 return a ~9,999,999 "unlimited" sentinel.
 
+## Coverage & cadence (required since the /adidas coach catalog launched)
+
+The public coach catalog at /adidas hides any product with **no**
+`adidas_inventory` rows — "never checked" is indistinguishable from "not
+carried". So:
+
+1. **SKU list:** re-query the `products` table **every run** (`brand='Adidas'`,
+   active, not archived) — never a cached list. Catalog imports must be picked
+   up automatically on the next run. (~4,000 SKUs currently; only ~2,100 have
+   rows today — close that gap.)
+2. **Cadence:** every catalog SKU must be re-checked **at least weekly**.
+   Daily runs can prioritize SKUs that already have stock or recent activity,
+   but the weekly sweep covers everything.
+3. **Write zero rows:** when Cowork returns a SKU with all sizes at 0, still
+   upsert the rows (stock_qty 0 + restock dates). That lets the catalog show
+   "out of stock — inbound" instead of hiding the item.
+4. **Report not-found SKUs:** keep a per-run list of SKUs Cowork doesn't
+   recognize (likely discontinued or Agron-sourced — socks/bags/accessories
+   are Agron-licensed and will never be on Cowork). Don't retry them every
+   run; re-test weekly.
+
+## Product images & descriptions (backfill task)
+
+~2,000 catalog items have no `products.image_front_url`, and none have
+`products.description` yet. When processing a SKU whose product row has an
+**empty** `image_front_url` and/or `description`, capture from Cowork:
+
+- the primary product image URL (the materials/product response includes
+  image assets) → `image_front_url`
+- the product description text on the Cowork product/inventory page
+  (fabric, fit, features blurb) → `description` — plain text, no HTML
+
+**Only fill empties — never overwrite existing values** (portal mockups,
+hand-picked images, and edited descriptions take precedence). This is a
+one-time-per-SKU grab: once filled, skip. Footwear and hats especially are
+missing images today. The /adidas coach catalog shows the description in the
+style detail view.
+
 ## Per SKU
 
 1. Default call. For each size: `stock_qty = sizes[code].inventory`, and

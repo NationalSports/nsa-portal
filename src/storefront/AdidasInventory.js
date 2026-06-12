@@ -56,6 +56,22 @@ const fmtPrice = (p) => {
   return '$' + (Number.isInteger(n) ? n : n.toFixed(2));
 };
 
+// ── Order list persistence + clipboard ───────────────────────────────
+const LIST_KEY = 'nsa_adidas_order_list';
+const COACH_KEY = 'nsa_adidas_coach_info';
+const loadJson = (k, fb) => { try { return JSON.parse(localStorage.getItem(k)) ?? fb; } catch { return fb; } };
+const saveJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+    return true;
+  } catch { return false; }
+}
+
 // ── Category / color / gender / sport derivation ─────────────────────
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
@@ -167,6 +183,22 @@ function Styles() {
         .ai-modal-bg{position:fixed;inset:0;background:rgba(15,18,26,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:4vh 14px;overflow-y:auto}
         .ai-modal{background:#fff;border-radius:16px;max-width:860px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.35);margin-bottom:6vh}
         .ai-cwrow{display:flex;gap:14px;padding:14px 0;border-top:1px solid #EEF0F3;align-items:flex-start}
+        .ai-chipbtn{position:relative;display:inline-flex;align-items:center;gap:4px;border:1px solid #E2E5EA;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;background:#FAFBFC;white-space:nowrap;cursor:pointer;font-family:inherit;transition:border-color .12s,background .12s}
+        .ai-chipbtn:hover{border-color:#191919;background:#fff}
+        .ai-chipbtn b{font-weight:700}
+        .ai-chipbtn .ai-inlist{position:absolute;top:-7px;right:-7px;background:#191919;color:#fff;border-radius:999px;font-size:10px;font-weight:700;min-width:16px;height:16px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+        .ai-iconbtn{border:1px solid #E2E5EA;background:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer;color:#3A4150;font-family:inherit;transition:border-color .12s}
+        .ai-iconbtn:hover{border-color:#191919}
+        .ai-fab{position:fixed;right:18px;bottom:18px;z-index:40;background:#191919;color:#fff;border:none;border-radius:999px;padding:13px 22px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 10px 28px rgba(15,26,56,.3);display:flex;align-items:center;gap:8px;transition:transform .15s}
+        .ai-fab:hover{transform:translateY(-2px)}
+        .ai-drawer-bg{position:fixed;inset:0;background:rgba(15,18,26,.45);z-index:60}
+        .ai-drawer{position:fixed;top:0;right:0;bottom:0;width:min(440px,100vw);background:#fff;z-index:61;box-shadow:-18px 0 50px rgba(0,0,0,.25);display:flex;flex-direction:column}
+        .ai-input{width:100%;border:1px solid #D8DCE2;border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;outline:none}
+        .ai-input:focus{border-color:#191919}
+        .ai-qbtn{border:1px solid #D8DCE2;background:#fff;border-radius:6px;width:26px;height:26px;font-size:14px;font-weight:700;cursor:pointer;color:#3A4150;line-height:1}
+        .ai-qbtn:hover{border-color:#191919}
+        .ai-toast{position:fixed;bottom:84px;left:50%;transform:translateX(-50%);background:#191919;color:#fff;border-radius:999px;padding:9px 20px;font-size:13.5px;font-weight:600;z-index:70;box-shadow:0 10px 28px rgba(0,0,0,.3);white-space:nowrap;animation:ai-toast-in .18s ease}
+        @keyframes ai-toast-in{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       `}</style>
     </>
   );
@@ -265,13 +297,22 @@ function StyleCard({ st, matchCws, onOpen }) {
 }
 
 // ── Style detail modal (per-colorway stock + inbound dates) ──────────
-function StyleModal({ st, matchSet, onClose }) {
+// Size chips are buttons: tapping adds that SKU+size to the order list.
+function StyleModal({ st, matchSet, onClose, onAdd, qtyInList, notify }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
   }, [onClose]);
+
+  const share = async () => {
+    const url = `${window.location.origin}/adidas?style=${encodeURIComponent(st.colorways[0].sku)}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: `${st.name} — NSA adidas catalog`, url }); return; } catch { /* fall through to copy */ }
+    }
+    if (await copyText(url)) notify('Link copied — send it to anyone');
+  };
 
   // Colorways that match the current filters float to the top
   const cws = [...st.colorways].sort((a, b) => (matchSet.has(b.sku) - matchSet.has(a.sku)) || a.color.localeCompare(b.color));
@@ -280,7 +321,7 @@ function StyleModal({ st, matchSet, onClose }) {
   return (
     <div className="ai-modal-bg" onClick={onClose}>
       <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
-        <div style={{ padding: '20px 24px 14px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ padding: '20px 24px 10px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 28, margin: 0, textTransform: 'uppercase', lineHeight: 1.05 }}>{st.name}</h2>
@@ -290,7 +331,16 @@ function StyleModal({ st, matchSet, onClose }) {
               {st.category}{st.sport ? ' · ' + st.sport : ''} · {st.colorways.length} {st.colorways.length === 1 ? 'colorway' : 'colorways'}
             </div>
           </div>
+          <button className="ai-iconbtn" style={{ padding: '7px 13px', fontSize: 13, flex: 'none' }} onClick={share}>Share ↗</button>
           <button onClick={onClose} aria-label="Close" style={{ border: 'none', background: '#F0F1F4', borderRadius: 8, width: 34, height: 34, fontSize: 17, cursor: 'pointer', fontWeight: 700, color: '#3A4150', flex: 'none' }}>✕</button>
+        </div>
+        {st.description && (
+          <div style={{ padding: '0 24px 8px', fontSize: 13.5, color: '#3A4150', lineHeight: 1.5, maxWidth: 720 }}>
+            {st.description}
+          </div>
+        )}
+        <div style={{ padding: '0 24px 6px', fontSize: 12, color: '#6A7180' }}>
+          Tap a size to add it to your order list — quantities can be adjusted there.
         </div>
         <div style={{ padding: '0 24px 22px' }}>
           {cws.map((cw) => {
@@ -310,24 +360,40 @@ function StyleModal({ st, matchSet, onClose }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span className="ai-dot" style={{ background: COLOR_DOTS[cw.family] || '#CBD5E1' }} />
                     <span style={{ fontWeight: 700, fontSize: 14.5 }}>{cw.color || cw.family}</span>
-                    <span style={{ fontSize: 12, color: '#6A7180' }}>{cw.sku}</span>
+                    <span style={{ fontSize: 12, color: '#6A7180', fontFamily: 'monospace' }}>{cw.sku}</span>
+                    <button className="ai-iconbtn" onClick={async () => { if (await copyText(cw.sku)) notify(`SKU ${cw.sku} copied`); }} title="Copy SKU">Copy SKU</button>
                     {fmtPrice(cw.price) && <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 'auto' }}>{fmtPrice(cw.price)}</span>}
                   </div>
-                  <div className="ai-chipgrid" style={{ marginTop: 7 }}>
-                    {inStock.length > 0 ? inStock.map((s) => (
-                      <span key={s.size} className="ai-chip" title={`${fmtQty(s.q)} available`}>
-                        {sizeLabel(s.size)} <b style={{ color: s.q >= 24 ? '#15803D' : '#B45309' }}>{fmtQty(s.q)}</b>
-                      </span>
-                    )) : (
+                  <div className="ai-chipgrid" style={{ marginTop: 8 }}>
+                    {inStock.length > 0 ? inStock.map((s) => {
+                      const n = qtyInList(cw.sku, s.size);
+                      return (
+                        <button key={s.size} className="ai-chipbtn" title={`${fmtQty(s.q)} available — tap to add`}
+                          onClick={() => onAdd(st, cw, s.size, null)}>
+                          {sizeLabel(s.size)} <b style={{ color: s.q >= 24 ? '#15803D' : '#B45309' }}>{fmtQty(s.q)}</b>
+                          {n > 0 && <span className="ai-inlist">{n}</span>}
+                        </button>
+                      );
+                    }) : (
                       <span style={{ fontSize: 12.5, fontWeight: 600, color: '#B45309' }}>Out of stock</span>
                     )}
                   </div>
                   {dates.length > 0 && (
-                    <div style={{ fontSize: 11.5, color: '#6A7180', marginTop: 6 }}>
+                    <div style={{ marginTop: 8 }}>
                       {dates.map((d) => (
-                        <div key={d} style={{ display: 'flex', gap: 6 }}>
-                          <span style={{ fontWeight: 700, color: '#3A4150', whiteSpace: 'nowrap' }}>Inbound {fmtDate(d)}:</span>
-                          <span>{incoming[d].map((s) => `${sizeLabel(s.size)} (${fmtQty(s.fq)})`).join(', ')}</span>
+                        <div key={d} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+                          <span style={{ fontSize: 11.5, fontWeight: 700, color: '#3A4150', whiteSpace: 'nowrap' }}>Inbound {fmtDate(d)}:</span>
+                          {incoming[d].map((s) => {
+                            const n = qtyInList(cw.sku, s.size);
+                            return (
+                              <button key={s.size} className="ai-chipbtn" style={{ borderColor: '#F0DCC0', background: '#FFFBF3', color: '#92580B' }}
+                                title={`Projected ${fmtQty(s.fq)} available ${fmtDate(d)} — tap to add`}
+                                onClick={() => onAdd(st, cw, s.size, d)}>
+                                {sizeLabel(s.size)} <b>{fmtQty(s.fq)}</b>
+                                {n > 0 && <span className="ai-inlist">{n}</span>}
+                              </button>
+                            );
+                          })}
                         </div>
                       ))}
                     </div>
@@ -339,6 +405,143 @@ function StyleModal({ st, matchSet, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Order list drawer: review lines, coach info, send to rep ─────────
+function OrderDrawer({ list, updateLine, removeLine, clearList, onClose, notify }) {
+  const [coach, setCoach] = useState(() => loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' }));
+  const [notes, setNotes] = useState('');
+  const [state, setState] = useState('idle'); // idle | sending | sent | error
+  const [errMsg, setErrMsg] = useState('');
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const setField = (k) => (e) => {
+    const next = { ...coach, [k]: e.target.value };
+    setCoach(next);
+    saveJson(COACH_KEY, next);
+  };
+
+  const total = list.reduce((a, l) => a + (l.price || 0) * l.qty, 0);
+  const units = list.reduce((a, l) => a + l.qty, 0);
+  const canSend = list.length > 0 && coach.name.trim() && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(coach.email.trim());
+
+  const submit = async () => {
+    if (!canSend || state === 'sending') return;
+    setState('sending');
+    setErrMsg('');
+    try {
+      const res = await fetch('/.netlify/functions/catalog-order-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brand: 'adidas',
+          coach_name: coach.name.trim(),
+          coach_email: coach.email.trim(),
+          coach_phone: coach.phone.trim(),
+          team_name: coach.team.trim(),
+          notes: notes.trim(),
+          lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound })),
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d.error || 'Something went wrong');
+      setState('sent');
+      clearList();
+    } catch (e) {
+      setState('error');
+      setErrMsg(e.message || 'Could not send — please try again');
+    }
+  };
+
+  return (
+    <>
+      <div className="ai-drawer-bg" onClick={onClose} />
+      <div className="ai-drawer" role="dialog" aria-label="Your order list">
+        <div style={{ padding: '18px 20px 12px', borderBottom: '1px solid #EEF0F3', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 24, margin: 0, textTransform: 'uppercase', flex: 1 }}>Your order list</h2>
+          <button onClick={onClose} aria-label="Close" style={{ border: 'none', background: '#F0F1F4', borderRadius: 8, width: 32, height: 32, fontSize: 16, cursor: 'pointer', fontWeight: 700, color: '#3A4150' }}>✕</button>
+        </div>
+
+        {state === 'sent' ? (
+          <div style={{ padding: 28, textAlign: 'center' }}>
+            <div style={{ fontSize: 42 }}>✅</div>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 24, textTransform: 'uppercase', marginTop: 8 }}>Request sent</div>
+            <p style={{ fontSize: 14, color: '#6A7180', lineHeight: 1.55, marginTop: 8 }}>
+              Your rep has your list and will follow up with a formal estimate at your team pricing.
+              A copy went to <b>{coach.email}</b>'s rep inbox — reply there with any changes.
+            </p>
+            <button className="ai-more" style={{ margin: '18px auto 0' }} onClick={onClose}>Done</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '6px 20px' }}>
+              {list.length === 0 && (
+                <p style={{ fontSize: 14, color: '#6A7180', padding: '22px 0', textAlign: 'center' }}>
+                  Your list is empty — open a style and tap sizes to add them.
+                </p>
+              )}
+              {list.map((l, i) => (
+                <div key={l.sku + '|' + l.size} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #F0F1F4' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{l.name}</div>
+                    <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
+                      {l.color} · {sizeLabel(l.size)} · <span style={{ fontFamily: 'monospace' }}>{l.sku}</span>
+                      {l.inbound && <span style={{ color: '#92580B', fontWeight: 600 }}> · inbound {fmtDate(l.inbound)}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 'none' }}>
+                    <button className="ai-qbtn" onClick={() => updateLine(i, l.qty - 1)} aria-label="Decrease">−</button>
+                    <input className="ai-input" style={{ width: 48, textAlign: 'center', padding: '4px 4px', fontWeight: 700 }} value={l.qty}
+                      onChange={(e) => updateLine(i, parseInt(e.target.value) || 0)} inputMode="numeric" />
+                    <button className="ai-qbtn" onClick={() => updateLine(i, l.qty + 1)} aria-label="Increase">+</button>
+                  </div>
+                  <div style={{ width: 58, textAlign: 'right', fontSize: 13, fontWeight: 700, flex: 'none' }}>
+                    {l.price ? fmtPrice(l.price * l.qty) : '—'}
+                  </div>
+                  <button onClick={() => removeLine(i)} aria-label="Remove" style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
+                </div>
+              ))}
+              {list.length > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 4px', fontSize: 13.5, fontWeight: 700 }}>
+                  <span>{units} unit{units === 1 ? '' : 's'} · retail reference</span>
+                  <span>{total ? fmtPrice(total) : '—'}</span>
+                </div>
+              )}
+              {list.length > 0 && (
+                <p style={{ fontSize: 11.5, color: '#6A7180', margin: '2px 0 10px' }}>
+                  Retail prices are list-price reference only — your rep will quote your team pricing on the estimate.
+                </p>
+              )}
+            </div>
+
+            <div style={{ borderTop: '1px solid #EEF0F3', padding: '14px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input className="ai-input" placeholder="Your name *" value={coach.name} onChange={setField('name')} />
+                <input className="ai-input" placeholder="Team / organization" value={coach.team} onChange={setField('team')} />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input className="ai-input" placeholder="Email *" type="email" value={coach.email} onChange={setField('email')} />
+                <input className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
+              </div>
+              <textarea className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
+              {state === 'error' && <div style={{ fontSize: 13, color: '#B91C1C', fontWeight: 600 }}>{errMsg}</div>}
+              <button
+                onClick={submit}
+                disabled={!canSend || state === 'sending'}
+                style={{ border: 'none', background: canSend ? '#191919' : '#C6CAD2', color: '#fff', borderRadius: 10, padding: '13px 0', fontSize: 15, fontWeight: 700, cursor: canSend ? 'pointer' : 'not-allowed', fontFamily: 'inherit' }}>
+                {state === 'sending' ? 'Sending…' : 'Send to my rep for an estimate'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -358,8 +561,41 @@ export default function AdidasInventory() {
   const [includeIncoming, setIncludeIncoming] = useState(false);
   const [shown, setShown] = useState(PAGE_SIZE);
   const [openStyle, setOpenStyle] = useState(null);
+  const [list, setList] = useState(() => loadJson(LIST_KEY, []));
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => { document.title = 'adidas Team Catalog | National Sports Apparel'; }, []);
+
+  // Toast auto-dismiss
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2400);
+    return () => clearTimeout(t);
+  }, [toast]);
+  const notify = useCallback((msg) => setToast({ msg, ts: Date.now() }), []);
+
+  // ── Order list ──
+  const mutateList = useCallback((fn) => {
+    setList((prev) => { const next = fn(prev); saveJson(LIST_KEY, next); return next; });
+  }, []);
+  const addLine = useCallback((st, cw, size, inbound) => {
+    mutateList((prev) => {
+      const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
+      if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: l.qty + 1 } : l));
+      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: 1, price: cw.price || 0, inbound: inbound || null }];
+    });
+    notify(`Added ${sizeLabel(size)} — ${st.name}`);
+  }, [mutateList, notify]);
+  const updateLine = useCallback((i, qty) => {
+    mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
+  }, [mutateList]);
+  const removeLine = useCallback((i) => mutateList((prev) => prev.filter((_, j) => j !== i)), [mutateList]);
+  const clearList = useCallback(() => mutateList(() => []), [mutateList]);
+  const qtyInList = useCallback((sku, size) => {
+    const l = list.find((x) => x.sku === sku && x.size === size);
+    return l ? l.qty : 0;
+  }, [list]);
 
   useEffect(() => {
     let alive = true;
@@ -368,7 +604,7 @@ export default function AdidasInventory() {
         const [prods, inv] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('sku,name,color,color_category,category,retail_price,image_front_url,image_back_url')
+            .select('sku,name,color,color_category,category,retail_price,image_front_url,image_back_url,description')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -423,10 +659,12 @@ export default function AdidasInventory() {
               category: cat,
               gender: deriveGender(p.name, p.sku, cat),
               sport: deriveSport(p.name),
+              description: '',
               colorways: [],
             };
             styleMap.set(key, st);
           }
+          if (p.description && !st.description) st.description = p.description;
           st.colorways.push(cw);
         }
 
@@ -499,6 +737,15 @@ export default function AdidasInventory() {
 
   useEffect(() => { setShown(PAGE_SIZE); }, [search, category, gender, sport, color, sizeSel, strongOnly, includeIncoming]);
 
+  // Deep link: /adidas?style=<sku> opens that style's detail view (Share button)
+  useEffect(() => {
+    if (!styles.length) return;
+    const sku = new URLSearchParams(window.location.search).get('style');
+    if (!sku) return;
+    const st = styles.find((s) => s.colorways.some((c) => c.sku.toUpperCase() === sku.toUpperCase()));
+    if (st) setOpenStyle(st.key);
+  }, [styles]);
+
   const toggleSize = (s) => setSizeSel((sel) => sel.includes(s) ? sel.filter((x) => x !== s) : [...sel, s]);
   const clearFilters = () => { setSearch(''); setCategory('All'); setGender('All'); setSport('All'); setColor('All'); setSizeSel([]); setStrongOnly(false); };
   const hasFilters = search || category !== 'All' || gender !== 'All' || sport !== 'All' || color !== 'All' || sizeSel.length || strongOnly;
@@ -524,7 +771,7 @@ export default function AdidasInventory() {
           <p style={{ margin: '8px 0 0', fontSize: 14, color: '#C3C8D0', maxWidth: 780, lineHeight: 1.5 }}>
             Every style we carry, with a live look at what's in the adidas warehouse right now — by color and size —
             and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
-            To place an order, contact your National Sports Apparel rep.
+            Tap sizes to build an order list and send it to your rep — they'll follow up with a formal estimate.
           </p>
         </div>
       </header>
@@ -616,8 +863,33 @@ export default function AdidasInventory() {
           st={openData ? openData.st : openFallback}
           matchSet={new Set((openData ? openData.matchCws : openFallback.colorways).map((c) => c.sku))}
           onClose={() => setOpenStyle(null)}
+          onAdd={addLine}
+          qtyInList={qtyInList}
+          notify={notify}
         />
       )}
+
+      {list.length > 0 && !drawerOpen && (
+        <button className="ai-fab" onClick={() => setDrawerOpen(true)}>
+          Order list
+          <span style={{ background: '#fff', color: '#191919', borderRadius: 999, minWidth: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 800, padding: '0 6px' }}>
+            {list.reduce((a, l) => a + l.qty, 0)}
+          </span>
+        </button>
+      )}
+
+      {drawerOpen && (
+        <OrderDrawer
+          list={list}
+          updateLine={updateLine}
+          removeLine={removeLine}
+          clearList={clearList}
+          onClose={() => setDrawerOpen(false)}
+          notify={notify}
+        />
+      )}
+
+      {toast && <div key={toast.ts} className="ai-toast">{toast.msg}</div>}
 
       <footer style={{ background: '#191919', color: '#9AA1AC', fontSize: 12.5, lineHeight: 1.6 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
