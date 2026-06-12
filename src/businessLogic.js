@@ -259,7 +259,13 @@ const allocateJobFulfillment = (jobs, items) => {
       res.fulSizes[gii] = fs;
       const it = safeArr(items)[gi.item_idx]; if (!it) return;
       const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
-      Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
+      let entries = Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0);
+      // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track them
+      // under the 'QTY' key — mirror calcSOStatus so a custom / no-size-breakdown job still
+      // totals its units and counts receipts. Without this its total stays 0, so the job never
+      // reads items_received / isJobReady and sits on "Ordered — Waiting" even fully received.
+      if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+      entries.forEach(([sz, v]) => {
         res.total += v;
         const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
         const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
