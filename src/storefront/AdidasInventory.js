@@ -375,7 +375,7 @@ function SizeCell({ size, avail, inbound, ih, qty, onQty }) {
 }
 
 // ── Style detail modal (per-colorway stock + inbound dates) ──────────
-function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
+function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, onConfirm, notify }) {
   const [alertFor, setAlertFor] = useState(null); // sku with the restock-alert form open
   const [alertEmail, setAlertEmail] = useState(() => (loadJson(COACH_KEY, {}).email || ''));
   const [alertSize, setAlertSize] = useState('');
@@ -535,6 +535,19 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
               </div>
             );
           })}
+        </div>
+        <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #EEF0F3', borderRadius: '0 0 16px 16px', padding: '12px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 12.5, color: '#6A7180', flex: 1 }}>
+            {unitsInList > 0
+              ? `${fmtQty(unitsInList)} unit${unitsInList === 1 ? '' : 's'} from this style on your list`
+              : 'Type quantities above to add sizes'}
+          </span>
+          <button
+            onClick={onConfirm}
+            disabled={unitsInList === 0}
+            style={{ border: 'none', background: unitsInList > 0 ? '#191919' : '#C6CAD2', color: '#fff', borderRadius: 999, padding: '11px 26px', fontSize: 14.5, fontWeight: 700, cursor: unitsInList > 0 ? 'pointer' : 'not-allowed', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            Add to order list{unitsInList > 0 ? ` (${fmtQty(unitsInList)})` : ''} →
+          </button>
         </div>
       </div>
     </div>
@@ -1122,16 +1135,22 @@ export default function AdidasInventory() {
         )}
       </main>
 
-      {(openData || openFallback) && (
-        <StyleModal
-          st={openData ? openData.st : openFallback}
-          matchSet={new Set((openData ? openData.matchCws : openFallback.colorways).map((c) => c.sku))}
-          onClose={() => setOpenStyle(null)}
-          onSetQty={setLineQty}
-          qtyInList={qtyInList}
-          notify={notify}
-        />
-      )}
+      {(openData || openFallback) && (() => {
+        const openSt = openData ? openData.st : openFallback;
+        const openSkus = new Set(openSt.colorways.map((c) => c.sku));
+        return (
+          <StyleModal
+            st={openSt}
+            matchSet={new Set((openData ? openData.matchCws : openFallback.colorways).map((c) => c.sku))}
+            onClose={() => setOpenStyle(null)}
+            onSetQty={setLineQty}
+            qtyInList={qtyInList}
+            unitsInList={list.filter((l) => openSkus.has(l.sku)).reduce((a, l) => a + l.qty, 0)}
+            onConfirm={() => { setOpenStyle(null); setDrawerOpen(true); }}
+            notify={notify}
+          />
+        );
+      })()}
 
       {list.length > 0 && !drawerOpen && (
         <button className="ai-fab" onClick={() => setDrawerOpen(true)}>
