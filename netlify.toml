@@ -43,3 +43,9 @@
 # overnight Cowork inventory sync. Emails coaches whose watched sizes landed.
 [functions."catalog-stock-alert-check"]
   schedule = "0 14 * * *"
+
+# S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
+# fires ss-adidas-sync-background (15-min budget), which pulls every adidas
+# style from the S&S API into products + adidas_inventory for /adidas.
+[functions."ss-adidas-sync-cron"]
+  schedule = "0 12 * * *"
