@@ -7116,19 +7116,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // check in calcSOStatus — instead of the misleading "Need to Order". Stored
       // item_status is left untouched (warehouse pull / PO receive flows own that); this
       // only relabels what the rep sees.
-      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';
-        // Nothing received/pulled yet — check whether the ordered sizes are already covered
-        // by POs (ordered − cancelled) or in-house picks. If fully covered, the job is
-        // waiting on the vendor, not awaiting an order.
-        let totalSz=0,coveredSz=0;
+      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';
+        // Compute coverage AND receipts live from the job's items, mirroring calcSOStatus —
+        // never trust stored fulfilled_units alone (it's only refreshed by recalcJobFulfillment,
+        // so a job received before this badge was rendered would read stale). coveredSz is what's
+        // committed (PO ordered − cancelled, or already picked); fulfilledSz is what's actually
+        // in-house (pulled picks + PO receipts). Receipts win, so a fully-received job reads
+        // "Items Received" instead of being stuck on "Ordered — Waiting" — including qty_only
+        // items whose units live in est_qty under the 'QTY' bucket.
+        let totalSz=0,coveredSz=0,fulfilledSz=0;
         (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
           let entries=Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
           if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
           entries.forEach(([sz,v])=>{const need=safeNum(v);totalSz+=need;
             const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
-            coveredSz+=Math.min(need,picked+poOrd);});
+            coveredSz+=Math.min(need,picked+poOrd);
+            const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+            fulfilledSz+=Math.min(need,pulledQty+rcvdQty);});
         });
+        if(totalSz>0&&fulfilledSz>=totalSz)return'items_received';
+        if(fulfilledSz>0||ful>0)return'partially_received';
         if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
         if(coveredSz>0)return'on_order';
         return'need_to_order';};
