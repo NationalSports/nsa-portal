@@ -11,6 +11,7 @@
 // filter logic only assume {sku,name,color,category,sizes[]} per variant.
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { rQ, auTierDisc } from '../pricing';
 
 // Type system aligned with the NSA marketing site (same as Storefront.js)
 const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
@@ -317,7 +318,15 @@ function ImageBox({ img, alt, height }) {
 }
 
 // ── Style card (one per item; colorways summarized) ──────────────────
-function StyleCard({ st, matchCws, colorSel, popColor, onOpen }) {
+function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
+  // Signed-in coaches see their tier price (green) with retail struck through
+  const tierPrice = (() => {
+    if (!yourPriceFn) return null;
+    const ps = st.colorways.map(yourPriceFn).filter(Boolean);
+    if (!ps.length) return null;
+    const mn = Math.min(...ps), mx = Math.max(...ps);
+    return mn === mx ? fmtPrice(mn) : `${fmtPrice(mn)}–${fmtPrice(mx)}`;
+  })();
   // Cover image: a forced pop color wins, then the coach's picked team
   // colors, then staple colors (Black/Navy/Grey) so the default grid reads
   // dark-neutral with red pops.
@@ -346,7 +355,9 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen }) {
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1/1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
         <ImageBox img={cover && cover.img} alt={st.name} />
         {price && (
-          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{price}</span>
+          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>
+            {tierPrice ? <><s style={{ opacity: .55, fontWeight: 500, marginRight: 5 }}>{price}</s><b style={{ color: '#7CE08A' }}>{tierPrice}</b></> : price}
+          </span>
         )}
         {gb && (
           <span className="ai-badge" style={{ position: 'absolute', top: 10, left: 10, background: gb.bg, color: gb.fg }}>{st.gender}</span>
@@ -400,7 +411,7 @@ function SizeCell({ size, avail, inbound, ih, qty, onQty }) {
 }
 
 // ── Style detail modal (per-colorway stock + inbound dates) ──────────
-function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, onConfirm, notify }) {
+function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, onConfirm, notify, yourPriceFn }) {
   const [alertFor, setAlertFor] = useState(null); // sku with the restock-alert form open
   const [alertEmail, setAlertEmail] = useState(() => (loadJson(COACH_KEY, {}).email || ''));
   const [alertSize, setAlertSize] = useState('');
@@ -499,7 +510,11 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
                         🔔 Restock alert
                       </button>
                     )}
-                    {fmtPrice(cw.price) && <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 'auto' }}>{fmtPrice(cw.price)}</span>}
+                    {fmtPrice(cw.price) && (
+                      <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 'auto' }}>
+                        {(() => { const y = yourPriceFn && yourPriceFn(cw); return y ? <><s style={{ color: '#9AA1AC', fontWeight: 500, marginRight: 6 }}>{fmtPrice(cw.price)}</s><b style={{ color: '#15803D' }}>{fmtPrice(y)}</b></> : fmtPrice(cw.price); })()}
+                      </span>
+                    )}
                   </div>
                   {alertFor === cw.sku && (
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 8, background: '#F7F8FB', border: '1px solid #E6E8EC', borderRadius: 10, padding: '8px 10px' }}>
@@ -580,8 +595,12 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
 }
 
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, onClose, notify }) {
-  const [coach, setCoach] = useState(() => loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' }));
+function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, onClose, notify, account }) {
+  const [coach, setCoach] = useState(() => {
+    const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
+    // Signed-in coach account prefills anything the browser doesn't remember
+    return account ? { ...s, name: s.name || account.name || '', email: s.email || account.email || '', team: s.team || account.customerName || '' } : s;
+  });
   const [notes, setNotes] = useState('');
   const [state, setState] = useState('idle'); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState('');
@@ -617,6 +636,7 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
           coach_phone: coach.phone.trim(),
           team_name: coach.team.trim(),
           notes: notes.trim(),
+          customer_id: (account && account.customerId) || null,
           lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
         }),
       });
@@ -687,13 +707,15 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
               ))}
               {list.length > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 4px', fontSize: 13.5, fontWeight: 700 }}>
-                  <span>{units} unit{units === 1 ? '' : 's'} · retail reference</span>
+                  <span>{units} unit{units === 1 ? '' : 's'} · {account ? 'your team pricing' : 'retail reference'}</span>
                   <span>{total ? fmtPrice(total) : '—'}</span>
                 </div>
               )}
               {list.length > 0 && (
                 <p style={{ fontSize: 11.5, color: '#6A7180', margin: '2px 0 10px' }}>
-                  Retail prices are list-price reference only — your rep will quote your team pricing on the estimate.
+                  {account
+                    ? 'Prices shown are your team pricing — your rep will confirm on the formal estimate.'
+                    : 'Retail prices are list-price reference only — your rep will quote your team pricing on the estimate.'}
                 </p>
               )}
             </div>
@@ -773,6 +795,56 @@ export default function AdidasInventory() {
 
   useEffect(() => { document.title = 'adidas Team Catalog | National Sports Apparel'; }, []);
 
+  // ── Coach account: magic-link sign-in → customer-linked tier pricing ──
+  const [coach, setCoach] = useState(null); // {email,name,customerId,customerName,tier,schoolColors}
+  const [signInOpen, setSignInOpen] = useState(false);
+  const [signInEmail, setSignInEmail] = useState('');
+  const [signInState, setSignInState] = useState('idle'); // idle|sending|sent|error
+  useEffect(() => {
+    let alive = true;
+    const load = async (session) => {
+      try {
+        const email = session?.user?.email;
+        if (!email) { if (alive) setCoach(null); return; }
+        // RLS limits this to the signed-in coach's own row (matched by verified email)
+        const { data: accts } = await supabase.from('coach_accounts').select('email,name,customer_id,status').limit(1);
+        const acct = (accts || [])[0];
+        if (!acct || acct.status !== 'active') { if (alive) setCoach(null); return; }
+        const { data: custs } = await supabase.from('customers').select('id,name,adidas_ua_tier,school_colors').eq('id', acct.customer_id).limit(1);
+        const c = (custs || [])[0];
+        if (!alive) return;
+        setCoach({
+          email, name: acct.name || '', customerId: acct.customer_id,
+          customerName: (c && c.name) || '', tier: (c && c.adidas_ua_tier) || 'B',
+          schoolColors: Array.isArray(c && c.school_colors) ? c.school_colors : [],
+        });
+      } catch { if (alive) setCoach(null); }
+    };
+    supabase.auth.getSession().then(({ data }) => load(data && data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => load(session));
+    return () => { alive = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
+  }, []);
+  // School colors pre-load the team-colors filter when the coach hasn't picked any
+  useEffect(() => {
+    if (!coach || colorSel.length) return;
+    const valid = (coach.schoolColors || []).filter((f) => COLOR_DOTS[f]);
+    if (valid.length) setColorSel(valid.slice(0, 5));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coach]);
+  const sendMagicLink = async () => {
+    const em = signInEmail.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || signInState === 'sending') return;
+    setSignInState('sending');
+    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + '/adidas' } });
+    setSignInState(error ? 'error' : 'sent');
+  };
+  const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
+  // Team price for a colorway under the coach's adidas/UA tier (null when anonymous)
+  const yourPriceFn = useCallback(
+    (cw) => (coach && cw.price ? rQ(cw.price * (1 - auTierDisc(coach.tier, cw.pricing_group))) : null),
+    [coach],
+  );
+
   // Toast auto-dismiss
   useEffect(() => {
     if (!toast) return;
@@ -793,9 +865,9 @@ export default function AdidasInventory() {
       const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
       if (n === 0) return i >= 0 ? prev.filter((_, j) => j !== i) : prev;
       if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: n } : l));
-      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: n, price: cw.price || 0, inbound: inbound || null, decoration: null }];
+      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null }];
     });
-  }, [mutateList]);
+  }, [mutateList, yourPriceFn]);
   const updateLine = useCallback((i, qty) => {
     mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
   }, [mutateList]);
@@ -816,7 +888,7 @@ export default function AdidasInventory() {
         const [prods, inv, inHouseRows] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('id,sku,name,color,color_category,category,retail_price,image_front_url,image_back_url,description')
+            .select('id,sku,name,color,color_category,category,retail_price,pricing_group,image_front_url,image_back_url,description')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -879,6 +951,7 @@ export default function AdidasInventory() {
             tags: colorInfo.tags,
             img: p.image_front_url || p.image_back_url || '',
             price: Number(p.retail_price) || 0,
+            pricing_group: p.pricing_group || null,
             sizes,
             inStock,
             units: sizes.reduce((a, s) => a + availNow(s), 0),
@@ -1066,6 +1139,39 @@ export default function AdidasInventory() {
             and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
             Open a style, type the quantities you need per size, and send the list to your rep — they'll follow up with a formal estimate.
           </p>
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {coach ? (
+              <>
+                <span style={{ background: '#2B2F38', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#E7E9ED' }}>
+                  {coach.customerName || coach.email} · <b style={{ color: '#7CE08A' }}>your team pricing is on</b>
+                </span>
+                <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
+              </>
+            ) : signInOpen ? (
+              signInState === 'sent' ? (
+                <span style={{ background: '#1E3A2A', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#7CE08A' }}>
+                  ✓ Check your email for the sign-in link
+                </span>
+              ) : (
+                <>
+                  <input value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)} placeholder="coach@school.org" type="email"
+                    onKeyDown={(e) => { if (e.key === 'Enter') sendMagicLink(); }}
+                    style={{ background: '#2B2F38', border: '1px solid #3A4150', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, color: '#fff', outline: 'none', fontFamily: 'inherit', width: 230 }} autoFocus />
+                  <button onClick={sendMagicLink} disabled={signInState === 'sending'}
+                    style={{ background: '#fff', color: '#191919', border: 'none', borderRadius: 999, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+                    {signInState === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
+                  </button>
+                  <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+                  {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
+                </>
+              )
+            ) : (
+              <button onClick={() => setSignInOpen(true)}
+                style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                Coach sign in — see your team pricing
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1174,7 +1280,7 @@ export default function AdidasInventory() {
           <>
             <div className="ai-grid">
               {visible.slice(0, shown).map(({ st, matchCws, popColor }) => (
-                <StyleCard key={st.key} st={st} matchCws={matchCws} colorSel={colorSel} popColor={popColor} onOpen={() => setOpenStyle(st.key)} />
+                <StyleCard key={st.key} st={st} matchCws={matchCws} colorSel={colorSel} popColor={popColor} onOpen={() => setOpenStyle(st.key)} yourPriceFn={yourPriceFn} />
               ))}
             </div>
             {visible.length > shown && (
@@ -1199,6 +1305,7 @@ export default function AdidasInventory() {
             unitsInList={list.filter((l) => openSkus.has(l.sku)).reduce((a, l) => a + l.qty, 0)}
             onConfirm={() => { setOpenStyle(null); setDrawerOpen(true); }}
             notify={notify}
+            yourPriceFn={yourPriceFn}
           />
         );
       })()}
@@ -1221,6 +1328,7 @@ export default function AdidasInventory() {
           clearList={clearList}
           onClose={() => setDrawerOpen(false)}
           notify={notify}
+          account={coach}
         />
       )}
 

@@ -21,6 +21,9 @@ exports.handler = async (event) => {
     const team_name = String(body.team_name || '').trim().slice(0, 160);
     const notes = String(body.notes || '').trim().slice(0, 2000);
     const brand = String(body.brand || 'adidas').trim().slice(0, 40);
+    // Signed-in coach accounts send their linked portal customer — the rep
+    // inbox then skips email matching entirely.
+    const customer_id = body.customer_id ? String(body.customer_id).trim().slice(0, 64) : null;
     const rawLines = Array.isArray(body.lines) ? body.lines.slice(0, MAX_LINES) : [];
 
     if (!coach_name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(coach_email)) {
@@ -51,7 +54,7 @@ exports.handler = async (event) => {
       const resp = await fetch(`${sbUrl}/rest/v1/catalog_order_requests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: `Bearer ${sbKey}`, Prefer: 'return=representation' },
-        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, lines }),
+        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, customer_id, lines }),
       });
       if (resp.ok) {
         const rows = await resp.json();
