@@ -653,7 +653,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false} = opts;
+  const {coreOnly=false, histInvoices=false, only=null} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -663,6 +663,12 @@ const _dbLoad = async (opts={}) => {
     // When coreOnly, skip slow-changing tables (team, vendors, omg, issues, deco, promo, etc.)
     // They'll be loaded on full polls every 5 minutes and via realtime reloadAll()
     const _skip=()=>Promise.resolve({data:[],error:null,status:200});
+    // Selective reload: when `only` (a Set of entity-group names) is given, fetch just those
+    // groups — a realtime products change shouldn't re-download estimates, SOs, invoices, etc.
+    // A group bundles a parent with every child table _dbLoad joins into it, so partial loads
+    // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
+    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
+    const _cold=q=>()=>(coreOnly||only)?_skip():q();
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -672,47 +678,49 @@ const _dbLoad = async (opts={}) => {
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
-      ()=>coreOnly?_skip():_safeQuery('team_members',{order:'name'}),
-      ()=>_safeQuery('customers',{order:'name'}),
-      ()=>_safeQuery('customer_contacts'),
-      ()=>coreOnly?_skip():_safeQuery('vendors',{order:'name'}),
-      ()=>_safeQuery('products',{order:'name'}),
-      ()=>_safeQuery('product_inventory'),
-      ()=>_safeQuery('estimates',{order:'id'}),
-      ()=>_safeQuery('estimate_art_files'),
-      ()=>_safeQuery('estimate_items',{order:'item_index'}),
-      ()=>_safeQuery('estimate_item_decorations',{order:'deco_index'}),
-      ()=>_safeQuery('sales_orders',{order:'id'}),
-      ()=>_safeQuery('so_art_files'),
-      ()=>_safeQuery('so_firm_dates'),
-      ()=>_safeQuery('so_items',{order:'item_index'}),
-      ()=>_safeQuery('so_item_decorations',{order:'deco_index'}),
-      ()=>_safeQuery('so_item_pick_lines'),
-      ()=>_safeQuery('so_item_po_lines'),
-      ()=>_safeQuery('so_jobs'),
-      ()=>_safeQuery('invoices',{order:'id'}),
-      ()=>_safeQuery('invoice_payments'),
-      ()=>_safeQuery('invoice_items'),
-      ()=>_safeQuery('messages',{order:'id'}),
-      ()=>_safeQuery('message_reads'),
-      ()=>coreOnly?_skip():_safeQuery('omg_stores',{order:'id'}),
-      ()=>coreOnly?_skip():_safeQuery('omg_store_products'),
-      ()=>coreOnly?_skip():_safeQuery('issues'),
-      ()=>_safeQuery('app_state'),
-      ()=>_safeQuery('customer_promo_programs'),
-      ()=>_safeQuery('customer_promo_periods'),
-      ()=>_safeQuery('customer_promo_usage'),
-      ()=>_safeQuery('customer_credits'),
-      ()=>_safeQuery('customer_credit_usage'),
-      ()=>coreOnly?_skip():_safeQuery('rep_csr_assignments'),
-      ()=>coreOnly?_skip():_safeQuery('assigned_todos'),
-      ()=>coreOnly?_skip():_safeQuery('todo_comments'),
-      ()=>coreOnly?_skip():_safeQuery('deco_vendors',{order:'name'}),
-      ()=>coreOnly?_skip():_safeQuery('deco_vendor_pricing'),
-      ()=>coreOnly?_skip():_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
-      ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
-      ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
-      ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
+      _cold(()=>_safeQuery('team_members',{order:'name'})),
+      _grp('customers',()=>_safeQuery('customers',{order:'name'})),
+      _grp('customers',()=>_safeQuery('customer_contacts')),
+      _cold(()=>_safeQuery('vendors',{order:'name'})),
+      _grp('products',()=>_safeQuery('products',{order:'name'})),
+      _grp('products',()=>_safeQuery('product_inventory')),
+      _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
+      _grp('estimates',()=>_safeQuery('estimate_art_files')),
+      _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
+      _grp('estimates',()=>_safeQuery('estimate_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_safeQuery('sales_orders',{order:'id'})),
+      _grp('sales_orders',()=>_safeQuery('so_art_files')),
+      _grp('sales_orders',()=>_safeQuery('so_firm_dates')),
+      _grp('sales_orders',()=>_safeQuery('so_items',{order:'item_index'})),
+      _grp('sales_orders',()=>_safeQuery('so_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
+      _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
+      _grp('sales_orders',()=>_safeQuery('so_jobs')),
+      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
+      _grp('invoices',()=>_safeQuery('invoice_payments')),
+      _grp('invoices',()=>_safeQuery('invoice_items')),
+      _grp('messages',()=>_safeQuery('messages',{order:'id'})),
+      _grp('messages',()=>_safeQuery('message_reads')),
+      _cold(()=>_safeQuery('omg_stores',{order:'id'})),
+      _cold(()=>_safeQuery('omg_store_products')),
+      _cold(()=>_safeQuery('issues')),
+      // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
+      // products snapshot must include them or every image-only product would mis-diff and re-save.
+      ()=>only&&!only.has('products')&&!only.has('app_state')?_skip():_safeQuery('app_state'),
+      _grp('customers',()=>_safeQuery('customer_promo_programs')),
+      _grp('customers',()=>_safeQuery('customer_promo_periods')),
+      _grp('customers',()=>_safeQuery('customer_promo_usage')),
+      _grp('customers',()=>_safeQuery('customer_credits')),
+      _grp('customers',()=>_safeQuery('customer_credit_usage')),
+      _cold(()=>_safeQuery('rep_csr_assignments')),
+      _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
+      _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
+      _cold(()=>_safeQuery('deco_vendors',{order:'name'})),
+      _cold(()=>_safeQuery('deco_vendor_pricing')),
+      _cold(()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
+      _cold(()=>_safeQuery('quote_request_items',{order:'sort_order'})),
+      _cold(()=>_safeQuery('dismissed_todos')),
+      _cold(()=>_safeQuery('dismissed_notifs')),
       // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
@@ -857,7 +865,8 @@ const _dbLoad = async (opts={}) => {
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
-    const hasData=(customers.length>0)||(sales_orders.length>0);
+    // Selective loads may not include customers/sales_orders — judge by whatever was fetched
+    const hasData=only?[customers,sales_orders,products,estimates,invoices,messages,assignedTodos].some(a=>a.length>0):((customers.length>0)||(sales_orders.length>0));
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
@@ -2330,6 +2339,194 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>(m[k]||[]).forEach(push))});
   return out;
 };
+// Production Job Sheet PDF options — the single builder shared by the production-board
+// prodJobModal and the SO editor's Jobs tab so both render an identical sheet. Pure: reads
+// the job (j) and its sales order (so), pulling customer/rep/sibling context from ctx
+// ({customers, allOrders, products, reps}). Returns the opts object that printDoc/downloadDoc
+// (utils.buildDocHtml) consume.
+const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={})=>{
+  const c=customers.find(x=>x.id===so.customer_id);
+  const allArtFiles=_prodJobArtFiles(j,so);
+  const itemDetails=(j.items||[]).map(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return null;
+    const sizes={};const fulSizes={};
+    Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
+      sizes[sz]=v;
+      if(gi.fulSizes){fulSizes[sz]=safeNum(gi.fulSizes[sz])||0}
+      else{const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulSizes[sz]=Math.min(v,picked+rcvd)}
+    });
+    const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+    return{item_idx:gi.item_idx,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+  }).filter(Boolean);
+  const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+  const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
+  const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
+  const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
+  // A garment linked to another garment's mockup prints a one-line reference instead of
+  // repeating the image; the source garment prints it once with an "also used by" caption.
+  const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
+  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
+  const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+    'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+    'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
+    'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
+    'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
+    'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
+  const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
+  const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return;
+    const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+    const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+    const nd=numDecos[0];const nameD=nameDecos[0];
+    if(!nd&&!nameD)return;
+    const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+    const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+    const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
+    results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
+  });return results})();
+  const infoBoxes=[
+    {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
+    {label:'Sales Order',value:so.id,sub:so.memo||''},
+    {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
+    {label:'Rep',value:j.rep||reps.find(r=>r.id===(customers.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
+  ];
+  // Render a table as an HTML string, matching the buildDocHtml table style
+  const _tHtml=(title,headers,aligns,rows)=>{
+    let h='';
+    if(title)h+='<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:#333">'+title+'</div>';
+    h+='<table style="width:100%;border-collapse:collapse;margin:4px 0"><thead><tr>';
+    headers.forEach((hd,i)=>{h+='<th style="background:#e8e8e8;padding:3px 6px;text-align:'+(aligns[i]||'left')+';font-size:10px;font-weight:700;color:#333;border:1px solid #ccc">'+hd+'</th>'});
+    h+='</tr></thead><tbody>';
+    (rows||[]).forEach(row=>{
+      h+='<tr>';
+      const cells=row.cells||row;
+      (Array.isArray(cells)?cells:[]).forEach((cell,i)=>{
+        const isObj=cell&&typeof cell==='object'&&!Array.isArray(cell);
+        const val=isObj?cell.value:cell;
+        h+='<td style="padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3;text-align:'+(aligns[i]||'left')+'">'+(val!=null?val:'')+'</td>';
+      });
+      h+='</tr>';
+    });
+    h+='</tbody></table>';
+    return h;
+  };
+  const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
+  // Color names → swatch chip HTML, mirroring the modal's PMS chips
+  const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
+    return a.map(cl=>{const sw=_swatchFor(cl);
+      return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
+  // Build one HTML section per item: all info tables + mockup image(s) together
+  const itemSectionHtmls=[];
+  itemDetails.forEach(gi=>{
+    const it=safeItems(so)[gi.item_idx];
+    if(!it)return;
+    const itemArtDecos=safeDecos(it).filter(d=>d.kind==='art');
+    const itemNumDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+    const itemNameDecos=safeDecos(it).filter(d=>d.kind==='names');
+    const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+    const ndData=numbersData.find(n=>n.sku===gi.sku);
+    const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
+    let sHtml='';
+    // Size table
+    const hdrs=['',...itemSizes,'Total'];
+    const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
+    ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
+    sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
+    // Decoration spec
+    if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
+      const specRows=[];
+      itemArtDecos.forEach(d=>{
+        const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+        const dt=artF?.deco_type||d.deco_type||'screen_print';
+        const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+        const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+        const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
+        const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
+        const sz2=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
+        const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
+        specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls)]});
+      });
+      itemNumDecos.forEach(nd=>{
+        specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',_chipsHtml([nd.print_color])]});
+      });
+      itemNameDecos.forEach(nd=>{
+        specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
+      });
+      sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
+    }
+    // Numbers list
+    if(ndData?.roster&&Object.keys(ndData.roster).length>0){
+      const numRows=[];
+      ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
+        if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
+      });
+      if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
+    }
+    // Names list
+    if(ndData?.names&&Object.keys(ndData.names).length>0){
+      const nameRows=[];
+      ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
+        if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
+      });
+      if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
+    }
+    // Mockup image(s) for this item immediately after its tables — all locations
+    // (front + back arts, numbers/names) side by side
+    const _giSrc=_linkSrcOf(gi);
+    if(_giSrc){
+      // Linked garment: reference the source garment's mockup instead of repeating it.
+      sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
+      itemSectionHtmls.push(sHtml);
+      return;
+    }
+    const _giDeps=_linkDepsOf(gi);
+    const itemMockUrls=_urlsFor(collectItemMocks(gi));
+    if(itemMockUrls.length>0){
+      const _mh=itemMockUrls.length>1?300:380;
+      const _mw=itemMockUrls.length>1?'48%':'100%';
+      const _depsCap=_giDeps.length?'<div style="text-align:center;font-size:10px;font-weight:700;color:#3730a3;margin-top:6px">🔗 Mockup also used by: '+_giDeps.map(k=>k.split('|')[0]).join(', ')+'</div>':'';
+      sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
+        +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
+        +'</div>'+_depsCap;
+    } else if(gi.image_url&&_isImgUrl(gi.image_url)){
+      sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
+    }
+    itemSectionHtmls.push(sHtml);
+  });
+  // Generic mockups not tied to a specific item
+  const _pdfGenericUrls=_urlsFor(genericMockupFiles);
+  const _genericMockHtml=_pdfGenericUrls.length>0
+    ?'<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>'
+    :'';
+  // Generic production files
+  let _prodFilesHtml='';
+  if(prodFiles.length>0){
+    _prodFilesHtml=_tHtml('Production Files',['Type','Filename'],['left','left'],
+      prodFiles.map(f=>({cells:['Production',fileDisplayName(f)]})));
+  }
+  // Run-together siblings — only jobs checked in and ready to run on this same screen now,
+  // so the sheet never lists a linked job whose garments aren't in hand yet.
+  const _pid=c?.parent_id||c?.id||null;
+  const _gk=jobGroupKey(j,_pid);
+  const _famPid=s2=>{const cc=customers.find(x=>x.id===s2.customer_id);return cc?.parent_id||cc?.id||null};
+  const _sibs=[];
+  if(_gk)allOrders.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:customers.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
+  const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
+  // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
+  // The <style> override strips the yellow notes-box styling so item sections render cleanly.
+  const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
+  const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
+    '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
+  ).join('');
+  return{title:c?.name||j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
+    headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
+    infoBoxes,tables:[],
+    // Repeat the Customer / Sales Order / Expected Date / Rep header on every
+    // page (without the NSA logo block) so multi-page sheets stay identifiable.
+    repeatInfoHeader:true,
+    notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    showPricing:false};
+};
 // Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
 // JPGs run 2-4MB each) and the prod modal shows several at once. w_800 covers the
 // ~420px-tall cards (~57KB vs 2.4MB); the lightbox asks for w_2000 to keep zoom detail.
@@ -3675,11 +3872,20 @@ export default function App(){
     if(supabase){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
+      // Selective reload bookkeeping: realtime events queue their entity group here and the
+      // debounced reload fetches only those groups. '__all__' (tab-visibility regain / unknown
+      // table) forces a full reload. Pending groups are consumed only once a load actually
+      // starts, so deferred reloads (save in flight) keep accumulating events.
+      const _rtPending=new Set();
+      const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
       const reloadAll=async()=>{
         // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
         if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
-        const d=await _dbLoad();if(!d||!d.hasData)return;
+        const groups=(_rtPending.size===0||_rtPending.has('__all__'))?null:new Set(_rtPending);
+        _rtPending.clear();
+        const _has=g=>!groups||groups.has(g);
+        const d=await _dbLoad(groups?{only:groups}:{});if(!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
@@ -3692,32 +3898,39 @@ export default function App(){
           return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
             apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
         };
-        const estMerge=_mergeProtected(d.estimates,'ests');
-        const soMerge=_mergeProtected(d.sales_orders,'sos');
-        const invMerge=_mergeProtected(d.invoices,'invs');
-        const custMerge=_mergeProtected(d.customers,'cust');
-        const msgMerge=_mergeProtected(d.messages,'msgs');
-        const prodMerge=_mergeProtected(d.products,'prod');
+        // Only build merges for groups that were actually loaded — skipped groups keep prior snap/state
+        const estMerge=_has('estimates')?_mergeProtected(d.estimates,'ests'):null;
+        const soMerge=_has('sales_orders')?_mergeProtected(d.sales_orders,'sos'):null;
+        const invMerge=_has('invoices')?_mergeProtected(d.invoices,'invs'):null;
+        const custMerge=_has('customers')?_mergeProtected(d.customers,'cust'):null;
+        const msgMerge=_has('messages')?_mergeProtected(d.messages,'msgs'):null;
+        const prodMerge=_has('products')?_mergeProtected(d.products,'prod'):null;
         // Update snapshot before state — auto-save effects will diff against this.
         // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
-        const todoMerge=_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]);
-        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:todoMerge};
+        const todoMerge=_has('assigned_todos')?_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]):null;
+        _dbSnap.current={..._dbSnap.current,
+          ...(estMerge?{ests:estMerge.snap}:{}),...(soMerge?{sos:soMerge.snap}:{}),
+          ...(invMerge?{invs:invMerge.snap}:{}),...(msgMerge?{msgs:msgMerge.snap}:{}),
+          ...(custMerge?{cust:custMerge.snap}:{}),...(prodMerge?{prod:prodMerge.snap}:{}),
+          ...(todoMerge?{assignedTodos:todoMerge}:{}),
+          ...(groups?{}:{vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues})};
         // Use change detection to avoid triggering save effects needlessly
-        if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
-        setEsts(estMerge.apply);
-        setSOs(soMerge.apply);
-        setInvs(invMerge.apply);
-        if(d.messages.length)setMsgs(msgMerge.apply);
-        setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
-        if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
-        if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
-        setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
-        setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
-        if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
-        if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
-        // Refresh app_state keys
-        const as=d.appState||{};
+        if(!groups&&d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
+        if(estMerge)setEsts(estMerge.apply);
+        if(soMerge)setSOs(soMerge.apply);
+        if(invMerge)setInvs(invMerge.apply);
+        if(msgMerge&&d.messages.length)setMsgs(msgMerge.apply);
+        if(custMerge)setCust(custMerge.apply);
+        if(prodMerge&&d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
+        if(!groups&&d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
+        if(!groups&&d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
+        if(!groups)setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        if(todoMerge)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
+        if(!groups&&d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
+        if(!groups&&d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
+        // Refresh app_state keys — fetched on full reloads and alongside products (image fallbacks).
+        // When app_state wasn't part of this load, `as` stays empty so the guarded setters no-op.
+        const as=(!groups||groups.has('products')||groups.has('app_state'))?(d.appState||{}):{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
         if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
@@ -3725,12 +3938,15 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
       };
-      // Debounce realtime events — coalesce rapid-fire changes into a single reload
-      const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
+      // Debounce realtime events — coalesce rapid-fire changes into a single selective reload.
+      // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
+      // active users the 2s debounce turned each save into an all-client re-download storm that
+      // saturated the database. The 60s poll remains the freshness backstop.
+      const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
       let _rtErrorLogged=false;
       ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
             if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
@@ -3740,7 +3956,8 @@ export default function App(){
         channels.push(ch);
       });
       // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload()}};
+      // Tab regained focus: full reload, short 1s debounce — a deliberate user action, keep it snappy
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload(null,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -5487,7 +5704,7 @@ export default function App(){
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
     if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
     if(t.type==='est_approved'||t.type==='est_update_request')return'est';
-    if(t.type==='order'||t.type==='deposit_needed'||t.type==='booking_confirm')return'order';
+    if(t.type==='order'||t.type==='deposit_needed'||t.type==='booking_confirm'||t.type==='if_short')return'order';
     if(t.type==='deadline')return'deadline';
     if(t.type==='firm')return'firm';
     if(t.type==='rep_delivery')return'delivery';
@@ -6649,19 +6866,50 @@ export default function App(){
           }
         });
       }
-      // Notify sales rep when IFs are pulled by warehouse
+      // Notify sales rep when an IF is pulled by the warehouse — ONE notification per IF (pick
+      // group), even when the IF spans several line items (items pulled together share a pick_id).
+      const _ifPulls={};
       safeItems(so).forEach(it=>{
         safePicks(it).filter(pk=>pk.status==='pulled'&&pk.pulled_at).forEach(pk=>{
           const pa=parseDate(pk.pulled_at);if(!pa)return;
-          const daysAgo=Math.floor((new Date()-pa)/(1000*60*60*24));
-          if(daysAgo<=7){
-            const szKeys=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0);
-            const qty=szKeys.reduce((a,s)=>a+(pk[s]||0),0);
-            const szStr=szKeys.map(s=>s+':'+pk[s]).join(', ');
-            todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(it.sku||it.name||'Item'),detail:tag+' · '+so.id+' · '+qty+' units ('+szStr+')'+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so,action:'View',role:'sales',isNotification:true,date:pk.pulled_at,dismissKey:'if_pulled:'+so.id+':'+(it.sku||it.name||'')+':'+(pk.pulled_at||'')});
-          }
+          const qty=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0).reduce((a,s)=>a+(pk[s]||0),0);if(qty<=0)return;
+          // Group by the IF id; legacy pulled lines without a pick_id stay per-line.
+          const ifKey=pk.pick_id||('line:'+(it.sku||it.name||'')+':'+(pk.pulled_at||''));
+          const g=_ifPulls[ifKey]||(_ifPulls[ifKey]={pickId:pk.pick_id||'',units:0,skus:[],latest:pa,latestRaw:pk.pulled_at});
+          g.units+=qty;const _lbl=it.sku||it.name||'Item';if(!g.skus.includes(_lbl))g.skus.push(_lbl);
+          if(pa>g.latest){g.latest=pa;g.latestRaw=pk.pulled_at}
         });
       });
+      Object.entries(_ifPulls).forEach(([ifKey,g])=>{
+        const daysAgo=Math.floor((new Date()-g.latest)/(1000*60*60*24));if(daysAgo>7)return;
+        const when=daysAgo===0?' · Today':' · '+daysAgo+'d ago';
+        const skuLbl=g.skus.length===1?g.skus[0]:g.skus.length+' items';
+        todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(g.pickId||skuLbl),detail:tag+' · '+so.id+(g.pickId?' · '+g.pickId:'')+' · '+g.units+' unit'+(g.units!==1?'s':'')+' · '+g.skus.join(', ')+when,so,action:'View',role:'sales',isNotification:true,date:g.latestRaw,dismissKey:'if_pulled:'+so.id+':'+ifKey+':'+(g.latestRaw||'')});
+      });
+      // Sales action item — items sent to the warehouse to pull that came up SHORT (e.g. inventory
+      // was wrong). Once an item's pick lines are all closed (none still open to pull) and the pulled
+      // qty plus any open PO still doesn't cover what was ordered, the rep needs to order the gap.
+      // Derived from current state, so it self-clears once a PO is raised or the units get pulled.
+      const _shortItems=[];
+      safeItems(so).forEach(it=>{
+        const picks=safePicks(it);
+        if(picks.length===0)return;                     // never set up for a stock pull
+        if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
+        const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        const short={};let shortTot=0;
+        szKeys.forEach(sz=>{
+          const ordered=it.sizes[sz]||0;if(ordered<=0)return;
+          const pulled=picks.reduce((a,pk)=>a+(pk.status==='pulled'?(pk[sz]||0):0),0);
+          const onPO=safePOs(it).reduce((a,po)=>a+(po[sz]||0)-((po.cancelled||{})[sz]||0),0);
+          const sh=Math.max(0,ordered-pulled-onPO);if(sh>0){short[sz]=sh;shortTot+=sh}
+        });
+        if(shortTot>0)_shortItems.push({lbl:it.sku||it.name||'Item',units:shortTot,szStr:Object.keys(short).map(sz=>sz+':'+short[sz]).join(', ')});
+      });
+      if(_shortItems.length>0){
+        const totUnits=_shortItems.reduce((a,s)=>a+s.units,0);
+        const summary=_shortItems.map(s=>s.lbl+' ('+s.szStr+')').join(' · ');
+        todos.push({type:'if_short',priority:1,msg:'🛒 Short on pull — order '+totUnits+' unit'+(totUnits!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.id+' · Short from stock: '+summary,so,repId:_repId,action:'Create PO',role:'sales',date:so.updated_at||so.created_at,dismissKey:'if_short:'+so.id});
+      }
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
@@ -6796,7 +7044,7 @@ export default function App(){
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -6902,7 +7150,7 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -7561,7 +7809,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -9821,156 +10069,9 @@ export default function App(){
           results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
         });return results})();
 
-        // Print Production PDF
-        const _buildProdPdfOpts=()=>{
-          const infoBoxes=[
-            {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
-            {label:'Sales Order',value:so.id,sub:so.memo||''},
-            {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
-            {label:'Rep',value:j.rep||REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
-          ];
-          // Render a table as an HTML string, matching the buildDocHtml table style
-          const _tHtml=(title,headers,aligns,rows)=>{
-            let h='';
-            if(title)h+='<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:#333">'+title+'</div>';
-            h+='<table style="width:100%;border-collapse:collapse;margin:4px 0"><thead><tr>';
-            headers.forEach((hd,i)=>{h+='<th style="background:#e8e8e8;padding:3px 6px;text-align:'+(aligns[i]||'left')+';font-size:10px;font-weight:700;color:#333;border:1px solid #ccc">'+hd+'</th>'});
-            h+='</tr></thead><tbody>';
-            (rows||[]).forEach(row=>{
-              h+='<tr>';
-              const cells=row.cells||row;
-              (Array.isArray(cells)?cells:[]).forEach((cell,i)=>{
-                const isObj=cell&&typeof cell==='object'&&!Array.isArray(cell);
-                const val=isObj?cell.value:cell;
-                h+='<td style="padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3;text-align:'+(aligns[i]||'left')+'">'+(val!=null?val:'')+'</td>';
-              });
-              h+='</tr>';
-            });
-            h+='</tbody></table>';
-            return h;
-          };
-          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
-          // Color names → swatch chip HTML, mirroring the modal's PMS chips
-          const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
-            return a.map(cl=>{const sw=_swatchFor(cl);
-              return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
-          // Build one HTML section per item: all info tables + mockup image(s) together.
-          // A garment linked to another garment's mockup prints a one-line reference instead
-          // of repeating the image; the source garment prints it once with an "also used by"
-          // caption — keeps multi-garment sheets compact.
-          const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
-          const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
-          const itemSectionHtmls=[];
-          itemDetails.forEach(gi=>{
-            const it=safeItems(so)[gi.item_idx];
-            if(!it)return;
-            const itemArtDecos=safeDecos(it).filter(d=>d.kind==='art');
-            const itemNumDecos=safeDecos(it).filter(d=>d.kind==='numbers');
-            const itemNameDecos=safeDecos(it).filter(d=>d.kind==='names');
-            const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-            const ndData=numbersData.find(n=>n.sku===gi.sku);
-            const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
-            let sHtml='';
-            // Size table
-            const hdrs=['',...itemSizes,'Total'];
-            const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
-            ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
-            sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
-            // Decoration spec
-            if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
-              const specRows=[];
-              itemArtDecos.forEach(d=>{
-                const artF=safeArt(so).find(f=>f.id===d.art_file_id);
-                const dt=artF?.deco_type||d.deco_type||'screen_print';
-                const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
-                const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
-                const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
-                const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
-                const sz2=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
-                const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
-                specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls)]});
-              });
-              itemNumDecos.forEach(nd=>{
-                specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',_chipsHtml([nd.print_color])]});
-              });
-              itemNameDecos.forEach(nd=>{
-                specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
-              });
-              sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
-            }
-            // Numbers list
-            if(ndData?.roster&&Object.keys(ndData.roster).length>0){
-              const numRows=[];
-              ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
-                if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
-              });
-              if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
-            }
-            // Names list
-            if(ndData?.names&&Object.keys(ndData.names).length>0){
-              const nameRows=[];
-              ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
-                if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
-              });
-              if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
-            }
-            // Mockup image(s) for this item immediately after its tables — all locations
-            // (front + back arts, numbers/names) side by side
-            const _giSrc=_linkSrcOf(gi);
-            if(_giSrc){
-              // Linked garment: reference the source garment's mockup instead of repeating it.
-              sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
-              itemSectionHtmls.push(sHtml);
-              return;
-            }
-            const _giDeps=_linkDepsOf(gi);
-            const itemMockUrls=_urlsFor(collectItemMocks(gi));
-            if(itemMockUrls.length>0){
-              const _mh=itemMockUrls.length>1?300:380;
-              const _mw=itemMockUrls.length>1?'48%':'100%';
-              const _depsCap=_giDeps.length?'<div style="text-align:center;font-size:10px;font-weight:700;color:#3730a3;margin-top:6px">🔗 Mockup also used by: '+_giDeps.map(k=>k.split('|')[0]).join(', ')+'</div>':'';
-              sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
-                +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
-                +'</div>'+_depsCap;
-            } else if(gi.image_url&&_isImgUrl(gi.image_url)){
-              sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
-            }
-            itemSectionHtmls.push(sHtml);
-          });
-          // Generic mockups not tied to a specific item
-          const _pdfGenericUrls=_urlsFor(genericMockupFiles);
-          const _genericMockHtml=_pdfGenericUrls.length>0
-            ?'<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>'
-            :'';
-          // Generic production files
-          let _prodFilesHtml='';
-          if(prodFiles.length>0){
-            _prodFilesHtml=_tHtml('Production Files',['Type','Filename'],['left','left'],
-              prodFiles.map(f=>({cells:['Production',fileDisplayName(f)]})));
-          }
-          // Run-together siblings — only jobs checked in and ready to run on this same screen now,
-          // so the sheet never lists a linked job whose garments aren't in hand yet.
-          const _pid=c?.parent_id||c?.id||null;
-          const _gk=jobGroupKey(j,_pid);
-          const _famPid=s2=>{const cc=cust.find(x=>x.id===s2.customer_id);return cc?.parent_id||cc?.id||null};
-          const _sibs=[];
-          if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
-          const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
-          // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
-          // The <style> override strips the yellow notes-box styling so item sections render cleanly.
-          const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
-          const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
-            '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
-          ).join('');
-          return{title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
-            headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
-            infoBoxes,tables:[],
-            // Repeat the Customer / Sales Order / Expected Date / Rep header on every
-            // page (without the NSA logo block) so multi-page sheets stay identifiable.
-            repeatInfoHeader:true,
-            notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
-            showPricing:false};
-        };
+        // Print Production PDF — delegates to the shared buildProdSheetOpts (top of file) so
+        // this modal and the SO editor's Jobs-tab download button always emit the same sheet.
+        const _buildProdPdfOpts=()=>buildProdSheetOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS});
         const printProdPDF=()=>printDoc(_buildProdPdfOpts());
         const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(_buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
 
