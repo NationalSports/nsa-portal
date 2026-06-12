@@ -99,24 +99,27 @@ export const sumDepositInvoiced = (invoicesForSO) =>
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
-// ── Shared ("one mockup for all garments") designs ──
-// An art file flagged `shared_mockup` (set from the Art Dashboard mockup modal or the
-// rep's approval view) means ONE mock represents every garment the design decorates —
-// e.g. the same 3" logo embroidered on three different black polos. The flag changes
-// interpretation only; no mock files are moved, so toggling it off restores the
-// per-garment behavior exactly.
-// Returns the files that act as that one shared mock: the shared mockup_files bucket
-// first; else the first non-empty per-garment bucket (covers flipping the flag on after
-// a single garment was already mocked — that mock becomes THE mock, without flattening
-// near-duplicate uploads from every garment); else the art's general files bucket
-// (legacy art where the mock lives in `files`).
-export const sharedMockFiles = (a) => {
-  const bucket = safeArr(a?.mockup_files);
-  if (bucket.length > 0) return bucket;
-  const firstPerItem = Object.values(a?.item_mockups || {}).find(v => safeArr(v).length > 0);
-  if (safeArr(firstPerItem).length > 0) return safeArr(firstPerItem);
-  return safeArr(a?.files);
+// ── Mock groups ("these garments share one mockup") ──
+// Default is one mock per garment. A rep can optionally LINK a subset of a job's
+// garments so they share a single mockup — e.g. the same 3" logo embroidered on three
+// different black polos needs only one mock, not three near-identical ones. Groups are
+// anchored on the job's primary design (art file) and stored as:
+//   art_file.mock_groups = [{ id, members: ['sku|color', ...], files: [{url,name}] }]
+// A garment belongs to at most one group (per design); ungrouped garments keep their own
+// per-garment mockups exactly as before. No mock files are moved when grouping, so
+// unlinking restores per-garment behavior.
+export const mockGroupsOf = (a) => safeArr(a?.mock_groups);
+export const mockGroupKeyOf = (sku, color) => (sku || '') + '|' + (color || '');
+// The group (on the given anchor art files) that contains this garment, or null.
+export const mockGroupForGarment = (anchorArts, sku, color) => {
+  const key = mockGroupKeyOf(sku, color);
+  for (const a of safeArr(anchorArts)) {
+    const g = mockGroupsOf(a).find(grp => safeArr(grp?.members).includes(key));
+    if (g) return g;
+  }
+  return null;
 };
+export const mockGroupFiles = (g) => safeArr(g?.files);
 
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
@@ -161,19 +164,22 @@ export const skusMissingMockups = (job, so) => {
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
     const artFiles = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
-    // A design explicitly marked "one mockup for all garments" satisfies every garment
-    // it decorates, as long as it carries at least one mock. Mirrors the existing rule
-    // that any one of a garment's designs having a mock satisfies the garment.
-    if (artFiles.some(a => a?.shared_mockup && sharedMockFiles(a).length > 0)) return;
-    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
-    // colors. Older data may use a plain SKU key — accept either. Read sku/color from
-    // the LIVE SO line, not the job snapshot: a line item's product can be swapped
-    // (e.g. A325 → A515) without rebuilding so.jobs, leaving gi.sku stale. The mockup
-    // screen keys off it.sku/it.color (App.js itemDetails), so the gate must check the
-    // same garment — otherwise it reports a phantom SKU (A325) as missing while the
-    // artist sees and mocks the real one (A515).
+    // Read sku/color from the LIVE SO line, not the job snapshot: a line item's product
+    // can be swapped (e.g. A325 → A515) without rebuilding so.jobs, leaving gi.sku stale.
+    // The mockup screen keys off it.sku/it.color (App.js itemDetails), so the gate must
+    // check the same garment — otherwise it reports a phantom SKU (A325) as missing while
+    // the artist sees and mocks the real one (A515).
     const mSku = it?.sku || gi?.sku || '';
     const mColor = it?.color || gi?.color || '';
+    // If the rep linked this garment into a mock group, the group's shared mock is the
+    // single source of truth for it — satisfied once the group has a file, missing
+    // otherwise (the garment's own per-item mock is intentionally ignored). The anchor is
+    // the job's primary design plus any art this garment uses.
+    const grpAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFiles].filter(Boolean);
+    const grp = mockGroupForGarment(grpAnchors, mSku, mColor);
+    if (grp) { if (mockGroupFiles(grp).length === 0 && mSku) missing.push(mSku); return; }
+    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
+    // colors. Older data may use a plain SKU key — accept either.
     const mockKey = mSku + '|' + mColor;
     const perSku = artFiles.flatMap(a => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
@@ -242,6 +248,10 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
     // Live SO line drives sku/color (the job snapshot can go stale on a product swap).
     const mSku = it?.sku || gi?.sku || '';
     const mColor = it?.color || gi?.color || '';
+    // A garment the rep linked into a mock group is an explicit decision — its mock comes
+    // from the group, so there's no reuse ambiguity for the rep to double-check.
+    const grpAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFilesForItem].filter(Boolean);
+    if (mockGroupForGarment(grpAnchors, mSku, mColor)) return;
     const mockKey = mSku + '|' + mColor;
     // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, or a
     // color-way sub-key of this garment (sku|color|cwid).
@@ -251,9 +261,6 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
     // front and a back) shows both.
     const artFiles = [];
     artFilesForItem.forEach(a => {
-      // Shared-mock designs with a mock are explicitly confirmed for every garment —
-      // nothing for the rep to double-check.
-      if (a?.shared_mockup && sharedMockFiles(a).length > 0) return;
       const im = a?.item_mockups || {};
       const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
       if (hasOwn) return;

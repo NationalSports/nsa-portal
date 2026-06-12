@@ -10,7 +10,7 @@
  *  - garmentsNeedingMockCheck surfaces those garments + the prior mock to confirm/redo.
  */
 
-const { skusMissingMockups, garmentsNeedingMockCheck, sharedMockFiles } = require('../safeHelpers');
+const { skusMissingMockups, garmentsNeedingMockCheck, mockGroupForGarment } = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
 const makeCase = (artFile, item = { sku: 'A2009', color: 'White' }) => {
@@ -83,8 +83,8 @@ describe('skusMissingMockups — stale job snapshot after a line-item swap', () 
   });
 });
 
-describe('shared one-mock-for-all designs (shared_mockup flag)', () => {
-  // Three different polos, same design — one mock in the shared bucket covers all.
+describe('mock groups — rep links a subset of garments to share one mockup', () => {
+  // Three polos on one embroidery design; the rep can link some of them.
   const threePoloSO = (art) => ({
     items: [
       { sku: 'P1', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
@@ -102,49 +102,59 @@ describe('shared one-mock-for-all designs (shared_mockup flag)', () => {
     ],
   });
 
-  test('one shared-bucket mock satisfies every garment, even with per-item mocks present elsewhere on the art', () => {
+  test('default (no groups) keeps per-garment behavior — every un-mocked garment is missing', () => {
+    const art = { id: 'af0', item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, mockup_files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P2', 'P3']);
+  });
+
+  test('a group with a shared mock satisfies all its members, regardless of their own per-item mocks', () => {
     const art = {
-      id: 'af1', shared_mockup: true,
-      mockup_files: [{ url: 'http://x/shared.png' }],
-      // Lingering per-item mock from before the flag was turned on must not break the others
-      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+      id: 'af1',
+      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black', 'P3|Black'], files: [{ url: 'http://x/shared.png' }] }],
+      item_mockups: {}, mockup_files: [],
     };
     expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
   });
 
-  test('flag on with an existing per-garment mock but empty shared bucket: that mock becomes THE mock', () => {
-    // The A515 case: artist mocked one garment, then flipped the design to shared.
-    const art = { id: 'af2', shared_mockup: true, mockup_files: [], item_mockups: { 'P2|Black': [{ url: 'http://x/p2.png' }] } };
-    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  test('a group with NO file yet blocks exactly its members (under their live sku)', () => {
+    const art = { id: 'af2', mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [] }], item_mockups: {}, mockup_files: [] };
+    // P1, P2 grouped-but-empty → missing; P3 ungrouped + no mock → missing too
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
   });
 
-  test('flag on but NO mock anywhere still blocks every garment', () => {
-    const art = { id: 'af3', shared_mockup: true, mockup_files: [], item_mockups: {}, files: [] };
-    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P1', 'P2', 'P3']);
-  });
-
-  test('flag off keeps garment-aware behavior (mock on one garment does not satisfy the others)', () => {
-    const art = { id: 'af4', shared_mockup: false, mockup_files: [], item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] } };
-    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P2', 'P3']);
-  });
-
-  test('garmentsNeedingMockCheck does not flag garments on a shared design with a mock', () => {
+  test('a subset group: grouped members satisfied by the group mock, ungrouped garment still needs its own', () => {
     const art = {
-      id: 'af5', shared_mockup: true,
-      mockup_files: [{ url: 'http://x/shared.png' }],
-      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 without the flag
+      id: 'af3',
+      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [{ url: 'http://x/shared.png' }] }],
+      item_mockups: {}, mockup_files: [],
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P3']);
+  });
+
+  test("a grouped garment's own per-item mock is ignored — the group is the source of truth", () => {
+    // P1 has its own mock but is in an empty group → still missing (group decides).
+    const art = {
+      id: 'af4',
+      mock_groups: [{ id: 'g1', members: ['P1|Black', 'P2|Black'], files: [] }],
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, mockup_files: [],
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
+  });
+
+  test('garmentsNeedingMockCheck never flags a grouped garment', () => {
+    const art = {
+      id: 'af5',
+      mock_groups: [{ id: 'g1', members: ['P2|Black', 'P3|Black'], files: [{ url: 'http://x/shared.png' }] }],
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 in per-garment mode
     };
     expect(garmentsNeedingMockCheck(threePoloJob(art), threePoloSO(art))).toEqual([]);
   });
 
-  test('sharedMockFiles precedence: shared bucket, else first per-garment bucket (not flattened), else files', () => {
-    expect(sharedMockFiles({ mockup_files: [{ url: 'http://x/b.png' }], item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] } }))
-      .toEqual([{ url: 'http://x/b.png' }]);
-    expect(sharedMockFiles({ mockup_files: [], item_mockups: { 'P1|Black': [], 'P2|Black': [{ url: 'http://x/p2.png' }], 'P3|Black': [{ url: 'http://x/p3.png' }] } }))
-      .toEqual([{ url: 'http://x/p2.png' }]);
-    expect(sharedMockFiles({ mockup_files: [], item_mockups: {}, files: [{ url: 'http://x/art.ai' }] }))
-      .toEqual([{ url: 'http://x/art.ai' }]);
-    expect(sharedMockFiles({})).toEqual([]);
+  test('mockGroupForGarment finds the group across anchor art files and returns null when ungrouped', () => {
+    const art = { id: 'af6', mock_groups: [{ id: 'g1', members: ['P1|Black'], files: [] }] };
+    expect(mockGroupForGarment([art], 'P1', 'Black')?.id).toBe('g1');
+    expect(mockGroupForGarment([art], 'P3', 'Black')).toBeNull();
+    expect(mockGroupForGarment([null, undefined, art], 'P1', 'Black')?.id).toBe('g1');
   });
 });
 

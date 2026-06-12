@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, sharedMockFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockGroupsOf, mockGroupForGarment, mockGroupFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -1963,6 +1963,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Persist an explicit display order (front-first by default) by writing `ord` onto each mock entry.
   const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const updated={...o,art_files:safeArt(o).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)})),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
   const moveMock=(orderedUrls,i,dir)=>{const j=i+dir;if(j<0||j>=orderedUrls.length)return;const arr=[...orderedUrls];[arr[i],arr[j]]=[arr[j],arr[i]];setMockupOrder(arr)};
+  // ── Mock groups (rep links a subset of garments to share one mockup) ── stored on the
+  // job's primary design art file. Mirrors the Art Dashboard modal handlers so grouping
+  // done in either place is identical. target: ''=own, '__new'=new group, else group id.
+  const assignGarmentToMockGroup=(artId,memberKey,target)=>{if(!artId)return;const updated={...o,art_files:safeArt(o).map(a=>{
+      if(a.id!==artId)return a;
+      let groups=mockGroupsOf(a).map(g=>({...g,members:safeArr(g.members).filter(m=>m!==memberKey),files:safeArr(g.files)}));
+      if(target==='__new')groups.push({id:'mg-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6),members:[memberKey],files:[]});
+      else if(target){const g=groups.find(x=>x.id===target);if(g)g.members=[...g.members,memberKey];else groups.push({id:target,members:[memberKey],files:[]});}
+      groups=groups.filter(g=>g.members.length>0);
+      return{...a,mock_groups:groups};
+    }),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
+  const uploadGroupMock=async(artId,files,groupId)=>{if(!artId||!files||!files.length)return;const uploaded=[];
+    for(const f of Array.from(files)){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-files');uploaded.push({url,name:f.name,art_file_id:artId,group_id:groupId})}catch(err){nf&&nf('Upload failed: '+err.message,'error')}}
+    if(!uploaded.length)return;
+    const updated={...o,art_files:safeArt(o).map(a=>a.id===artId?{...a,status:'uploaded',mock_groups:mockGroupsOf(a).map(g=>g.id===groupId?{...g,files:[...safeArr(g.files),...uploaded]}:g)}:a),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(uploaded.length+' shared mockup'+(uploaded.length>1?'s':'')+' uploaded')};
+  const deleteGroupMock=(artId,url,groupId)=>{if(!artId)return;const _u=f=>typeof f==='string'?f:(f?.url||'');const updated={...o,art_files:safeArt(o).map(a=>a.id===artId?{...a,mock_groups:mockGroupsOf(a).map(g=>g.id===groupId?{...g,files:safeArr(g.files).filter(f=>_u(f)!==url)}:g)}:a),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf('Shared mockup removed')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -7377,57 +7393,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
-                // ── Shared one-mock-for-all designs ── rep-side mirror of the Art Dashboard toggle.
-                // A flagged design shows its single mock ONCE here (with the garments it covers);
-                // the per-garment cards below stop repeating it.
+                // ── Mock groups ── default per-garment; the rep can LINK garments to share one
+                // mock. Mirrors the Art Dashboard modal so grouping in either place is identical.
                 const _jobArts=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                const _setSharedFlag=(artId,on)=>{const updated={...o,art_files:safeArt(o).map(a=>a.id===artId?{...a,shared_mockup:on}:a),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(on?'One mockup now covers all garments for this design':'Back to per-garment mockups')};
-                const _sharedArts=_jobArts.filter(a=>a.shared_mockup);
+                const _grpArtId=j.art_file_id||(_jobArts[0]&&_jobArts[0].id)||null;
+                const _grpArt=safeArt(o).find(a=>a.id===_grpArtId)||null;
+                const _groups=mockGroupsOf(_grpArt);
+                const _groupOf=gi=>mockGroupForGarment(_jobArts,gi.sku,gi.color);
+                const _groupLetter=gid=>{const i=_groups.findIndex(g=>g.id===gid);return i>=0?String.fromCharCode(65+i):'?'};
+                const _mkGroupSelectR=(gi)=>{if(!_grpArtId||itemDetails.length<2)return null;const cur=_groupOf(gi);
+                  return<select value={cur?.id||''} onClick={e=>e.stopPropagation()} onChange={e=>assignGarmentToMockGroup(_grpArtId,gi.sku+'|'+(gi.color||''),e.target.value)} style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#334155',fontWeight:600,maxWidth:150,cursor:'pointer'}}>
+                    <option value="">🔗 Own mockup</option>
+                    {_groups.map(g=><option key={g.id} value={g.id}>Shared {_groupLetter(g.id)}</option>)}
+                    <option value="__new">＋ New shared group</option>
+                  </select>;};
+                const _renderGroupCardR=(grp,members)=>{const files=_filterDisplayable(mockGroupFiles(grp));const pick=()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>uploadGroupMock(_grpArtId,inp.files,grp.id);inp.click()};
+                  return<div key={'grp-'+grp.id} style={{marginBottom:14,border:'2px solid #c7d2fe',borderRadius:10,overflow:'hidden',background:'white'}}>
+                    <div style={{padding:'8px 12px',background:'linear-gradient(135deg,#eef2ff,#e0e7ff)',borderBottom:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:8}}>
+                      <span style={{fontSize:11,fontWeight:800,color:'#3730a3'}}>🔗 Shared mockup {_groupLetter(grp.id)} — {members.length} garment{members.length!==1?'s':''}</span>
+                    </div>
+                    {files.length>0?<div style={{padding:10,display:'grid',gridTemplateColumns:files.length>1?'1fr 1fr':'1fr',gap:8}}>
+                      {files.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                        return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #818cf8',overflow:'hidden',background:'white'}}>
+                          <button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this shared mockup?'))deleteGroupMock(_grpArtId,url,grp.id)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0}}>×</button>
+                          <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                            {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                            :_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                            :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}><span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                          </div>
+                          <div style={{padding:'4px 10px',borderTop:'1px solid #c7d2fe',fontSize:11,color:'#3730a3',fontWeight:600,display:'flex',justifyContent:'space-between',gap:6}}><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span><span style={{color:'#2563eb',cursor:'pointer'}} onClick={pick}>Replace</span></div>
+                        </div>;})}
+                    </div>:<div onClick={pick} style={{margin:10,padding:18,textAlign:'center',background:'#eef2ff',border:'2px dashed #818cf8',borderRadius:8,color:'#4f46e5',fontSize:12,fontWeight:600,cursor:'pointer'}}>📎 Upload the shared mockup for these {members.length} garments</div>}
+                    <div style={{padding:'8px 12px',borderTop:'1px solid #eef2ff',display:'flex',flexWrap:'wrap',gap:6}}>
+                      {members.map((gi,mi)=><div key={mi} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:10}}>{gi.sku}</span>
+                        <span style={{fontSize:10,color:'#334155'}}>{gi.color||''}</span>
+                        {_mkGroupSelectR(gi)}
+                      </div>)}
+                    </div>
+                  </div>;};
+                const _renderedGroups=new Set();
                 return<div style={{marginBottom:12}}>
-                  {_jobArts.length>0&&<div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:10}}>
-                    {_jobArts.map(a=><label key={a.id} style={{display:'flex',alignItems:'center',gap:8,fontSize:11,fontWeight:600,color:'#334155',cursor:'pointer',padding:'6px 10px',background:a.shared_mockup?'#eef2ff':'#fffbeb',border:'1px solid '+(a.shared_mockup?'#c7d2fe':'#fde68a'),borderRadius:8}}>
-                      <input type="checkbox" checked={!!a.shared_mockup} onChange={e=>_setSharedFlag(a.id,e.target.checked)} style={{accentColor:'#4f46e5'}}/>
-                      <span>One mockup for all garments{_jobArts.length>1?<span style={{color:'#7c3aed'}}> — {a.name||a.title||'design'}</span>:null}</span>
-                      {a.shared_mockup&&<span style={{marginLeft:'auto',fontSize:9,fontWeight:800,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>SHARED</span>}
-                    </label>)}
-                  </div>}
-                  {_sharedArts.map(a=>{const sFiles=_filterDisplayable(sharedMockFiles(a));if(sFiles.length===0)return<div key={'sh-'+a.id} style={{padding:14,marginBottom:10,textAlign:'center',background:'#eef2ff',border:'1px dashed #818cf8',borderRadius:8,color:'#3730a3',fontSize:12,fontWeight:600}}>No shared mockup uploaded yet for {a.name||'this design'}</div>;
-                    return<div key={'sh-'+a.id} style={{marginBottom:10,border:'2px solid #c7d2fe',borderRadius:10,overflow:'hidden',background:'white'}}>
-                      <div style={{padding:'8px 12px',background:'linear-gradient(135deg,#eef2ff,#e0e7ff)',borderBottom:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:8}}>
-                        <span style={{fontSize:11,fontWeight:800,color:'#3730a3'}}>🖼️ {a.name||a.title||'Design'} — one mockup, applies to all {itemDetails.length} garment{itemDetails.length!==1?'s':''}</span>
-                      </div>
-                      <div style={{padding:10,display:'grid',gridTemplateColumns:sFiles.length>1?'1fr 1fr':'1fr',gap:8}}>
-                        {sFiles.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #818cf8',overflow:'hidden',background:'white'}}>
-                            <button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this shared mockup from the job?'))removeMockupUrl(url)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>
-                            <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}}/>:<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4}}><span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div>}
-                              </div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}><span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                            </div>
-                            <div style={{padding:'4px 10px',borderTop:'1px solid #c7d2fe',fontSize:11,color:'#3730a3',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
-                              <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
-                              <span style={{color:'#2563eb',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(url)}>Click to enlarge</span>
-                            </div>
-                          </div>;})}
-                      </div>
-                    </div>;})}
+                  {_grpArtId&&itemDetails.length>1&&<div style={{fontSize:11,color:'#475569',marginBottom:10,padding:'7px 10px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:6}}>💡 Garments that share the same mockup can be linked — set them to the same <strong>Shared</strong> group and upload the mock once.</div>}
                   {itemDetails.map((gi,gii)=>{
+                    const _grp=_groupOf(gi);
+                    if(_grp){if(_renderedGroups.has(_grp.id))return null;_renderedGroups.add(_grp.id);return _renderGroupCardR(_grp,itemDetails.filter(g=>_groupOf(g)?.id===_grp.id));}
                     const it=safeItems(o)[gi.item_idx];
                     // Art files referenced by THIS item's decorations, intersected with this job's art set.
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU).
-                    // Designs flagged shared (one mock for all garments) are skipped everywhere here —
-                    // their mock renders once in the shared block above instead of on every card.
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    const _coveredByShared=itemArtFiles.some(_af=>_af?.shared_mockup&&_filterDisplayable(sharedMockFiles(_af)).length>0);
-                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3||af3.shared_mockup)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{if(_af?.shared_mockup)return[];const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{if(_af?.shared_mockup)return[];const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
-                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.shared_mockup?[]:(_af?.mockup_files||_af?.files||[]))):[];
+                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
                     const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
@@ -7449,9 +7469,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                             {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
                         </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
-                          <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
-                          <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                        <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4,flexShrink:0}}>
+                          <div style={{textAlign:'right'}}>
+                            <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
+                            <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                          </div>
+                          {_mkGroupSelectR(gi)}
                         </div>
                       </div>
                       {/* Mockup */}
@@ -7481,9 +7504,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                               </div>
                             </div>})}
                         </div>
-                      </div>})():_coveredByShared
-                       ?<div style={{padding:'8px 10px',margin:10,textAlign:'center',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,color:'#166534',fontSize:11,fontWeight:600}}>✓ Covered by the shared mockup above</div>
-                       :<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      </div>})():<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
@@ -7631,34 +7652,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
-                // Shared one-mock-for-all designs render once here (read-only — art is already
-                // approved at this stage); the per-garment cards below skip them.
-                const _sharedArts2=[..._jArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(a=>a&&a.shared_mockup);
+                // Mock groups render once here (read-only — art is already approved); the
+                // per-garment cards below skip grouped garments.
+                const _jArts2=[..._jArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _groupOf2=gi=>mockGroupForGarment(_jArts2,gi.sku,gi.color);
+                const _groupLetter2=gid=>{const all=mockGroupsOf(safeArt(o).find(a=>a.id===j.art_file_id)||_jArts2[0]);const i=all.findIndex(g=>g.id===gid);return i>=0?String.fromCharCode(65+i):'?'};
+                const _renderedGroups2=new Set();
                 return<div style={{margin:'8px 20px'}}>
-                  {_sharedArts2.map(a=>{const sFiles=_filterDisplayable(sharedMockFiles(a));if(sFiles.length===0)return null;
-                    return<div key={'sh2-'+a.id} style={{marginBottom:10,border:'2px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
-                      <div style={{padding:'8px 12px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',fontSize:11,fontWeight:800,color:'#166534'}}>🖼️ {a.name||a.title||'Design'} — one mockup, applies to all {itemDetails.length} garment{itemDetails.length!==1?'s':''}</div>
-                      <div style={{padding:10,display:'grid',gridTemplateColumns:sFiles.length>1?'1fr 1fr':'1fr',gap:8}}>
-                        {sFiles.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<div key={fi} style={{borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                            {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                            :_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                            :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}><span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                            <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600}}>{name}</div>
-                          </div>;})}
-                      </div>
-                    </div>;})}
                   {itemDetails.map((gi,gii)=>{
+                    const _grp=_groupOf2(gi);
+                    if(_grp){if(_renderedGroups2.has(_grp.id))return null;_renderedGroups2.add(_grp.id);
+                      const members=itemDetails.filter(g=>_groupOf2(g)?.id===_grp.id);const files=_filterDisplayable(mockGroupFiles(_grp));
+                      return<div key={'grp2-'+_grp.id} style={{marginBottom:10,border:'2px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
+                        <div style={{padding:'8px 12px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',fontSize:11,fontWeight:800,color:'#166534'}}>🔗 Shared mockup {_groupLetter2(_grp.id)} — {members.map(m=>m.sku).join(', ')}</div>
+                        {files.length>0&&<div style={{padding:10,display:'grid',gridTemplateColumns:files.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {files.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}><span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600}}>{name}</div>
+                            </div>;})}
+                        </div>}
+                      </div>;}
                     const it=safeItems(o)[gi.item_idx];
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    // Shared one-mock-for-all designs are skipped here — they render once above.
-                    const _coveredByShared=itemArtFiles.some(_af=>_af?.shared_mockup&&_filterDisplayable(sharedMockFiles(_af)).length>0);
-                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3||af3.shared_mockup)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{if(_af?.shared_mockup)return[];const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{if(_af?.shared_mockup)return[];const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
-                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.shared_mockup?[]:(_af?.mockup_files||_af?.files||[]))):[];
+                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
                     const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
@@ -7712,9 +7736,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                               </div>
                             </div>})}
                         </div>
-                      </div>})():_coveredByShared
-                       ?<div style={{padding:'8px 10px',margin:10,textAlign:'center',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,color:'#166534',fontSize:11,fontWeight:600}}>✓ Covered by the shared mockup above</div>
-                       :<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      </div>})():<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #bbf7d0',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
