@@ -40,9 +40,12 @@ carried". So:
    active, not archived) — never a cached list. Catalog imports must be picked
    up automatically on the next run. (~4,000 SKUs currently; only ~2,100 have
    rows today — close that gap.)
-2. **Cadence:** every catalog SKU must be re-checked **at least weekly**.
-   Daily runs can prioritize SKUs that already have stock or recent activity,
-   but the weekly sweep covers everything.
+2. **Cadence:** inventory is the daily job; discovery and backfill are monthly.
+   - **Daily:** stock sync only (prioritized subset is fine).
+   - **Weekly:** full-catalog stock sweep — every SKU re-checked, no time filters.
+   - **Monthly:** full-range discovery (new SKUs on Cowork → create rows) and
+     image/description backfill. Backfill is fill-empties-only, so it is
+     naturally one-time per SKU; the monthly pass just catches new items.
 3. **Write zero rows:** when Cowork returns a SKU with all sizes at 0, still
    upsert the rows (stock_qty 0 + restock dates). That lets the catalog show
    "out of stock — inbound" instead of hiding the item.
