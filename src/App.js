@@ -3964,18 +3964,35 @@ export default function App(){
     return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
-  // ─── Auto-heal orphaned "converted" estimates (no matching SO exists) ───
+  // ─── Auto-heal orphaned "converted" estimates (SO was truly deleted) ───
+  // An estimate is only orphaned if its sales order no longer exists. The client `sos` array can be empty
+  // or partial right after a selective/timed-out reload (realtime reloads one table at a time), which would
+  // make EVERY converted estimate look orphaned. Guard hard: bail when sos is unloaded, and confirm against
+  // the DB before any destructive revert — an unguarded check here once flipped the entire converted set
+  // back to 'approved'.
   React.useEffect(()=>{
-    if(dbLoading)return;
-    const orphaned=ests.filter(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id));
-    if(orphaned.length){
-      orphaned.forEach(e=>{
+    if(dbLoading||!sos.length)return;
+    const candidates=ests.filter(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id));
+    if(!candidates.length)return;
+    let cancelled=false;
+    (async()=>{
+      let orphans=candidates;
+      if(supabase){
+        // Authoritative check — never revert based on a possibly-incomplete client cache.
+        const{data,error}=await supabase.from('sales_orders').select('estimate_id').in('estimate_id',candidates.map(e=>e.id));
+        if(error){console.warn('[DB] orphan-heal check failed, skipping revert:',error.message);return}
+        const linked=new Set((data||[]).map(r=>r.estimate_id));
+        orphans=candidates.filter(e=>!linked.has(e.id));
+      }
+      if(cancelled||!orphans.length)return;
+      const ids=new Set(orphans.map(e=>e.id));
+      orphans.forEach(e=>{
         console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved');
-        const healed={...e,status:'approved',updated_at:new Date().toLocaleString()};
-        _dbSaveEstimate(healed);
+        _dbSaveEstimate({...e,status:'approved',updated_at:new Date().toLocaleString()});
       });
-      setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
-    }
+      setEsts(prev=>prev.map(e=>ids.has(e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
+    })();
+    return()=>{cancelled=true};
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
   // ─── Supabase polling: safety-net refresh with exponential backoff for cross-tab/cross-device sync ───
   React.useEffect(()=>{
@@ -7114,8 +7131,9 @@ export default function App(){
         todos.push({type:'if_short',priority:1,msg:'🛒 Short on pull — order '+totUnits+' unit'+(totUnits!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.id+' · Short from stock: '+summary,so,repId:_repId,action:'Create PO',role:'sales',date:so.updated_at||so.created_at,dismissKey:'if_short:'+so.id});
       }
     });
-    // Coach-approved estimates → rep needs to convert to SO
-    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
+    // Coach-approved estimates → rep needs to convert to SO. Skip any that already have a sales order:
+    // those are already converted, so never nag to convert them again even if the status field is stale.
+    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach'&&!sos.some(s=>s.estimate_id===e.id)).forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
         todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'csr',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
