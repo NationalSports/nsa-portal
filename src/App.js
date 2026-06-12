@@ -6396,6 +6396,79 @@ export default function App(){
     </div>
   </div>;
 
+  // ── Coach accounts: public-catalog logins tied to customers ──
+  // Created here by staff; the coach then signs in on /adidas via magic link
+  // and gets their customer's tier pricing + school colors automatically.
+  const[coachAcctsOpen,setCoachAcctsOpen]=useState(false);
+  const[coachAccts,setCoachAccts]=useState(null);
+  const[coachForm,setCoachForm]=useState({email:'',name:'',customer_id:null,q:''});
+  const[coachColorEdit,setCoachColorEdit]=useState({});
+  const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
+  const loadCoachAccts=()=>{if(!supabase)return;supabase.from('coach_accounts').select('*').order('created_at',{ascending:false}).then(r=>{if(!r.error)setCoachAccts(r.data||[]);else{setCoachAccts([]);nf('Coach accounts: '+r.error.message,'error')}})};
+  useEffect(()=>{if(coachAcctsOpen)loadCoachAccts()},[coachAcctsOpen]);// eslint-disable-line react-hooks/exhaustive-deps
+  const createCoachAcct=async()=>{
+    const em=(coachForm.email||'').trim().toLowerCase();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em))return nf('Valid email required','error');
+    if(!coachForm.customer_id)return nf('Pick a customer for this coach','error');
+    const{error}=await supabase.from('coach_accounts').insert([{email:em,name:(coachForm.name||'').trim()||null,customer_id:coachForm.customer_id}]);
+    if(error)return nf((error.message||'').includes('duplicate')?'That email already has an account':error.message,'error');
+    nf('Coach account created — '+em+' can now sign in on the catalog');
+    setCoachForm({email:'',name:'',customer_id:null,q:''});loadCoachAccts();
+  };
+  const toggleCoachAcct=async(a)=>{const ns=a.status==='active'?'disabled':'active';const{error}=await supabase.from('coach_accounts').update({status:ns}).eq('id',a.id);if(error)return nf(error.message,'error');setCoachAccts(prev=>(prev||[]).map(x=>x.id===a.id?{...x,status:ns}:x))};
+  const saveSchoolColors=async(custId)=>{
+    const txt=coachColorEdit[custId]??'';
+    const arr=txt.split(',').map(s=>s.trim()).filter(Boolean).map(s=>s[0].toUpperCase()+s.slice(1).toLowerCase());
+    const bad=arr.filter(c=>!CATALOG_COLOR_FAMILIES.includes(c));
+    if(bad.length)return nf('Unknown colors: '+bad.join(', ')+'. Valid: '+CATALOG_COLOR_FAMILIES.join(', '),'error');
+    const{error}=await supabase.from('customers').update({school_colors:arr.length?arr:null}).eq('id',custId);
+    if(error)return nf(error.message,'error');
+    setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:arr}:c));
+    setCoachColorEdit(s=>({...s,[custId]:undefined}));
+    nf('School colors saved');
+  };
+  const renderCoachAcctsModal=()=>coachAcctsOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCoachAcctsOpen(false)}>
+    <div style={{background:'white',borderRadius:14,maxWidth:820,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
+      <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
+        <h2 style={{margin:0,fontSize:17}}>🎽 Coach Catalog Accounts</h2>
+        <button style={{marginLeft:'auto',border:'none',background:'#f1f5f9',borderRadius:8,width:30,height:30,cursor:'pointer',fontWeight:700}} onClick={()=>setCoachAcctsOpen(false)}>✕</button>
+      </div>
+      <div style={{padding:'14px 22px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:.4,marginBottom:8}}>Invite a coach</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-start'}}>
+          <input placeholder="coach@school.org *" value={coachForm.email} onChange={e=>setCoachForm(f=>({...f,email:e.target.value}))} style={{padding:'7px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:13,width:200}}/>
+          <input placeholder="Coach name" value={coachForm.name} onChange={e=>setCoachForm(f=>({...f,name:e.target.value}))} style={{padding:'7px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:13,width:160}}/>
+          {(()=>{const sel=cust.find(c2=>c2.id===coachForm.customer_id);const q=coachForm.q||'';const sugg=!sel&&q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+            return sel?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'7px 10px',fontWeight:600}}>{sel.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>setCoachForm(f=>({...f,customer_id:null}))}>✕</button></span>
+            :<div style={{position:'relative'}}>
+              <input placeholder="Customer * (search…)" value={q} onChange={e=>setCoachForm(f=>({...f,q:e.target.value}))} style={{padding:'7px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:13,width:220}}/>
+              {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280}}>
+                {sugg.map(c2=><div key={c2.id} style={{padding:'7px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}} onClick={()=>setCoachForm(f=>({...f,customer_id:c2.id,q:''}))}>{c2.name}{c2.alpha_tag?' ('+c2.alpha_tag+')':''}</div>)}
+              </div>}
+            </div>})()}
+          <button className="btn btn-sm btn-primary" style={{padding:'7px 16px'}} onClick={createCoachAcct}>Create Account</button>
+        </div>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>The coach signs in at nationalsportsapparel catalog → "Coach sign in" with this email (magic link, no password). They get the customer's adidas/UA tier pricing and school colors automatically.</div>
+      </div>
+      <div style={{padding:'6px 22px 18px'}}>
+        {coachAccts===null&&<div className="empty" style={{padding:20}}>Loading…</div>}
+        {coachAccts&&coachAccts.length===0&&<div className="empty" style={{padding:20}}>No coach accounts yet</div>}
+        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const colorsTxt=coachColorEdit[a.customer_id]??((c2&&Array.isArray(c2.school_colors)?c2.school_colors:[]).join(', '));
+          return<div key={a.id} style={{borderBottom:'1px solid #f1f5f9',padding:'10px 0',display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',opacity:a.status==='active'?1:.55}}>
+            <div style={{flex:'1 1 220px',minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700}}>{a.name||a.email}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{a.email} · {c2?c2.name:a.customer_id}{c2?.adidas_ua_tier?' · Tier '+c2.adidas_ua_tier:''}</div>
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <input placeholder="School colors (e.g. Maroon, Gold)" value={colorsTxt} onChange={e=>setCoachColorEdit(s=>({...s,[a.customer_id]:e.target.value}))} style={{padding:'5px 9px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:210}}/>
+              {coachColorEdit[a.customer_id]!=null&&<button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'4px 10px'}} onClick={()=>saveSchoolColors(a.customer_id)}>Save</button>}
+            </div>
+            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:a.status==='active'?'#fef2f2':'#f0fdf4',color:a.status==='active'?'#dc2626':'#166534',border:'1px solid '+(a.status==='active'?'#fecaca':'#bbf7d0'),borderRadius:8}} onClick={()=>toggleCoachAcct(a)}>{a.status==='active'?'Disable':'Re-enable'}</button>
+          </div>})}
+      </div>
+    </div>
+  </div>;
+
   // Mark an assigned TODO complete from anywhere (e.g. the open-tasks banner on a sales order).
   // Mirrors the dashboard's _todoComplete: optimistic local update + snapshot sync + DB write.
   const completeTodo = (id) => {
@@ -7003,7 +7076,9 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
       <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
       <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button>
-      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button>
+      <button className="btn btn-secondary" onClick={()=>setCoachAcctsOpen(true)}>🎽 Coach Accounts</button></div></div>
+    {renderCoachAcctsModal()}
     </>}
 
     {/* ═══ SALES REP VIEW ═══ */}
@@ -7106,7 +7181,9 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
       {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task to CSR</button>}
+      <button className="btn btn-secondary" onClick={()=>setCoachAcctsOpen(true)}>🎽 Coach Accounts</button>
     </div></div>
+    {renderCoachAcctsModal()}
     </>}
 
     {/* ═══ WAREHOUSE VIEW ═══ */}
