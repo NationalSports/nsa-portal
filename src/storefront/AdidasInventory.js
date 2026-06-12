@@ -380,6 +380,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
   const [alertEmail, setAlertEmail] = useState(() => (loadJson(COACH_KEY, {}).email || ''));
   const [alertSize, setAlertSize] = useState('');
   const [alertBusy, setAlertBusy] = useState(false);
+  const [inboundOpen, setInboundOpen] = useState({}); // sku → expanded inbound rows
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -502,19 +503,34 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, notify }) {
                       <span style={{ fontSize: 12.5, fontWeight: 600, color: '#B45309', alignSelf: 'center' }}>Out of stock</span>
                     )}
                   </div>
-                  {dates.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      {dates.map((d) => (
-                        <div key={d} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-                          <span style={{ fontSize: 11.5, fontWeight: 700, color: '#3A4150', whiteSpace: 'nowrap' }}>Inbound {fmtDate(d)}:</span>
-                          {incoming[d].map((s) => (
-                            <SizeCell key={s.size} size={s.size} avail={s.fq} inbound={d}
-                              qty={qtyInList(cw.sku, s.size)} onQty={(n) => onSetQty(st, cw, s.size, n, d)} />
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  {dates.length > 0 && (() => {
+                    // Collapsed by default — auto-open if the coach already ordered an inbound size
+                    const hasQty = dates.some((d) => incoming[d].some((s) => qtyInList(cw.sku, s.size) > 0));
+                    const open = inboundOpen[cw.sku] ?? hasQty;
+                    const nSizes = dates.reduce((a, d) => a + incoming[d].length, 0);
+                    return open ? (
+                      <div style={{ marginTop: 8 }}>
+                        <button className="ai-iconbtn" style={{ fontSize: 10.5, color: '#92580B' }} onClick={() => setInboundOpen((o) => ({ ...o, [cw.sku]: false }))}>
+                          ▾ Inbound restocks
+                        </button>
+                        {dates.map((d) => (
+                          <div key={d} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+                            <span style={{ fontSize: 11.5, fontWeight: 700, color: '#3A4150', whiteSpace: 'nowrap' }}>Inbound {fmtDate(d)}:</span>
+                            {incoming[d].map((s) => (
+                              <SizeCell key={s.size} size={s.size} avail={s.fq} inbound={d}
+                                qty={qtyInList(cw.sku, s.size)} onQty={(n) => onSetQty(st, cw, s.size, n, d)} />
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <button className="ai-iconbtn" style={{ marginTop: 8, fontSize: 11, color: '#92580B', borderColor: '#F0DCC0', background: '#FFFBF3' }}
+                        onClick={() => setInboundOpen((o) => ({ ...o, [cw.sku]: true }))}
+                        title="Show inbound sizes and order them for future delivery">
+                        ▸ {nSizes} size{nSizes === 1 ? '' : 's'} inbound · {dates.map((d) => fmtDate(d)).join(' · ')}
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             );
