@@ -10,7 +10,7 @@
  *  - garmentsNeedingMockCheck surfaces those garments + the prior mock to confirm/redo.
  */
 
-const { skusMissingMockups, garmentsNeedingMockCheck } = require('../safeHelpers');
+const { skusMissingMockups, garmentsNeedingMockCheck, resolveMockLink, mockLinkDependents } = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
 const makeCase = (artFile, item = { sku: 'A2009', color: 'White' }) => {
@@ -48,6 +48,129 @@ describe('skusMissingMockups — garment-aware reuse', () => {
     const art = { id: 'af4', item_mockups: { 'A2009|White': [{ url: 'http://x/white.png' }] }, mockup_files: [] };
     const { job, so } = makeCase(art);
     expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
+describe('skusMissingMockups — stale job snapshot after a line-item swap', () => {
+  // Repro for the reported bug: a line item's product was swapped (A325 → A515) but
+  // so.jobs was never rebuilt, so job.items[].sku still says A325 while the live SO
+  // line — and its approved mock — are A515. The gate must follow the live line.
+  test('a swapped item satisfied by a mock on its LIVE sku is not reported missing', () => {
+    const art = { id: 'af1', item_mockups: { 'A515|Black': [{ url: 'http://x/a515.png' }] }, mockup_files: [] };
+    const so = {
+      items: [{ sku: 'A515', color: 'Black', decorations: [{ kind: 'art', art_file_id: 'af1' }] }],
+      art_files: [art],
+    };
+    const job = { _art_ids: ['af1'], art_file_id: 'af1', items: [{ item_idx: 0, sku: 'A325', color: 'Black/White' }] };
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+
+  test('a genuinely un-mocked swapped item is reported under its LIVE sku, not the stale one', () => {
+    const art = { id: 'af2', item_mockups: { 'TEE-1|Royal': [{ url: 'http://x/royal.png' }] }, mockup_files: [] };
+    const so = {
+      items: [{ sku: 'A515', color: 'Black', decorations: [{ kind: 'art', art_file_id: 'af2' }] }],
+      art_files: [art],
+    };
+    const job = { _art_ids: ['af2'], art_file_id: 'af2', items: [{ item_idx: 0, sku: 'A325', color: 'Black/White' }] };
+    expect(skusMissingMockups(job, so)).toEqual(['A515']);
+  });
+
+  test('a job item whose live SO line was deleted is skipped, not reported missing', () => {
+    const art = { id: 'af3', item_mockups: { 'A2009|White': [{ url: 'http://x/w.png' }] }, mockup_files: [] };
+    const so = { items: [], art_files: [art] }; // the line at item_idx 0 no longer exists
+    const job = { _art_ids: ['af3'], art_file_id: 'af3', items: [{ item_idx: 0, sku: 'A325', color: 'Black' }] };
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
+describe('mock links — "use the same mockup as that garment"', () => {
+  // Three polos on one embroidery design; garments can be linked to another's mock.
+  const threePoloSO = (art) => ({
+    items: [
+      { sku: 'P1', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+      { sku: 'P2', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+      { sku: 'P3', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] },
+    ],
+    art_files: [art],
+  });
+  const threePoloJob = (art) => ({
+    _art_ids: [art.id], art_file_id: art.id,
+    items: [
+      { item_idx: 0, sku: 'P1', color: 'Black' },
+      { item_idx: 1, sku: 'P2', color: 'Black' },
+      { item_idx: 2, sku: 'P3', color: 'Black' },
+    ],
+  });
+
+  test('default (no links) keeps per-garment behavior — every un-mocked garment is missing', () => {
+    const art = { id: 'af0', item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, mockup_files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P2', 'P3']);
+  });
+
+  test("linked garments are satisfied by the source garment's mock", () => {
+    const art = {
+      id: 'af1',
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' },
+      mockup_files: [],
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  });
+
+  test('a link to a source with NO mock blocks the linked garment AND the source', () => {
+    const art = { id: 'af2', item_mockups: {}, mock_links: { 'P2|Black': 'P1|Black' }, mockup_files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
+  });
+
+  test('a partial link: linked garment satisfied, the unlinked one still needs its own mock', () => {
+    const art = {
+      id: 'af3',
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black' },
+      mockup_files: [],
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P3']);
+  });
+
+  test("a linked garment's own per-item mock is ignored — the source decides", () => {
+    // P2 has its own mock but is linked to P1 which has none → P2 still missing.
+    const art = {
+      id: 'af4',
+      item_mockups: { 'P2|Black': [{ url: 'http://x/p2.png' }] },
+      mock_links: { 'P2|Black': 'P1|Black' },
+      mockup_files: [],
+    };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art)).sort()).toEqual(['P1', 'P2', 'P3']);
+  });
+
+  test('source lookup accepts the legacy bare-sku bucket', () => {
+    const art = { id: 'af5', item_mockups: { P1: [{ url: 'http://x/p1.png' }] }, mock_links: { 'P2|Black': 'P1|Black' }, mockup_files: [] };
+    expect(skusMissingMockups(threePoloJob(art), threePoloSO(art))).toEqual(['P3']);
+  });
+
+  test('garmentsNeedingMockCheck never flags a linked garment', () => {
+    const art = {
+      id: 'af6',
+      item_mockups: { 'P1|Black': [{ url: 'http://x/p1.png' }] }, // would flag P2/P3 as reuse candidates
+      mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' },
+    };
+    expect(garmentsNeedingMockCheck(threePoloJob(art), threePoloSO(art))).toEqual([]);
+  });
+
+  test('resolveMockLink follows chains, guards cycles, and returns null when unlinked', () => {
+    const art = { id: 'af7', mock_links: { 'P3|Black': 'P2|Black', 'P2|Black': 'P1|Black' } };
+    expect(resolveMockLink([art], 'P3', 'Black')).toBe('P1|Black'); // chain flattened on read
+    expect(resolveMockLink([art], 'P2', 'Black')).toBe('P1|Black');
+    expect(resolveMockLink([art], 'P1', 'Black')).toBeNull();
+    const cyc = { id: 'af8', mock_links: { 'A|X': 'B|X', 'B|X': 'A|X' } };
+    expect(resolveMockLink([cyc], 'A', 'X')).toBe('B|X'); // terminates, last distinct hop
+    expect(resolveMockLink([null, undefined, art], 'P2', 'Black')).toBe('P1|Black');
+  });
+
+  test('mockLinkDependents lists the garments pointing at a source', () => {
+    const art = { id: 'af9', mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' } };
+    expect(mockLinkDependents([art], 'P1', 'Black').sort()).toEqual(['P2|Black', 'P3|Black']);
+    expect(mockLinkDependents([art], 'P2', 'Black')).toEqual([]);
   });
 });
 

@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -65,7 +65,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -309,6 +309,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
     const[podDropShip,setPodDropShip]=useState(null);// inline deco PO — warehouse(false) vs drop ship(true); null = unchosen
     const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
+    const[decoEditPo,setDecoEditPo]=useState(null);// {decoPoId,po_id,vendor,customVendor,deco_type,status,expected_date,unit_cost,drop_ship,notes} — edit PO details on the deco PO full page
+    const[decoTrackAdd,setDecoTrackAdd]=useState('');// input for adding a tracking number on the deco PO full page
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -322,6 +324,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[mockBuilder,setMockBuilder]=useState(null);// {gi} — Quick Mock Builder open for jobWizard group index
   const[editMockJob,setEditMockJob]=useState(null);// job object whose quick mock is being re-edited in place
+  const[prodSheetBusy,setProdSheetBusy]=useState(false);// generating the production-sheet PDF download
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
@@ -1963,6 +1966,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Persist an explicit display order (front-first by default) by writing `ord` onto each mock entry.
   const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const updated={...o,art_files:safeArt(o).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)})),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
   const moveMock=(orderedUrls,i,dir)=>{const j=i+dir;if(j<0||j>=orderedUrls.length)return;const arr=[...orderedUrls];[arr[i],arr[j]]=[arr[j],arr[i]];setMockupOrder(arr)};
+  // ── Mock links ("use the same mockup as that garment") ── stored on the job's primary
+  // design art file as garment -> source garment. Mirrors the Art Dashboard modal handler
+  // so linking done in either place is identical. sourceKey null = unlink. Chains are
+  // flattened on write and anything pointing at the member is re-pointed.
+  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:safeArt(o).map(a=>{
+      if(a.id!==artId)return a;
+      const links={...mockLinksOf(a)};
+      let root=sourceKey;
+      const seen=new Set([memberKey]);
+      while(root&&links[root]&&!seen.has(root)){seen.add(root);root=links[root]}
+      if(root===memberKey)root=sourceKey===memberKey?null:sourceKey;
+      if(root)links[memberKey]=root;else delete links[memberKey];
+      Object.keys(links).forEach(k=>{if(links[k]===memberKey)links[k]=root||memberKey;if(links[k]===k)delete links[k]});
+      return{...a,mock_links:links};
+    }),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -5727,7 +5745,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }else{
           lineItems.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
         }
-        return{title:rBillName,docNum:ir.id,docType:'INVOICE',
+        return{title:rBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,
           headerRight:'<div class="ta">'+_$(ir.total)+'</div>'
             +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
           infoBoxes:[
@@ -5959,7 +5977,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
             const brevoAttachments=[];
             try{
-              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',css:PRINT_CSS,
+              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,
                 headerRight:'<div class="ta">'+_$e(ir.total)+'</div><div class="ts">Balance Due: <strong>'+_$e(irBal)+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
                 infoBoxes:[
                   {label:'Bill To',value:irBillName,sub:eBillAddr},
@@ -7114,19 +7132,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // check in calcSOStatus — instead of the misleading "Need to Order". Stored
       // item_status is left untouched (warehouse pull / PO receive flows own that); this
       // only relabels what the rep sees.
-      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';
-        // Nothing received/pulled yet — check whether the ordered sizes are already covered
-        // by POs (ordered − cancelled) or in-house picks. If fully covered, the job is
-        // waiting on the vendor, not awaiting an order.
-        let totalSz=0,coveredSz=0;
+      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';
+        // Compute coverage AND receipts live from the job's items, mirroring calcSOStatus —
+        // never trust stored fulfilled_units alone (it's only refreshed by recalcJobFulfillment,
+        // so a job received before this badge was rendered would read stale). coveredSz is what's
+        // committed (PO ordered − cancelled, or already picked); fulfilledSz is what's actually
+        // in-house (pulled picks + PO receipts). Receipts win, so a fully-received job reads
+        // "Items Received" instead of being stuck on "Ordered — Waiting" — including qty_only
+        // items whose units live in est_qty under the 'QTY' bucket.
+        let totalSz=0,coveredSz=0,fulfilledSz=0;
         (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
           let entries=Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
           if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
           entries.forEach(([sz,v])=>{const need=safeNum(v);totalSz+=need;
             const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
-            coveredSz+=Math.min(need,picked+poOrd);});
+            coveredSz+=Math.min(need,picked+poOrd);
+            const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+            fulfilledSz+=Math.min(need,pulledQty+rcvdQty);});
         });
+        if(totalSz>0&&fulfilledSz>=totalSz)return'items_received';
+        if(fulfilledSz>0||ful>0)return'partially_received';
         if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
         if(coveredSz>0)return'on_order';
         return'need_to_order';};
@@ -7195,6 +7222,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     onBlur={e=>{const v=e.target.value.trim();const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_name:v||jj.art_name,_name_locked:true}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);setEditingJobName(null)}}/>
                   :<><span style={{fontSize:15,fontWeight:700}}>{j.art_name}</span>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>setEditingJobName(j.id)} title="Rename this job">✏️ Rename</button>
+                    {onDownloadProdSheet&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#d97706',color:'white',border:'none',fontWeight:700}} title="Download a production sheet PDF for this job — mockups, sizes & decoration spec for reference" disabled={prodSheetBusy} onClick={async()=>{setProdSheetBusy(true);try{await onDownloadProdSheet(j,o)}catch(err){nf&&nf('Could not generate the production sheet — '+(err?.message||'please try again'),'error')}finally{setProdSheetBusy(false)}}}>{prodSheetBusy?'⏳ Generating…':'📄 Production Sheet'}</button>}
                     {(()=>{const _aids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const canEditMock=j.quick_mock||_aids.some(aid=>{const a=safeArt(o).find(x=>x.id===aid);return a&&a.item_mockups&&Object.values(a.item_mockups).some(arr=>(arr||[]).length>0)});return canEditMock?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}} title="Edit this Quick Mock — updates the mockup the coach sees, status unchanged" onClick={()=>{(j.items||[]).forEach(gItem=>{const it=safeItems(o)[gItem.item_idx];if(it)fetchVendorImage(it.sku,it.color,it.vendor_id,it)});setEditMockJob(j)}}>✏️ Edit Mock</button>:null})()}
                     {j._name_locked&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,_name_locked:false}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf('Job name will sync from artwork on next change')}} title="Stop overriding — name will follow the artwork again">🔓 Unlock</button>}
                     {j._name_locked&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>Custom name</span>}
@@ -7382,14 +7410,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
+                // ── Mock links ── default per-garment; a garment can be linked to use the same
+                // mockup as another garment. Mirrors the Art Dashboard modal.
+                const _jobArts=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _linkArtId=j.art_file_id||(_jobArts[0]&&_jobArts[0].id)||null;
+                const _linkOfR=gi=>resolveMockLink(_jobArts,gi.sku,gi.color);
+                const _depsOfR=gi=>mockLinkDependents(_jobArts,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
+                const _hasOwnMockR=g=>{const k=g.sku+'|'+(g.color||'');return _jobArts.some(a=>{const im=a?.item_mockups||{};return _filterDisplayable(im[k]&&im[k].length>0?im[k]:(im[g.sku]||[])).length>0})};
+                // "Use same mockup as …" chips — one per other garment, single click to link.
+                const _linkChipsR=gi=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
+                  const others=itemDetails.filter(g=>(g.sku+'|'+(g.color||''))!==myKey);
+                  if(others.length===0)return null;
+                  return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
+                    <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
+                    {others.map((g,oi)=>{const theirKey=g.sku+'|'+(g.color||'');const hasMock=_hasOwnMockR(g);
+                      return<button key={oi} onClick={()=>setMockLinkOE(_linkArtId,myKey,theirKey)}
+                        style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:'pointer'}}
+                        title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>🔗 {g.sku}{hasMock?' 🖼️':''}</button>;})}
+                  </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
+                    const _myLinkSrc=_linkOfR(gi);
+                    const _myDeps=_depsOfR(gi);
                     const it=safeItems(o)[gi.item_idx];
                     // Art files referenced by THIS item's decorations, intersected with this job's art set.
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
+                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU).
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
                     const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
@@ -7420,8 +7468,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
                       </div>
-                      {/* Mockup */}
-                      {itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                      {/* Mockup — linked garments show a compact reference to their source garment */}
+                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jobArts,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
+                        return<div style={{margin:10,padding:'10px 12px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #c7d2fe',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
+                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #a5b4fc',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
+                            <div style={{fontSize:10,color:srcFiles.length>0?'#64748b':'#b45309'}}>{srcFiles.length>0?'Approval uses that mockup for this garment too.':'Waiting on that garment’s mockup.'}</div>
+                          </div>
+                          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLinkOE(_linkArtId,gi.sku+'|'+(gi.color||''),null)}>Unlink</button>
+                        </div>;})()
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
                         <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white'}}>
@@ -7447,7 +7506,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                               </div>
                             </div>})}
                         </div>
-                      </div>})():<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      </div>})():<>
+                       <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
+                       {_linkChipsR(gi)}
+                      </>}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
@@ -7595,8 +7657,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
+                // Mock links render read-only here (art is already approved): a linked garment
+                // references its source garment's mock instead of repeating the image.
+                const _jArts2=[..._jArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _linkOf2=gi=>resolveMockLink(_jArts2,gi.sku,gi.color);
+                const _depsOf2=gi=>mockLinkDependents(_jArts2,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
                 return<div style={{margin:'8px 20px'}}>
                   {itemDetails.map((gi,gii)=>{
+                    const _myLinkSrc=_linkOf2(gi);
+                    const _myDeps=_depsOf2(gi);
                     const it=safeItems(o)[gi.item_idx];
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
@@ -7631,8 +7700,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
                       </div>
-                      {/* Mockup */}
-                      {itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                      {/* Mockup — linked garments reference their source garment's mock (read-only) */}
+                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
+                        return<div style={{margin:10,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
+                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #86efac',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                          <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
+                        </div>;})()
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#166534',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
                         <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white'}}>
@@ -10009,14 +10085,51 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
-      // Decoration POs (so.deco_pos) — cost buckets, not per-item line items. Render a
-      // simplified view: header, totals card, bills history, tracking, notes. Reuse the
-      // outer wrapper by synthesizing a fake "po" shape so the existing JSX below works.
+      // Decoration POs (so.deco_pos) — cost buckets, not per-item line items. Full view:
+      // header w/ actions, totals banner, editable PO details, per-item line table (SKUs,
+      // size spreads, decoration instructions), editable tracking, notes, bills history.
       if(poFullPage.decoPo){
-        const dp=poFullPage.decoPo;const soId=poFullPage.soId;const soItems=poFullPage.soItems||[];
+        // Resolve the live record from o.deco_pos so edits made here (or bills applied
+        // elsewhere while the page is open) render immediately, not the snapshot from open.
+        const _dpRef=poFullPage.decoPo;
+        const dp=(o.deco_pos||[]).find(x=>_dpRef.id?x.id===_dpRef.id:x.po_id===_dpRef.po_id)||_dpRef;
+        const soId=poFullPage.soId;
+        const _liveItems=safeItems(o);const soItems=_liveItems.length>0?_liveItems:(poFullPage.soItems||[]);
+        const dpKey=dp.id||dp.po_id;
         const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);
         const actual=safeNum(dp._bill_cost||0);
-        const coveredItems=(dp.item_idxs||[]).map(ii=>soItems[ii]).filter(Boolean);
+        const isTopstar=!!dp.topstar_service;
+        const _rate=safeNum(dp.unit_cost);
+        const _saveDp=(updatedDp,msg)=>{
+          const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+          setO(updated);onSave(updated);
+          setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+          if(msg)nf(msg);
+        };
+        const _szSort=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);if(ia!==-1||ib!==-1)return(ia===-1?99:ia)-(ib===-1?99:ib);const na=parseFloat(a),nb=parseFloat(b);if(!isNaN(na)&&!isNaN(nb))return na-nb;return String(a).localeCompare(String(b))};
+        // One row per covered SO item: live size spread, qty, and outside-deco instructions.
+        const coveredRows=(dp.item_idxs||[]).map(ii=>{const it=soItems[ii];if(!it)return null;
+          const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>_szSort(a,b));
+          const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
+          const decos=(it.decorations||[]).filter(d=>d&&d.kind==='outside_deco');
+          return{idx:ii,it,sizes,qty,decos,lineTotal:Math.round(qty*_rate*100)/100};
+        }).filter(Boolean);
+        const liveQty=coveredRows.reduce((a,r)=>a+r.qty,0);
+        const liveExpected=Math.round(liveQty*_rate*100)/100;
+        const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
+        const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
+        const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+        const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
+          if((dp.tracking_numbers||[]).includes(tn)){nf('Tracking number already on this PO','error');return}
+          _saveDp({...dp,tracking_numbers:[...(dp.tracking_numbers||[]),tn]},'Added tracking '+tn);setDecoTrackAdd('')};
+        const DECO_STATUSES=[['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
+        const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
+        const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
+        const editingPo=decoEditPo&&decoEditPo.decoPoId===dpKey;
+        // Price-list rate for the vendor/type currently picked in the edit panel (if priced).
+        const _draftVendorName=editingPo?(decoEditPo.vendor==='Other'?decoEditPo.customVendor.trim():decoEditPo.vendor):null;
+        const _draftDv=_draftVendorName?decoVendors.find(v=>v.name===_draftVendorName):null;
+        const _draftListRate=_draftDv?_decoVendorPrice(decoVendorPricing,_draftDv.id,decoEditPo.deco_type||'embroidery',{qty:safeNum(dp.qty)||liveQty}):null;
         // Build the printable/downloadable doc for this decoration PO — same
         // buildDocHtml format used by supplier POs and SO documents.
         const _decoPdfFilename='DPO-'+String(dp.po_id||'').replace(/[^a-z0-9]+/gi,'_')+(dp.vendor?'-'+dp.vendor.replace(/[^a-z0-9]+/gi,'_'):'');
@@ -10029,6 +10142,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {label:'Expected Return',value:dp.expected_date||'TBD',sub:dp.created_at?'Created: '+dp.created_at:undefined},
           ],
           tables:[
+            ...(coveredRows.length>0?[{title:'Items on this PO',
+              headers:['SKU','Item','Color','Sizes','Qty',...(_rate>0?['Rate','Line Total']:[])],
+              aligns:['left','left','left','left','center',...(_rate>0?['right','right']:[])],
+              rows:[
+                ...coveredRows.map(r=>({cells:[
+                  {value:r.it.sku||'',style:'font-weight:700'},r.it.name||'',r.it.color||'—',
+                  r.sizes.map(([sz,q])=>sz+':'+q).join('&nbsp; ')||'—',
+                  {value:r.qty,style:'text-align:center;font-weight:700'},
+                  ...(_rate>0?[{value:'$'+_rate.toFixed(2),style:'text-align:right'},{value:'$'+r.lineTotal.toFixed(2),style:'text-align:right;font-weight:700'}]:[]),
+                ]})),
+                {cells:[{value:'TOTAL',style:'font-weight:800'},'','','',{value:liveQty,style:'text-align:center;font-weight:800'},...(_rate>0?['',{value:'$'+liveExpected.toFixed(2),style:'text-align:right;font-weight:800'}]:[])]},
+              ]}]:[]),
+            ...(decoInstr.length>0?[{title:'Decoration Instructions',headers:['SKU','Placement','Type','Notes'],aligns:['left','left','left','left'],
+              rows:decoInstr.map(d=>({cells:[{value:d.sku||'',style:'font-weight:700'},d.position||'—',(d.deco_type||'').replace(/_/g,' ')||'—',d.notes||'—']}))}]:[]),
             {title:'Cost Summary',headers:['Units Covered','Unit Cost','Expected','Actual (billed)','Bills'],aligns:['center','right','right','right','center'],
               rows:[{cells:[
                 {value:dp.qty||0,style:'text-align:center;font-weight:700'},
@@ -10037,8 +10164,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {value:'$'+actual.toFixed(2),style:'text-align:right'},
                 {value:(dp._bill_details||[]).length,style:'text-align:center'},
               ]}]},
-            ...(coveredItems.length>0?[{title:'Items Covered',headers:['SKU','Item','Color'],aligns:['left','left','left'],
-              rows:coveredItems.map(it=>({cells:[it.sku||'',it.name||'',it.color||'—']}))}]:[]),
             ...((dp._bill_details||[]).length>0?[{title:'Billing Details',headers:['Doc #','Date','Supplier','Cost','Freight','Tracking'],aligns:['left','left','left','right','right','left'],
               rows:dp._bill_details.map(bd=>({cells:[bd.doc||'—',bd.date||'—',bd.supplier||'—',{value:'$'+safeNum(bd.cost).toFixed(2),style:'text-align:right'},{value:bd.freight?'$'+safeNum(bd.freight).toFixed(2):'—',style:'text-align:right'},bd.tracking||'—']}))}]:[]),
           ],
@@ -10048,32 +10173,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         return<div className="po-fullpage">
           <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
-              <div style={{display:'flex',alignItems:'center',gap:12}}>
-                <button className="btn btn-secondary btn-sm" onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}}>&larr; Back</button>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12,gap:12}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <button className="btn btn-secondary btn-sm" onClick={()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)}}>&larr; Back</button>
                 <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
-                <button className="btn btn-sm" style={{background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
-                  if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
-                  const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);nf('Deleted '+(dp.po_id||'decoration PO'));
-                }}>🗑 Delete PO</button>
-                <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
-                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
-                  try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
-                  catch(err){console.warn('Decoration PO PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
-                }}>📥 Download</button>
                 <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
                 <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
                 {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
               </div>
-              <div style={{textAlign:'right'}}>
-                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null)}} title="Back to Sales Order">{soId}</span></div>
+              <div style={{textAlign:'right',flexShrink:0}}>
+                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)}} title="Back to Sales Order">{soId}</span></div>
                 <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{dp.vendor||'—'}</strong></div>
                 {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
                 {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
                 {dp.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected return: {dp.expected_date}</div>}
               </div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
+              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:!!dp.drop_ship,notes:dp.notes||''})}>✎ Edit PO</button>}
+              <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
+                try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
+                catch(err){console.warn('Decoration PO PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
+              }}>📥 Download</button>
+              <button className="btn btn-sm" style={{marginLeft:'auto',background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
+                if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
+                const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null);nf('Deleted '+(dp.po_id||'decoration PO'));
+              }}>🗑 Delete PO</button>
             </div>
             <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
               <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
@@ -10084,18 +10212,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>{(dp._bill_details||[]).length}</div></div>
               </div>
             </div>
-            {coveredItems.length>0&&(()=>{
+            {editingPo&&<div className="card" style={{marginBottom:16,border:'2px solid #7c3aed'}}>
+              <div className="card-header" style={{background:'#faf5ff'}}><h2 style={{color:'#7c3aed'}}>✎ Edit PO Details</h2></div>
+              <div className="card-body">
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:12}}>
+                  <div><label className="form-label">PO Number</label><input className="form-input" value={decoEditPo.po_id} onChange={e=>setDecoEditPo(d=>({...d,po_id:e.target.value}))} style={{fontWeight:700,color:'#7c3aed'}}/></div>
+                  <div><label className="form-label">Vendor</label><select className="form-select" value={decoEditPo.vendor} onChange={e=>setDecoEditPo(d=>({...d,vendor:e.target.value}))}>
+                      {_vendorOpts.map(v=><option key={v} value={v}>{v}</option>)}</select>
+                    {decoEditPo.vendor==='Other'&&<input className="form-input" placeholder="Vendor name..." value={decoEditPo.customVendor} onChange={e=>setDecoEditPo(d=>({...d,customVendor:e.target.value}))} style={{marginTop:6}}/>}
+                  </div>
+                  <div><label className="form-label">Deco Type</label><select className="form-select" value={decoEditPo.deco_type} onChange={e=>setDecoEditPo(d=>({...d,deco_type:e.target.value}))}>
+                    {(DECO_TYPES.includes(decoEditPo.deco_type)?DECO_TYPES:[decoEditPo.deco_type,...DECO_TYPES]).map(t=><option key={t} value={t}>{(t||'').replace(/_/g,' ')}</option>)}</select></div>
+                  <div><label className="form-label">Status</label><select className="form-select" value={decoEditPo.status} onChange={e=>setDecoEditPo(d=>({...d,status:e.target.value}))}>
+                    {(DECO_STATUSES.some(([v])=>v===decoEditPo.status)?DECO_STATUSES:[[decoEditPo.status,decoEditPo.status],...DECO_STATUSES]).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+                  <div><label className="form-label">Expected Return</label><input className="form-input" type="date" value={decoEditPo.expected_date} onChange={e=>setDecoEditPo(d=>({...d,expected_date:e.target.value}))}/></div>
+                  <div><label className="form-label">Unit Cost ($/unit)</label><input className="form-input" type="number" step="0.01" value={decoEditPo.unit_cost} onChange={e=>setDecoEditPo(d=>({...d,unit_cost:e.target.value}))} style={{fontWeight:700,color:'#7c3aed'}}/>
+                    {_draftListRate!==null&&Math.abs((parseFloat(decoEditPo.unit_cost)||0)-_draftListRate)>0.004&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:6}} onClick={()=>setDecoEditPo(d=>({...d,unit_cost:_draftListRate.toFixed(2)}))}>Price list: ${_draftListRate.toFixed(2)}/unit — apply</button>}
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:8,marginBottom:12}}>
+                  {[{v:false,t:'🏭 Return to Warehouse',s:'Decorated goods come back to NSA'},{v:true,t:'📦 Drop Ship',s:'Decorator ships direct to the customer'}].map(opt=>{const sel=decoEditPo.drop_ship===opt.v;return<button key={String(opt.v)} type="button" onClick={()=>setDecoEditPo(d=>({...d,drop_ship:opt.v}))} style={{flex:1,padding:'8px 12px',borderRadius:8,border:sel?'2px solid #7c3aed':'1px solid #e2e8f0',background:sel?'#faf5ff':'white',cursor:'pointer',textAlign:'left'}}>
+                    <div style={{fontWeight:700,fontSize:12,color:sel?'#6d28d9':'#1e293b'}}>{opt.t}</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{opt.s}</div>
+                  </button>})}
+                </div>
+                <div style={{marginBottom:12}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={3} value={decoEditPo.notes} onChange={e=>setDecoEditPo(d=>({...d,notes:e.target.value}))} placeholder="Thread colors, PMS colors, placement notes..." style={{resize:'vertical'}}/></div>
+                <div style={{display:'flex',alignItems:'center',gap:16,paddingTop:10,borderTop:'1px dashed #e2e8f0',fontSize:13,flexWrap:'wrap'}}>
+                  <span style={{color:'#64748b'}}>{safeNum(dp.qty)} units × ${(parseFloat(decoEditPo.unit_cost)||0).toFixed(2)}/unit = <strong style={{color:'#166534'}}>${(Math.round(safeNum(dp.qty)*(parseFloat(decoEditPo.unit_cost)||0)*100)/100).toFixed(2)} expected</strong></span>
+                  <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+                    <button className="btn btn-sm btn-secondary" onClick={()=>setDecoEditPo(null)}>Cancel</button>
+                    <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+                      const finalVendor=decoEditPo.vendor==='Other'?decoEditPo.customVendor.trim():decoEditPo.vendor;
+                      const newPoId=decoEditPo.po_id.trim();
+                      if(!newPoId){nf('PO number cannot be empty','error');return}
+                      if(!finalVendor){nf('Pick a vendor (or type a name under Other)','error');return}
+                      const uc=Math.round((parseFloat(decoEditPo.unit_cost)||0)*100)/100;
+                      const dv=decoVendors.find(v=>v.name===finalVendor);
+                      const updatedDp={...dp,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:Math.round(safeNum(dp.qty)*uc*100)/100,drop_ship:decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
+                      _saveDp(updatedDp,'✎ Updated '+newPoId);
+                      setDecoEditPo(null);
+                    }}>Save Details</button>
+                  </div>
+                </div>
+              </div>
+            </div>}
+            {(coveredRows.length>0||!isTopstar)&&(()=>{
               // Item coverage stays editable after creation — decorators often get more styles added
               // to a run later. qty + expected cost recompute from the new coverage; unit_cost and
               // any applied bills are left alone.
-              const dpKey=dp.id||dp.po_id;
               const editing=decoEditItems&&decoEditItems.decoPoId===dpKey;
               const editQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const editableItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>editQty(it)>0||(dp.item_idxs||[]).includes(it._idx));
               const newQty=editing?editableItems.reduce((a,it)=>a+(decoEditItems.sel[it._idx]?editQty(it):0),0):0;
               const newExpected=Math.round(newQty*safeNum(dp.unit_cost)*100)/100;
               return<div className="card" style={{marginBottom:16}}>
-              <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><h2>Items covered (for price-list lookup and badges)</h2>
+              <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><h2>Items on this PO ({coveredRows.length})<span style={{fontSize:10,fontWeight:400,color:'#94a3b8',marginLeft:8}}>drives price-list lookup and item badges</span></h2>
                 {!editing?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};(dp.item_idxs||[]).forEach(ii=>{sel[ii]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>✎ Edit Items</button>
                 :<div style={{display:'flex',gap:6,alignItems:'center'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};editableItems.forEach(it=>{sel[it._idx]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>Select All</button>
@@ -10104,18 +10275,50 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
                     if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
                     const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected};
-                    const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
-                    setO(updated);onSave(updated);
-                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+                    _saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
                     setDecoEditItems(null);
-                    nf('🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
                   }}>Save Items</button>
                 </div>}
               </div>
               <div className="card-body">
-                {!editing?<div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                  {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
-                </div>
+                {!editing?(coveredRows.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No items linked to this PO yet — hit <strong>✎ Edit Items</strong> to pick which SO items it covers.</div>
+                :<>
+                  {qtyDrift&&<div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:10,fontSize:12,color:'#92400e',flexWrap:'wrap'}}>
+                    <span>⚠️ SO quantities changed since this PO was saved — PO covers <strong>{safeNum(dp.qty)}</strong> units, covered items now total <strong>{liveQty}</strong>.</span>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:'auto'}} onClick={()=>_saveDp({...dp,qty:liveQty,expected_cost:liveExpected},'Synced '+(dp.po_id||'deco PO')+' to '+liveQty+' units (expected $'+liveExpected.toFixed(2)+')')}>Sync to {liveQty} units</button>
+                  </div>}
+                  <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                    <thead><tr style={{borderBottom:'2px solid #0f172a'}}>
+                      <th style={{padding:'6px 8px',textAlign:'left'}}>SKU</th>
+                      <th style={{padding:'6px 8px',textAlign:'left'}}>Product</th>
+                      <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
+                      <th style={{padding:'6px 8px',textAlign:'left'}}>Sizes</th>
+                      <th style={{padding:'6px 8px',textAlign:'center'}}>Units</th>
+                      <th style={{padding:'6px 8px',textAlign:'right'}}>Rate</th>
+                      <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {coveredRows.map(r=><tr key={r.idx} style={{borderBottom:'1px solid #e2e8f0',verticalAlign:'top'}}>
+                        <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{r.it.sku}</td>
+                        <td style={{padding:'6px 8px'}}>
+                          <div style={{fontWeight:600}}>{r.it.name}</div>
+                          {r.decos.map((d,di)=><div key={di} style={{fontSize:10,color:'#7c3aed',marginTop:2}}>🎨 {(d.position||'—')+' · '+((d.deco_type||'').replace(/_/g,' ')||'—')}{d.vendor?' · '+d.vendor:''}{d.notes?<span style={{color:'#64748b'}}> — {d.notes}</span>:null}</div>)}
+                        </td>
+                        <td style={{padding:'6px 8px',color:'#64748b'}}>{r.it.color||'—'}</td>
+                        <td style={{padding:'6px 8px'}}>{r.sizes.length>0?<div style={{display:'flex',flexWrap:'wrap',gap:4}}>{r.sizes.map(([sz,q])=><span key={sz} style={{fontFamily:'monospace',fontSize:11,fontWeight:700,padding:'1px 6px',borderRadius:4,background:'#f1f5f9',color:'#334155',whiteSpace:'nowrap'}}>{sz}×{q}</span>)}</div>:<span style={{color:'#94a3b8'}}>—</span>}</td>
+                        <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{r.qty}</td>
+                        <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${_rate.toFixed(2)}</td>
+                        <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:13}}>${r.lineTotal.toFixed(2)}</td>
+                      </tr>)}
+                      <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
+                        <td colSpan={4} style={{padding:'6px 8px',textAlign:'right'}}>Total</td>
+                        <td style={{padding:'6px 8px',textAlign:'center'}}>{liveQty}</td>
+                        <td></td>
+                        <td style={{padding:'6px 8px',textAlign:'right',fontSize:14,color:'#166534'}}>${liveExpected.toFixed(2)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </>)
                 :<>
                   {editableItems.map(it=><div key={it._idx} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'#faf5ff',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
                     <input type="checkbox" checked={!!decoEditItems.sel[it._idx]} style={{width:14,height:14}} onChange={()=>setDecoEditItems(d=>({...d,sel:{...d.sel,[it._idx]:!d.sel[it._idx]}}))}/>
@@ -10132,13 +10335,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </>}
               </div>
             </div>})()}
-            {dp.notes&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Notes</h2></div><div className="card-body"><div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{dp.notes}</div></div></div>}
-            {(dp.tracking_numbers||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>
-              <div className="card-header" style={{background:'#eff6ff'}}><h2 style={{color:'#1e40af'}}>Tracking Numbers</h2></div>
-              <div className="card-body"><div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                {dp.tracking_numbers.map((tn,i)=><span key={i} style={{fontFamily:'monospace',fontSize:12,padding:'4px 10px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700}}>{tn}</span>)}
-              </div></div>
-            </div>}
+            {dp.notes&&!editingPo&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><h2>Notes / Instructions for Decorator</h2></div><div className="card-body"><div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{dp.notes}</div></div></div>}
+            <div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>
+              <div className="card-header" style={{background:'#eff6ff'}}><h2 style={{color:'#1e40af'}}>Tracking Numbers{(dp.tracking_numbers||[]).length>0?' ('+(dp.tracking_numbers||[]).length+')':''}</h2></div>
+              <div className="card-body">
+                {(dp.tracking_numbers||[]).length===0?<div style={{fontSize:12,color:'#94a3b8',marginBottom:10}}>No tracking numbers yet — they're added automatically from decorator bills, or add one below.</div>
+                :<div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:10}}>
+                  {(dp.tracking_numbers||[]).map((tn,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:6,background:'#eff6ff'}}>
+                    <a href={_trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:12,color:'#1e40af',fontWeight:700,textDecoration:'none'}}>{tn}</a>
+                    <span title="Remove tracking number" style={{cursor:'pointer',color:'#dc2626',fontWeight:800,fontSize:13,lineHeight:1}} onClick={()=>_saveDp({...dp,tracking_numbers:(dp.tracking_numbers||[]).filter((_,ti)=>ti!==i)},'Removed tracking '+tn)}>×</span>
+                  </span>)}
+                </div>}
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <input className="form-input" placeholder="Add tracking number..." value={decoTrackAdd} onChange={e=>setDecoTrackAdd(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();_addTrack()}}} style={{maxWidth:300,fontSize:12}}/>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={_addTrack}>+ Add</button>
+                </div>
+              </div>
+            </div>
             {(dp._bill_details||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #166534'}}>
               <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Billing Details ({dp._bill_details.length})</h2></div>
               <div className="card-body"><table style={{width:'100%',fontSize:12}}>

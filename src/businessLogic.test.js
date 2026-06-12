@@ -1008,6 +1008,33 @@ describe('Job Readiness (isJobReady)', () => {
     expect(isJobReady(job, so)).toBe(false);
   });
 
+  test('ready when a qty_only item (units in est_qty) is received under the QTY bucket', () => {
+    // Custom / no-size-breakdown line: quantity lives in est_qty, sizes is empty, and POs/picks
+    // track receipts under the 'QTY' key. The job must still total its units and read ready —
+    // otherwise its total stays 0 and it sits on "Ordered — Waiting" even fully received.
+    const job = { art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0 }] };
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }],
+      })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(job, so)).toBe(true);
+  });
+
+  test('not ready when a qty_only item is on a PO but not yet received', () => {
+    const job = { art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0 }] };
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: {} }], // ordered, nothing checked in
+      })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(job, so)).toBe(false);
+  });
+
   test('split parent with open units is not ready off its slice\'s receipts', () => {
     // Split-by-received: the slice owns the 90 checked-in L's; the parent's 10 are still open.
     // Both jobs read the same item-level receipt pool — the parent must not count the slice's.
@@ -1038,6 +1065,22 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
     expect(j.fulfilled_units).toBe(15);
     expect(j.total_units).toBe(15);
+  });
+
+  test('qty_only item received under the QTY bucket marks job items_received', () => {
+    // Regression: custom / no-size-breakdown jobs (units in est_qty, receipts under 'QTY') were
+    // stuck at total 0, so they never reached items_received and read "Ordered — Waiting" forever.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 0, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: {}, qty_only: true, est_qty: 50,
+      po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received');
+    expect(j.fulfilled_units).toBe(50);
+    expect(j.total_units).toBe(50);
   });
 
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
