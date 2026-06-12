@@ -653,7 +653,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false} = opts;
+  const {coreOnly=false, histInvoices=false, only=null} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -663,6 +663,12 @@ const _dbLoad = async (opts={}) => {
     // When coreOnly, skip slow-changing tables (team, vendors, omg, issues, deco, promo, etc.)
     // They'll be loaded on full polls every 5 minutes and via realtime reloadAll()
     const _skip=()=>Promise.resolve({data:[],error:null,status:200});
+    // Selective reload: when `only` (a Set of entity-group names) is given, fetch just those
+    // groups — a realtime products change shouldn't re-download estimates, SOs, invoices, etc.
+    // A group bundles a parent with every child table _dbLoad joins into it, so partial loads
+    // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
+    const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
+    const _cold=q=>()=>(coreOnly||only)?_skip():q();
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -672,47 +678,49 @@ const _dbLoad = async (opts={}) => {
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
-      ()=>coreOnly?_skip():_safeQuery('team_members',{order:'name'}),
-      ()=>_safeQuery('customers',{order:'name'}),
-      ()=>_safeQuery('customer_contacts'),
-      ()=>coreOnly?_skip():_safeQuery('vendors',{order:'name'}),
-      ()=>_safeQuery('products',{order:'name'}),
-      ()=>_safeQuery('product_inventory'),
-      ()=>_safeQuery('estimates',{order:'id'}),
-      ()=>_safeQuery('estimate_art_files'),
-      ()=>_safeQuery('estimate_items',{order:'item_index'}),
-      ()=>_safeQuery('estimate_item_decorations',{order:'deco_index'}),
-      ()=>_safeQuery('sales_orders',{order:'id'}),
-      ()=>_safeQuery('so_art_files'),
-      ()=>_safeQuery('so_firm_dates'),
-      ()=>_safeQuery('so_items',{order:'item_index'}),
-      ()=>_safeQuery('so_item_decorations',{order:'deco_index'}),
-      ()=>_safeQuery('so_item_pick_lines'),
-      ()=>_safeQuery('so_item_po_lines'),
-      ()=>_safeQuery('so_jobs'),
-      ()=>_safeQuery('invoices',{order:'id'}),
-      ()=>_safeQuery('invoice_payments'),
-      ()=>_safeQuery('invoice_items'),
-      ()=>_safeQuery('messages',{order:'id'}),
-      ()=>_safeQuery('message_reads'),
-      ()=>coreOnly?_skip():_safeQuery('omg_stores',{order:'id'}),
-      ()=>coreOnly?_skip():_safeQuery('omg_store_products'),
-      ()=>coreOnly?_skip():_safeQuery('issues'),
-      ()=>_safeQuery('app_state'),
-      ()=>_safeQuery('customer_promo_programs'),
-      ()=>_safeQuery('customer_promo_periods'),
-      ()=>_safeQuery('customer_promo_usage'),
-      ()=>_safeQuery('customer_credits'),
-      ()=>_safeQuery('customer_credit_usage'),
-      ()=>coreOnly?_skip():_safeQuery('rep_csr_assignments'),
-      ()=>coreOnly?_skip():_safeQuery('assigned_todos'),
-      ()=>coreOnly?_skip():_safeQuery('todo_comments'),
-      ()=>coreOnly?_skip():_safeQuery('deco_vendors',{order:'name'}),
-      ()=>coreOnly?_skip():_safeQuery('deco_vendor_pricing'),
-      ()=>coreOnly?_skip():_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
-      ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
-      ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
-      ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
+      _cold(()=>_safeQuery('team_members',{order:'name'})),
+      _grp('customers',()=>_safeQuery('customers',{order:'name'})),
+      _grp('customers',()=>_safeQuery('customer_contacts')),
+      _cold(()=>_safeQuery('vendors',{order:'name'})),
+      _grp('products',()=>_safeQuery('products',{order:'name'})),
+      _grp('products',()=>_safeQuery('product_inventory')),
+      _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
+      _grp('estimates',()=>_safeQuery('estimate_art_files')),
+      _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
+      _grp('estimates',()=>_safeQuery('estimate_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_safeQuery('sales_orders',{order:'id'})),
+      _grp('sales_orders',()=>_safeQuery('so_art_files')),
+      _grp('sales_orders',()=>_safeQuery('so_firm_dates')),
+      _grp('sales_orders',()=>_safeQuery('so_items',{order:'item_index'})),
+      _grp('sales_orders',()=>_safeQuery('so_item_decorations',{order:'deco_index'})),
+      _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
+      _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
+      _grp('sales_orders',()=>_safeQuery('so_jobs')),
+      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
+      _grp('invoices',()=>_safeQuery('invoice_payments')),
+      _grp('invoices',()=>_safeQuery('invoice_items')),
+      _grp('messages',()=>_safeQuery('messages',{order:'id'})),
+      _grp('messages',()=>_safeQuery('message_reads')),
+      _cold(()=>_safeQuery('omg_stores',{order:'id'})),
+      _cold(()=>_safeQuery('omg_store_products')),
+      _cold(()=>_safeQuery('issues')),
+      // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
+      // products snapshot must include them or every image-only product would mis-diff and re-save.
+      ()=>only&&!only.has('products')&&!only.has('app_state')?_skip():_safeQuery('app_state'),
+      _grp('customers',()=>_safeQuery('customer_promo_programs')),
+      _grp('customers',()=>_safeQuery('customer_promo_periods')),
+      _grp('customers',()=>_safeQuery('customer_promo_usage')),
+      _grp('customers',()=>_safeQuery('customer_credits')),
+      _grp('customers',()=>_safeQuery('customer_credit_usage')),
+      _cold(()=>_safeQuery('rep_csr_assignments')),
+      _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
+      _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
+      _cold(()=>_safeQuery('deco_vendors',{order:'name'})),
+      _cold(()=>_safeQuery('deco_vendor_pricing')),
+      _cold(()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}})),
+      _cold(()=>_safeQuery('quote_request_items',{order:'sort_order'})),
+      _cold(()=>_safeQuery('dismissed_todos')),
+      _cold(()=>_safeQuery('dismissed_notifs')),
       // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
@@ -857,7 +865,8 @@ const _dbLoad = async (opts={}) => {
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
-    const hasData=(customers.length>0)||(sales_orders.length>0);
+    // Selective loads may not include customers/sales_orders — judge by whatever was fetched
+    const hasData=only?[customers,sales_orders,products,estimates,invoices,messages,assignedTodos].some(a=>a.length>0):((customers.length>0)||(sales_orders.length>0));
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
@@ -3671,11 +3680,20 @@ export default function App(){
     if(supabase){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
+      // Selective reload bookkeeping: realtime events queue their entity group here and the
+      // debounced reload fetches only those groups. '__all__' (tab-visibility regain / unknown
+      // table) forces a full reload. Pending groups are consumed only once a load actually
+      // starts, so deferred reloads (save in flight) keep accumulating events.
+      const _rtPending=new Set();
+      const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
       const reloadAll=async()=>{
         // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
         if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
-        const d=await _dbLoad();if(!d||!d.hasData)return;
+        const groups=(_rtPending.size===0||_rtPending.has('__all__'))?null:new Set(_rtPending);
+        _rtPending.clear();
+        const _has=g=>!groups||groups.has(g);
+        const d=await _dbLoad(groups?{only:groups}:{});if(!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
@@ -3688,32 +3706,39 @@ export default function App(){
           return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
             apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
         };
-        const estMerge=_mergeProtected(d.estimates,'ests');
-        const soMerge=_mergeProtected(d.sales_orders,'sos');
-        const invMerge=_mergeProtected(d.invoices,'invs');
-        const custMerge=_mergeProtected(d.customers,'cust');
-        const msgMerge=_mergeProtected(d.messages,'msgs');
-        const prodMerge=_mergeProtected(d.products,'prod');
+        // Only build merges for groups that were actually loaded — skipped groups keep prior snap/state
+        const estMerge=_has('estimates')?_mergeProtected(d.estimates,'ests'):null;
+        const soMerge=_has('sales_orders')?_mergeProtected(d.sales_orders,'sos'):null;
+        const invMerge=_has('invoices')?_mergeProtected(d.invoices,'invs'):null;
+        const custMerge=_has('customers')?_mergeProtected(d.customers,'cust'):null;
+        const msgMerge=_has('messages')?_mergeProtected(d.messages,'msgs'):null;
+        const prodMerge=_has('products')?_mergeProtected(d.products,'prod'):null;
         // Update snapshot before state — auto-save effects will diff against this.
         // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
-        const todoMerge=_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]);
-        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:todoMerge};
+        const todoMerge=_has('assigned_todos')?_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]):null;
+        _dbSnap.current={..._dbSnap.current,
+          ...(estMerge?{ests:estMerge.snap}:{}),...(soMerge?{sos:soMerge.snap}:{}),
+          ...(invMerge?{invs:invMerge.snap}:{}),...(msgMerge?{msgs:msgMerge.snap}:{}),
+          ...(custMerge?{cust:custMerge.snap}:{}),...(prodMerge?{prod:prodMerge.snap}:{}),
+          ...(todoMerge?{assignedTodos:todoMerge}:{}),
+          ...(groups?{}:{vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues})};
         // Use change detection to avoid triggering save effects needlessly
-        if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
-        setEsts(estMerge.apply);
-        setSOs(soMerge.apply);
-        setInvs(invMerge.apply);
-        if(d.messages.length)setMsgs(msgMerge.apply);
-        setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
-        if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
-        if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
-        setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
-        setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
-        if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
-        if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
-        // Refresh app_state keys
-        const as=d.appState||{};
+        if(!groups&&d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
+        if(estMerge)setEsts(estMerge.apply);
+        if(soMerge)setSOs(soMerge.apply);
+        if(invMerge)setInvs(invMerge.apply);
+        if(msgMerge&&d.messages.length)setMsgs(msgMerge.apply);
+        if(custMerge)setCust(custMerge.apply);
+        if(prodMerge&&d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
+        if(!groups&&d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
+        if(!groups&&d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
+        if(!groups)setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        if(todoMerge)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
+        if(!groups&&d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
+        if(!groups&&d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
+        // Refresh app_state keys — fetched on full reloads and alongside products (image fallbacks).
+        // When app_state wasn't part of this load, `as` stays empty so the guarded setters no-op.
+        const as=(!groups||groups.has('products')||groups.has('app_state'))?(d.appState||{}):{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
         if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
@@ -3721,12 +3746,15 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
       };
-      // Debounce realtime events — coalesce rapid-fire changes into a single reload
-      const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
+      // Debounce realtime events — coalesce rapid-fire changes into a single selective reload.
+      // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
+      // active users the 2s debounce turned each save into an all-client re-download storm that
+      // saturated the database. The 60s poll remains the freshness backstop.
+      const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
       let _rtErrorLogged=false;
       ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
             if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
@@ -3736,7 +3764,8 @@ export default function App(){
         channels.push(ch);
       });
       // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload()}};
+      // Tab regained focus: full reload, short 1s debounce — a deliberate user action, keep it snappy
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload(null,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
