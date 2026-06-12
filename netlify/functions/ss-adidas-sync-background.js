@@ -118,7 +118,8 @@ exports.handler = async () => {
             const qty = Array.isArray(r.warehouses)
               ? r.warehouses.reduce((a, w) => a + (Number(w.qty) || 0), 0)
               : (Number(r.qty) || 0);
-            invUpserts.push({ sku, size: r.sizeName, stock_qty: qty, last_synced: new Date().toISOString(), source: 'ss_activewear' });
+            // id is text NOT NULL with no default — same {sku}-{size} scheme as the Cowork sync
+            invUpserts.push({ id: sku + '-' + r.sizeName, sku, size: r.sizeName, stock_qty: qty, last_synced: new Date().toISOString(), source: 'ss_activewear' });
           }
         }
 
