@@ -16,7 +16,7 @@ import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
@@ -2307,6 +2307,10 @@ const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
 // slots instead of sweeping every key on every art keeps both out of the display.
 const _prodJobItemMocks=(artFiles,so,gi)=>{
   const sku=gi.sku;const _mk=sku+'|'+(gi.color||'');
+  // A garment linked to another garment's mockup resolves to the SOURCE garment's mock.
+  // Display surfaces dedupe so it renders once for the linked set.
+  const _src=resolveMockLink(artFiles,sku,gi.color);
+  if(_src)return mockLinkSourceFiles(artFiles,_src);
   const _isNN=k=>/\|(numbers|names)(_\d+)?$/.test(k);
   const out=[];const seen=new Set();
   const push=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)};
@@ -2358,6 +2362,10 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
   const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
   const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
+  // A garment linked to another garment's mockup prints a one-line reference instead of
+  // repeating the image; the source garment prints it once with an "also used by" caption.
+  const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
+  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
   const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
     'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
     'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
@@ -2464,13 +2472,22 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     }
     // Mockup image(s) for this item immediately after its tables — all locations
     // (front + back arts, numbers/names) side by side
+    const _giSrc=_linkSrcOf(gi);
+    if(_giSrc){
+      // Linked garment: reference the source garment's mockup instead of repeating it.
+      sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
+      itemSectionHtmls.push(sHtml);
+      return;
+    }
+    const _giDeps=_linkDepsOf(gi);
     const itemMockUrls=_urlsFor(collectItemMocks(gi));
     if(itemMockUrls.length>0){
       const _mh=itemMockUrls.length>1?300:380;
       const _mw=itemMockUrls.length>1?'48%':'100%';
+      const _depsCap=_giDeps.length?'<div style="text-align:center;font-size:10px;font-weight:700;color:#3730a3;margin-top:6px">🔗 Mockup also used by: '+_giDeps.map(k=>k.split('|')[0]).join(', ')+'</div>':'';
       sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
         +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
-        +'</div>';
+        +'</div>'+_depsCap;
     } else if(gi.image_url&&_isImgUrl(gi.image_url)){
       sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
     }
@@ -10153,11 +10170,16 @@ export default function App(){
 
             {/* Per-item production cards — mockup, sizes, numbers/names, decoration spec, files */}
             {(()=>{
+              // Linked garments reference their source garment's mockup instead of repeating it.
+              const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
+              const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
               return<div style={{padding:20,background:'#f8fafc'}}>
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
                   if(!it)return null;
-                  const itemMocks=collectItemMocks(gi);
+                  const _giSrc=_linkSrcOf(gi);
+                  const _giDeps=_linkDepsOf(gi);
+                  const itemMocks=_giSrc?[]:collectItemMocks(gi);
                   const artDecos=safeDecos(it).filter(d=>d.kind==='art');
                   const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
@@ -10185,11 +10207,15 @@ export default function App(){
                       </div>
                     </div>
                     {/* Mockup display */}
-                    {itemMocks.length>0&&<div style={{padding:12,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
+                    {_giSrc?<div style={{padding:'8px 12px',background:'#eef2ff',borderBottom:'1px solid #c7d2fe',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>🔗 Same mockup as {_giSrc.split('|')[0]}</div>
+                    :itemMocks.length>0&&<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
+                      {_giDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',textAlign:'center',marginBottom:6}}>🔗 Mockup also used by {_giDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center'}}>
                       {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?_cloudinaryDisplay(u):isPdf?_cloudinaryPdfThumb(u):null;
                         return src?<img key={fi} src={src} alt="Mockup" style={{height:itemMocks.length>1?320:420,maxWidth:itemMocks.length>1?'48%':'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
                         :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
                       })}
+                      </div>
                     </div>}
                     {/* Size grid */}
                     {itemSizes.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',overflowX:'auto'}}>
@@ -19697,6 +19723,34 @@ export default function App(){
             if(typeof nf==='function')nf('Mockup removed from '+sku);
           }finally{setArtJobDetailUploading(false)}
         };
+        // ── Mock links ── stored on the job's primary design: garment -> source garment.
+        const _linkAnchorId=af?.id||null;
+        // Link a garment to another garment's mockup (sourceKey), or unlink (null). Chains
+        // are flattened on write: linking to an already-linked garment stores its root, and
+        // anything pointing at THIS garment is re-pointed to the new source.
+        const setMockLink=async(memberKey,sourceKey)=>{
+          if(!_linkAnchorId||artJobDetailUploading||memberKey===sourceKey)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=safeArt(liveSO).map(a=>{
+              if(a.id!==_linkAnchorId)return a;
+              const links={...mockLinksOf(a)};
+              let root=sourceKey;
+              const seen=new Set([memberKey]);
+              while(root&&links[root]&&!seen.has(root)){seen.add(root);root=links[root]}
+              if(root===memberKey)root=sourceKey===memberKey?null:sourceKey; // never self-link via chain
+              if(root)links[memberKey]=root;else delete links[memberKey];
+              Object.keys(links).forEach(k=>{if(links[k]===memberKey)links[k]=root||memberKey;if(links[k]===k)delete links[k]});
+              return{...a,mock_links:links};
+            });
+            const newSO=savSO({...liveSO,art_files:updArt});
+            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){if(typeof nf==='function')nf('Failed to save mockup link. Please retry.','error');return}
+            if(typeof nf==='function')nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup');
+          }finally{setArtJobDetailUploading(false)}
+        };
 
         return<div className="modal-overlay" onClick={()=>setArtMockupModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'94vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#1e293b,#334155)',color:'white'}}>
@@ -19755,7 +19809,30 @@ export default function App(){
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                   });
                 });
-                return itemDetails.map((gi,gii)=>{
+                // ── Mock links ── default is one mock per garment; a garment can be linked to USE
+                // THE SAME MOCKUP AS another garment (e.g. the same logo on three black polos).
+                // Links live on the job's primary design (af.mock_links); a linked garment shows a
+                // compact reference instead of its own slots, the source gets an "also used by" badge.
+                const _linkOf=gi=>af?resolveMockLink([af],gi.sku,gi.color):null;
+                const _depsOf=gi=>af?mockLinkDependents([af],gi.sku,gi.color).filter(k=>itemDetails.some(g=>_mockKey(g.sku,g.color)===k)):[];
+                const _garmentByKey=k=>itemDetails.find(g=>_mockKey(g.sku,g.color)===k);
+                // "Use same mockup as …" chips: one per other garment, single click to link.
+                const _linkChips=gi=>{if(!af||itemDetails.length<2)return null;const myKey=_mockKey(gi.sku,gi.color);
+                  const others=itemDetails.filter(g=>_mockKey(g.sku,g.color)!==myKey);
+                  if(others.length===0)return null;
+                  return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:8}}>
+                    <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
+                    {others.map((g,oi)=>{const theirKey=_mockKey(g.sku,g.color);const hasMock=_getMocks(af,g.sku,g.color).length>0;
+                      return<button key={oi} disabled={artJobDetailUploading} onClick={()=>setMockLink(myKey,theirKey)}
+                        style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:artJobDetailUploading?'wait':'pointer'}}
+                        title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>
+                        🔗 {g.sku}{hasMock?' 🖼️':''}
+                      </button>;})}
+                  </div>;};
+                return<>
+                {itemDetails.map((gi,gii)=>{
+                  const _myLinkSrc=_linkOf(gi);
+                  const _myDeps=_depsOf(gi);
                   const gk=gi.sku+'|'+gi.color;
                   const decos=repPerItemDecos[gi.item_idx]||[];
                   const artDecos=decos.filter(d=>d.kind==='art');
@@ -19796,9 +19873,26 @@ export default function App(){
                         <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase'}}>units</div>
                       </div>
                     </div>
-                    {/* Per-item mockup — one labeled drop zone per art on this item (side by side) */}
-                    <div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',marginBottom:6}}>🖼️ Mockup</div>
+                    {/* Per-item mockup — one labeled drop zone per art on this item (side by side).
+                        A garment linked to another garment's mockup shows a compact reference
+                        instead of its own slots; unlinked garments get "use same mockup as" chips. */}
+                    {_myLinkSrc?(()=>{const srcG=_garmentByKey(_myLinkSrc);const srcSku=_myLinkSrc.split('|')[0];const srcColor=_myLinkSrc.split('|').slice(1).join('|');
+                      const srcFiles=mockLinkSourceFiles(allArtFiles2.length?allArtFiles2:[af],_myLinkSrc);
+                      const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
+                      return<div style={{padding:'10px 12px',borderBottom:'1px solid #e2e8f0',background:'#eef2ff',display:'flex',alignItems:'center',gap:10}}>
+                        {sUrl&&_isImgUrl(sUrl)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #c7d2fe',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>openFile(sUrl)}/>
+                         :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #a5b4fc',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>🔗 Same mockup as {srcSku}{(srcG?.color||srcColor)?' — '+(srcG?.color||srcColor):''}</div>
+                          <div style={{fontSize:10,color:srcFiles.length>0?'#64748b':'#b45309'}}>{srcFiles.length>0?'Approval uses that mockup for this garment too.':'Waiting on that garment’s mockup.'}</div>
+                        </div>
+                        <button className="btn btn-sm" disabled={artJobDetailUploading} style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLink(_mockKey(gi.sku,gi.color),null)}>Unlink</button>
+                      </div>;})()
+                    :<div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#1e3a5f'}}>🖼️ Mockup</span>
+                        {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
+                      </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
                         const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
@@ -19830,7 +19924,8 @@ export default function App(){
                             {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
                           </div>
                         </div>;})}</div>}
-                    </div>
+                      {_linkChips(gi)}
+                    </div>}
                     {/* Decoration spec */}
                     {effectiveArtDecos.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:6}}>📋 Decoration</div>
@@ -19871,7 +19966,8 @@ export default function App(){
                       <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{repItemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<a key={fi} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',textDecoration:'none'}} onClick={e=>{e.preventDefault();openFile(f)}}>📁 {name}</a>;})}</div>
                     </div>}
                   </div>;
-                });
+                })}
+                </>;
               })()}
             </div>
 

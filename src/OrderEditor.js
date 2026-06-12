@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -1966,6 +1966,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Persist an explicit display order (front-first by default) by writing `ord` onto each mock entry.
   const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const updated={...o,art_files:safeArt(o).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)})),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
   const moveMock=(orderedUrls,i,dir)=>{const j=i+dir;if(j<0||j>=orderedUrls.length)return;const arr=[...orderedUrls];[arr[i],arr[j]]=[arr[j],arr[i]];setMockupOrder(arr)};
+  // ── Mock links ("use the same mockup as that garment") ── stored on the job's primary
+  // design art file as garment -> source garment. Mirrors the Art Dashboard modal handler
+  // so linking done in either place is identical. sourceKey null = unlink. Chains are
+  // flattened on write and anything pointing at the member is re-pointed.
+  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:safeArt(o).map(a=>{
+      if(a.id!==artId)return a;
+      const links={...mockLinksOf(a)};
+      let root=sourceKey;
+      const seen=new Set([memberKey]);
+      while(root&&links[root]&&!seen.has(root)){seen.add(root);root=links[root]}
+      if(root===memberKey)root=sourceKey===memberKey?null:sourceKey;
+      if(root)links[memberKey]=root;else delete links[memberKey];
+      Object.keys(links).forEach(k=>{if(links[k]===memberKey)links[k]=root||memberKey;if(links[k]===k)delete links[k]});
+      return{...a,mock_links:links};
+    }),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -7390,14 +7405,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
+                // ── Mock links ── default per-garment; a garment can be linked to use the same
+                // mockup as another garment. Mirrors the Art Dashboard modal.
+                const _jobArts=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _linkArtId=j.art_file_id||(_jobArts[0]&&_jobArts[0].id)||null;
+                const _linkOfR=gi=>resolveMockLink(_jobArts,gi.sku,gi.color);
+                const _depsOfR=gi=>mockLinkDependents(_jobArts,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
+                const _hasOwnMockR=g=>{const k=g.sku+'|'+(g.color||'');return _jobArts.some(a=>{const im=a?.item_mockups||{};return _filterDisplayable(im[k]&&im[k].length>0?im[k]:(im[g.sku]||[])).length>0})};
+                // "Use same mockup as …" chips — one per other garment, single click to link.
+                const _linkChipsR=gi=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
+                  const others=itemDetails.filter(g=>(g.sku+'|'+(g.color||''))!==myKey);
+                  if(others.length===0)return null;
+                  return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
+                    <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
+                    {others.map((g,oi)=>{const theirKey=g.sku+'|'+(g.color||'');const hasMock=_hasOwnMockR(g);
+                      return<button key={oi} onClick={()=>setMockLinkOE(_linkArtId,myKey,theirKey)}
+                        style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:'pointer'}}
+                        title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>🔗 {g.sku}{hasMock?' 🖼️':''}</button>;})}
+                  </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
+                    const _myLinkSrc=_linkOfR(gi);
+                    const _myDeps=_depsOfR(gi);
                     const it=safeItems(o)[gi.item_idx];
                     // Art files referenced by THIS item's decorations, intersected with this job's art set.
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
+                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU).
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
                     const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
@@ -7428,8 +7463,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
                       </div>
-                      {/* Mockup */}
-                      {itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                      {/* Mockup — linked garments show a compact reference to their source garment */}
+                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jobArts,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
+                        return<div style={{margin:10,padding:'10px 12px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #c7d2fe',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
+                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #a5b4fc',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
+                            <div style={{fontSize:10,color:srcFiles.length>0?'#64748b':'#b45309'}}>{srcFiles.length>0?'Approval uses that mockup for this garment too.':'Waiting on that garment’s mockup.'}</div>
+                          </div>
+                          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLinkOE(_linkArtId,gi.sku+'|'+(gi.color||''),null)}>Unlink</button>
+                        </div>;})()
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
                         <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white'}}>
@@ -7455,7 +7501,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                               </div>
                             </div>})}
                         </div>
-                      </div>})():<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      </div>})():<>
+                       <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
+                       {_linkChipsR(gi)}
+                      </>}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
@@ -7603,8 +7652,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
+                // Mock links render read-only here (art is already approved): a linked garment
+                // references its source garment's mock instead of repeating the image.
+                const _jArts2=[..._jArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _linkOf2=gi=>resolveMockLink(_jArts2,gi.sku,gi.color);
+                const _depsOf2=gi=>mockLinkDependents(_jArts2,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
                 return<div style={{margin:'8px 20px'}}>
                   {itemDetails.map((gi,gii)=>{
+                    const _myLinkSrc=_linkOf2(gi);
+                    const _myDeps=_depsOf2(gi);
                     const it=safeItems(o)[gi.item_idx];
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
@@ -7639,8 +7695,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
                       </div>
-                      {/* Mockup */}
-                      {itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                      {/* Mockup — linked garments reference their source garment's mock (read-only) */}
+                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
+                        return<div style={{margin:10,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
+                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #86efac',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                          <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
+                        </div>;})()
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#166534',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
                         <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white'}}>
