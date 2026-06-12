@@ -11263,7 +11263,7 @@ export default function App(){
         const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
         const poNum=inv._po_number||so?.po_number;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
-        return{title:billToName,docNum:inv.id,docType:'INVOICE',
+        return{title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
           infoBoxes:[
             {label:'Bill To',value:billToName,sub:billAddr},
@@ -12052,7 +12052,7 @@ export default function App(){
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
-                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',css:PRINT_CSS,
+                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',date:siInv.date,css:PRINT_CSS,
                     headerRight:'<div class="ta">'+_$si(siInv.total)+'</div><div class="ts">Balance Due: <strong>'+_$si(siBal)+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
                     infoBoxes:[
                       {label:'Bill To',value:siBillName,sub:siBillAddr},
@@ -12325,7 +12325,7 @@ export default function App(){
                 const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
                 printDoc({
-                  title:billToName,docNum:inv.id,docType:'INVOICE',
+                  title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
                   headerRight:'<div class="ta">'+_$f(inv.total)+'</div>'
                     +'<div class="ts">Balance Due: <strong>'+_$f(inv._bal)+'</strong></div>'+(fPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+fPoNum+'</div>':''),
                   infoBoxes:[
