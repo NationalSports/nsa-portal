@@ -6206,7 +6206,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
             setSanMarPreviewBatch({poNumber:nextBatchPONumber||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
             setBatchReadyPopup(null);
-          }}>🔍 Preview SanMar API Payload</button>
+          }}>🚀 Submit SanMar Order (API)</button>
         </div>
       </div></div>;
       })()}
