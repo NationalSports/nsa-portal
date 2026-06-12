@@ -5483,7 +5483,7 @@ export default function App(){
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
     if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
     if(t.type==='est_approved'||t.type==='est_update_request')return'est';
-    if(t.type==='order'||t.type==='deposit_needed'||t.type==='booking_confirm')return'order';
+    if(t.type==='order'||t.type==='deposit_needed'||t.type==='booking_confirm'||t.type==='if_short')return'order';
     if(t.type==='deadline')return'deadline';
     if(t.type==='firm')return'firm';
     if(t.type==='rep_delivery')return'delivery';
@@ -6645,19 +6645,50 @@ export default function App(){
           }
         });
       }
-      // Notify sales rep when IFs are pulled by warehouse
+      // Notify sales rep when an IF is pulled by the warehouse — ONE notification per IF (pick
+      // group), even when the IF spans several line items (items pulled together share a pick_id).
+      const _ifPulls={};
       safeItems(so).forEach(it=>{
         safePicks(it).filter(pk=>pk.status==='pulled'&&pk.pulled_at).forEach(pk=>{
           const pa=parseDate(pk.pulled_at);if(!pa)return;
-          const daysAgo=Math.floor((new Date()-pa)/(1000*60*60*24));
-          if(daysAgo<=7){
-            const szKeys=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0);
-            const qty=szKeys.reduce((a,s)=>a+(pk[s]||0),0);
-            const szStr=szKeys.map(s=>s+':'+pk[s]).join(', ');
-            todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(it.sku||it.name||'Item'),detail:tag+' · '+so.id+' · '+qty+' units ('+szStr+')'+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so,action:'View',role:'sales',isNotification:true,date:pk.pulled_at,dismissKey:'if_pulled:'+so.id+':'+(it.sku||it.name||'')+':'+(pk.pulled_at||'')});
-          }
+          const qty=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0).reduce((a,s)=>a+(pk[s]||0),0);if(qty<=0)return;
+          // Group by the IF id; legacy pulled lines without a pick_id stay per-line.
+          const ifKey=pk.pick_id||('line:'+(it.sku||it.name||'')+':'+(pk.pulled_at||''));
+          const g=_ifPulls[ifKey]||(_ifPulls[ifKey]={pickId:pk.pick_id||'',units:0,skus:[],latest:pa,latestRaw:pk.pulled_at});
+          g.units+=qty;const _lbl=it.sku||it.name||'Item';if(!g.skus.includes(_lbl))g.skus.push(_lbl);
+          if(pa>g.latest){g.latest=pa;g.latestRaw=pk.pulled_at}
         });
       });
+      Object.entries(_ifPulls).forEach(([ifKey,g])=>{
+        const daysAgo=Math.floor((new Date()-g.latest)/(1000*60*60*24));if(daysAgo>7)return;
+        const when=daysAgo===0?' · Today':' · '+daysAgo+'d ago';
+        const skuLbl=g.skus.length===1?g.skus[0]:g.skus.length+' items';
+        todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(g.pickId||skuLbl),detail:tag+' · '+so.id+(g.pickId?' · '+g.pickId:'')+' · '+g.units+' unit'+(g.units!==1?'s':'')+' · '+g.skus.join(', ')+when,so,action:'View',role:'sales',isNotification:true,date:g.latestRaw,dismissKey:'if_pulled:'+so.id+':'+ifKey+':'+(g.latestRaw||'')});
+      });
+      // Sales action item — items sent to the warehouse to pull that came up SHORT (e.g. inventory
+      // was wrong). Once an item's pick lines are all closed (none still open to pull) and the pulled
+      // qty plus any open PO still doesn't cover what was ordered, the rep needs to order the gap.
+      // Derived from current state, so it self-clears once a PO is raised or the units get pulled.
+      const _shortItems=[];
+      safeItems(so).forEach(it=>{
+        const picks=safePicks(it);
+        if(picks.length===0)return;                     // never set up for a stock pull
+        if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
+        const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        const short={};let shortTot=0;
+        szKeys.forEach(sz=>{
+          const ordered=it.sizes[sz]||0;if(ordered<=0)return;
+          const pulled=picks.reduce((a,pk)=>a+(pk.status==='pulled'?(pk[sz]||0):0),0);
+          const onPO=safePOs(it).reduce((a,po)=>a+(po[sz]||0)-((po.cancelled||{})[sz]||0),0);
+          const sh=Math.max(0,ordered-pulled-onPO);if(sh>0){short[sz]=sh;shortTot+=sh}
+        });
+        if(shortTot>0)_shortItems.push({lbl:it.sku||it.name||'Item',units:shortTot,szStr:Object.keys(short).map(sz=>sz+':'+short[sz]).join(', ')});
+      });
+      if(_shortItems.length>0){
+        const totUnits=_shortItems.reduce((a,s)=>a+s.units,0);
+        const summary=_shortItems.map(s=>s.lbl+' ('+s.szStr+')').join(' · ');
+        todos.push({type:'if_short',priority:1,msg:'🛒 Short on pull — order '+totUnits+' unit'+(totUnits!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.id+' · Short from stock: '+summary,so,repId:_repId,action:'Create PO',role:'sales',date:so.updated_at||so.created_at,dismissKey:'if_short:'+so.id});
+      }
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
@@ -6792,7 +6823,7 @@ export default function App(){
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -6898,7 +6929,7 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
