@@ -914,7 +914,7 @@ export default function AdidasInventory() {
           const prices = st.colorways.map((c) => c.price).filter(Boolean);
           st.priceMin = prices.length ? Math.min(...prices) : 0;
           st.priceMax = prices.length ? Math.max(...prices) : 0;
-          st.searchText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
+          st.searchText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + (st.description || '') + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
         }
         grouped.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
         setStyles(grouped);
