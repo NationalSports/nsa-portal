@@ -16,12 +16,27 @@
 // Env: SS_ACCOUNT_NUMBER, SS_API_KEY, REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 const SS_CDN = 'https://cdn.ssactivewear.com/';
-const CATEGORY_MAP = {
-  'T-Shirts': 'Tees', 'Polos': 'Polos', 'Knits & Polos': 'Polos',
-  Fleece: 'Hoods', Sweatshirts: 'Hoods', Outerwear: 'Outerwear',
-  Headwear: 'Hats', Caps: 'Hats', Pants: 'Pants', Shorts: 'Shorts',
-  Bags: 'Bags', Accessories: 'Accessories', Wovens: 'Polos', 'Activewear': 'Tees',
-};
+// S&S baseCategory values are compound ("Knits & Layering", "Fleece - Premium -
+// Crew"), so map by pattern — title first (most specific), then baseCategory.
+const CATEGORY_RULES = [
+  ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],
+  ['Outerwear', /FULL[- ]ZIP|JACKET|VEST|WINDBREAKER|OUTERWEAR|RAIN/i],
+  ['Polos', /POLO/i],
+  ['Hats', /HEADWEAR|\bCAP\b|BEANIE|VISOR/i],
+  ['Crew', /CREW/i],
+  ['Hoods', /HOOD|FLEECE|SWEATSHIRT|PULLOVER/i],
+  ['Shorts', /SHORT/i],
+  ['Pants', /PANT|LEGGING|BOTTOM|JOGGER/i],
+  ['Tees', /T-SHIRT|\bTEE\b|ACTIVEWEAR/i],
+  ['Bags', /\bBAG\b|BACKPACK|DUFFEL/i],
+  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL/i],
+];
+function mapCategory(title, baseCategory) {
+  for (const hay of [String(title || ''), String(baseCategory || '')]) {
+    for (const [cat, re] of CATEGORY_RULES) if (re.test(hay)) return cat;
+  }
+  return 'Other';
+}
 
 exports.handler = async () => {
   const ssAccount = process.env.SS_ACCOUNT_NUMBER;
@@ -89,7 +104,7 @@ exports.handler = async () => {
             name: 'Adidas ' + (st.title || st.styleName) + (st.styleName && st.title && !String(st.title).includes(st.styleName) ? ' (' + st.styleName + ')' : ''),
             brand: 'Adidas',
             color: r0.colorName || colorCode,
-            category: CATEGORY_MAP[st.baseCategory] || CATEGORY_MAP[(st.categories || '').split(',')[0]] || 'Other',
+            category: mapCategory(st.title, st.baseCategory),
             retail_price: map > 0 ? map : Math.round(cost * 2),
             nsa_cost: cost,
             is_active: true,
