@@ -730,6 +730,16 @@ export default function AdidasInventory() {
   const [sizeSel, setSizeSel] = useState([]);
   const [strongOnly, setStrongOnly] = useState(false);
   const [includeIncoming, setIncludeIncoming] = useState(false);
+  // "Need by" date: only show gear in stock now or inbound at least 4 weeks
+  // before that date (time for decoration + delivery).
+  const [needBy, setNeedBy] = useState('');
+  const needCutoff = useMemo(() => {
+    if (!needBy) return null;
+    const d = new Date(needBy + 'T00:00:00');
+    if (isNaN(d)) return null;
+    d.setDate(d.getDate() - 28);
+    return d.toISOString().slice(0, 10);
+  }, [needBy]);
   const [shown, setShown] = useState(PAGE_SIZE);
   const [openStyle, setOpenStyle] = useState(null);
   const [list, setList] = useState(() => loadJson(LIST_KEY, []));
@@ -899,11 +909,17 @@ export default function AdidasInventory() {
   // so picking Maroon + Gold surfaces Maroon/White, Gold/Maroon, plain Maroon…
   const cwMatcher = useCallback((cw) => {
     if (colorSel.length && !colorSel.some((c) => cw.tags.has(c))) return false;
-    if (sizeSel.length && !sizeSel.every((s) => cw.inStock.has(s))) return false;
+    // An inbound delivery counts when a "need by" date is set and it lands at
+    // least 4 weeks before it; otherwise only via the "Include incoming" toggle.
+    const inboundOk = (s) => !!(s.fd && s.fq) && (needCutoff ? s.fd <= needCutoff : includeIncoming);
+    if (sizeSel.length) {
+      const sizeAvail = (sz) => cw.inStock.has(sz) || cw.sizes.some((s) => s.size === sz && inboundOk(s));
+      if (!sizeSel.every(sizeAvail)) return false;
+    }
     if (strongOnly && !cw.strongRun) return false;
-    if (cw.units === 0 && !(includeIncoming && cw.hasIncoming)) return false;
-    return true;
-  }, [colorSel, sizeSel, strongOnly, includeIncoming]);
+    if (cw.units > 0) return true;
+    return cw.sizes.some(inboundOk);
+  }, [colorSel, sizeSel, strongOnly, includeIncoming, needCutoff]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -982,7 +998,7 @@ export default function AdidasInventory() {
     };
   }, [styles, includeIncoming]);
 
-  useEffect(() => { setShown(PAGE_SIZE); }, [search, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming]);
+  useEffect(() => { setShown(PAGE_SIZE); }, [search, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming, needBy]);
 
   // Deep link: /adidas?style=<sku> opens that style's detail view (Share button)
   useEffect(() => {
@@ -999,8 +1015,8 @@ export default function AdidasInventory() {
     saveJson('nsa_adidas_team_colors', next);
     return next;
   });
-  const clearFilters = () => { setSearch(''); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); };
-  const hasFilters = search || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly;
+  const clearFilters = () => { setSearch(''); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); setNeedBy(''); };
+  const hasFilters = search || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly || needBy;
 
   const openData = openStyle && visible.find((v) => v.st.key === openStyle);
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
@@ -1094,6 +1110,16 @@ export default function AdidasInventory() {
               title="Also show colorways that are out of stock now but have confirmed inbound deliveries">
               Include incoming
             </button>
+            <span style={{ width: 1, height: 18, background: '#D8DCE2', margin: '0 3px' }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>Need by:</span>
+            <input type="date" value={needBy} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setNeedBy(e.target.value)}
+              style={{ border: '1px solid ' + (needBy ? '#191919' : '#D8DCE2'), background: needBy ? '#191919' : '#fff', color: needBy ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 11px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
+              title="Only show gear that's in stock now or arriving at least 4 weeks before this date — time for decoration and delivery" />
+            {needCutoff && (
+              <span style={{ fontSize: 11.5, color: '#6A7180' }}>
+                = in stock now or inbound by <b style={{ color: '#3A4150' }}>{fmtDate(needCutoff)}</b>
+              </span>
+            )}
             {hasFilters && (
               <button className="ai-filterbtn" style={{ padding: '3px 11px', fontSize: 12.5, color: '#B91C1C', borderColor: '#F1C4C4' }} onClick={clearFilters}>✕ Clear</button>
             )}
