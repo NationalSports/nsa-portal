@@ -1016,13 +1016,10 @@ const _dbSaveEstimateInner = async (est) => {
   if(_bgSync&&(_EST_STATUS_RANK[est.status]??-1)<_EST_STATUS_RANK.approved){await _mergeDbEstStatus(est)}
   return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
-    let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
-    if(estErr){
-      const coreEstRow={};Object.keys(_pick(estRow,_estCols)).forEach(k=>{if(!_estExtraCols.has(k))coreEstRow[k]=_pick(estRow,_estCols)[k]});
-      const retry=await supabase.from('estimates').upsert(coreEstRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true;_failMsg='estimates: '+retry.error.message}
-      else console.warn('[DB] estimate saved with core columns only')
-    }
+    // The estimate row is now written by the atomic save_estimate RPC below — together with its items and
+    // decorations in a single transaction. We intentionally no longer upsert it separately here: writing the
+    // parent and children in independent calls (and letting a failed parent write fall through) is exactly
+    // what produced orphaned stub estimates and the cryptic line-item FK error reps were seeing.
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
     const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id));
     // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
@@ -1106,10 +1103,29 @@ const _dbSaveEstimateInner = async (est) => {
         }
       }
     }
-    // DATA-LOSS FIX: do NOT delete old item/decoration rows here. We insert the new rows first and only
-    // remove the old ones once the insert is verified (see "Commit/rollback the swap" below). estimate_items
-    // has no unique (estimate_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
-    // window where a committed delete followed by a timed-out insert left the estimate permanently empty.
+    // Atomic estimate save (replaces the old separate estimate-upsert + item/decoration writes): one
+    // transactional Postgres RPC upserts the estimate and replaces its items + decorations together, so a
+    // partial write is impossible and a retry after a dropped connection never duplicates lines or orphans
+    // rows. It raises CUSTOMER_MISSING when the estimate's customer isn't in the DB yet (the root-cause
+    // failure) — mapped to plain English below instead of leaking a raw constraint string to the rep. The
+    // safety guards above still decide WHETHER to save (they only read); this performs the write.
+    {
+      const _rpcItems=(items||[]).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
+      const{error:_rpcErr}=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_pick(estRow,_estCols),p_items:_rpcItems}));
+      if(_rpcErr){
+        const _m=_rpcErr.message||String(_rpcErr);
+        if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id);
+        const _friendly=_m.includes('CUSTOMER_MISSING')
+          ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
+          :(_m.includes('ESTIMATE_ID_MISSING')||_m.includes('ESTIMATE_PAYLOAD_EMPTY'))
+            ?'Estimate could not be saved — required fields are missing. Please reload and try again.'
+            :'Estimate save failed — please try again, or reload the page if it keeps happening.';
+        console.error('[DB] save_estimate RPC failed:',_m);
+        _dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_m);_persistFailedIds();
+        if(_dbNotify)_dbNotify(_friendly,'error');
+        return false;
+      }
+    }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
     const{data:_dbAf}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
@@ -1146,86 +1162,8 @@ const _dbSaveEstimateInner = async (est) => {
       if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(!items?.length){
-      // Intentional removal of all items (already validated by the hydration guard above). Since we no longer
-      // delete upfront, remove the old rows here.
-      if(oldItemIds.length){
-        await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
-        await supabase.from('estimate_items').delete().in('id',oldItemIds);
-      }
-      _dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
-    // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
-    let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
-    if(itemErr){
-      // If FK constraint on product_id fails, retry with product_id nulled out
-      if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
-        const fkRows=allItemRows.map(r=>({...r,product_id:null}));
-        const fkRetry=await supabase.from('estimate_items').insert(fkRows).select('id');
-        if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] estimate items saved with product_id nulled (FK constraint)')}
-        else{itemErr=fkRetry.error}
-      }
-      if(!insertedItems){
-        const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-        const retry=await supabase.from('estimate_items').insert(coreRows).select('id');
-        if(retry.error){
-          // Also try core rows with product_id nulled
-          const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
-          const retry2=await supabase.from('estimate_items').insert(coreNullPid).select('id');
-          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true;_failMsg='estimate_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':'')}
-          else{insertedItems=retry2.data;console.warn('[DB] estimate items saved with core columns + product_id nulled')}
-        }
-        else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
-      }
-    }
-    if(insertedItems?.length){
-      // Verify item count: if DB got fewer rows than we tried to insert, treat as a failed save
-      if(insertedItems.length<allItemRows.length){
-        decoFailed=true;
-        _failMsg=_failMsg||('estimate_items: only '+insertedItems.length+' of '+allItemRows.length+' rows persisted');
-        console.error('[DB] SAFETY: estimate item insert verification failed — expected',allItemRows.length,'got',insertedItems.length);
-      }
-      const allDecoRows=[];
-      items.forEach((item,idx)=>{
-        const itemId=insertedItems[idx]?.id;if(!itemId)return;
-        if(item.decorations?.length)item.decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:itemId,deco_index:di}));
-      });
-      if(allDecoRows.length){
-        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(allDecoRows);
-        if(decoErr){
-          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRows);
-          if(coreErr){decoFailed=true;_failMsg='estimate_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':'');console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
-          else console.warn('[DB] estimate decos saved with core columns only')
-        }
-        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
-        if(!decoFailed){
-          const{count:_verifyCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',insertedItems.map(i=>i.id));
-          if((_verifyCount||0)<allDecoRows.length){
-            decoFailed=true;_failMsg=_failMsg||('estimate_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
-            console.error('[DB] SAFETY: estimate deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
-          }
-        }
-      }
-    }
-    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
-    if(insertedItems?.length){
-      if(!decoFailed){
-        // New items + decorations verified — now safe to remove the old rows (delete by id so the new rows survive).
-        if(oldItemIds.length){
-          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
-          await supabase.from('estimate_items').delete().in('id',oldItemIds);
-        }
-      }else{
-        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
-        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
-        if(_newIds.length){
-          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',_newIds);
-          const{error:_rbErr}=await supabase.from('estimate_items').delete().in('id',_newIds);
-          if(_rbErr)console.error('[DB] ROLLBACK FAILED for estimate items',_newIds,':',_rbErr.message,'— phantom rows may remain in DB');
-        }
-      }
-    }
+    // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
+    // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
     if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
@@ -5877,8 +5815,12 @@ export default function App(){
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
-  const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
+  const savC=async c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
+    // Is this a brand-new customer (e.g. created inline while building an estimate)? If so we confirm it
+    // actually landed in the DB before letting it stand — a phantom customer that only exists in local state
+    // is what let an estimate reference a customer_id the database never had.
+    const _isNewCust=!cust.some(x=>x.id===c.id);
     setCust(p=>{
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
@@ -5939,6 +5881,18 @@ export default function App(){
       return next;
     });
     const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));if(shipCount)parts.push('updated shipping address on '+shipCount+' sub'+(shipCount===1?'':'s'));if(contactCount)parts.push('copied contacts to '+contactCount+' sub'+(contactCount===1?'':'s'));
+    if(_isNewCust){
+      // Inline-created customer: await a confirmed DB write (the error-checked _dbSaveCustomer path) before
+      // claiming success, instead of trusting local state. The background [cust] effect also persists it, but
+      // awaiting here gives the rep immediate truth. If the write failed, pull the customer back out of state
+      // so nothing — least of all an estimate — can reference a row the DB never accepted.
+      const _ok=await _dbSaveCustomer(c);
+      if(_ok===false){
+        setCust(prev=>prev.filter(x=>x.id!==c.id));
+        nf("Customer couldn't be saved — check your connection and re-add it before building the estimate.",'error');
+        return;
+      }
+    }
     nf(parts.length?'Saved — '+parts.join(', '):'Saved');
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
