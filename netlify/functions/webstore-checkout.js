@@ -163,7 +163,11 @@ exports.handler = async (event) => {
   try {
     if (body.action === 'place_order') return await placeOrder(sb, body);
     if (body.action === 'finalize') return await finalize(sb, body);
-    return bad(400, 'Unknown action. Use place_order or finalize.');
+    if (body.action === 'check_coupon') return await checkCoupon(sb, body);
+    if (body.action === 'get_order') return await getOrder(sb, body);
+    if (body.action === 'track_order') return await trackOrder(sb, body);
+    if (body.action === 'update_ship') return await updateShip(sb, body);
+    return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[webstore-checkout] error:', e);
     return bad(500, e.message || 'Checkout failed');
@@ -334,4 +338,71 @@ async function finalize(sb, body) {
     if (order.buyer_email) { try { await sendOrderConfirmation(sb, { ...order, status: 'paid' }); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, orderId: order.id }) };
+}
+
+// ── Coupon preview ───────────────────────────────────────────────────
+// Replaces the storefront's direct anon read of webstore_coupons (which exposed
+// every code, including 100%-off). Returns only what the cart math needs.
+async function checkCoupon(sb, body) {
+  const { storeSlug, code } = body;
+  const { data: stores, error } = await sb.from('webstores').select('id,slug').eq('slug', String(storeSlug || '')).limit(1);
+  if (error) return bad(500, error.message);
+  const store = stores && stores[0];
+  if (!store) return bad(404, 'Store not found');
+  const coup = await loadCoupon(sb, store, code);
+  if (coup.error) return bad(409, coup.error);
+  if (!coup.coupon) return bad(400, 'Enter a code.');
+  const c = coup.coupon;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ coupon: { code: c.code, kind: c.kind, value: c.value, cover_shipping: c.cover_shipping } }) };
+}
+
+// ── Order status (tokenless, by order id) ────────────────────────────
+// The post-checkout status page knows the order's UUID (122 bits of entropy,
+// the same bearer model the emailed status_token uses). Returns the buyer their
+// own order + line items — no anon access to the tables themselves.
+async function getOrder(sb, body) {
+  const { orderId } = body;
+  if (!orderId) return bad(400, 'orderId required');
+  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('id', orderId).limit(1);
+  if (error) return bad(500, error.message);
+  const order = orders && orders[0];
+  if (!order) return bad(404, 'Order not found');
+  const { data: items } = await sb.from('webstore_order_items').select('*').eq('order_id', order.id);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: items || [] }) };
+}
+
+// ── Order tracking (by emailed status_token) ─────────────────────────
+async function trackOrder(sb, body) {
+  const { token } = body;
+  if (!token) return bad(400, 'token required');
+  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('status_token', token).limit(1);
+  if (error) return bad(500, error.message);
+  const order = orders && orders[0];
+  if (!order) return bad(404, 'Order not found');
+  const [{ data: sRows }, { data: items }, { data: shipments }] = await Promise.all([
+    sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
+    sb.from('webstore_order_items').select('*').eq('order_id', order.id),
+    sb.from('webstore_shipments').select('*').eq('order_id', order.id).order('created_at', { ascending: true }),
+  ]);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [] }) };
+}
+
+// ── Buyer self-service shipping-address edit (before the order ships) ──
+async function updateShip(sb, body) {
+  const { orderId, ship } = body;
+  if (!orderId || !ship) return bad(400, 'orderId and ship required');
+  if (!ship.street1 || !ship.city || !ship.state || !ship.zip) return bad(400, 'Please complete street, city, state and ZIP.');
+  const { data: orders, error } = await sb.from('webstore_orders').select('id,ship_address,shipped_at,status').eq('id', orderId).limit(1);
+  if (error) return bad(500, error.message);
+  const order = orders && orders[0];
+  if (!order) return bad(404, 'Order not found');
+  if (order.shipped_at || order.status === 'shipped' || order.status === 'complete') return bad(409, 'This order has already shipped — contact us to change the address.');
+  const addr = {
+    name: String(ship.name || '').slice(0, 120),
+    street1: String(ship.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
+    city: String(ship.city).slice(0, 120), state: String(ship.state).slice(0, 40), zip: String(ship.zip).slice(0, 20),
+  };
+  const { error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr }).eq('id', order.id);
+  if (upErr) return bad(502, 'Could not save the address: ' + upErr.message);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, ship_address: addr }) };
 }
