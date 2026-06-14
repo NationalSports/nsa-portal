@@ -11593,6 +11593,8 @@ export default function App(){
                   await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
                 }catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
+            {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
+              onClick={()=>{const purl='https://nsa-portal.netlify.app/?portal='+ic.alpha_tag;navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
                 // If line_items not stored on invoice, populate from computed items before splitting
