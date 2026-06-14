@@ -119,7 +119,7 @@ export default function Storefront() {
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
-    const { data: stores, error } = await supabase.from('webstores').select('*').eq('slug', slug).limit(1);
+    const { data: stores, error } = await supabase.from('webstores_public').select('*').eq('slug', slug).limit(1);
     if (error) { if (isMissingTable(error)) setStatus('nomigration'); else { setStatus('error'); setErrMsg(error.message); } return; }
     const s = (stores || [])[0];
     if (!s || s.status === 'archived') { setStatus('notfound'); return; }
@@ -678,12 +678,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
 
   const applyCoupon = async () => {
     setCouponErr(''); const code = couponInput.trim(); if (!code) return;
-    const { data } = await supabase.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', code).limit(1);
-    const c = data && data[0];
-    if (!c || !c.active) { setCoupon(null); setCouponErr('That code isn’t valid for this store.'); return; }
-    if (c.expires_at && new Date(c.expires_at) < new Date(new Date().toDateString())) { setCoupon(null); setCouponErr('That code has expired.'); return; }
-    if (c.max_uses != null && (c.used_count || 0) >= c.max_uses) { setCoupon(null); setCouponErr('That code has already been used.'); return; }
-    setCoupon(c); setCouponErr('');
+    const r = await checkoutCall({ action: 'check_coupon', storeSlug: store.slug, code });
+    if (r.error) { setCoupon(null); setCouponErr(r.error.message); return; }
+    setCoupon(r.coupon); setCouponErr('');
   };
 
   const submitUnpaid = async () => {
@@ -821,11 +818,10 @@ function OrderStatusPage({ store, theme, orderId }) {
   const [status, setStatus] = useState('loading');
   useEffect(() => {
     (async () => {
-      const { data: o } = await supabase.from('webstore_orders').select('*').eq('id', orderId).limit(1);
-      if (!o || !o[0]) { setStatus('notfound'); return; }
-      setOrder(o[0]);
-      const { data: its } = await supabase.from('webstore_order_items').select('*').eq('order_id', orderId);
-      setItems(its || []); setStatus('ok');
+      const r = await checkoutCall({ action: 'get_order', orderId });
+      if (r.error || !r.order) { setStatus('notfound'); return; }
+      setOrder(r.order);
+      setItems(r.items || []); setStatus('ok');
     })();
   }, [orderId]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
@@ -868,11 +864,10 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
   const save = async () => {
     if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
     setBusy(true); setMsg('');
-    const addr = { ...a, ...f };
-    const { error } = await supabase.from('webstore_orders').update({ ship_address: addr }).eq('id', order.id);
+    const r = await checkoutCall({ action: 'update_ship', orderId: order.id, ship: f });
     setBusy(false);
-    if (error) { setMsg('Could not save — please try again.'); return; }
-    onSaved(addr); setEditing(false);
+    if (r.error) { setMsg(r.error.message || 'Could not save — please try again.'); return; }
+    onSaved(r.ship_address || { ...a, ...f }); setEditing(false);
   };
   return (
     <div style={{ marginTop: 22, borderTop: '1px solid #eef1f5', paddingTop: 16 }}>

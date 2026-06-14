@@ -63,18 +63,16 @@ export default function OrderTrack() {
   useEffect(() => {
     (async () => {
       if (!token) { setStatus('notfound'); return; }
-      const { data: orders, error } = await supabase.from('webstore_orders').select('*').eq('status_token', token).limit(1);
-      if (error || !orders || !orders[0]) { setStatus('notfound'); return; }
-      const o = orders[0];
-      setOrder(o);
-      const [{ data: sRows }, { data: iRows }, { data: shRows }] = await Promise.all([
-        supabase.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', o.store_id).limit(1),
-        supabase.from('webstore_order_items').select('*').eq('order_id', o.id),
-        supabase.from('webstore_shipments').select('*').eq('order_id', o.id).order('created_at', { ascending: true }),
-      ]);
-      setStore((sRows && sRows[0]) || { name: 'Your Order' });
-      setItems((iRows || []).filter((i) => !i.is_bundle_parent));
-      setShipments(shRows || []);
+      let d = {};
+      try {
+        const resp = await fetch('/.netlify/functions/webstore-checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'track_order', token }) });
+        d = await resp.json().catch(() => ({}));
+        if (!resp.ok || !d.order) { setStatus('notfound'); return; }
+      } catch (e) { setStatus('notfound'); return; }
+      setOrder(d.order);
+      setStore(d.store || { name: 'Your Order' });
+      setItems((d.items || []).filter((i) => !i.is_bundle_parent));
+      setShipments(d.shipments || []);
       setStatus('ok');
     })();
   }, [token]);
