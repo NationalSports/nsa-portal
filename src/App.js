@@ -3392,6 +3392,7 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
+  const[dashSalesYr,setDashSalesYr]=useState(new Date().getFullYear());// year shown in the dashboard "Sales by Month" widget
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
@@ -7195,6 +7196,49 @@ export default function App(){
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
     const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
+    // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
+    const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();const t=dt.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(dt.toDateString()===now.toDateString())return'Today '+t;const y=new Date(now);y.setDate(now.getDate()-1);if(dt.toDateString()===y.toDateString())return'Yesterday '+t;return dt.toLocaleDateString([],{month:'short',day:'numeric'})+' '+t}catch{return''}};
+    // Sales-by-month report card. scopeRepId=null → whole company (admin); pass a rep id to scope to
+    // that rep's booked orders (customer's primary rep, else the SO creator). Revenue uses calcOrderTotals
+    // (product + deco sell, ex ship/tax) to match the Reports page. SO created_at is text "M/D/YYYY, h:mm".
+    const _renderSalesByMonth=(scopeRepId)=>{
+      const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const _parseSaleDt=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return{m:parseInt(m[1])-1,y}};
+      const scopedSOs=scopeRepId?sos.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return(c?.primary_rep_id||so.created_by)===scopeRepId}):sos;
+      const years=[...new Set(scopedSOs.map(s=>_parseSaleDt(s.created_at)?.y).filter(Boolean))].sort((a,b)=>b-a);
+      const yr=years.includes(dashSalesYr)?dashSalesYr:(years[0]||new Date().getFullYear());
+      const monthly=MONTHS.map(mn=>({month:mn,revenue:0,orders:0}));
+      scopedSOs.forEach(so=>{const dt=_parseSaleDt(so.created_at);if(!dt||dt.y!==yr)return;const b=monthly[dt.m];if(!b)return;b.revenue+=calcOrderTotals(so).rev;b.orders++});
+      const totalRev=monthly.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthly.reduce((a,m)=>a+m.orders,0);
+      const maxRev=Math.max(...monthly.map(m=>m.revenue),1);const isNowYr=yr===new Date().getFullYear();
+      const _$=(n)=>'$'+Math.round(n).toLocaleString();const _$k=(n)=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
+      const _lbl={fontSize:10,color:'#64748b',textTransform:'uppercase',fontWeight:700,letterSpacing:0.4};
+      return(<div className="card">
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>📈 Sales by Month{scopeRepId?'':' · Company'}</h2>
+          <select value={yr} onChange={e=>setDashSalesYr(parseInt(e.target.value))} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+            {(years.length>0?years:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <div className="card-body" style={{padding:'14px 16px'}}>
+          <div style={{display:'flex',gap:24,marginBottom:14,flexWrap:'wrap'}}>
+            <div><div style={_lbl}>Revenue {yr}</div><div style={{fontSize:22,fontWeight:800,color:'#059669'}}>{_$(totalRev)}</div></div>
+            <div><div style={_lbl}>Orders</div><div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{totalOrders}</div></div>
+            <div><div style={_lbl}>Avg / Order</div><div style={{fontSize:22,fontWeight:800,color:'#7c3aed'}}>{totalOrders>0?_$(totalRev/totalOrders):'—'}</div></div>
+          </div>
+          {totalOrders===0?<div className="empty" style={{padding:'24px 8px'}}>No orders booked in {yr}</div>:
+          <div style={{display:'flex',alignItems:'flex-end',gap:3,height:150,padding:'0 2px'}}>
+            {monthly.map((m,i)=>{const h=(m.revenue/maxRev)*120;const isNow=isNowYr&&i===new Date().getMonth();
+              return<div key={i} title={m.month+' '+yr+': '+_$(m.revenue)+' · '+m.orders+' order'+(m.orders!==1?'s':'')} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+                <span style={{fontSize:9,fontWeight:700,color:m.revenue>0?'#059669':'#cbd5e1',whiteSpace:'nowrap'}}>{m.revenue>0?_$k(m.revenue):''}</span>
+                <div style={{width:'100%',maxWidth:34,height:Math.max(h,2),background:m.revenue>0?(isNow?'#059669':'#6ee7b7'):'#f1f5f9',borderRadius:'4px 4px 0 0',transition:'height 0.3s'}}/>
+                <span style={{fontSize:9,color:isNow?'#047857':'#94a3b8',fontWeight:isNow?800:400}}>{m.month}</span>
+              </div>})}
+          </div>}
+        </div>
+      </div>);
+    };
+
     const ROLE_TABS=[
       {id:'admin',label:'🏢 Admin Overview',icon:'home',roles:['admin','gm']},
       {id:'sales',label:'💼 Sales Rep',icon:'dollar',roles:['admin','gm','rep']},
@@ -7244,6 +7288,21 @@ export default function App(){
             </div>)}
           </div>)})()}
         </div></div>
+      {_renderSalesByMonth(null)}
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
+          visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div>
+      </div>})()}
+      {/* Unread messages — moved beside Notifications (each half-width) */}
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
         {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
@@ -7260,15 +7319,6 @@ export default function App(){
             </div>})}
         </div></div>
     </div>
-    {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
-      <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
-        </div>)}
-      </div>
-    </div>})()}
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
@@ -7359,11 +7409,13 @@ export default function App(){
               </div></div>})}
         </div></div>
     </div>
+    <div style={{marginBottom:16}}>{_renderSalesByMonth(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
     const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
         {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
           <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
