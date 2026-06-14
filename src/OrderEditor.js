@@ -298,7 +298,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
     const[poDropShip,setPoDropShip]=useState(null);// product PO form — In-House(false) vs Drop Ship(true); null = rep hasn't chosen
-    const[dpoDropShip,setDpoDropShip]=useState(null);// standalone deco PO form — warehouse(false) vs drop ship(true); null = unchosen
+    const[dpoDropShip,setDpoDropShip]=useState(true);// standalone deco PO form — deco POs are always drop ship
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
@@ -307,7 +307,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
-    const[podDropShip,setPodDropShip]=useState(null);// inline deco PO — warehouse(false) vs drop ship(true); null = unchosen
+    const[podDropShip,setPodDropShip]=useState(true);// inline deco PO — deco POs are always drop ship
     const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
     const[decoEditPo,setDecoEditPo]=useState(null);// {decoPoId,po_id,vendor,customVendor,deco_type,status,expected_date,unit_cost,drop_ship,notes} — edit PO details on the deco PO full page
     const[decoTrackAdd,setDecoTrackAdd]=useState('');// input for adding a tracking number on the deco PO full page
@@ -6159,7 +6159,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
                   <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:decoSel===dv?'#7c3aed':'#fff',color:decoSel===dv?'#fff':'#334155',border:'1px solid '+(decoSel===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer'}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
               </div>
-              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel){setDpoDropShip(null);setShowPO('deco:'+decoSel)}}}>Create Deco PO</button>
+              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel){setDpoDropShip(true);setShowPO('deco:'+decoSel)}}}>Create Deco PO</button>
             </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
@@ -6203,9 +6203,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
-            <DropShipToggle isDropShip={dpoDropShip} onSelect={setDpoDropShip}
-              inTitle='🏭 Return to Warehouse' inSub='Decorated goods come back to NSA — warehouse counts them in & receives'
-              dsTitle='📦 Drop Ship' dsSub='Decorator ships direct to school — warehouse will NOT receive or count this in'/>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Items covered by this PO</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
@@ -6232,7 +6229,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('')}}>Cancel</button>
             <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
-              if(dpoDropShip==null){nf('Choose 🏭 Return to Warehouse or 📦 Drop Ship for this PO first','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
@@ -6370,7 +6366,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
       const buildInlineDecoPO=()=>{
         if(podSelIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
-        if(podDropShip==null)return{error:'Choose 🏭 Return to Warehouse or 📦 Drop Ship for the deco PO'};
         return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
           po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
           item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
@@ -6393,7 +6388,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(null);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(null)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -6409,9 +6404,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
                 <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
               </div>
-              <DropShipToggle isDropShip={podDropShip} onSelect={setPodDropShip}
-                inTitle='🏭 Return to Warehouse' inSub='Decorated goods come back to NSA — warehouse counts them in & receives'
-                dsTitle='📦 Drop Ship' dsSub='Decorator ships direct to school — warehouse will NOT receive or count this in'/>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
                 <span style={{color:'#94a3b8'}}>mirrors the items selected on this {vn} PO — toggle any item to override</span>
@@ -10191,7 +10183,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
-              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:!!dp.drop_ship,notes:dp.notes||''})}>✎ Edit PO</button>}
+              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
                 try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
@@ -10229,12 +10221,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div><label className="form-label">Unit Cost ($/unit)</label><input className="form-input" type="number" step="0.01" value={decoEditPo.unit_cost} onChange={e=>setDecoEditPo(d=>({...d,unit_cost:e.target.value}))} style={{fontWeight:700,color:'#7c3aed'}}/>
                     {_draftListRate!==null&&Math.abs((parseFloat(decoEditPo.unit_cost)||0)-_draftListRate)>0.004&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:6}} onClick={()=>setDecoEditPo(d=>({...d,unit_cost:_draftListRate.toFixed(2)}))}>Price list: ${_draftListRate.toFixed(2)}/unit — apply</button>}
                   </div>
-                </div>
-                <div style={{display:'flex',gap:8,marginBottom:12}}>
-                  {[{v:false,t:'🏭 Return to Warehouse',s:'Decorated goods come back to NSA'},{v:true,t:'📦 Drop Ship',s:'Decorator ships direct to the customer'}].map(opt=>{const sel=decoEditPo.drop_ship===opt.v;return<button key={String(opt.v)} type="button" onClick={()=>setDecoEditPo(d=>({...d,drop_ship:opt.v}))} style={{flex:1,padding:'8px 12px',borderRadius:8,border:sel?'2px solid #7c3aed':'1px solid #e2e8f0',background:sel?'#faf5ff':'white',cursor:'pointer',textAlign:'left'}}>
-                    <div style={{fontWeight:700,fontSize:12,color:sel?'#6d28d9':'#1e293b'}}>{opt.t}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{opt.s}</div>
-                  </button>})}
                 </div>
                 <div style={{marginBottom:12}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={3} value={decoEditPo.notes} onChange={e=>setDecoEditPo(d=>({...d,notes:e.target.value}))} placeholder="Thread colors, PMS colors, placement notes..." style={{resize:'vertical'}}/></div>
                 <div style={{display:'flex',alignItems:'center',gap:16,paddingTop:10,borderTop:'1px dashed #e2e8f0',fontSize:13,flexWrap:'wrap'}}>
