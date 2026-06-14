@@ -7,7 +7,16 @@ import { supabase as _sbAuthClient } from './lib/supabase';
 // refunds, create-quote-request), which verify the caller server-side.
 export const authFetch=async(url,opts={})=>{
   let auth={};
-  try{const{data:{session}}=await _sbAuthClient.auth.getSession();if(session?.access_token)auth={Authorization:'Bearer '+session.access_token}}catch{}
+  try{
+    let{data:{session}}=await _sbAuthClient.auth.getSession();
+    // getSession() can return an already-expired JWT when the background auto-refresh
+    // timer was throttled (idle/backgrounded tab). The staff-only Netlify functions
+    // reject expired tokens with 401, so refresh proactively when it's stale/near-expiry.
+    if(session?.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60){
+      try{const{data}=await _sbAuthClient.auth.refreshSession();if(data?.session)session=data.session}catch{}
+    }
+    if(session?.access_token)auth={Authorization:'Bearer '+session.access_token};
+  }catch{}
   return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
 };
 
@@ -54,7 +63,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
 
