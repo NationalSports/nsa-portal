@@ -90,6 +90,11 @@ async function copyText(t) {
   } catch { return false; }
 }
 
+// Path the catalog is served at — /adidas, or /livelook when proxied onto the
+// marketing site. Trailing slash stripped so shared links and the Supabase
+// sign-in redirect match the canonical (slash-free) URLs in the auth allow-list.
+const catalogPath = () => window.location.pathname.replace(/\/+$/, '') || '/adidas';
+
 // ── Category / color / gender / sport derivation ─────────────────────
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
@@ -518,7 +523,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   const share = async () => {
     // Build the link off the current path so it works whether the catalog is on
     // /adidas or proxied onto nationalsportsapparel.com/livelook.
-    const url = `${window.location.origin}${window.location.pathname}?style=${encodeURIComponent(st.colorways[0].sku)}`;
+    const url = `${window.location.origin}${catalogPath()}?style=${encodeURIComponent(st.colorways[0].sku)}`;
     if (navigator.share) {
       try { await navigator.share({ title: `${st.name} — NSA adidas catalog`, url }); return; } catch { /* fall through to copy */ }
     }
@@ -932,7 +937,7 @@ export default function AdidasInventory() {
     setSignInState('sending');
     // Return the coach to wherever they signed in (/adidas or the proxied
     // /livelook). This exact URL must be allow-listed in Supabase Auth redirects.
-    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + window.location.pathname } });
+    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + catalogPath() } });
     setSignInState(error ? 'error' : 'sent');
   };
   const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
