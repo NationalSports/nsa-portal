@@ -91,23 +91,15 @@ serve(async (req: Request) => {
       );
     }
 
-    // Meter against the monthly cap before any TaxCloud call. A capture =
-    // Lookup + AuthorizedWithCapture (2 calls); a return = 1 call. Reserve both
-    // up front so we never file a Lookup we can't follow with a Capture.
+    // Count this filing against the monthly meter for visibility, but NEVER
+    // block invoice filing on the cap (p_enforce: false always records and
+    // grants). Dropping a legally-required tax filing is worse than briefly
+    // exceeding the call budget — so metering here is best-effort only.
     const callsNeeded = action === "returned" ? 1 : 2;
-    const budget = await consumeBudget(callsNeeded);
-    if (!budget.granted) {
-      const seen = budget.used >= 0 ? budget.used : budget.cap;
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          capped: true,
-          used: seen,
-          cap: budget.cap,
-          error: `Monthly TaxCloud call limit reached (${seen}/${budget.cap}). Filing resumes next month.`,
-        }),
-        { status: 200, headers: CORS },
-      );
+    try {
+      await meter.rpc("taxcloud_try_consume", { p_count: callsNeeded, p_cap: MONTHLY_CAP, p_enforce: false });
+    } catch {
+      /* metering must never block compliance filing */
     }
 
     // Build cart items for TaxCloud
