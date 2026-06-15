@@ -5,6 +5,7 @@ import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
+import { _sbAuthLock } from './lib/supabase';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
@@ -20,7 +21,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
-import { calcOrderTotals, auTierDisc, isAU } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -350,17 +351,10 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
-// Per-tab mutex replaces the default Navigator LockManager, which can deadlock across tabs and time out the auth token refresh.
-const _sbAuthLock = (() => {
-  let chain = Promise.resolve();
-  return async (_name, _acquireTimeout, fn) => {
-    const prev = chain;
-    let release;
-    chain = new Promise(r => { release = r; });
-    try { await prev; return await fn(); }
-    finally { release(); }
-  };
-})();
+// Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
+// client and the lib client (same Supabase storage key) serialize auth ops
+// through ONE lock, instead of contending on the cross-tab Navigator
+// LockManager that deadlocks/times out token refresh when many tabs are open.
 try {
   if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) {
     supabase = createClient(_sbUrl, _sbKey, {
@@ -3392,6 +3386,9 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
+  const[dashSalesPeriod,setDashSalesPeriod]=useState('this_month');// dashboard sales box window: this_month|last_month|last_3|ytd|last_12
+  const[dashSalesReport,setDashSalesReport]=useState('by_rep');// admin sales box report: by_rep|top_customers|kpis
+  const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
@@ -5683,6 +5680,18 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
+  // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
+  // the open thread + msgs so it also catches replies that arrive while the thread is open and
+  // re-applies if a background sync (realtime/poll) briefly reverts read state before the save
+  // lands. setMsgs here is a no-op once everything's read, so it can't loop.
+  React.useEffect(()=>{
+    if(pg!=='messages'||!mThread||!cu?.id)return;
+    const anchor=msgs.find(m=>m.id===mThread);if(!anchor)return;
+    const ck=(anchor.entity_type||'so')+'::'+(anchor.entity_id||anchor.so_id||anchor.id);
+    const ids=new Set(msgs.filter(m=>((m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id))===ck&&!(m.read_by||[]).includes(cu.id)).map(m=>m.id));
+    if(ids.size)setMsgs(prev=>prev.map(m=>ids.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m));
+  },[pg,mThread,msgs,cu?.id]);
   // Lock non-admin/GM users to their own dashboard view (they shouldn't land on the admin overview).
   React.useEffect(()=>{
     if(!cu?.role)return;
@@ -7195,6 +7204,101 @@ export default function App(){
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
     const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
+    // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
+    const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();const t=dt.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(dt.toDateString()===now.toDateString())return'Today '+t;const y=new Date(now);y.setDate(now.getDate()-1);if(dt.toDateString()===y.toDateString())return'Yesterday '+t;return dt.toLocaleDateString([],{month:'short',day:'numeric'})+' '+t}catch{return''}};
+    // Dashboard sales box. scopeRepId set → that rep's own sales by month (period-scoped). For admin
+    // (scopeRepId=null) it's a mini multi-report panel: By Rep (leaderboard), Top Customers (filterable
+    // by rep), and KPIs (revenue, gross margin %, orders, avg order, customers, top rep, margin-by-rep).
+    // Period: This Month (default) / Last Month / Last 3 Months / Year to Date / Last 12 Months.
+    // Revenue + margin via calcOrderMargin (product + deco); an SO attributes to a rep via the customer's
+    // primary rep, else the SO creator. created_at is text "M/D/YYYY".
+    const _renderSalesBox=(scopeRepId)=>{
+      const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const NAVY='#1e3a8a',NAVY2='#1e40af',RED='#dc2626',SLATE='#475569';
+      const _saleDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))};
+      const now=new Date(),cY=now.getFullYear(),cM=now.getMonth();
+      const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
+      const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
+      const inPeriod=(so)=>{const dt=_saleDate(so.created_at);return dt&&dt>=pStart&&dt<pEnd};
+      const repOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+      const repName=(id)=>(REPS.find(r=>r.id===id)?.name||'—').split(' ')[0];
+      const _$=(n)=>'$'+Math.round(n).toLocaleString();const _$k=(n)=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
+      const _lbl={fontSize:10,color:'#64748b',textTransform:'uppercase',fontWeight:700,letterSpacing:0.4};
+      const periodSelect=<select value={dashSalesPeriod} onChange={e=>setDashSalesPeriod(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}>{PERIODS.map(p=><option key={p[0]} value={p[0]}>{p[1]}</option>)}</select>;
+      const _summary=(tiles)=><div style={{display:'flex',gap:22,marginBottom:12,flexWrap:'wrap'}}>{tiles.map(([l,v,c],i)=><div key={i}><div style={_lbl}>{l}</div><div style={{fontSize:20,fontWeight:800,color:c||NAVY}}>{v}</div></div>)}</div>;
+      const _barRows=(rows,labelWidth,highlightTop)=>{const maxRev=Math.max(...rows.map(r=>r.rev),1);return rows.length===0?<div className="empty" style={{padding:'24px 8px'}}>No sales in this period</div>:<div style={{display:'flex',flexDirection:'column',gap:7}}>{rows.map((s,i)=>{const top=highlightTop&&i===0;return<div key={i} style={{display:'flex',alignItems:'center',gap:8}} title={s.label+': '+_$(s.rev)+' · '+s.orders+' order'+(s.orders!==1?'s':'')}>
+        <div style={{width:labelWidth,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{top?'🥇 ':''}{s.label}</div>
+        <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:18,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.rev/maxRev)*100)+'%',background:top?RED:NAVY2,borderRadius:6,transition:'width 0.3s'}}/></div>
+        <div style={{width:58,textAlign:'right',fontSize:12,fontWeight:700,color:NAVY,flexShrink:0}}>{_$k(s.rev)}</div>
+        <div style={{width:26,textAlign:'right',fontSize:10,color:'#94a3b8',flexShrink:0}}>{s.orders}</div>
+      </div>})}</div>;};
+      // ── Rep view: own sales by month within the period ──
+      if(scopeRepId){
+        const byMonth=new Map();
+        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byMonth.set(key,seg)});
+        const rows=[...byMonth.values()].sort((a,b)=>a.sortKey-b.sortKey);
+        const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
+        return(<div className="card">
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📈 My Sales</h2>{periodSelect}</div>
+          <div className="card-body" style={{padding:'14px 16px',maxHeight:392,overflow:'auto'}}>
+            {_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Avg / Order',tOrders>0?_$(tRev/tOrders):'—',RED]])}
+            {_barRows(rows,40,false)}
+          </div>
+        </div>);
+      }
+      // ── Admin view: multi-report panel ──
+      const periodSOs=sos.filter(inPeriod);
+      const report=dashSalesReport;
+      const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs'};
+      let body=null;
+      if(report==='top_customers'){
+        const byCust=new Map();
+        periodSOs.forEach(so=>{if(dashCustRepFilter!=='all'&&repOf(so)!==dashCustRepFilter)return;const c=cust.find(x=>x.id===so.customer_id);const id=so.customer_id||'?';const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byCust.set(id,seg)});
+        const rows=[...byCust.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev).slice(0,15);
+        const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
+        body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true)}</>;
+      }else if(report==='kpis'){
+        let rev=0,cost=0,orders=0;const custSet=new Set();const perRep=new Map();
+        periodSOs.forEach(so=>{const m=calcOrderMargin(so);rev+=m.rev;cost+=m.cost;orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0};pr.rev+=m.rev;pr.cost+=m.cost;perRep.set(id,pr)}});
+        const margin=rev-cost,pct=rev>0?Math.round(margin/rev*100):0,avg=orders>0?rev/orders:0;
+        let topRep=null,topRevV=0;perRep.forEach((v,id)=>{if(v.rev>topRevV){topRevV=v.rev;topRep=id}});
+        const marginRows=[...perRep.entries()].map(([id,v])=>({label:repName(id),rev:v.rev,pct:v.rev>0?Math.round((v.rev-v.cost)/v.rev*100):0})).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
+        const kpi=(label,value,sub,color)=><div style={{flex:'1 1 28%',minWidth:92,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'8px 10px'}}><div style={_lbl}>{label}</div><div style={{fontSize:18,fontWeight:800,color:color||NAVY,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{value}</div>{sub?<div style={{fontSize:10,color:'#94a3b8'}}>{sub}</div>:null}</div>;
+        body=<>
+          <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:14}}>
+            {kpi('Revenue',_$(rev),null,NAVY)}
+            {kpi('Gross Margin',pct+'%',_$(margin)+' margin',RED)}
+            {kpi('Orders',orders+'',null,NAVY)}
+            {kpi('Avg Order',_$(avg),null,NAVY)}
+            {kpi('Customers',custSet.size+'',null,NAVY)}
+            {kpi('Top Rep',topRep?repName(topRep):'—',topRep?_$k(topRevV):null,RED)}
+          </div>
+          {marginRows.length>0&&<><div style={{...(_lbl),marginBottom:6}}>Margin by Rep</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>{marginRows.map((r,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8}} title={r.label+': '+r.pct+'% margin on '+_$(r.rev)}>
+            <div style={{width:96,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.label}</div>
+            <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:16,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,Math.min(100,r.pct))+'%',background:r.pct>=40?NAVY2:r.pct>=25?'#d97706':RED,borderRadius:6}}/></div>
+            <div style={{width:42,textAlign:'right',fontSize:12,fontWeight:700,color:NAVY,flexShrink:0}}>{r.pct}%</div>
+          </div>)}</div></>}
+        </>;
+      }else{
+        const byRep=new Map();
+        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byRep.set(id,seg)});
+        const rows=[...byRep.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev);
+        const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
+        body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Reps',rows.length+'',RED]])}{_barRows(rows,96,true)}</>;
+      }
+      return(<div className="card">
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{titles[report]}</h2>{periodSelect}</div>
+        <div className="card-body" style={{padding:'12px 14px',maxHeight:392,overflow:'auto'}}>
+          <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+            {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
+            {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin'||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
+          </div>
+          {body}
+        </div>
+      </div>);
+    };
+
     const ROLE_TABS=[
       {id:'admin',label:'🏢 Admin Overview',icon:'home',roles:['admin','gm']},
       {id:'sales',label:'💼 Sales Rep',icon:'dollar',roles:['admin','gm','rep']},
@@ -7244,6 +7348,21 @@ export default function App(){
             </div>)}
           </div>)})()}
         </div></div>
+      {_renderSalesBox(null)}
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
+          visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div>
+      </div>})()}
+      {/* Unread messages — moved beside Notifications (each half-width) */}
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
         {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
@@ -7260,15 +7379,6 @@ export default function App(){
             </div>})}
         </div></div>
     </div>
-    {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
-      <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
-        </div>)}
-      </div>
-    </div>})()}
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
@@ -7359,11 +7469,13 @@ export default function App(){
               </div></div>})}
         </div></div>
     </div>
+    <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
     const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
         {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
           <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
