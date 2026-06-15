@@ -995,7 +995,7 @@ export default function AdidasInventory() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
-  useEffect(() => { document.title = 'Team Catalog | National Sports Apparel'; }, []);
+  useEffect(() => { document.title = 'Product Live Look | National Sports Apparel'; }, []);
 
   // ── Coach account: magic-link sign-in → customer-linked tier pricing ──
   const [coach, setCoach] = useState(null); // {email,name,customerId,customerName,tier,schoolColors}
@@ -1363,7 +1363,7 @@ export default function AdidasInventory() {
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '26px 20px 22px' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
             <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(30px,5vw,44px)', margin: 0, textTransform: 'uppercase', letterSpacing: '.01em' }}>
-              Team Catalog
+              Product Live Look
             </h1>
             <span style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 18, color: '#9AA1AC', textTransform: 'uppercase', letterSpacing: '.08em' }}>
               National Sports Apparel
