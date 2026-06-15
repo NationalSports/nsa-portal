@@ -41,6 +41,11 @@ const sizeLabel = (s) => {
   const m = String(s || '').trim().match(/^(\d+(?:\.\d+)?)-$/);
   return m ? m[1] + '½' : s; // "10-" → "10½"
 };
+// One-size labels (OSFA & friends). Styles where every size is one-size — most
+// Agron accessories (bags/hats/socks) — show a single size cell in the modal,
+// so they get a larger product image instead of empty space beside it.
+const ONE_SIZE = new Set(['OSFA', 'OSFM', 'OFA', 'ONE SIZE', 'OS', 'O/S', 'NS']);
+const isOneSize = (s) => ONE_SIZE.has(String(s || '').trim().toUpperCase());
 // Size filter chips (apparel only — footwear runs are too granular to chip)
 const FILTER_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
 // "Strong run" = these sizes each ≥ STRONG_MIN units in a single colorway
@@ -503,6 +508,11 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   // Colorways that match the current filters float to the top
   const cws = [...st.colorways].sort((a, b) => (matchSet.has(b.sku) - matchSet.has(a.sku)) || a.color.localeCompare(b.color));
   const gb = GENDER_BADGE[st.gender];
+  // One-size styles (OSFA — most Agron accessories) show a single size cell, so
+  // the row would otherwise be mostly empty: give them a much larger, centered
+  // product image. Sized apparel keeps the compact thumb so its size grid fits.
+  const oneSize = st.colorways.every((cw) => cw.sizes.length > 0 && cw.sizes.every((s) => isOneSize(s.size)));
+  const thumb = oneSize ? 140 : 76;
 
   return (
     <div className="ai-modal-bg" onClick={onClose}>
@@ -541,8 +551,8 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
             const hasOOS = cw.sizes.some((s) => !availNow(s));
             const oosSizes = cw.sizes.filter((s) => !availNow(s));
             return (
-              <div key={cw.sku} className="ai-cwrow" style={matchSet.has(cw.sku) ? undefined : { opacity: .55 }}>
-                <div style={{ width: 76, height: 76, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+              <div key={cw.sku} className="ai-cwrow" style={{ ...(oneSize ? { alignItems: 'center' } : null), ...(matchSet.has(cw.sku) ? null : { opacity: .55 }) }}>
+                <div style={{ width: thumb, height: thumb, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                   <ImageBox img={cw.img} alt={cw.color} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -940,7 +950,7 @@ export default function AdidasInventory() {
         const [prods, inv, inHouseRows] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('id,sku,name,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description')
+            .select('id,sku,name,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -983,7 +993,13 @@ export default function AdidasInventory() {
           if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
           const inHouse = inHouseByPid[p.id] || null;
           const sizes = bySku[p.sku] || [];
-          // No Cowork data AND nothing in-house — can't vouch for availability
+          // Agron accessories must be carried by Agron itself. An Agron SKU with
+          // no agron_inventory row is only here because NSA happens to hold a
+          // stray unit in-house — not orderable from this catalog — so drop it,
+          // even when it's on our shelf. (CLICK & Agron SKUs are disjoint, so
+          // `sizes` for an Agron SKU is purely its Agron stock/inbound.)
+          if (p.inventory_source === 'agron' && !sizes.length) continue;
+          // Otherwise: no Cowork data AND nothing in-house — can't vouch for it.
           if (!sizes.length && !inHouse) continue;
           seen.add(p.sku);
           // Merge NSA warehouse stock into the size list: ih rides alongside
