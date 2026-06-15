@@ -137,6 +137,31 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   return{rev,ship,tax,grand:rev+ship+tax};
 };
 
+// ── calcOrderMargin — quick rev/cost/margin for dashboard KPIs ──
+// Mirrors calcOrderTotals' revenue walk and adds a parallel cost walk (catalog/size
+// cost + deco cost). Lighter than the Reports page (which prefers actual PO costs) — a
+// reasonable at-a-glance gross margin. Returns { rev, cost, margin, pct }.
+export const calcOrderMargin=(o)=>{
+  if(!o)return{rev:0,cost:0,margin:0,pct:0};
+  const items=_sItems(o);const af=_sArt(o);
+  const artQty={};
+  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q*(d.reversible?2:1)}})});
+  let rev=0,cost=0;
+  items.forEach(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    if(!it.is_free_promo){
+      if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))})}
+      else{rev+=q*_sNum(it.unit_sell)}
+    }
+    if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
+    else{cost+=q*_sNum(it.nsa_cost)}
+    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=eq*_sNum(dp.cost)})
+  });
+  return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0};
+};
+
 // ── calcQualifyingSpend — net sales (product + deco) that qualifies for promo earning ──
 // Mirrors calcOrderTotals' revenue walk but also tallies per-line cost, and only counts
 // a line's net revenue when its margin (sell−cost)/sell meets `minMargin` (default 20%).
