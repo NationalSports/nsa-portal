@@ -9,13 +9,12 @@ This file is NOT executed by this app. It exists so the live skill can be diffed
 against a known-good version. Companions: adidas-inventory-sync.SKILL.reference.md
 (adidas CLICK) and agron-inventory-sync.SKILL.reference.md (adidas accessories).
 
-⚠️ ENDPOINTS ARE UNVERIFIED. Armour House is behind a B2B login, so the exact API
-shapes below were NOT reverse-engineered from a live session yet — they're the
-target contract + a discovery runbook (§Discovery). On the FIRST COWORK run,
-capture the real requests (DevTools → Network) and fill in the confirmed
-endpoints/field names, exactly as the adidas/agron skills were authored against
-live responses. Everything downstream of the writes (tables, the /adidas Team
-Catalog, the order screen) is already built and waiting for rows.
+✅ ENDPOINTS VERIFIED 2026-06-15 (live COWORK discovery). See §Confirmed API for the
+captured, replay-tested contract: live stock = GraphQL `getInventory`; catalog/range =
+the Algolia index; pricing = GraphQL `getPricesByStyle`. Cookies alone 401 — the auth
+Bearer is grabbed off a live in-app request at runtime. The §Discovery runbook below is
+kept for reference / re-discovery. Everything downstream of the writes (tables, the
+/adidas Team Catalog, the order screen) is already built and waiting for rows.
 -->
 ---
 name: ua-inventory-sync
@@ -89,14 +88,54 @@ Likely shapes to look for (UA/Salesforce-Commerce/MuleSoft style — verify!):
 - Catalog: a `…/products` or `…/search` endpoint with `styleNumber`, `colorway`,
   `sizes[]`, `listPrice`/`msrp`, `imageUrl`, `description`, `gender`, `category`.
 
-## Confirmed API (fill in after discovery)
+## Confirmed API (VERIFIED LIVE 2026-06-15 — Armour House uses TWO backends)
+
+Discovery is DONE — endpoints captured from a logged-in session and replayed
+headless. The catalog and the live stock come from different backends:
 
 ```
-Auth:        <session cookie | Bearer from localStorage/… >   credentials:'include'
-Catalog:     <METHOD> <url>            body/params: <…>   → styles+colorways+sizes+price+image+desc
-Inventory:   <METHOD> <url>            body/params: <…>   → per-size stock + next date (+ ATP)
-Future ATP:  <same inventory call with a requestedDate param? or a separate endpoint>
+Auth — a Bearer JWT the SPA decrypts from encrypted localStorage (the `@secure.s.ua`
+       store). COOKIES ALONE RETURN 401. Capture the `authorization` header off a
+       live in-app request at runtime: install a fetch interceptor, then open/navigate
+       a product so the app fires getInventory, and read the header it sent. A WAF also
+       inspects headers — replay them ALL verbatim (`authorization`, `content-type`,
+       and the `x-rum-*` pair). Token is short-lived → re-grab each run; 401 = stop-and-pause.
+
+Inventory (LIVE stock) — GraphQL:
+   POST https://armourhouse.underarmour.com/graphql      operation `getInventory`
+   Variables: a list of per-size SKUs. Response per SKU: `qty` (on-hand) and
+   `future[]` = an ARRAY of { qty, effectiveDate } inbound deliveries (NOT one date).
+   Verified 200 with real data by replaying the app's EXACT captured body + headers.
+
+Catalog (full range) — Algolia (NOT GraphQL):
+   App ID `3X10FE38S0`, index `prod_new_products_en_us_1wh01uszzz` (~33,137 colorways).
+   Each hit: style number, name, colors, `sizes{}` (per-size SKUs), images, description,
+   and a per-plant `inv` SNAPSHOT (point-in-time — use getInventory for real-time stock).
+   This is the enumeration source for discovery + the per-size SKU list feeding getInventory.
+
+Pricing — GraphQL `getPricesByStyle`: `accountPrice` (list wholesale = retail × 0.5),
+   `msrp` (→ retail_price), `promoPrice`.
+
+Size order — GraphQL `getStyle`: per-style size ordering.
 ```
+
+### Resolved deviations from the original draft (confirmed against live data)
+1. **`future` is an ARRAY**, not a single date. The `ua_inventory` schema (and the
+   order screen / catalog) carry ONE `future_delivery_date` + `future_delivery_qty`,
+   so store the **earliest** `future[]` entry's `effectiveDate` + its `qty` (the next
+   inbound), same semantics as the adidas next-restock. (The later entries are dropped;
+   revisit only if multi-date inbound is ever surfaced in the UI.)
+2. **Cost basis:** `accountPrice` is the LIST wholesale (retail × 0.5) and does NOT
+   include NSA's extra 15% — same situation as Agron (elastic_wholesale = retail × 0.5,
+   true cost lower). So `nsa_cost = msrp × 0.5 × 0.85` (= retail × 0.425 = accountPrice ×
+   0.85), and `retail_price = msrp`. The promote function already computes retail × 0.425 —
+   write `retail_price = msrp` to staging and let promote derive cost. Do NOT store
+   accountPrice as nsa_cost.
+3. **Range:** for the INVENTORY sync, don't enumerate all 33k — Step 1 scopes to the
+   ~2,239 UA SKUs already in `products`; pull each colorway's per-size SKUs from the
+   Algolia hit (or getStyle) and batch them into getInventory. The team-assortment
+   `catalogs`/`activeIn` filter only matters for DISCOVERY (creating new product rows);
+   confirm NSA's team catalog code before enabling full-range discovery.
 
 ## Step 1 — SKU list (re-query EVERY run — never a cached list)
 
@@ -112,22 +151,27 @@ WHERE brand ILIKE 'under armour' AND COALESCE(is_active,true) AND NOT COALESCE(i
 
 Daily run may prioritize active/recent SKUs; a WEEKLY sweep re-checks every UA SKU.
 
-## Step 2 — Per SKU (mirror the adidas materials runner)
+## Step 2 — Per SKU (GraphQL getInventory; see §Confirmed API)
 
-1. Default inventory call → for EACH size: `stock_qty = <availableToSell>`,
-   `future_delivery_date = <nextAvailableDate>` (save it for every size that has one,
-   in stock or not). Sold-out style with an empty size list → use the catalog's size
-   run, stock 0, date null. **Write zero rows** (all-0 SKUs still upsert) so the
-   catalog shows "out of stock — inbound" instead of hiding the style.
-2. Collect DISTINCT next-dates among the OUT-OF-STOCK sizes.
-3. If UA exposes a projected-quantity-for-a-date param, call once per date and set
-   `future_delivery_qty` for every size whose next-date equals it (store ATP as-is;
-   map any "unlimited" sentinel ≥ 1e6 → null). If UA does NOT expose it, leave
-   `future_delivery_qty` null — the order screen just shows the date without "· N available".
-4. Upsert per size `{ id: sku+'-'+label, sku, size: label, stock_qty,
+For each UA style from Step 1, gather its per-size SKUs (from the Algolia hit's
+`sizes{}` or `getStyle`) and batch them into `getInventory`. Per returned SKU:
+
+1. `stock_qty = qty` (on-hand). From `future[]` (array of { qty, effectiveDate },
+   sorted ascending by date), take the EARLIEST entry: `future_delivery_date =
+   future[0].effectiveDate`, `future_delivery_qty = future[0].qty` (later inbounds are
+   dropped — the schema + order screen carry one next-restock). Empty `future[]` →
+   leave both null. **Write zero rows** (all-0 SKUs still upsert) so the catalog shows
+   "out of stock — inbound" instead of hiding the style.
+2. Map any "unlimited" sentinel (≥ 1e6) on a qty → null.
+3. Upsert per size `{ id: sku+'-'+label, sku, size: label, stock_qty,
    future_delivery_date, future_delivery_qty, last_synced, source:'armourhouse',
    style_number, color_code, upc }` on conflict `sku,size`. Batch ~500/upsert.
    **Verify with a row count, not the HTTP code.**
+
+Note: `sku` keying — use the per-COLORWAY code that matches the `products.sku` already
+in the portal (the colorway/style identifier), so live rows light up the existing UA
+product cards. The per-SIZE Armour House SKU goes in nothing extra unless needed for the
+getInventory call itself; size labels are the grid columns (Step 3).
 
 ## Step 3 — Size labels
 
