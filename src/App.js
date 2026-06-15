@@ -5647,6 +5647,16 @@ export default function App(){
     setOmgPriceLoading(false);
     nf(`Updated ${found}/${targets.length} cost${found===1?'':'s'}` + (zero ? ` · ${zero} had no catalog/API match (enter manually)` : ''));
   };
+  // A SKU is "obviously not a real one" when it's blank or a compound of
+  // multiple style numbers (OMG sometimes ships "IP9746//IS1111"). Detection
+  // only — we never rewrite the SKU; the rep corrects it (which re-sources the
+  // cost/vendor) and the Sales Order stays blocked until every SKU is valid.
+  const _skuLooksInvalid = (sku) => {
+    const s = String(sku || '').trim();
+    if (!s) return true;                      // no SKU at all
+    if (/[\/\\|,;]|\s/.test(s)) return true;  // separators → compound / multi-token
+    return false;
+  };
   // Map a supplier-API vendor name (e.g. "S&S", "SanMar") back to a vendor row id.
   const _vendorIdByName = (name) => {
     const n = String(name || '').toLowerCase().trim();
@@ -15726,6 +15736,7 @@ export default function App(){
       // Everything below the page must be complete before the SO can be pulled.
       const _alreadyPulled=sos.some(so=>so.omg_store_id===s.id);
       const _needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+      const _badSku=(s.products||[]).filter(p=>_skuLooksInvalid(p.sku));  // blank or compound SKUs (e.g. "IP9746//IS1111")
       const _hasDollar=(s._omg_grand_total||0)>0;                       // ① Dollar Report entered
       const _hasAcct=(s._omg_acct_collected||0)>0;                      // ② Accounting Report entered
       const _reportsMatch=!(_hasDollar&&_hasAcct)||Math.abs((s._omg_acct_collected||0)-(s._omg_grand_total||0))<1; // collected == grand total
@@ -15740,6 +15751,7 @@ export default function App(){
         if(!_hasAcct)reasons.push('Enter the Accounting Report (fees, top)');
         if(!_reportsMatch)reasons.push('Reports disagree — Total Collected ≠ Grand Total');
         if(_needArt.length)reasons.push(`${_needArt.length} item${_needArt.length>1?'s':''} need deco or “No Deco”`);
+        if(_badSku.length)reasons.push(`${_badSku.length} item${_badSku.length>1?'s':''} have an invalid SKU (e.g. “IP9746//IS1111”) — fix before pulling`);
         if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
         return{ok:reasons.length===0,reasons};
       })();
@@ -15751,6 +15763,10 @@ export default function App(){
               // "No Deco" (shoes, socks, equipment) before it can become an SO.
               const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
               if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
+              // Block junk SKUs (blank or a compound like "IP9746//IS1111") — they'd
+              // create un-orderable line items. The rep fixes them in Store Products.
+              const badSku=(s.products||[]).filter(p=>_skuLooksInvalid(p.sku));
+              if(badSku.length){nf(`${badSku.length} item(s) have an invalid SKU (e.g. a compound like IP9746//IS1111). Fix them in Store Products before creating the SO.`,'error');return;}
               // Build art files from unique art_group labels across all decorations
               // Each distinct art is either a customer-library logo (keyed by its
               // saved art id) or a new named group. Build one art file per identity.
@@ -16258,7 +16274,7 @@ export default function App(){
                 <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} title="Edit the SKU to re-source this item — leaving the field looks the new style up across vendor APIs and switches the vendor + cost to match (e.g. Adidas → S&S Activewear for better stock)." style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}}
                   onFocus={e=>{e.target.dataset.orig=e.target.value;e.target.style.borderBottom='1px solid #2563eb'}}
                   onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
-                  onBlur={e=>{e.target.style.borderBottom='1px solid transparent';const orig=e.target.dataset.orig||'';if((e.target.value||'').trim()!==orig.trim())omgResolveRowSku(s,i,e.target.value,orig)}}/></td>
+                  onBlur={e=>{e.target.style.borderBottom='1px solid transparent';const orig=e.target.dataset.orig||'';if((e.target.value||'').trim()!==orig.trim())omgResolveRowSku(s,i,e.target.value,orig)}}/>{_skuLooksInvalid(p.sku)&&<div title="Not a single valid SKU (e.g. a compound like IP9746//IS1111). Enter the real style number — it re-sources the cost/vendor. The Sales Order is blocked until every SKU is valid." style={{fontSize:8,fontWeight:800,color:'#b91c1c',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:3,padding:'1px 4px',marginTop:3,display:'inline-block',whiteSpace:'nowrap',cursor:'help'}}>⚠ invalid SKU</div>}</td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
                     <span style={{color:p.vendor_id?'#2563eb':'#dc2626',fontWeight:600}}>→</span>
@@ -16391,10 +16407,11 @@ export default function App(){
                 [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':'',false],
                 [_reportsMatch,'Reports match',!_reportsMatch?'Total Collected ≠ Dollar Report Grand Total — check the screenshots':'',false],
                 [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:'',false],
+                [_badSku.length===0,'All SKUs valid',_badSku.length?`${_badSku.length} item${_badSku.length>1?'s':''} have an invalid/compound SKU (e.g. “IP9746//IS1111”) — fix in Store Products`:'',false],
                 [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':'',false],
                 [_portalEmailed,'Parents emailed (optional)',!_portalEmailed?'You can send the “order is being processed” emails now or later — not required to create the SO':'',true],
               ].map(([ok,label,hint,optional],i)=>(
-                // Required steps are numbered (1-6); the optional email row never blocks the gate.
+                // Required steps are numbered in order; the optional email row never blocks the gate.
                 <div key={i} style={{display:'flex',alignItems:'center',gap:10,fontSize:13,opacity:optional&&!ok?0.85:1}}>
                   <span style={{width:20,height:20,flex:'0 0 20px',borderRadius:'50%',background:ok?'#16a34a':(optional?'#f1f5f9':'#e2e8f0'),color:ok?'#fff':'#94a3b8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:optional?13:12,fontWeight:800}}>{ok?'✓':(optional?'•':i+1)}</span>
                   <span style={{fontWeight:700,color:ok?'#0f172a':'#64748b'}}>{label}</span>
