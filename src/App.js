@@ -21,7 +21,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
-import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -2970,14 +2970,15 @@ const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
 };
 // _v bumps when default values change so cached localStorage from older versions is ignored.
 let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
-let EM={_v:3,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6};
+// fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
+let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
-// EM.pr stores cost; sell = rT(cost × EM.mk).
-function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?rT(v*EM.mk):v}
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
+function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
   const pq=cq||q;
@@ -2985,17 +2986,17 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-      if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
+      if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-    if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
+    if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
     if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-  if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
+  if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
@@ -8534,7 +8535,8 @@ export default function App(){
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
-    const _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
+    const _isFootwear=(ep.category||'').toLowerCase()==='footwear';
+    const _displaySz=SZ_ORD.filter(sz=>(!_isFootwear&&_coreSz.includes(sz))||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -15825,7 +15827,7 @@ export default function App(){
                   // product_id/vendor/cost come from the rep's resolved SKU first (set when they
                   // correct a SKU in Store Products — incl. an S&S swap), then the exact catalog match.
                   color:p.color,product_id:p.product_id||catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
-                  nsa_cost:p.cost||catP?.nsa_cost||0,
+                  nsa_cost:(()=>{const c0=p.cost||catP?.nsa_cost||0;if(c0>0)return c0;const rt=p.retail||catP?.retail_price||0;const br=p.brand||p.manufacturer||catP?.brand||'';const isFw=(p.category||catP?.category||'').toLowerCase()==='footwear';return rt>0&&isAU(br)?rQ(rt*auCostMult(br,isFw)):0})(),
                   retail_price:p.retail||0,
                   unit_sell:p.retail||0,
                   sizes,
@@ -19737,7 +19739,7 @@ export default function App(){
     };
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
-    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf'].includes(j.artFile?.deco_type||j.deco_type));
+    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j));
     // In Production: art complete but decoration not finished yet
     const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);
@@ -27262,8 +27264,9 @@ export default function App(){
 
         {/* Embroidery Matrix */}
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Embroidery Pricing</h3></div><div className="card-body">
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={EM.mk} onChange={e=>{savSettings('EM',{...EM,mk:parseFloat(e.target.value)||1.6})}}/>
+          <div style={{display:'flex',gap:16,marginBottom:12,flexWrap:'wrap'}}>
+            <div><label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={EM.mk} onChange={e=>{savSettings('EM',{...EM,mk:parseFloat(e.target.value)||1.6})}}/></div>
+            <div><label className="form-label">Minimum Sell Price ($)</label><input className="form-input" type="number" step="0.25" style={{width:80}} value={EM.fl??0} onChange={e=>{savSettings('EM',{...EM,fl:parseFloat(e.target.value)||0})}}/></div>
           </div>
           <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
             <thead><tr><th style={{fontSize:10}}>Stitches</th>{EM.qb.map((q,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{i===0?'1':EM.qb[i-1]+1}-{q>=99999?'+':q}</th>)}</tr></thead>
@@ -27273,7 +27276,7 @@ export default function App(){
                 value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;savSettings('EM',{...EM,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x).</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x){EM.fl>0?`, floored at $${EM.fl.toFixed(2)} per piece`:''}. Tiers already above the minimum keep their higher price.</div>
         </div></div>
 
         {/* Number Press Pricing */}
