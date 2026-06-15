@@ -5324,16 +5324,22 @@ export default function App(){
           const cleanSectionSku = cleanSku(sectionSku);
           const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
 
-          // Same product can ship multiple SKUs (one per color), e.g. the
-          // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
-          // distinct SKU into its own product row instead of merging them.
+          // One line item per distinct colorway. A real per-color style number
+          // (e.g. KB9093 black vs KB9097 grey) keys by SKU; when the report
+          // omits it (just "Team Navy Blue/White") we key by COLOR instead.
+          // The section style number is shared across colors, so keying on it
+          // would wrongly merge them into one row — splitting on color keeps
+          // each colorway its own editable line (the user then sets the right
+          // SKU/vendor per color).
           const groups = {};
           rows.forEach(row => {
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            const rowSku = extractSku(row.color) || (sectionSkuOk ? cleanSectionSku : '');
-            const key = rowSku || '__nosku__';
+            const colorSku = extractSku(row.color);
+            const rowColor = (row.color || '').trim();
+            const rowSku = colorSku || (sectionSkuOk ? cleanSectionSku : '');
+            const key = colorSku || rowColor || '__nosku__';
             if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
             const g = groups[key];
             g.sizes[sz] = (g.sizes[sz] || 0) + qty;
@@ -5354,15 +5360,16 @@ export default function App(){
               sku = fromText || (sectionSkuOk ? cleanSectionSku : cleanSku(sectionSku));
             }
 
-            // Match this SKU's mockup image (each color has its own art),
-            // falling back to the section's first artwork.
-            // The OMG report labels each mockup with its color+SKU in the
-            // `caption` (e.g. "Black/White (KB9093)"); match on that so each
-            // SKU gets its own mock rather than the section's first image.
-            const matchedArt = sku
-              ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
-              : [];
-            const artForSku = matchedArt.length ? matchedArt : artworkList;
+            // Match this colorway's mockup. Each color has its own art, labeled
+            // in the OMG `caption` with the color and/or SKU (e.g. "Team Navy
+            // Blue/White (KB9093)"). Prefer a COLOR match first — colors that
+            // share a style number can't be told apart by SKU — then fall back
+            // to a SKU match, then the section's first artwork.
+            const _artText = (a) => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase();
+            const _colorUp = ([...g.colors][0] || '').toUpperCase();
+            const matchedByColor = _colorUp ? artworkList.filter(a => _artText(a).includes(_colorUp) || (a.color||'').toUpperCase() === _colorUp) : [];
+            const matchedBySku = sku ? artworkList.filter(a => _artText(a).includes(sku)) : [];
+            const artForSku = matchedByColor.length ? matchedByColor : (matchedBySku.length ? matchedBySku : artworkList);
             const artwork = artForSku[0];
             const imageUrl = artwork?.link || artwork?.thumbnail || '';
 
@@ -5435,13 +5442,18 @@ export default function App(){
 
       // Merge with existing data — preserve manual edits (SKU corrections,
       // costs, deco types, art groups, vendors) from previous imports.
-      // Match by OMG product id + SKU, then by SKU. NEVER fall back to array
-      // position: a single OMG product now spans multiple SKU rows, so the
+      // Match by OMG product id + colorway (see below). NEVER fall back to array
+      // position: a single OMG product now spans one row per colorway, so the
       // product list changes shape between imports and a positional match
       // would graft an unrelated product's name/SKU onto a row.
       const existingProducts = store.products || [];
       const mergedProducts = products.map((p) => {
-        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep._original_sku || ep.sku) === p.sku)
+        // Identity for a split row = its OMG product + its colorway. Colors of
+        // one product can share a style number until edited, so matching on SKU
+        // alone would graft one color's edits onto another. Match on
+        // product-id + color first, then SKU + color, then SKU (legacy).
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep.color||'') === (p.color||''))
+          || existingProducts.find(ep => (ep._original_sku || ep.sku) === p.sku && (ep.color||'') === (p.color||''))
           || existingProducts.find(ep => (ep._original_sku || ep.sku) === p.sku);
         if (!existing) return p;
         // Preserve manual edits, take fresh data for quantities
@@ -5466,6 +5478,20 @@ export default function App(){
           _original_sku: p.sku, // track original for detecting user edits
         };
       });
+
+      // Product images only flow through when "Include product images" was
+      // checked while sharing the OMG report. Hard-block the import when the
+      // MERGED result has no images at all (the share was exported without
+      // them) so a rep can't proceed on an imageless catalog. Using the merged
+      // list — not the fresh parse — means a re-import that only refreshes
+      // quantities keeps photos already on the rows and isn't blocked. A
+      // partial miss is allowed through with a warning below.
+      const _noImg = mergedProducts.filter(p => !p.image_url).length;
+      const _total = mergedProducts.length;
+      if (_total > 0 && _noImg === _total) {
+        nf(`⚠ Import blocked — none of the ${_total} products have images. In OMG, re-share the report with “Include product images” checked, then Re-import.`, 'error');
+        return null;
+      }
 
       // Update the store with merged products
       const updated = {
@@ -5494,14 +5520,9 @@ export default function App(){
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      // Product images only come through when "include images" is checked when
-      // sharing the OMG report. If most/all products have no image, the share
-      // was almost certainly exported without it — warn so the rep re-shares.
-      const _noImg = (products || []).filter(p => !p.image_url).length;
-      const _total = (products || []).length;
-      if (_total > 0 && _noImg === _total) {
-        nf(`⚠ Imported ${_total} products but NONE have images. In OMG, re-share the report with “Include product images” checked, then Re-import.`, 'error');
-      } else if (_noImg > 0) {
+      // All-missing is blocked before the commit above; only a partial miss can
+      // reach here, so warn (don't block) and otherwise confirm success.
+      if (_noImg > 0) {
         nf(`⚠ Imported ${_total} products — ${_noImg} are missing images. Re-share the OMG report with “Include product images” checked and Re-import if you need them.`, 'warn');
       } else {
         nf(`Imported ${_total} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
@@ -5625,6 +5646,84 @@ export default function App(){
     setOmgSel(upd);
     setOmgPriceLoading(false);
     nf(`Updated ${found}/${targets.length} cost${found===1?'':'s'}` + (zero ? ` · ${zero} had no catalog/API match (enter manually)` : ''));
+  };
+  // Map a supplier-API vendor name (e.g. "S&S", "SanMar") back to a vendor row id.
+  const _vendorIdByName = (name) => {
+    const n = String(name || '').toLowerCase().trim();
+    if (!n) return null;
+    const v = vend.find(vv => {
+      const vn = (vv.name || '').toLowerCase();
+      if (!vn) return false;
+      if (/s.?s/.test(n) && /s.?s\s*activ/.test(vn)) return true;
+      if (/sanmar/.test(n) && /sanmar/.test(vn)) return true;
+      if (/richardson/.test(n) && /richardson/.test(vn)) return true;
+      if (/momentec/.test(n) && /momentec/.test(vn)) return true;
+      return vn.includes(n) || n.includes(vn);
+    });
+    return v?.id || null;
+  };
+  // A rep edited a line item's SKU. A different style number usually means a
+  // different vendor — e.g. moving an Adidas CLICK item to its S&S Activewear
+  // equivalent for better stock — so re-source the row: re-run the same
+  // catalog → supplier-API resolution used at import and switch vendor + cost
+  // to match. Vendor is always updated; cost is overwritten only when a price
+  // is found, so a lookup miss never wipes a number already on the row.
+  const omgResolveRowSku = async (store, index, newSkuRaw, prevSkuRaw) => {
+    const newSku = (newSkuRaw || '').trim();
+    const prevSku = (prevSkuRaw || '').trim();
+    const products = store.products || [];
+    const p0 = products[index];
+    if (!p0) return;
+    const changed = newSku !== '' && newSku.toUpperCase() !== prevSku.toUpperCase();
+    let vendorId = p0.vendor_id || null;
+    let cost = p0.cost || 0;
+    let costSrc = p0._cost_source || '';
+    let matched = false;
+    if (changed) {
+      const skuClean = newSku.toUpperCase();
+      setOmgPriceLoading(true);
+      try {
+        // 1) NSA catalog (in-memory)
+        const catMatch = prod.find(cp => { const c=(cp.sku||'').trim().toUpperCase(); return c && (c===skuClean||c.includes(skuClean)||skuClean.includes(c)); });
+        if (catMatch?.vendor_id) { vendorId = catMatch.vendor_id; matched = true; }
+        if (catMatch && parseFloat(catMatch.nsa_cost) > 0) { cost = parseFloat(catMatch.nsa_cost); costSrc = 'catalog'; matched = true; }
+        else {
+          // 2) Supabase catalog fallback
+          if (supabase) {
+            try {
+              const { data } = await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku', skuClean).limit(1);
+              const row = data?.[0];
+              if (row?.vendor_id) { vendorId = row.vendor_id; matched = true; }
+              if (row && parseFloat(row.nsa_cost) > 0) { cost = parseFloat(row.nsa_cost); costSrc = 'catalog'; matched = true; }
+            } catch (e) { console.log(`[OMG SKU] DB lookup failed for ${newSku}: ${e.message}`); }
+          }
+          // 3) Supplier API — target the known vendor, else search all
+          const vendorName = (vend.find(v => v.id === vendorId)?.name || p0.manufacturer || '').toLowerCase();
+          let hit = null;
+          try {
+            if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(newSku);
+            else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(newSku);
+            else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(newSku);
+            else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(newSku, { discount: _momentecDiscount() });
+            else hit = await resolveSkuAcrossVendors(newSku);
+          } catch (e) { console.log(`[OMG SKU] API lookup failed for ${newSku}: ${e.message}`); }
+          if (hit?.rate > 0) {
+            cost = hit.rate; costSrc = _vendorCostSrc(hit.vendor); matched = true;
+            const vid = _vendorIdByName(hit.vendor);
+            if (vid) vendorId = vid;
+          }
+        }
+      } finally { setOmgPriceLoading(false); }
+    }
+    const newProds = products.map((pr, j) => j === index ? { ...pr, sku: newSku, vendor_id: vendorId || null, cost, _cost_source: costSrc } : pr);
+    const upd = { ...store, products: newProds };
+    setOmgStores(prev => prev.map(st => st.id === store.id ? upd : st));
+    setOmgSel(upd);
+    if (changed) {
+      const vName = vend.find(v => v.id === vendorId)?.name;
+      if (matched) nf(`SKU → ${newSku}${vName ? ` · ${vName}` : ''}${cost > 0 ? ` · $${cost}` : ''}`);
+      else nf(`SKU → ${newSku} · no catalog/API match — set vendor & cost manually`, 'warn');
+    }
   };
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
@@ -16053,7 +16152,7 @@ export default function App(){
                 <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>{s.status==='closed'?'Store closed — ready for pull':'Paste the OMG report to load products'}</div>
                 <div style={{fontSize:12,color:'#64748b'}}>Share the report from OMG admin and paste the link below.</div>
                 <div style={{marginTop:8,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:12,color:'#92400e',fontWeight:600}}>
-                  📷 Before sharing in OMG, check <b>“Include product images”</b> — without it, products import with no photos and you’ll have to re-share &amp; re-import.
+                  📷 Before sharing in OMG, check <b>“Include product images”</b> — it’s required. Without images the import is blocked, and you’ll need to re-share the report with them.
                 </div>
               </div>}
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -16156,7 +16255,10 @@ export default function App(){
                   overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
                   overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
                 }}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
-                <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/></td>
+                <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} title="Edit the SKU to re-source this item — leaving the field looks the new style up across vendor APIs and switches the vendor + cost to match (e.g. Adidas → S&S Activewear for better stock)." style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}}
+                  onFocus={e=>{e.target.dataset.orig=e.target.value;e.target.style.borderBottom='1px solid #2563eb'}}
+                  onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                  onBlur={e=>{e.target.style.borderBottom='1px solid transparent';const orig=e.target.dataset.orig||'';if((e.target.value||'').trim()!==orig.trim())omgResolveRowSku(s,i,e.target.value,orig)}}/></td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
                     <span style={{color:p.vendor_id?'#2563eb':'#dc2626',fontWeight:600}}>→</span>
