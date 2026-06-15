@@ -7,6 +7,7 @@ import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
+import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
@@ -38,6 +39,31 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   const[portalApvOpen,setPortalApvOpen]=useState(false);
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
+  // NetSuite-imported (_hist) invoices keep their line items in a separate
+  // table (customer_invoice_lines) that isn't loaded with the invoice header,
+  // so they open with no `line_items` — both the on-screen detail and the
+  // downloaded PDF then render an empty item table. Lazily fetch and attach the
+  // lines the first time such an invoice is opened (at open time, not at
+  // PDF-download time, so printDoc's window.open stays within the click gesture
+  // and isn't blocked as a popup).
+  useEffect(()=>{
+    const inv=portalInvView;
+    if(!inv||!inv._hist||!supabase||!inv.netsuite_internal_id||inv.line_items?.length)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const{data,error}=await supabase
+          .from('customer_invoice_lines')
+          .select('line_seq,item,description,line_memo,quantity,rate,amount')
+          .eq('netsuite_internal_id',inv.netsuite_internal_id)
+          .order('line_seq',{ascending:true});
+        if(cancelled||error||!data||!data.length)return;
+        const line_items=data.map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
+        setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
+      }catch{/* non-fatal — leave the invoice without line detail */}
+    })();
+    return()=>{cancelled=true};
+  },[portalInvView]);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
@@ -1483,7 +1509,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             });
           });
         }else{
-          (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty,style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:_$(rate),style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
+          // Some NetSuite-imported lines only carry an amount (no qty/rate/desc),
+          // so render those columns blank rather than a misleading 0 / $0.00.
+          (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
         }
         const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
         const _tax=inv.tax||0;
@@ -1563,7 +1591,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
             {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;
               return<div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
-              <div><div style={{fontWeight:600,fontSize:13}}>{safeStr(li._name||li.name||li.desc)||li._sku||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{safeNum(li.qty)} × ${rate.toFixed(2)}</div></div>
+              <div><div style={{fontWeight:600,fontSize:13}}>{safeStr(li._name||li.name||li.desc)||li._sku||li.sku||'Item'}</div><div style={{fontSize:11,color:'#64748b'}}>{[safeNum(li.qty)>0?safeNum(li.qty):null,rate>0?'$'+rate.toFixed(2):null].filter(v=>v!=null).join(' × ')}</div></div>
               <div style={{fontWeight:700,fontSize:13}}>${amt.toFixed(2)}</div>
             </div>})}
           </div>}
