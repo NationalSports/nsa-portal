@@ -15746,6 +15746,7 @@ export default function App(){
       const soGate=(()=>{
         const reasons=[];
         if(!s.customer_id)reasons.push('Link a customer (top of page)');
+        if(!s.rep_id)reasons.push('Assign a sales rep (dropdown next to the customer, top)');
         if(!s.delivery_mode)reasons.push('Choose a delivery method (ship to home / deliver to school)');
         if(!_hasDollar)reasons.push('Enter the Dollar Report (revenue, top)');
         if(!_hasAcct)reasons.push('Enter the Accounting Report (fees, top)');
@@ -15758,6 +15759,7 @@ export default function App(){
       const createOmgSO=(force=false)=>{
               if(!force&&sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
+              if(!s.rep_id){nf('Assign a sales rep to this store first — use the rep dropdown next to the customer at the top.','error');return}
               const generatedId=nextSOId(sos);
               // Every product must be assigned an art group or explicitly marked
               // "No Deco" (shoes, socks, equipment) before it can become an SO.
@@ -16402,6 +16404,7 @@ export default function App(){
             <div style={{display:'grid',gap:6,marginBottom:14}}>
               {[
                 [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':'',false],
+                [!!s.rep_id,'Sales rep assigned',!s.rep_id?'Pick a rep from the dropdown next to the customer at the top':'',false],
                 [!!s.delivery_mode,'Delivery method chosen',!s.delivery_mode?'Pick “Ship to home” or “Deliver to school” at the top':(s.delivery_mode==='deliver_school'?'Deliver to school — no per-player shipping labels':'Ship to home — labels per player'),false],
                 [_hasDollar,'Dollar Report entered (revenue)',!_hasDollar?'Enter the ① Dollar Report at the top':'',false],
                 [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':'',false],
