@@ -21,7 +21,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
-import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -8535,7 +8535,8 @@ export default function App(){
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
-    const _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
+    const _isFootwear=(ep.category||'').toLowerCase()==='footwear';
+    const _displaySz=SZ_ORD.filter(sz=>(!_isFootwear&&_coreSz.includes(sz))||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -15826,7 +15827,7 @@ export default function App(){
                   // product_id/vendor/cost come from the rep's resolved SKU first (set when they
                   // correct a SKU in Store Products — incl. an S&S swap), then the exact catalog match.
                   color:p.color,product_id:p.product_id||catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
-                  nsa_cost:p.cost||catP?.nsa_cost||0,
+                  nsa_cost:(()=>{const c0=p.cost||catP?.nsa_cost||0;if(c0>0)return c0;const rt=p.retail||catP?.retail_price||0;const br=p.brand||p.manufacturer||catP?.brand||'';const isFw=(p.category||catP?.category||'').toLowerCase()==='footwear';return rt>0&&isAU(br)?rQ(rt*auCostMult(br,isFw)):0})(),
                   retail_price:p.retail||0,
                   unit_sell:p.retail||0,
                   sizes,
