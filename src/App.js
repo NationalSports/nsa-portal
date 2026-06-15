@@ -19597,14 +19597,16 @@ export default function App(){
   // ARTIST DASHBOARD — dual-view (Artist workboard + Rep tracker)
   // ═══════════════════════════════════════════════
   function rArtist(){
-    // True when a job has art files but not all of them have production files ready yet.
-    // Mirrors isJobReady (businessLogic): checks every design the job's items CURRENTLY
-    // decorate with (jobLiveArtIds) — so orphaned/stale art files don't block completion —
-    // and counts an embroidery .dst or the prod_files_attached confirmation as a prod file.
-    // Names/numbers-only jobs (no art files) return false so they can still be completed.
+    // True when a job has art files but not all of them have production files CONFIRMED yet —
+    // the per-design prod_files_attached checkbox, or an embroidery .dst (which IS the production
+    // file). Files merely sitting in prod_files (e.g. an order-sheet PDF) do NOT count, so an
+    // art_complete job that reached completion without explicit confirmation is surfaced back in
+    // its production-files stage instead of reading as production-ready. Checks every design the
+    // job's items CURRENTLY decorate with (jobLiveArtIds) so orphaned/stale art files don't block
+    // it. Names/numbers-only jobs (no art files) return false so they can still be completed.
     const _jobNeedsProdFiles=(j,so)=>{
       const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
-      return afs.length>0&&!afs.every(a=>artProdFilesReady(a));
+      return afs.length>0&&!afs.every(a=>artProdFilesConfirmed(a));
     };
     // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
@@ -19633,7 +19635,7 @@ export default function App(){
         if(j.art_status!=='art_complete')return;
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
-          const af=afs.find(a=>!artProdFilesReady(a))||afs[0];
+          const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];
           allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,

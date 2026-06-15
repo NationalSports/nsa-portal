@@ -829,7 +829,9 @@ describe('Job Building', () => {
   });
 
   test('generates jobs from art decorations', () => {
-    const artFile = makeArtFile();
+    // prod_files_attached marks the per-design "Production Files by Design" checkbox as confirmed —
+    // required for an approved job to reach art_complete (files alone no longer skip the seps stage).
+    const artFile = makeArtFile({ prod_files_attached: true });
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 5, M: 10 },

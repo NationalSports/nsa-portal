@@ -179,9 +179,14 @@ const buildJobs = (o) => {
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
-          const _prodReady = af.prod_files_attached === true || (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
+          // Skipping the production-files stage (landing straight on art_complete) requires EXPLICIT
+          // confirmation — the per-design prod_files_attached checkbox, or, for embroidery, a .dst that
+          // IS the production file. A file merely sitting in prod_files (e.g. an order-sheet PDF dropped
+          // in before the seps exist) is NOT enough, so an approved job waits in its production-files
+          // stage until someone confirms. Mirrors artProdFilesConfirmed in constants.js.
+          const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (af.deco_type || '') === 'dtf' ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
-          const st = af.status === 'approved' ? (_prodReady ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
