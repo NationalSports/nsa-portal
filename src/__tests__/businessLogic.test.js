@@ -126,9 +126,9 @@ describe('Rounding Helpers', () => {
 // ═══════════════════════════════════════════════
 describe('Screen Print Pricing — spP()', () => {
   test('returns sell price for valid qty/color combos', () => {
-    // Bracket 0 (qty 1-11) stores sell directly (flat total price)
-    expect(BL.spP(1, 1)).toBe(BL.SP.pr[0][0]);
-    expect(BL.spP(11, 1)).toBe(BL.SP.pr[0][0]);
+    // Bracket 0 (qty 1-11) is a flat run charge — same for 1 or 11 pcs; value is cost, sell = cost × markup
+    expect(BL.spP(1, 1)).toBe(BL.rT(BL.SP.pr[0][0] * BL.SP.mk));
+    expect(BL.spP(11, 1)).toBe(BL.rT(BL.SP.pr[0][0] * BL.SP.mk));
     // Brackets 1+ store cost; sell = rT(cost * markup)
     expect(BL.spP(12, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
     expect(BL.spP(23, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
@@ -138,8 +138,8 @@ describe('Screen Print Pricing — spP()', () => {
   test('returns cost price when sell=false', () => {
     // Brackets 1+: stored value IS the cost
     expect(BL.spP(48, 1, false)).toBe(BL.SP.pr[4][0]);
-    // Bracket 0 (under-12): cost = sell / markup
-    expect(BL.spP(5, 1, false)).toBe(BL.rQ(BL.SP.pr[0][0] / BL.SP.mk));
+    // Bracket 0 (under-12): the stored value IS the cost (flat for the run)
+    expect(BL.spP(5, 1, false)).toBe(BL.SP.pr[0][0]);
   });
 
   test('returns 0 for invalid inputs', () => {
@@ -331,7 +331,9 @@ describe('Decoration Pricing — dP()', () => {
     const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 2, underbase: false };
     const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 flat total
     const aggregated = BL.dP(d, 4, [], 14);      // combined qty → bracket 1 per-piece
-    expect(perLine.sell).toBeCloseTo(60, 2);
+    expect(perLine.cost).toBeCloseTo(60, 2);   // 2-color flat run COST (the table value)
+    expect(perLine.sell).toBeCloseTo(90, 2);   // sell = cost × 1.5 markup
+    expect(perLine._nq).toBe(1);               // flat charge applied once, not per-unit
     expect(aggregated.sell).toBeCloseTo(6.4, 2);
     expect(aggregated.cost).toBeCloseTo(4.25, 2);
   });

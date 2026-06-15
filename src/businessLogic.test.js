@@ -135,8 +135,10 @@ describe('Pricing Functions', () => {
   });
 
   describe('Screen Print Pricing (spP)', () => {
-    test('1 color, 1-11 qty: bracket 0 stores flat sell', () => {
-      expect(spP(1, 1, true)).toBe(SP.pr[0][0]);
+    test('1 color, 1-11 qty: bracket 0 is flat; value is cost, sell = cost × markup', () => {
+      expect(spP(1, 1, true)).toBe(rT(SP.pr[0][0] * SP.mk));
+      expect(spP(11, 1, true)).toBe(rT(SP.pr[0][0] * SP.mk));
+      expect(spP(5, 1, false)).toBe(SP.pr[0][0]);
     });
 
     test('1 color, 48-71 qty: stored value is cost; sell = cost × 1.5', () => {
