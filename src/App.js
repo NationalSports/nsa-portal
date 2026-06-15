@@ -1838,20 +1838,34 @@ const _handleAuthSaveFailure=(id)=>{
   _recoverSession();
   return false;
 };
+// Proactive guard: ensure the access token isn't expired/near-expiry *before* a write goes out. A
+// hidden/idle/slept tab throttles GoTrue's auto-refresh timer, so the in-memory JWT can be stale; the
+// PostgREST write path would send it as-is, the server treats the request as the anon role, and RLS
+// rejects every INSERT/UPDATE (reads still work) — the silent "save failed / check your connection"
+// users hit on resume. Refresh only when actually near expiry, reusing the de-duped _recoverSession()
+// so a proactive refresh never races a reactive one.
+const _ensureFreshSession=async()=>{
+  if(!supabase||_sessionDead)return;
+  try{
+    const{data:{session}}=await supabase.auth.getSession();
+    if(session?.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
+  }catch{}
+};
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
+  await _ensureFreshSession();
   // Optimistic locking: check version before saving
   if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number')c._version=vc;return false}}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
-    let{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
+    let{error:custErr}=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'}));
     if(custErr){
       // Retry without optional columns if they don't exist yet (art_files: 00027, search_tags: 00085)
       const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags');
-      const retry=await supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'});
-      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
+      const retry=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'}));
+      if(retry.error){if(_isAuthError(retry.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
       else{console.warn('[DB] customer saved without optional columns (run latest migrations)')}
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
@@ -1874,7 +1888,7 @@ const _dbSaveCustomer = async (c) => {
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(c._version)c._version=c._version+1;
     console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
   if(!supabase)return false;
@@ -4845,10 +4859,13 @@ export default function App(){
   // Retry failed saves immediately when tab regains visibility (don't wait 60s).
   // Heavy tables are no longer flushed to localStorage on hide — cloud is the source of truth.
   React.useEffect(()=>{
-    const onVis=()=>{
-      if(document.hidden){
-        // No-op — heavy tables persist via _diffSave to Supabase on every change.
-      }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
+    const onVis=async()=>{
+      if(document.hidden)return;// heavy tables persist via _diffSave on every change — nothing to flush
+      // Returning to the foreground: a hidden tab throttles GoTrue's auto-refresh timer, so the in-memory
+      // JWT may be expired. Refresh proactively before anything writes — an expired token makes the server
+      // treat writes as anon and RLS rejects them (reads still work), the silent save failure users hit on resume.
+      await _ensureFreshSession();
+      if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
         _retryBackoff.current=60000;
