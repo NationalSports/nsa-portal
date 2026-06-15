@@ -942,6 +942,89 @@ describe('Job Building', () => {
 });
 
 // ═══════════════════════════════════════════════
+// 7b. SPLIT ART — two designs on one line → one job each
+// ═══════════════════════════════════════════════
+describe('Split Art', () => {
+  const splitSO = (over = {}) => makeSO({
+    art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' })],
+    items: [makeSOItem({
+      sizes: { S: 10, M: 20 },
+      decorations: [
+        { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sg1', split_sizes: { S: 4, M: 8 } },
+        { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sg1', split_sizes: { S: 6, M: 12 } },
+      ],
+    })],
+    jobs: [],
+    ...over,
+  });
+
+  test('a split line produces one job per design, each sized to its own allocation', () => {
+    const jobs = buildJobs(splitSO());
+    expect(jobs).toHaveLength(2);
+    const a = jobs.find(j => j.art_file_id === 'afA');
+    const b = jobs.find(j => j.art_file_id === 'afB');
+    expect(a.total_units).toBe(12); // 4 + 8
+    expect(b.total_units).toBe(18); // 6 + 12
+    expect(a.items[0].sizes).toEqual({ S: 4, M: 8 });
+    expect(b.items[0].sizes).toEqual({ S: 6, M: 12 });
+    expect(a.split_group).toBe('sg1');
+    expect(b.split_group).toBe('sg1');
+    expect(a.art_name).toBe('Friars');
+    expect(b.art_name).toBe('Servite');
+  });
+
+  test('split designs do NOT merge into one combined job, and totals never double-count the line', () => {
+    const jobs = buildJobs(splitSO());
+    expect(jobs.every(j => (j._art_ids || []).length === 1)).toBe(true);
+    expect(jobs.reduce((sum, j) => sum + j.total_units, 0)).toBe(30); // full line, counted once
+  });
+
+  test('two non-split arts on a line still merge into one job (unchanged behavior)', () => {
+    const jobs = buildJobs(makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Front' }), makeArtFile({ id: 'afB', name: 'Back' })],
+      items: [makeSOItem({ sizes: { S: 10 }, decorations: [
+        { kind: 'art', art_file_id: 'afA', position: 'Front' },
+        { kind: 'art', art_file_id: 'afB', position: 'Back' },
+      ] })],
+      jobs: [],
+    }));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+  });
+
+  test('split-art siblings (shared split_group) partition partial receipts — no double-count', () => {
+    // Line S:10 split 4/6 between two designs; only 5 of the S blanks have arrived.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg1', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg1', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 6 } }], total_units: 6, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 10, received: { S: 5 } }] })];
+    const [a, b] = recalcJobFulfillment(so, items);
+    // 5 received fills design A's 4 first, then 1 toward B — never counted as 5 + 5.
+    expect(a.fulfilled_units).toBe(4);
+    expect(b.fulfilled_units).toBe(1);
+    expect(a.fulfilled_units + b.fulfilled_units).toBe(5);
+  });
+
+  test('fully-received split line marks both design jobs items_received', () => {
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg1', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg1', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 6 } }], total_units: 6, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 10, received: { S: 10 } }] })];
+    const [a, b] = recalcJobFulfillment(so, items);
+    expect(a.fulfilled_units).toBe(4);
+    expect(b.fulfilled_units).toBe(6);
+    expect(a.item_status).toBe('items_received');
+    expect(b.item_status).toBe('items_received');
+  });
+});
+
+// ═══════════════════════════════════════════════
 // 8. JOB READINESS
 // ═══════════════════════════════════════════════
 describe('Job Readiness (isJobReady)', () => {

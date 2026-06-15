@@ -74,7 +74,20 @@ export function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);
 // EM.pr stores cost; sell = rT(cost × EM.mk).
 export function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?rT(v*EM.mk):v}
 export function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+// Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
+// null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
+export const decoSplitQty=(d)=>(d&&d.split_group&&d.split_sizes)?Object.values(d.split_sizes).reduce((a,v)=>a+safeNum(v),0):null;
 export function dP(d,q,artFiles,cq){
+  // Split-art designs bill at their own per-size allocation. cq (the combined tier qty) is
+  // already summed per design by the artQty builders, so price the design at its share, then
+  // stamp the billed qty (_nq) so every caller's `eq` multiplies by the design's pieces — not
+  // the full line. Non-split decos are untouched (decoSplitQty → null).
+  const _r=_dPInner(d,q,artFiles,cq);
+  const _sq=decoSplitQty(d);
+  if(_sq!=null&&d.kind==='art'&&_r&&_r._nq==null)_r._nq=_sq*(d.reversible?2:1);
+  return _r;
+}
+function _dPInner(d,q,artFiles,cq){
   const _revMult=d.reversible?2:1;
   // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback
   const pq=cq!=null?cq:q*_revMult;
@@ -110,7 +123,7 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;
-    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q*(d.reversible?2:1)}});
+    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
   let rev=0;
   items.forEach(it=>{
@@ -145,7 +158,7 @@ export const calcOrderMargin=(o)=>{
   if(!o)return{rev:0,cost:0,margin:0,pct:0};
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
-  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q*(d.reversible?2:1)}})});
+  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
   let rev=0,cost=0;
   items.forEach(it=>{
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
@@ -178,7 +191,7 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;
-    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q*(d.reversible?2:1)}});
+    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
   let total=0;
   items.forEach(it=>{
