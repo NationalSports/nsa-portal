@@ -6801,10 +6801,21 @@ export default function App(){
   const[catReqOpen,setCatReqOpen]=useState(false);
   const[catReqCustSel,setCatReqCustSel]=useState({});
   const[catReqSearch,setCatReqSearch]=useState({});
+  const[catReqFocus,setCatReqFocus]=useState(null);
   useEffect(()=>{if(!supabase)return;let on=true;
-    const load=()=>supabase.from('catalog_order_requests').select('*').not('status','in','(done,dismissed)').order('created_at',{ascending:false}).limit(200).then(r=>{if(on&&!r.error&&Array.isArray(r.data))setCatReqs(r.data)});
+    const load=()=>supabase.from('catalog_order_requests').select('*').not('status','in','(done,dismissed,estimate_created)').order('created_at',{ascending:false}).limit(200).then(r=>{if(on&&!r.error&&Array.isArray(r.data))setCatReqs(r.data)});
     load();const t=setInterval(load,5*60*1000);return()=>{on=false;clearInterval(t)};
   },[]);
+  // Deep link from the rep email's "Create estimate" button (?catreq=<id>):
+  // land on the dashboard with the Estimate Requests inbox open and the
+  // matching request highlighted + scrolled into view.
+  useEffect(()=>{if(dbLoading)return;try{const id=new URLSearchParams(window.location.search).get('catreq');if(!id)return;setPg('dashboard');setCatReqOpen(true);setCatReqFocus(id);const u=new URL(window.location);u.searchParams.delete('catreq');window.history.replaceState({},'',u)}catch{}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[dbLoading]);
+  useEffect(()=>{if(!catReqOpen||!catReqFocus)return;const t=setTimeout(()=>{const el=document.getElementById('catreq-'+catReqFocus);if(el)el.scrollIntoView({behavior:'smooth',block:'center'})},250);return()=>clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[catReqOpen,catReqFocus,catReqs.length]);
+  useEffect(()=>{if(!catReqOpen)setCatReqFocus(null)},[catReqOpen]);
   // Auto-create a TODO per new request (idempotent: deterministic id + upsert; todo_id
   // written back). Assigned to the matched customer's primary rep, else whoever loads first.
   useEffect(()=>{if(!supabase||!cu?.id||!catReqs.length)return;
@@ -6839,7 +6850,9 @@ export default function App(){
       return{product_id:null,sku,name:ls[0].name||sku,brand:'Adidas',vendor_id:null,color:ls[0].color||'',nsa_cost:0,retail_price:safeNum(ls[0].price),unit_sell:safeNum(ls[0].price),available_sizes:Object.keys(sizes),sizes,decorations:[],is_custom:true,notes}});
     const e=newE(c,null,items);
     const upd={status:'estimate_created',estimate_id:e.id,customer_id:c.id,reviewed_by:cu.id,reviewed_at:new Date().toISOString()};
-    setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,...upd}:x));
+    // Once it's an estimate the request is handled — drop it from the inbox
+    // (also excluded from the reload query); the rep works it under Estimates.
+    setCatReqs(prev=>prev.filter(x=>x.id!==r.id));
     if(supabase)supabase.from('catalog_order_requests').update(upd).eq('id',r.id).then(()=>{});
     if(r.todo_id)completeTodo(r.todo_id);
     setCatReqOpen(false);
@@ -6850,6 +6863,52 @@ export default function App(){
     setCatReqs(prev=>prev.filter(x=>x.id!==r.id));
     if(supabase)supabase.from('catalog_order_requests').update({status:'dismissed',reviewed_by:cu.id,reviewed_at:new Date().toISOString()}).eq('id',r.id).then(()=>{});
     if(r.todo_id)completeTodo(r.todo_id);
+  };
+  // Link a request to a customer (used by the search picker and the new-customer
+  // shortcut): updates the selection + the persisted row.
+  const linkCatReqCust=(r,custId)=>{
+    setCatReqCustSel(s=>({...s,[r.id]:custId}));
+    setCatReqSearch(s=>({...s,[r.id]:''}));
+    setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:custId}:x));
+    if(supabase)supabase.from('catalog_order_requests').update({customer_id:custId}).eq('id',r.id).then(()=>{});
+  };
+  // Hand a request to another rep — routes its dashboard TODO to them (creating
+  // one if it wasn't auto-made yet). The inbox is shared, so this is about who
+  // owns it: the assignee sees it under My Items / Assigned Tasks.
+  const reassignCatReq=(r,repId)=>{
+    if(!repId)return;const rep=REPS.find(x=>x.id===repId);const ts=new Date().toISOString();
+    const lines=Array.isArray(r.lines)?r.lines:[];
+    const todoId=r.todo_id||('todo-catreq-'+String(r.id).slice(0,8));
+    if(assignedTodos.some(t=>t.id===todoId)){
+      setAssignedTodos(prev=>prev.map(t=>t.id===todoId?{...t,assigned_to:repId,updated_at:ts}:t));
+      if(supabase)supabase.from('assigned_todos').update({assigned_to:repId,updated_at:ts}).eq('id',todoId).then(()=>{});
+    }else{
+      const todo={id:todoId,title:'📥 Estimate request — '+(r.coach_name||'Coach')+(r.team_name?' ('+r.team_name+')':''),description:'From the adidas catalog: '+lines.length+' line'+(lines.length===1?'':'s')+', '+lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0)+' units.'+(r.notes?' Notes: '+r.notes:'')+' Review it from Dashboard → Estimate Requests.',created_by:cu.id,assigned_to:repId,so_id:null,customer_id:r.customer_id||null,priority:2,status:'open',created_at:ts,updated_at:ts,comments:[]};
+      setAssignedTodos(prev=>[todo,...prev]);
+      if(supabase)supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(()=>{});
+    }
+    if(r.todo_id!==todoId){setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,todo_id:todoId}:x));if(supabase)supabase.from('catalog_order_requests').update({todo_id:todoId}).eq('id',r.id).then(()=>{})}
+    nf('Assigned to '+(rep?.name||'rep'));
+  };
+  // Spin up a brand-new customer straight from a request (coach isn't tied to an
+  // account yet), prefilled from their contact info, then link + select it.
+  const createCustFromCatReq=async(r)=>{
+    const name=String(r.team_name||r.coach_name||'').trim()||'New Customer';
+    const dup=cust.find(c=>(c.name||'').toLowerCase()===name.toLowerCase());
+    if(dup){if(window.confirm('A customer named "'+name+'" already exists — link that one instead?'))linkCatReqCust(r,dup.id);return}
+    const initials=name.split(/\s+/).map(w=>w[0]||'').join('').toUpperCase().slice(0,4)||'CUST';
+    const taken=new Set(cust.map(c=>(c.alpha_tag||'').toUpperCase()));let tag=initials,n=2;while(taken.has(tag.toUpperCase())){tag=initials+n;n++}
+    const id='c-'+Date.now();const ts=new Date().toISOString();
+    const c={id,parent_id:null,name,alpha_tag:tag,
+      contacts:(r.coach_name||r.coach_email||r.coach_phone)?[{name:r.coach_name||'',email:r.coach_email||'',phone:r.coach_phone||'',role:'Head Coach'}]:[],
+      billing_address_line1:'',billing_city:'',billing_state:'',billing_zip:'',
+      shipping_address_line1:'',shipping_city:'',shipping_state:'',shipping_zip:'',
+      adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0,
+      primary_rep_id:cu.id,is_active:true,_oe:0,_os:0,_oi:0,_ob:0,created_at:ts,updated_at:ts};
+    setCust(prev=>[...prev,c]);
+    linkCatReqCust(r,id);
+    nf('Created customer '+name+' — now build the estimate');
+    await _dbSaveCustomer(c);
   };
   const renderCatReqCard=()=>catReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
     <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -6877,7 +6936,7 @@ export default function App(){
         {catReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
         {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
           const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
-          return<div key={r.id} style={{border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12}}>
+          return<div key={r.id} id={'catreq-'+r.id} style={{border:r.id===catReqFocus?'2px solid #191919':'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12,boxShadow:r.id===catReqFocus?'0 0 0 4px rgba(25,25,25,.08)':'none'}}>
             <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
               <span style={{fontWeight:700,fontSize:14}}>{r.coach_name}</span>
               {r.team_name&&<span style={{fontSize:12,color:'#475569'}}>{r.team_name}</span>}
@@ -6892,14 +6951,15 @@ export default function App(){
             </table>
             <div style={{display:'flex',gap:8,alignItems:'center',marginTop:12,flexWrap:'wrap'}}>
               {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
-              :<div style={{position:'relative'}}>
+              :<><div style={{position:'relative'}}>
                 <input placeholder="Match customer…" value={q} onChange={e=>setCatReqSearch(s=>({...s,[r.id]:e.target.value}))} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:220}}/>
                 {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280}}>
                   {sugg.map(c2=><div key={c2.id} style={{padding:'7px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:c2.id}));setCatReqSearch(s=>({...s,[r.id]:''}));if(supabase)supabase.from('catalog_order_requests').update({customer_id:c2.id}).eq('id',r.id).then(()=>{});setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:c2.id}:x))}}>{c2.name}{c2.alpha_tag?' ('+c2.alpha_tag+')':''}</div>)}
                 </div>}
-              </div>}
+              </div><button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>createCustFromCatReq(r)}>+ New customer</button></>}
               {est2?<button className="btn btn-sm btn-secondary" onClick={()=>{setEEst(est2);setEEstC(cust.find(x=>x.id===est2.customer_id));setPg('estimates');setCatReqOpen(false)}}>Open {est2.id}</button>
               :<button className="btn btn-sm btn-primary" onClick={()=>estFromCatReq(r)}>Build Estimate</button>}
+              <select value={(assignedTodos.find(t=>t.id===r.todo_id)||{}).assigned_to||''} onChange={e=>reassignCatReq(r,e.target.value)} title="Assign this request to a rep" style={{padding:'6px 8px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,background:'white',cursor:'pointer'}}><option value="">Assign rep…</option>{REPS.filter(x=>(x.role==='rep'||x.role==='admin'||x.role==='gm')&&x.is_active!==false).map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>
               <button className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:8}} onClick={()=>dismissCatReq(r)}>Dismiss</button>
               {r.status!=='new'&&!est2&&<span style={{fontSize:11,color:'#166534',fontWeight:600}}>{String(r.status).replace(/_/g,' ')}</span>}
             </div>

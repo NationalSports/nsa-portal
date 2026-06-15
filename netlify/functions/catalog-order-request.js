@@ -83,6 +83,16 @@ exports.handler = async (event) => {
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:right">${l.price ? '$' + (l.price * l.qty).toFixed(2) : '—'}</td>
       </tr>`).join('');
 
+    const portalUrl = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+    // Deep link straight to the rep's Estimate Requests inbox, focused on this
+    // request — one click there drops these lines into a draft estimate at the
+    // team's pricing. Only shown when the request was saved (we have its id).
+    const ctaHtml = requestId ? `
+      <div style="text-align:center;margin:2px 0 18px">
+        <a href="${portalUrl}/?catreq=${encodeURIComponent(requestId)}" style="display:inline-block;background:#191919;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:8px">Create estimate from this request →</a>
+        <div style="color:#94a3b8;font-size:11px;margin-top:7px">Opens the portal with these ${lines.length} item${lines.length === 1 ? '' : 's'} ready to drop into a draft estimate at the team's pricing.</div>
+      </div>` : '';
+
     const htmlContent = `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:680px;margin:0 auto">
         <div style="background:#191919;color:white;padding:18px 22px;border-radius:8px 8px 0 0">
@@ -97,6 +107,7 @@ exports.handler = async (event) => {
             ${notes ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Notes</td><td style="padding:5px 10px">${esc(notes)}</td></tr>` : ''}
             ${requestId ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Request ID</td><td style="padding:5px 10px;font-family:monospace;font-size:12px">${esc(requestId)}</td></tr>` : ''}
           </table>
+          ${ctaHtml}
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="background:#f8fafc;color:#64748b;font-weight:600;text-align:left">
               <th style="padding:6px 10px">SKU</th><th style="padding:6px 10px">Item</th><th style="padding:6px 10px">Color</th>
@@ -109,7 +120,7 @@ exports.handler = async (event) => {
               <td style="padding:8px 10px;text-align:right;font-weight:700">${estTotal ? '$' + estTotal.toFixed(2) : '—'}</td>
             </tr>
           </table>
-          <p style="color:#64748b;font-size:12px;margin-top:14px">Retail totals are list price for reference only. The CSV is attached for import. Reply to this email to reach the coach directly.</p>
+          <p style="color:#64748b;font-size:12px;margin-top:14px">Use <strong>Create estimate from this request</strong> above to pull these lines into a draft estimate at the team's pricing — or import the attached CSV. Retail totals are list price for reference only. Reply to this email to reach the coach directly.</p>
         </div>
       </div>`;
 
