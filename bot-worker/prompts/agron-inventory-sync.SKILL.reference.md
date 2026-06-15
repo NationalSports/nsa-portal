@@ -34,11 +34,13 @@ Supabase project: `hpslkvngulqirmbstlfx` · URL `https://hpslkvngulqirmbstlfx.su
 Anon key (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — same as the CLICK sync:
 `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhwc2xrdm5ndWxxaXJtYnN0bGZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0NDEyNDAsImV4cCI6MjA4NzAxNzI0MH0.s5OKUjim-EfBmKpuWt8x7c1QxiSoOY7_sTzvThNaYLw`
 
-`agron_inventory` writes go through the anon key (RLS is open for the app role,
-same as `adidas_inventory`). **`products` writes do NOT** — anon is RLS-blocked;
-a 200/204 is NOT proof of a write, so verify row counts. Product create/backfill
-(Step 4b/4c) needs an `authenticated`/service-role key. Stock sync (Steps 1–4)
-is the anon-key core and is all a "real inventory run" needs.
+`agron_inventory` AND `agron_products_staging` writes go through the anon key
+(RLS is open for the app role, same as `adidas_inventory`). **`products` writes do
+NOT** — anon is RLS-blocked; a 200/204 is NOT proof of a write, so verify row
+counts. So product create/backfill uses a **staging handoff**: the bot writes
+metadata to `agron_products_staging` (anon), then Claude Code promotes it into
+`products` with the service role (Step 4b/4c). Stock sync (Steps 1–4) is the
+anon-key core and is all a daily "real inventory run" needs.
 
 Tables:
 - `agron_inventory` (id, sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced, source, created_at, upc, size_code) on-conflict `sku,size`, id = `{sku}-{size}`.
@@ -155,30 +157,52 @@ last_synced: now, source: 'agron-api' }` on conflict `sku,size`.
 **Write zero-stock rows too** (so the catalog can show "out of stock" rather than
 hiding the colorway). Batch ~500/upsert. Verify with a row count, not the HTTP code.
 
-### Step 4b/4c — products create/backfill (OPTIONAL, needs service role)
-For each colorway, create-if-missing a `products` row keyed by `sku=variation.code`.
-**Only create missing rows and only fill empty image/description fields — never
-clobber edited portal copy/images** (same rule as the CLICK backfill).
-Field mapping (Agron → products):
+### Step 4b/4c — product metadata → staging (anon key), then promote (Claude Code)
 
-| products column    | from Agron                                                              |
-|--------------------|------------------------------------------------------------------------|
-| `id`               | `p-<epoch-ms>-<n>` (only when creating)                                 |
-| `sku`              | `variation.code` (numeric colorway code)                               |
-| `name`             | `product.name` (+ color) — match the existing "Adidas …" naming        |
-| `brand`            | `"Adidas"`                                                             |
-| `vendor_id`        | `"v1777312659133"` (the Agron vendor)                                  |
-| `color`            | `variation.name` / `base_color`                                       |
-| `category`         | map `tags["Product"]` (table below)                                    |
-| `retail_price`     | `stock_item.prices.elastic_retail`                                     |
-| `nsa_cost`         | `stock_item.prices.elastic_wholesale` — **actual wholesale, NO markup** |
-| `available_sizes`  | array of `stock_item.name` across the variation                       |
-| `image_front_url`  | `variation.images[firstKey][0].large` (fill-empty only)               |
-| `description`      | `product.description` (+ `features`) (fill-empty only)                 |
-| `is_active`        | `tags["Colorway Status"][0] === "ACTIVE"`                              |
-| `inventory_source` | `"agron"`                                                             |
+So the FULL Agron catalog renders on the coach-facing `/adidas` page — not just the
+colorways that already had a product row — capture per-colorway metadata during the
+same paging pass and write it to **`agron_products_staging`** with the anon key (no
+service role needed). **Always grab the image.** A card with no image shows an
+"image coming soon" placeholder, so `image_url` is the difference between a usable
+card and a blank one — treat it as required.
 
-Category map (`tags["Product"]` → portal category):
+Write one staging row per colorway (`POST …/rest/v1/agron_products_staging?on_conflict=code`,
+`Prefer: resolution=merge-duplicates`):
+
+| staging column    | from Agron                                                              |
+|-------------------|------------------------------------------------------------------------|
+| `code`            | `variation.code` (numeric colorway code = `agron_inventory.sku`)       |
+| `product_number`  | `product.number`                                                       |
+| `name`            | `product.name`                                                         |
+| `color`           | `variation.name` / `base_color`                                       |
+| `product_type`    | `tags["Product"][0]` (raw — Bag, Sock, Headwear, Underwear, Sp Acc, Knit) |
+| `gender`          | `tags["Gender"][0]`                                                    |
+| `adidas_article`  | `tags["adidas Article #"][0]` (reference only)                         |
+| `colorway_status` | `tags["Colorway Status"][0]`                                          |
+| `retail_price`    | `stock_item.prices.elastic_retail`                                    |
+| `nsa_cost`        | `stock_item.prices.elastic_wholesale` (raw 50%-off wholesale, reference only — promote sets cost = retail × 0.375) |
+| `image_url`       | `variation.images[firstKey][0].large` — **REQUIRED so the card shows an image** |
+| `description`     | `product.description` (+ `features`)                                   |
+| `sizes`           | array of `stock_item.name` (optional; promote prefers `agron_inventory`) |
+
+**Promote (Claude Code / service role).** `products` writes are RLS-blocked for
+anon, so the bot never writes `products`. After COWORK fills staging, Claude Code runs:
+
+```sql
+select * from public.promote_agron_products_from_staging();   -- returns (created, updated)
+```
+
+This create-if-missing's one `products` row per colorway (keyed by `code`):
+`brand='Adidas'`, `vendor_id='v1777312659133'`, `inventory_source='agron'`,
+`category` mapped from `product_type`, `retail_price` = Agron MSRP,
+**`nsa_cost` = retail × 0.5 × 0.75** (= retail × 0.375, computed from retail — not
+the raw wholesale), `available_sizes` from the live
+`agron_inventory` size run, **`image_front_url` from `image_url`**, and the
+description. It only fills empty image/description and never clobbers edited portal
+copy. Once the row exists, the colorway renders on `/adidas` with its size grid and
+image — identical to CLICK.
+
+Category map (`product_type` → portal category, applied by the promote):
 
 | Agron product_type | Portal category   |
 |--------------------|-------------------|
@@ -189,9 +213,6 @@ Category map (`tags["Product"]` → portal category):
 | Sp Acc             | Sport Accessories |
 | Knit               | Hats              |
 
-(Portal category enum in use: Socks, Bags, Hats, Underwear, Sport Accessories,
-Accessories, Other.)
-
 ### Step 5 — Report
 Run-end report: styles paged, colorways, size rows upserted, rows with stock>0,
 products created (service-role runs only), images/descriptions backfilled, and
@@ -199,10 +220,15 @@ any `tags["Product"]` value that didn't map (so the category map can grow).
 
 ## Cadence
 
-Daily stock refresh of `agron_inventory` (the at-once catalog ships now, so stock
-is the moving part). Self-login runs unattended as long as Chrome is open and the
-password manager is unlocked, same as the CLICK sync. Prebook/seasonal catalogs
-(future-delivery dates, a different `catalog_key`) are out of scope for v1.
+- **Daily, overnight:** stock refresh of `agron_inventory` (the at-once catalog
+  ships now, so stock is the moving part). Self-login runs unattended as long as
+  Chrome is open and the password manager is unlocked, same as the CLICK sync.
+- **Periodic (and on first run / whenever new colorways appear):** also write
+  `agron_products_staging` (Step 4b/4c) incl. images, then have Claude Code run the
+  promote so new colorways get product rows + images and appear on `/adidas`.
+  Existing rows are fill-empty only, so it is safe to re-run.
+- Prebook/seasonal catalogs (future-delivery dates, a different `catalog_key`)
+  remain out of scope for v1.
 
 ## Coordination with the adidas CLICK sync (no collision)
 
