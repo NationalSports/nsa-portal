@@ -49,3 +49,14 @@
 # style from the S&S API into products + adidas_inventory for /adidas.
 [functions."ss-adidas-sync-cron"]
   schedule = "0 12 * * *"
+
+# S&S Activewear Under Armour catalog sync — daily at 12:30 UTC (after adidas).
+# Fires ss-ua-sync-background → products + ua_inventory for the Team Catalog.
+[functions."ss-ua-sync-cron"]
+  schedule = "30 12 * * *"
+
+# SanMar Nike catalog sync — daily at 13:30 UTC. Fires sanmar-nike-sync-background
+# → products + nike_inventory for the Team Catalog. Seeds styles from existing
+# Nike SanMar products + the SANMAR_NIKE_STYLES env list.
+[functions."sanmar-nike-sync-cron"]
+  schedule = "30 13 * * *"
