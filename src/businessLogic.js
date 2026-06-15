@@ -180,7 +180,7 @@ const buildJobs = (o) => {
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
           const _prodReady = af.prod_files_attached === true || (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
-          const _prodNeededSt = (af.deco_type || '') === 'dtf' ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
+          const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
           const st = af.status === 'approved' ? (_prodReady ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
