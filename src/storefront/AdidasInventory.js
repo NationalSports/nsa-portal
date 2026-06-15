@@ -687,6 +687,32 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   );
 }
 
+// Downscale a coach-selected image in the browser so the order-request email
+// stays small: longest edge <= 1600px, PNG kept (transparency) else JPEG.
+// Resolves { name, type, content (base64, no data: prefix), preview }.
+function downscaleImage(file, maxDim = 1600) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const isPng = file.type === 'image/png';
+      const type = isPng ? 'image/png' : 'image/jpeg';
+      const preview = canvas.toDataURL(type, isPng ? undefined : 0.85);
+      const base = (file.name || 'image').replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_').slice(0, 60) || 'image';
+      resolve({ name: base + (isPng ? '.png' : '.jpg'), type, content: preview.split(',')[1] || '', preview });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+    img.src = url;
+  });
+}
+
 // ── Order list drawer: review lines, coach info, send to rep ─────────
 function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, onClose, notify, account }) {
   const [coach, setCoach] = useState(() => {
@@ -695,6 +721,7 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
     return account ? { ...s, name: s.name || account.name || '', email: s.email || account.email || '', team: s.team || account.customerName || '' } : s;
   });
   const [notes, setNotes] = useState('');
+  const [images, setImages] = useState([]); // [{ name, type, content, preview }]
   const [state, setState] = useState('idle'); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState('');
 
@@ -708,6 +735,20 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
     const next = { ...coach, [k]: e.target.value };
     setCoach(next);
     saveJson(COACH_KEY, next);
+  };
+
+  const MAX_IMG = 6;
+  const onAddImages = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // let the same file be re-picked after removal
+    const room = MAX_IMG - images.length;
+    if (room <= 0) { notify && notify(`Up to ${MAX_IMG} images`); return; }
+    const out = [];
+    for (const f of files.slice(0, room)) {
+      if (!f.type.startsWith('image/')) continue;
+      try { out.push(await downscaleImage(f)); } catch { /* skip an image the browser can't decode */ }
+    }
+    if (out.length) setImages((prev) => [...prev, ...out]);
   };
 
   const total = list.reduce((a, l) => a + (l.price || 0) * l.qty, 0);
@@ -731,12 +772,14 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
           notes: notes.trim(),
           customer_id: (account && account.customerId) || null,
           lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
+          images: images.map(({ name, type, content }) => ({ name, type, content })),
         }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) throw new Error(d.error || 'Something went wrong');
       setState('sent');
       clearList();
+      setImages([]);
     } catch (e) {
       setState('error');
       setErrMsg(e.message || 'Could not send — please try again');
@@ -823,6 +866,21 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
                 <input className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
               </div>
               <textarea className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                {images.map((im, i) => (
+                  <div key={i} style={{ position: 'relative' }}>
+                    <img src={im.preview} alt="" style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid #E2E5EA', display: 'block' }} />
+                    <button onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove image"
+                      style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#191919', color: '#fff', fontSize: 11, fontWeight: 700, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+                  </div>
+                ))}
+                {images.length < MAX_IMG && (
+                  <label style={{ width: 52, height: 52, borderRadius: 8, border: '1.5px dashed #C6CAD2', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#6A7180', fontSize: 22, flex: 'none' }}>
+                    +<input type="file" accept="image/*" multiple onChange={onAddImages} style={{ display: 'none' }} />
+                  </label>
+                )}
+                <span style={{ fontSize: 11, color: '#9AA1AC', flex: 1, minWidth: 130 }}>Optional — add a logo, mockup, or reference image for your rep.</span>
+              </div>
               {state === 'error' && <div style={{ fontSize: 13, color: '#B91C1C', fontWeight: 600 }}>{errMsg}</div>}
               <button
                 onClick={submit}
