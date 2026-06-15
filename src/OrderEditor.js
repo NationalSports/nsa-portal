@@ -6958,7 +6958,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const balanced=lineQty>0&&lineSizes.every(([sz])=>leftFor(sz)===0);
       const overAny=lineSizes.some(([sz])=>leftFor(sz)<0);
       const activeCount=designs.filter((d,di)=>dTotal(di)>0).length;
-      const setSz=(di,sz,val)=>{const n=Math.max(0,parseInt(val,10)||0);setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:d)}))};
+      const setSz=(di,sz,val)=>{const lq=safeNum(safeSizes(it)[sz]);let n=Math.max(0,parseInt(val,10)||0);if(n>lq)n=lq;setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:(mm.designs.length===2?{...d,sizes:{...d.sizes,[sz]:Math.max(0,lq-n)}}:d))}))};
       const setArt=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,art_file_id:v}:d)}));
       const setPos=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,position:v}:d)}));
       const fillEven=()=>setSplitArtModal(mm=>{const ds=mm.designs.map(d=>({...d,sizes:{}}));lineSizes.forEach(([sz,v])=>{const half=Math.floor(safeNum(v)/2);if(ds[0])ds[0].sizes[sz]=half;if(ds[1])ds[1].sizes[sz]=safeNum(v)-half});return{...mm,designs:ds}});
@@ -6973,7 +6973,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="modal-close" style={{color:'white'}} onClick={()=>setSplitArtModal(null)}>×</button>
           </div>
           <div style={{padding:'16px 20px'}}>
-            <p style={{fontSize:12,color:'#64748b',marginTop:0,marginBottom:14}}>Pick two designs and set how many of each size gets each one. This line splits into a separate production job per design — each design prices at its own quantity.</p>
+            <p style={{fontSize:12,color:'#64748b',marginTop:0,marginBottom:14}}>Pick two designs, then type how many of each size goes to one — the other design fills in the rest automatically. This line splits into a separate production job per design, each priced at its own quantity.</p>
             <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
               {designs.map((d,di)=><div key={di} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span style={{width:70,fontSize:12,fontWeight:800,color:colors[di]||'#475569'}}>Design {di+1}</span>
