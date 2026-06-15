@@ -1,9 +1,12 @@
 /* eslint-disable */
 // Public coach-facing adidas inventory catalog at /adidas.
 // Joins the portal's adidas product catalog (products, brand=Adidas) with live
-// per-size availability from adidas Cowork (adidas_inventory, synced by the
-// Mac Mini cron — see scripts/adidas-cowork-sync.js). Read-only: no cart, no
-// pricing internals (nsa_cost is never selected), just what coaches can order.
+// per-size availability from inventory_unified — adidas Cowork CLICK
+// (adidas_inventory) UNION Agron accessories (agron_inventory), both synced by
+// the COWORK bot. Agron items (socks/bags/hats/underwear/sport accessories) are
+// brand=Adidas with inventory_source='agron' and render identically to CLICK.
+// Read-only: no cart, no pricing internals (nsa_cost is never selected), just
+// what coaches can order.
 //
 // Cards are grouped by STYLE (one card per item, colorways inside); coaches
 // filter by item type, gender, sport, color, and size availability. Built to
@@ -931,8 +934,12 @@ export default function AdidasInventory() {
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
             .order('sku')),
+          // Live per-size stock. Reads inventory_unified (adidas CLICK + Agron),
+          // so Agron accessories (socks/bags/hats/…, brand=Adidas) render the same
+          // as CLICK. CLICK & Agron SKUs are disjoint, so the union is a clean
+          // by-SKU join and `id` stays globally unique for range pagination.
           fetchAllPages(() => supabase
-            .from('adidas_inventory')
+            .from('inventory_unified')
             .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
             .or('stock_qty.gt.0,future_delivery_qty.gt.0')
             .order('id')),

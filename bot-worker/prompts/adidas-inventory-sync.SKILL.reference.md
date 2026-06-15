@@ -88,7 +88,8 @@ picked up automatically:
 
 ```sql
 SELECT sku, category FROM products
-WHERE brand='Adidas' AND COALESCE(is_active,true) AND NOT COALESCE(is_archived,false);
+WHERE brand='Adidas' AND COALESCE(is_active,true) AND NOT COALESCE(is_archived,false)
+  AND COALESCE(inventory_source,'click') <> 'agron';  -- Agron accessories are synced by agron-inventory-sync (never on Cowork)
 ```
 
 ~4,000 SKUs today; only ~2,100 have inventory rows — close that gap.
