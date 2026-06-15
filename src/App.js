@@ -4206,17 +4206,6 @@ export default function App(){
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
-  // Keyed on the open thread + msgs so it also catches replies that arrive while the thread is
-  // open and re-applies if a background sync (realtime/poll) briefly reverts read state before
-  // the save lands. setMsgs here is a no-op once everything's read, so it can't loop.
-  React.useEffect(()=>{
-    if(pg!=='messages'||!mThread||!cu?.id)return;
-    const anchor=msgs.find(m=>m.id===mThread);if(!anchor)return;
-    const ck=(anchor.entity_type||'so')+'::'+(anchor.entity_id||anchor.so_id||anchor.id);
-    const ids=new Set(msgs.filter(m=>((m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id))===ck&&!(m.read_by||[]).includes(cu.id)).map(m=>m.id));
-    if(ids.size)setMsgs(prev=>prev.map(m=>ids.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m));
-  },[pg,mThread,msgs,cu?.id]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
     // Also save products when they change
@@ -5695,6 +5684,18 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
+  // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
+  // the open thread + msgs so it also catches replies that arrive while the thread is open and
+  // re-applies if a background sync (realtime/poll) briefly reverts read state before the save
+  // lands. setMsgs here is a no-op once everything's read, so it can't loop.
+  React.useEffect(()=>{
+    if(pg!=='messages'||!mThread||!cu?.id)return;
+    const anchor=msgs.find(m=>m.id===mThread);if(!anchor)return;
+    const ck=(anchor.entity_type||'so')+'::'+(anchor.entity_id||anchor.so_id||anchor.id);
+    const ids=new Set(msgs.filter(m=>((m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id))===ck&&!(m.read_by||[]).includes(cu.id)).map(m=>m.id));
+    if(ids.size)setMsgs(prev=>prev.map(m=>ids.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m));
+  },[pg,mThread,msgs,cu?.id]);
   // Lock non-admin/GM users to their own dashboard view (they shouldn't land on the admin overview).
   React.useEffect(()=>{
     if(!cu?.role)return;
