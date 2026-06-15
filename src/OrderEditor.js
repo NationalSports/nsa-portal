@@ -5838,7 +5838,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {label:'Bill To',value:rBillName,sub:rBillAddr},
             ...(rShipAddr?[{label:'Ship To',value:rShipName,sub:rShipAddr}]:[]),
             {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
-            {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(rPoNum?'<br/><strong>PO# '+rPoNum+'</strong>':'')},
+            {label:'PO Number',value:rPoNum||'—'},
             {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
@@ -6069,7 +6069,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {label:'Bill To',value:irBillName,sub:eBillAddr},
                   ...(eShipAddr?[{label:'Ship To',value:eShipName,sub:eShipAddr}]:[]),
                   {label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},
-                  {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(irPoNum?'<br/><strong>PO# '+irPoNum+'</strong>':'')},
+                  {label:'PO Number',value:irPoNum||'—'},
                   {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
                 ],
                 tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],

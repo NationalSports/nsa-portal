@@ -11882,7 +11882,7 @@ export default function App(){
             {label:'Bill To',value:billToName,sub:billAddr},
             ...(shipAddr?[{label:'Ship To',value:shipToName,sub:shipAddr}]:[]),
             {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
-            {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
+            {label:'PO Number',value:poNum||'—'},
             {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
@@ -12673,7 +12673,7 @@ export default function App(){
                       {label:'Bill To',value:siBillName,sub:siBillAddr},
                       ...(siShipAddr?[{label:'Ship To',value:siShipName,sub:siShipAddr}]:[]),
                       {label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},
-                      {label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''+(siPoNum?'<br/><strong>PO# '+siPoNum+'</strong>':'')},
+                      {label:'PO Number',value:siPoNum||'—'},
                       {label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':siInv.inv_type==='partial'?'Partial Invoice':siInv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}
                     ],
                     tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
@@ -12947,7 +12947,7 @@ export default function App(){
                     {label:'Bill To',value:billToName,sub:fBillAddr},
                     ...(fShipAddr?[{label:'Ship To',value:fShipName,sub:fShipAddr}]:[]),
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
-                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''+(fPoNum?'<br/><strong>PO# '+fPoNum+'</strong>':'')},
+                    {label:'PO Number',value:fPoNum||'—'},
                     {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
                   ],
                   tables:[{
