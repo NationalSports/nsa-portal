@@ -23,5 +23,13 @@ module.exports = defineConfig({
     port: 3000,
     timeout: 120000,
     reuseExistingServer: true,
+    // When E2E_SUPABASE_URL/ANON_KEY are set (the DB-backed persistence suite,
+    // see 14-persistence-db-roundtrip.spec.js), point the app at the test DB by
+    // mapping them onto the REACT_APP_* vars CRA reads. Unset → unchanged, so the
+    // localStorage-only suites keep running exactly as before.
+    env: {
+      ...(process.env.E2E_SUPABASE_URL ? { REACT_APP_SUPABASE_URL: process.env.E2E_SUPABASE_URL } : {}),
+      ...(process.env.E2E_SUPABASE_ANON_KEY ? { REACT_APP_SUPABASE_ANON_KEY: process.env.E2E_SUPABASE_ANON_KEY } : {}),
+    },
   },
 });
