@@ -3723,7 +3723,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <div style={{display:'flex',gap:12,alignItems:'center'}}>
               <span style={{fontSize:11,color:'#64748b'}}>Garment: ${pRev.toFixed(2)}</span>
-              {safeDecos(item).length>0&&<span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*dp2.sell});return d.toFixed(2)})()}</span>}
+              {safeDecos(item).length>0&&<span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:(dd.reversible?qty*2:qty);d+=eq2*dp2.sell});return d.toFixed(2)})()}</span>}
               <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${iR.toFixed(2)}</span>
             </div>
           </div>
