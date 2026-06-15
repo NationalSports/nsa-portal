@@ -5,6 +5,7 @@ import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
+import { _sbAuthLock } from './lib/supabase';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
@@ -350,17 +351,10 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
-// Per-tab mutex replaces the default Navigator LockManager, which can deadlock across tabs and time out the auth token refresh.
-const _sbAuthLock = (() => {
-  let chain = Promise.resolve();
-  return async (_name, _acquireTimeout, fn) => {
-    const prev = chain;
-    let release;
-    chain = new Promise(r => { release = r; });
-    try { await prev; return await fn(); }
-    finally { release(); }
-  };
-})();
+// Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
+// client and the lib client (same Supabase storage key) serialize auth ops
+// through ONE lock, instead of contending on the cross-tab Navigator
+// LockManager that deadlocks/times out token refresh when many tabs are open.
 try {
   if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) {
     supabase = createClient(_sbUrl, _sbKey, {
