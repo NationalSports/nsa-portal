@@ -29,6 +29,21 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
+// S&S Activewear returns its image fields (colorFrontImage, colorBackImage, colorSideImage,
+// styleImage) as CDN-relative paths like "Images/Color/136611_f_fm.jpg" — they only load
+// once prefixed with the S&S CDN host. The server-side adidas sync does this (SS_CDN + img);
+// the client search/live-image paths must too, or the Quick Mock Builder's canvas (and the
+// image-proxy) get a bare relative path and fail with "Could not load garment image".
+// Already-absolute URLs pass through (forced to https so the canvas stays exportable).
+const SS_CDN='https://cdn.ssactivewear.com/';
+const ssCdnImg=u=>{
+  const s=(u||'').toString().trim();
+  if(!s)return '';
+  if(/^https?:\/\//i.test(s))return s.replace(/^http:\/\//i,'https://');
+  if(s.startsWith('//'))return 'https:'+s;
+  return SS_CDN+s.replace(/^\/+/,'');
+};
+
 // Adidas B2B restock helpers (display-only). When an Adidas size is out of
 // stock its synced inventory may carry a future_delivery_date (the "Re-stock in
 // …" date the vendor portal shows on the size's calendar) and a
@@ -455,10 +470,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const colorLower=(color||'').toLowerCase();
           const match=items.find(it=>(it.colorName||'').toLowerCase()===colorLower)||items[0];
           if(match){
-            front=match.colorFrontImage||match.colorSideImage||'';
-            back=match.colorBackImage||'';
-            if(front&&front.startsWith('http://'))front=front.replace('http://','https://');
-            if(back&&back.startsWith('http://'))back=back.replace('http://','https://');
+            // S&S image fields are CDN-relative ("Images/Color/…"); prefix the CDN host so
+            // the mock canvas / image-proxy can load them (mirrors the server adidas sync).
+            front=ssCdnImg(match.colorFrontImage||match.colorSideImage||'');
+            back=ssCdnImg(match.colorBackImage||'');
           }
         }catch(e){console.warn('[SS] Image fetch error for',sku,e.message)}
       }else if(isSM){
@@ -492,7 +507,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Helper to get vendor image for an item (used in itemDetails builders)
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
   // Resolve the best front-image URL for a line item (same priority as itemDetails)
-  const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
   // Copy a line item's product image to the clipboard so the rep can paste it to the customer.
   // Tries the actual image first; falls back to copying the URL when the browser/host blocks it (CORS, no ClipboardItem).
   const copyItemImage=async(it)=>{
@@ -958,7 +973,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     items.forEach(item=>{
       if(!(isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)))return;
       const prd=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
-      const hasImg=prd?.image_url||(prd?.images&&prd.images[0])||item._colorImage;
+      const hasImg=prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||item._colorImage;
       if(hasImg)return;
       const cacheKey=item.sku+'|'+(item.color||'').toLowerCase();
       if(vendorImgCache.current[cacheKey]||vendorImgFetching.current[cacheKey])return;
@@ -1102,10 +1117,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const styleMap={};
       items.forEach(it=>{
         const sid=it.styleID||it.styleName||query;
-        let imgUrl=it.colorFrontImage||it.colorSideImage||'';
-        if(imgUrl&&imgUrl.startsWith('http://'))imgUrl=imgUrl.replace('http://','https://');
-        let backUrl=it.colorBackImage||'';
-        if(backUrl&&backUrl.startsWith('http://'))backUrl=backUrl.replace('http://','https://');
+        let imgUrl=ssCdnImg(it.colorFrontImage||it.colorSideImage||'');
+        let backUrl=ssCdnImg(it.colorBackImage||'');
         if(!styleMap[sid]){
           const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||{};
           styleMap[sid]={
@@ -2382,7 +2395,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];if(!full)return;safeDecos(full).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_artIdSet.add(d.art_file_id)})});
       const artIds=[..._artIdSet];
       const primaryId=_declaredArtIds[0]||artIds[0];
-      const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+      const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=sku+'|'+color;if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
       // Map each art file in the job to the garment keys (sku|color) it actually decorates, read
@@ -7178,7 +7191,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             fulSizes[sz]=Math.min(safeNum(v),pQ+rQ);
           });
           const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||_vImg(it,'back')||'',images:prd?.images||[]};
+          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||'',back_image_url:prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||_vImg(it,'back')||'',images:prd?.images||[]};
         });
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -8707,7 +8720,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {mockBuilder&&(()=>{
           const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;
           const rel=g.items.filter(it=>!it._excluded);
-          const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+          const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
           const garments=[];const seenG=new Set();
           rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=it.sku+'|'+(it.color||'').toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:front,backUrl:back,pending})});
           const locations=[];const seenL=new Set();
