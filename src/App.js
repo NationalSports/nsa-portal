@@ -15811,11 +15811,15 @@ export default function App(){
                   ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
                   notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
               });
+              // OMG short sizes arrive keyed with the inseam (e.g. 'M 7"' = Medium 7-inch);
+              // strip the trailing inseam so the SO size grid recognizes S/M/L (merge collisions).
+              const _stripInseam=(sizes)=>{const out={};Object.entries(sizes||{}).forEach(([k,v])=>{const base=String(k).replace(/\s+\d+(?:\.\d+)?"?$/,'').trim()||k;out[base]=(out[base]||0)+(Number(v)||0)});return out;};
               // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
                 const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
                 const decos=(p.decorations||[]);
                 const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
+                const sizes=_stripInseam(p.sizes);
                 return{
                   sku:p.sku,name:p.name,brand:p.brand||p.manufacturer||catP?.brand||'',
                   // product_id/vendor/cost come from the rep's resolved SKU first (set when they
@@ -15824,8 +15828,8 @@ export default function App(){
                   nsa_cost:p.cost||catP?.nsa_cost||0,
                   retail_price:p.retail||0,
                   unit_sell:p.retail||0,
-                  sizes:p.sizes||{},
-                  available_sizes:Object.keys(p.sizes||{}),
+                  sizes,
+                  available_sizes:Object.keys(sizes),
                   _colorImage:p.image_url||'',
                   no_deco:p.no_deco||decos.length===0,
                   decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
