@@ -180,7 +180,7 @@ Write one staging row per colorway (`POST …/rest/v1/agron_products_staging?on_
 | `adidas_article`  | `tags["adidas Article #"][0]` (reference only)                         |
 | `colorway_status` | `tags["Colorway Status"][0]`                                          |
 | `retail_price`    | `stock_item.prices.elastic_retail`                                    |
-| `nsa_cost`        | `stock_item.prices.elastic_wholesale` — **actual wholesale, NO markup** |
+| `nsa_cost`        | `stock_item.prices.elastic_wholesale` (raw 50%-off wholesale, reference only — promote sets cost = retail × 0.375) |
 | `image_url`       | `variation.images[firstKey][0].large` — **REQUIRED so the card shows an image** |
 | `description`     | `product.description` (+ `features`)                                   |
 | `sizes`           | array of `stock_item.name` (optional; promote prefers `agron_inventory`) |
@@ -194,7 +194,9 @@ select * from public.promote_agron_products_from_staging();   -- returns (create
 
 This create-if-missing's one `products` row per colorway (keyed by `code`):
 `brand='Adidas'`, `vendor_id='v1777312659133'`, `inventory_source='agron'`,
-`category` mapped from `product_type`, `available_sizes` from the live
+`category` mapped from `product_type`, `retail_price` = Agron MSRP,
+**`nsa_cost` = retail × 0.5 × 0.75** (= retail × 0.375, computed from retail — not
+the raw wholesale), `available_sizes` from the live
 `agron_inventory` size run, **`image_front_url` from `image_url`**, and the
 description. It only fills empty image/description and never clobbers edited portal
 copy. Once the row exists, the colorway renders on `/adidas` with its size grid and
