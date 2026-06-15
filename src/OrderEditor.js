@@ -11,7 +11,7 @@ import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, get
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
-import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
+import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -335,6 +335,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[splitArtModal,setSplitArtModal]=useState(null);// {itemIdx, designs:[{art_file_id,position,sizes:{S:n,...}}]} — split a line's garments between two logos
   const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[mockBuilder,setMockBuilder]=useState(null);// {gi} — Quick Mock Builder open for jobWizard group index
@@ -1897,6 +1898,53 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const addNumDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{},...(rev?{reversible:true}:{})}]}:x))};
   const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',name_method:'heat_press',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
   const addOutsideDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
+  // ── Split Art ── A coach wants two logos on one line (e.g. some shirts get "Friars", the rest
+  // "Servite Basketball"). Splitting stores two art decorations that share a split_group and each
+  // carry their own per-size allocation (split_sizes); syncJobs then emits one production job per
+  // design, and pricing + fulfillment follow each design's share of the line.
+  const openSplitArt=(idx)=>{
+    const it=safeItems(o)[idx];if(!it)return;
+    const arts=safeDecos(it).filter(d=>d.kind==='art');
+    const splitArts=arts.filter(d=>d.split_group);
+    const full={};Object.entries(safeSizes(it)).forEach(([sz,v])=>{if(safeNum(v)>0)full[sz]=safeNum(v)});
+    let designs;
+    if(splitArts.length>=2){
+      designs=splitArts.slice(0,2).map(d=>({art_file_id:d.art_file_id||'',position:d.position||'Front Center',sizes:{...(d.split_sizes||{})}}));
+    }else{
+      const cur=arts[0];
+      designs=[{art_file_id:cur?.art_file_id||'',position:cur?.position||'Front Center',sizes:{...full}},
+        {art_file_id:'',position:cur?.position||'Front Center',sizes:{}}];
+    }
+    setSplitArtModal({itemIdx:idx,designs});
+  };
+  const applySplitArt=()=>{
+    const m=splitArtModal;if(!m)return;const it=safeItems(o)[m.itemIdx];if(!it)return;
+    const active=m.designs.map(d=>{const sizes={};Object.entries(d.sizes||{}).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)sizes[sz]=n});return{art_file_id:d.art_file_id||null,position:d.position||'Front Center',sizes,total:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(d=>d.total>0);
+    if(active.length===0){nf('Assign pieces to at least one design first','error');return}
+    const rev=itemIsReversible(m.itemIdx);
+    const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
+    let artDecos;
+    if(active.length===1){
+      const d=active[0];artDecos=[{kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,...(rev?{reversible:true}:{})}];
+    }else{
+      const sg='sg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+      artDecos=active.map(d=>({kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,split_group:sg,split_sizes:{...d.sizes},...(rev?{reversible:true}:{})}));
+    }
+    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:[...artDecos,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setDirty(true);setSplitArtModal(null);
+    nf(active.length>=2?('✂️ Split into '+active.length+' designs — '+active.length+' jobs created'):'Updated — one design on all pieces');
+  };
+  const unsplitArt=(idx)=>{
+    const it=safeItems(o)[idx];if(!it)return;
+    const splitArts=safeDecos(it).filter(d=>d.kind==='art'&&d.split_group);
+    if(splitArts.length===0)return;
+    const otherArts=safeDecos(it).filter(d=>d.kind==='art'&&!d.split_group);
+    const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
+    const first=splitArts[0];
+    const merged={kind:'art',position:first.position||'Front Center',art_file_id:first.art_file_id||null,sell_override:null,...(first.reversible?{reversible:true}:{})};
+    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:[merged,...otherArts,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setDirty(true);nf('Split removed — first design kept on all pieces');
+  };
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uDM=(ii,di,updates)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,...updates}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Swap art on a decoration. If it's part of a released or in-progress art job, recall the
@@ -2001,7 +2049,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
-  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q*(d.reversible?2:1)}})});return m},[o]);
+  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
   const totals=useMemo(()=>{
     // PO size-key exclusion list — matches the per-PO modal so we count only true size qty fields.
     const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
@@ -2101,24 +2149,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
           const part=d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position);
-          if(!decosByType[dt])decosByType[dt]=[];
-          decosByType[dt].push({part,d,di});
+          // A split-art design buckets on its own so each logo becomes its own production job,
+          // instead of merging with the other split design into one combined job.
+          const bk=d.split_group?dt+'::__split__::'+d.split_group+'::'+di:dt;
+          if(!decosByType[bk])decosByType[bk]=[];
+          decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
-          decosByType[dt].push({part,d,di});
+          decosByType[dt].push({part,d,di,_dt:dt});
         } else if(d.kind==='names'){
           const dt=d.name_method||'heat_press';
           const part='names_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
-          decosByType[dt].push({part,d,di});
+          decosByType[dt].push({part,d,di,_dt:dt});
         }
       });
-      // Create one signature entry per deco type group
-      Object.entries(decosByType).forEach(([dt,decos])=>{
+      // Create one signature entry per deco type group (split-art designs get their own group)
+      Object.entries(decosByType).forEach(([bk,decos])=>{
+        const dt=decos[0]._dt||bk;
         const parts=decos.map(x=>x.part).sort();
-        const sig=dt+'::'+parts.join('|');
+        const sig=bk.indexOf('::__split__::')>=0?dt+'::'+bk+'::'+parts.join('|'):dt+'::'+parts.join('|');
         itemSigs.push({ii,it,sig,decos,decoType:dt});
       });
     });
@@ -2163,21 +2215,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // should start in 'needs_art' so the rep can submit them, not 'art_complete'.
       if(!hasArtDeco)worstArtSt='needs_art';
       const jobKey=grp.sig;
+      const _splitGrp=(firstEntry.decos.length===1&&firstEntry.decos[0].d.split_group)||null;
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
-        total_units:0,fulfilled_units:0,_art_ids:artIds};
+        total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp};
       // Add each item in the group
       grp.items.forEach(({ii,it,decos})=>{
-        const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
-        let itemTotal=0,itemFulfilled=0;
-        szEntries.forEach(([sz,v])=>{
-          itemTotal+=v;
+        // Split-art job: a single design carrying its own per-size allocation. Receipts apportion
+        // across sibling designs in deco order (lower index fills first) so a partially-received
+        // line never counts the same garments toward both logos — mirrors allocateJobFulfillment.
+        const splitDeco=decos.length===1&&decos[0].d.split_group&&decos[0].d.split_sizes?decos[0].d:null;
+        const sibBefore=splitDeco?safeDecos(it).filter((dd,ddi)=>dd!==splitDeco&&dd.split_group===splitDeco.split_group&&dd.split_sizes&&ddi<decos[0].di):[];
+        const baseSizes=splitDeco?(splitDeco.split_sizes||{}):safeSizes(it);
+        let itemTotal=0,itemFulfilled=0;const giSizes={};
+        Object.entries(baseSizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+          const cap=safeNum(v);itemTotal+=cap;giSizes[sz]=cap;
           const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-          itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
+          let avail=pulledQ+rcvdQ;
+          if(splitDeco){const claimedBefore=sibBefore.reduce((a,dd)=>a+safeNum((dd.split_sizes||{})[sz]),0);avail=Math.max(0,avail-claimedBefore)}
+          itemFulfilled+=Math.min(cap,avail);
         });
         const decoIdxs=decos.map(x=>x.di);
-        job.items.push({item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
+        const giItem={item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled};
+        if(splitDeco){giItem.sizes={...giSizes};giItem._artSplit=true}
+        job.items.push(giItem);
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
       jobMap[jobKey]=job;
@@ -2214,7 +2276,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
-        split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
+        split_from:existing?.split_from||null,split_group:j.split_group||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
@@ -2239,6 +2301,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!existing||!Array.isArray(existing.items))return;
       let hasOverride=false;
       nj.items=nj.items.map(gi=>{
+        if(gi._artSplit)return gi;// split-art allocations are re-derived each sync — never restore the prior slice
         const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
         if(!ex||!ex.sizes)return gi;
         hasOverride=true;
@@ -2643,7 +2706,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
               const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
-              const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+              const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
               const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
               const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -2790,7 +2853,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               let promoBudget=_drawable.reduce((a,p)=>a+safeNum(p.allocated)-safeNum(p.used),0);
               if(promoBudget<=0){nf('No promo funds available','error');return}
               // Calculate promo cost per item (retail price + 25% deco markup)
-              const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+              const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
               let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
               // Pre-compute original revenue per item so flat shipping can be allocated proportionally,
               // matching how promoTotals.promoShip distributes flat ship across promo items.
@@ -3385,6 +3448,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <option value={8000}>≤10k st</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                  {deco.split_group&&(()=>{const ss=deco.split_sizes||{};const tot=Object.values(ss).reduce((a,v)=>a+safeNum(v),0);const ordd=sz=>{const i=SZ_ORD.indexOf(sz);return i===-1?99:i};const summ=Object.entries(ss).filter(([,v])=>safeNum(v)>0).sort((a,b)=>ordd(a[0])-ordd(b[0])).map(([sz,v])=>sz+' '+v).join(' · ');return<span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe'}} title={'Split allocation — '+(summ||'none yet')}>✂️ Split · {tot} of {qty} pc{qty===1?'':'s'}<button onClick={()=>openSplitArt(idx)} style={{background:'none',border:'none',color:'#7c3aed',cursor:'pointer',fontWeight:700,fontSize:10,padding:0,textDecoration:'underline'}}>edit</button></span>})()}
                   {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
                       if(isTbd)return<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={artF.deco_type||'screen_print'} onChange={e=>{uArt(afi,'deco_type',e.target.value);uD(idx,di,'sell_override',null)}}><option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                         {artF.deco_type==='screen_print'&&<><select className="form-select" style={{width:90,fontSize:10}} value={artF.ink_colors?artF.ink_colors.split('\n').filter(l=>l.trim()).length:1} onChange={e=>{const n=parseInt(e.target.value);const inks=Array.from({length:n},(_,i)=>'Color '+(i+1)).join('\n');uArt(afi,'ink_colors',inks);uD(idx,di,'sell_override',null)}}>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>
@@ -3666,6 +3730,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {safeDecos(item).map((d,di)=>d.kind==='art'?<React.Fragment key={'deco-x-'+di}>{(()=>{const artF=af.find(f=>f.id===d.art_file_id);return artF&&artF.deco_type==='screen_print'?<label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:d.underbase?'#fef3c7':'#f1f5f9',borderRadius:4,cursor:'pointer',border:'1px solid '+(d.underbase?'#fbbf24':'#e2e8f0')}}><input type="checkbox" checked={d.underbase||false} onChange={e=>uD(idx,di,'underbase',e.target.checked)}/> Underbase</label>:null})()}{(()=>{const artF=af.find(f=>f.id===d.art_file_id);if(!artF)return null;const st=artF.status==='uploaded'?'needs_approval':artF.status;if(!st||st==='waiting_for_art')return null;const label=st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ');return<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{label}</span>})()}</React.Fragment>:null)}
             {/* Single item-level reversible toggle — applies to every deco on this garment (art + numbers + names) */}
             {(()=>{const itemRev=safeDecos(item).some(d=>d.reversible);return safeDecos(item).length>0?<label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:itemRev?'#ecfeff':'#f1f5f9',borderRadius:4,cursor:'pointer',border:'1px solid '+(itemRev?'#67e8f9':'#e2e8f0')}}><input type="checkbox" checked={itemRev} onChange={e=>{setItemReversible(idx,e.target.checked);nf(e.target.checked?'Reversible ON — applies to all decos on this item':'Reversible OFF')}}/> 🔄 Reversible (×2)</label>:null})()}
+            {szQty>0&&(()=>{const _isSplit=safeDecos(item).some(d=>d.split_group);return<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:_isSplit?'#f5f3ff':'white',borderColor:_isSplit?'#c4b5fd':'#d1d5db',color:_isSplit?'#6d28d9':'#475569',fontWeight:_isSplit?700:400}} onClick={()=>openSplitArt(idx)} title="Split this line's garments between two different logos — creates a separate job for each design">✂️ {_isSplit?'Split ✓':'Split Art'}</button>})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:item.notes!=null?'#fef9c3':'white',borderColor:item.notes!=null?'#fde047':'#d1d5db',color:item.notes!=null?'#854d0e':'#475569'}} onClick={()=>uI(idx,'notes',item.notes==null?'':null)}>📝 {item.notes!=null?'Notes ✓':'+ Notes'}</button>
             {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
           </div>
@@ -5190,7 +5255,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
       const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
-      const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+      const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
       const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
       const rows=[];let subTotal=0;
       items.forEach(it=>{
@@ -5736,7 +5801,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Build rows with decoration detail from SO items
         const rows=[];let subTotal=0;
         const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
-        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
         const isDeposit=ir.inv_type==='deposit';const depPct=isDeposit?(ir.deposit_pct||50)/100:1;
         if(soItems.length>0){
           soItems.forEach(it=>{
@@ -5966,7 +6031,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build rows with decoration detail from SO items
             const eRows=[];let eSubTotal=0;
             const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
-            const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+            const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
             const eIsDeposit=ir.inv_type==='deposit';const eDepPct=eIsDeposit?(ir.deposit_pct||50)/100:1;
             if(eSoItems.length>0){
               eSoItems.forEach(it=>{
@@ -6880,6 +6945,89 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </>:<button className="btn btn-secondary" onClick={()=>{setShowPick(false);setPickSel({})}}>Cancel</button>}
       </div>
     </div></div>}
+
+    {/* SPLIT ART MODAL — assign a line's garments across two designs (one job per design) */}
+    {splitArtModal&&(()=>{
+      const m=splitArtModal;const it=safeItems(o)[m.itemIdx];if(!it)return null;
+      const ordd=sz=>{const i=SZ_ORD.indexOf(sz);return i===-1?99:i};
+      const lineSizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>ordd(a[0])-ordd(b[0]));
+      const lineQty=lineSizes.reduce((a,[,v])=>a+safeNum(v),0);
+      const designs=m.designs;
+      const dTotal=di=>lineSizes.reduce((a,[sz])=>a+safeNum(designs[di]?.sizes?.[sz]),0);
+      const leftFor=sz=>safeNum(safeSizes(it)[sz])-designs.reduce((a,d)=>a+safeNum(d.sizes?.[sz]),0);
+      const balanced=lineQty>0&&lineSizes.every(([sz])=>leftFor(sz)===0);
+      const overAny=lineSizes.some(([sz])=>leftFor(sz)<0);
+      const activeCount=designs.filter((d,di)=>dTotal(di)>0).length;
+      const setSz=(di,sz,val)=>{const n=Math.max(0,parseInt(val,10)||0);setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:d)}))};
+      const setArt=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,art_file_id:v}:d)}));
+      const setPos=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,position:v}:d)}));
+      const fillEven=()=>setSplitArtModal(mm=>{const ds=mm.designs.map(d=>({...d,sizes:{}}));lineSizes.forEach(([sz,v])=>{const half=Math.floor(safeNum(v)/2);if(ds[0])ds[0].sizes[sz]=half;if(ds[1])ds[1].sizes[sz]=safeNum(v)-half});return{...mm,designs:ds}});
+      const fillAll=(di)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>{if(i!==di)return{...d,sizes:{}};const sizes={};lineSizes.forEach(([sz,v])=>{sizes[sz]=safeNum(v)});return{...d,sizes}})}));
+      const artName=di=>{const id=designs[di]?.art_file_id;if(!id)return'(needs art)';const a=af.find(x=>x.id===id);return a?.name||'(art)'};
+      const colors=['#7c3aed','#0891b2'];
+      const previewJobs=designs.map((d,di)=>({di,t:dTotal(di)})).filter(x=>x.t>0);
+      return<div className="modal-overlay" style={{zIndex:10002}} onClick={()=>setSplitArtModal(null)}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'92vh',overflow:'auto'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#6d28d9,#7c3aed)',color:'white'}}>
+            <h2 style={{color:'white',margin:0,fontSize:16}}>✂️ Split Art — {it.name||it.sku||'Item'} · {lineQty} pc{lineQty===1?'':'s'}</h2>
+            <button className="modal-close" style={{color:'white'}} onClick={()=>setSplitArtModal(null)}>×</button>
+          </div>
+          <div style={{padding:'16px 20px'}}>
+            <p style={{fontSize:12,color:'#64748b',marginTop:0,marginBottom:14}}>Pick two designs and set how many of each size gets each one. This line splits into a separate production job per design — each design prices at its own quantity.</p>
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
+              {designs.map((d,di)=><div key={di} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{width:70,fontSize:12,fontWeight:800,color:colors[di]||'#475569'}}>Design {di+1}</span>
+                <select className="form-select" style={{flex:'1 1 240px',fontSize:12,minWidth:200,borderColor:colors[di]||'#d1d5db'}} value={d.art_file_id||''} onChange={e=>setArt(di,e.target.value||'')}>
+                  <option value="">⚠️ Choose art (or assign later)…</option>
+                  {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
+                </select>
+                <select className="form-select" style={{width:140,fontSize:12}} value={d.position||'Front Center'} onChange={e=>setPos(di,e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>fillAll(di)} title="Put every piece on this design">All →</button>
+              </div>)}
+              <div><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={fillEven}>⚖️ Even split</button></div>
+            </div>
+            <div style={{overflowX:'auto'}}>
+              <table style={{borderCollapse:'collapse',width:'100%',fontSize:12}}>
+                <thead><tr>
+                  <th style={{textAlign:'left',padding:'4px 8px'}}></th>
+                  {lineSizes.map(([sz])=><th key={sz} style={{padding:'4px 6px',textAlign:'center',color:'#475569',fontWeight:800,minWidth:46}}>{sz}</th>)}
+                  <th style={{padding:'4px 8px',textAlign:'center',color:'#475569',fontWeight:800}}>Total</th>
+                </tr></thead>
+                <tbody>
+                  <tr style={{borderBottom:'2px solid #e2e8f0'}}>
+                    <td style={{padding:'4px 8px',color:'#64748b',fontWeight:700,whiteSpace:'nowrap'}}>Line qty</td>
+                    {lineSizes.map(([sz,v])=><td key={sz} style={{padding:'4px 6px',textAlign:'center',fontWeight:700,color:'#1e293b'}}>{v}</td>)}
+                    <td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{lineQty}</td>
+                  </tr>
+                  {designs.map((d,di)=><tr key={di}>
+                    <td style={{padding:'4px 8px',fontWeight:700,color:colors[di]||'#475569',whiteSpace:'nowrap',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis'}}>{di+1}. {artName(di)}</td>
+                    {lineSizes.map(([sz,v])=>{const val=safeNum(d.sizes?.[sz]);const bad=leftFor(sz)<0;return<td key={sz} style={{padding:'3px 4px',textAlign:'center'}}><input type="number" min="0" max={v} value={d.sizes?.[sz]||''} placeholder="0" onChange={e=>setSz(di,sz,e.target.value)} style={{width:42,textAlign:'center',border:'1px solid '+(bad?'#fca5a5':'#cbd5e1'),borderRadius:4,padding:'3px 2px',fontSize:12,fontWeight:600,background:val>0?(di===0?'#f5f3ff':'#ecfeff'):'white'}}/></td>})}
+                    <td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,color:colors[di]||'#475569'}}>{dTotal(di)}</td>
+                  </tr>)}
+                  <tr style={{borderTop:'2px solid #e2e8f0'}}>
+                    <td style={{padding:'4px 8px',color:'#64748b',fontWeight:700,whiteSpace:'nowrap'}}>Left to assign</td>
+                    {lineSizes.map(([sz])=>{const lf=leftFor(sz);return<td key={sz} style={{padding:'4px 6px',textAlign:'center',fontWeight:800,color:lf===0?'#16a34a':lf<0?'#dc2626':'#d97706'}}>{lf}</td>})}
+                    <td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,color:balanced?'#16a34a':'#d97706'}}>{lineSizes.reduce((a,[sz])=>a+leftFor(sz),0)}{balanced?' ✓':''}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style={{marginTop:14,padding:'10px 12px',borderRadius:8,background:balanced?'#f0fdf4':'#fffbeb',border:'1px solid '+(balanced?'#86efac':'#fde68a')}}>
+              {balanced
+                ?(activeCount>=2
+                  ?<div style={{fontSize:12,color:'#166534',fontWeight:600}}>→ Creates {activeCount} jobs: {previewJobs.map((x,k)=><span key={x.di}>{k>0?'  +  ':''}<span style={{fontWeight:800}}>“{artName(x.di)}” ({x.t})</span></span>)}</div>
+                  :<div style={{fontSize:12,color:'#166534',fontWeight:600}}>→ One design on all {lineQty} pieces (no split).</div>)
+                :<div style={{fontSize:12,color:'#92400e',fontWeight:600}}>{overAny?'Too many assigned — each size can’t exceed the line qty.':'Assign every piece — each size must add up to the line qty before you can split.'}</div>}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0',flexWrap:'wrap',alignItems:'center'}}>
+            {safeDecos(it).some(d=>d.split_group)&&<button className="btn btn-secondary" style={{marginRight:'auto',color:'#dc2626'}} onClick={()=>{unsplitArt(m.itemIdx);setSplitArtModal(null)}}>Remove split</button>}
+            <button className="btn btn-secondary" onClick={()=>setSplitArtModal(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={!balanced} style={{background:balanced?'#7c3aed':'#c4b5fd',borderColor:balanced?'#7c3aed':'#c4b5fd',cursor:balanced?'pointer':'not-allowed'}} onClick={applySplitArt}>✂️ {activeCount>=2?('Split into '+activeCount+' jobs'):'Apply'}</button>
+          </div>
+        </div>
+      </div>;
+    })()}
 
     {/* JOBS TAB */}
     {isSO&&tab==='jobs'&&(()=>{

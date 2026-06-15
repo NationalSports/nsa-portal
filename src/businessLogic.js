@@ -139,23 +139,26 @@ const buildJobs = (o) => {
         const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
         const part = 'art_' + d.art_file_id;
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        // A split-art design buckets on its own so it becomes a separate job (one logo per job).
+        const bk = d.split_group ? dt + '::__split__::' + d.split_group + '::' + di : dt;
+        if (!decosByType[bk]) decosByType[bk] = [];
+        decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
         const dt = d.num_method || 'heat_transfer';
         const part = 'numbers_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        decosByType[dt].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'names') {
         const dt = d.name_method || 'heat_press';
         const part = 'names_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        decosByType[dt].push({ part, d, di, _dt: dt });
       }
     });
-    Object.entries(decosByType).forEach(([dt, decos]) => {
+    Object.entries(decosByType).forEach(([bk, decos]) => {
+      const dt = decos[0]._dt || bk;
       const parts = decos.map(x => x.part).sort();
-      const sig = dt + '::' + parts.join('|');
+      const sig = bk.indexOf('::__split__::') >= 0 ? dt + '::' + bk + '::' + parts.join('|') : dt + '::' + parts.join('|');
       if (sig) itemSigs.push({ idx, it, sig, decos });
     });
   });
@@ -193,13 +196,19 @@ const buildJobs = (o) => {
     });
     const items = grp.items.map(({ idx, it, decos }) => {
       const decoIdxs = decos.map(x => x.di);
-      return { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
+      // Split-art job: this group is one design carrying its own per-size allocation.
+      const splitDeco = decos.length === 1 && decos[0].d.split_group && decos[0].d.split_sizes ? decos[0].d : null;
+      const szMap = splitDeco ? splitDeco.split_sizes : safeSizes(it);
+      const units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      const out = { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units, fulfilled: 0 };
+      if (splitDeco) out.sizes = Object.assign({}, splitDeco.split_sizes);
+      return out;
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
       _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
-      total_units: totalUnits, fulfilled_units: 0, split_from: null, items, _auto: true };
+      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: (firstEntry.decos.length === 1 && firstEntry.decos[0].d.split_group) || null, items, _auto: true };
   });
 };
 
@@ -244,7 +253,11 @@ const allocateJobFulfillment = (jobs, items) => {
     while (cur && cur.id && cur.split_from && byId[cur.split_from] && !seen[cur.id]) {
       seen[cur.id] = 1; cur = byId[cur.split_from]; depth++;
     }
-    return { root: (cur && cur.id) || (j && j.id) || '', depth };
+    // Split-art siblings (two logos sharing one line via split_group) partition that line's
+    // units, so they share one apportioning pool — otherwise each would count the same receipts.
+    // Treating the split_group as the family root makes receipts fill one design, then the next.
+    const root = (j && j.split_group) ? ('sg:' + j.split_group) : ((cur && cur.id) || (j && j.id) || '');
+    return { root, depth };
   };
   const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (b.m.depth - a.m.depth) || (a.i - b.i));
   const claimed = {}; // family root::item_idx::size -> units already taken by deeper slices
