@@ -159,6 +159,10 @@ export const calcOrderMargin=(o)=>{
     else{cost+=q*_sNum(it.nsa_cost)}
     _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=eq*_sNum(dp.cost)})
   });
+  // SO-level decoration POs (outside-deco + Topstar) are a real cost the customer is billed for.
+  // calcTotals and the Reports page already count these; include them here too so the dashboard
+  // KPI margin matches instead of overstating it. Prefer the actual supplier bill, else expected.
+  (o.deco_pos||[]).forEach(dp=>{const bc=_sNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=_sNum(dp.qty||0)*_sNum(dp.unit_cost||0)});
   return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0};
 };
 
