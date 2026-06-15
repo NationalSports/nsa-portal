@@ -11816,19 +11816,28 @@ export default function App(){
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
       nf('$'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
-      if(newStatus==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&supabase){
-        const c=cust.find(x=>x.id===inv.customer_id);
-        if(c&&!c.tax_exempt&&(c.shipping_state||c.billing_state)){
-          (async()=>{try{
-            const d=await invokeEdgeFn(supabase,'taxcloud-capture',{
-              action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,
-              items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),
-              destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});
-            if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('TaxCloud: $'+d.total_tax+' tax filed for '+inv.id)}
-            else{console.warn('[TaxCloud] Capture failed for '+inv.id,d?.error)}
-          }catch(e){console.warn('[TaxCloud] Error capturing '+inv.id,e.message)}})();
-        }
-      }
+      // Tax filing to TaxCloud is MANUAL — file from the invoice's "File to
+      // TaxCloud" button (fileTaxCloud below) so filing stays within the
+      // monthly TaxCloud call budget. (Previously auto-fired here on payment.)
+    };
+
+    // Manual TaxCloud filing for one paid invoice. Only runs when the user
+    // clicks "File to TaxCloud" on the invoice — never automatically.
+    const fileTaxCloud=async(inv)=>{
+      if(!supabase){nf('Supabase not configured','error');return}
+      if(inv.tc_reported){nf('Invoice '+inv.id+' is already filed to TaxCloud','error');return}
+      const c=cust.find(x=>x.id===inv.customer_id);
+      if(!c||c.tax_exempt){nf('Customer is tax-exempt — nothing to file','error');return}
+      if(!(c.shipping_state||c.billing_state)){nf('No shipping/billing state on customer — cannot file','error');return}
+      nf('Filing tax for '+inv.id+' to TaxCloud…');
+      try{
+        const d=await invokeEdgeFn(supabase,'taxcloud-capture',{
+          action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,
+          items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),
+          destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});
+        if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('TaxCloud: $'+d.total_tax+' tax filed for '+inv.id)}
+        else{nf('TaxCloud filing failed: '+(d?.error||'unknown error'),'error')}
+      }catch(e){nf('TaxCloud error: '+e.message,'error')}
     };
 
     // ═══ INVOICE DETAIL PAGE ═══
@@ -11963,6 +11972,9 @@ export default function App(){
           <div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap'}}>
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
+            {inv.status==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&ic&&!ic.tax_exempt&&<button className="btn btn-sm" style={{background:'#1e40af',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
+              onClick={()=>fileTaxCloud(inv)} title="Report this paid invoice to TaxCloud for state filing (1 manual call)">File to TaxCloud</button>}
+            {inv.tc_reported&&<span style={{fontSize:12,padding:'6px 10px',color:'#166534',fontWeight:600}}>✓ Filed to TaxCloud{inv.tc_tax?' ($'+Number(inv.tc_tax).toLocaleString()+')':''}</span>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer

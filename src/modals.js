@@ -182,7 +182,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>TaxCloud Connection</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
-          TaxCloud handles sales tax rate lookups and files returns automatically. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
+          TaxCloud handles sales tax rate lookups and tax filing. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
           <button className="btn btn-sm btn-primary" onClick={testConnection} disabled={tcStatus.loading}
@@ -263,7 +263,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>Tax Filing (AuthorizedWithCapture)</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
-          When an invoice is fully paid, the portal automatically reports the transaction to TaxCloud via <strong>AuthorizedWithCapture</strong>. This means:
+          Filing is <strong>manual</strong>: open a paid invoice and click <strong>File to TaxCloud</strong> to report the transaction via AuthorizedWithCapture. This means:
         </div>
         <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
           {[['TaxCloud calculates the exact tax for each line item based on TIC codes','#2563eb'],
