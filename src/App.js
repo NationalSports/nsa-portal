@@ -19735,7 +19735,7 @@ export default function App(){
     };
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
-    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf'].includes(j.artFile?.deco_type||j.deco_type));
+    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j));
     // In Production: art complete but decoration not finished yet
     const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);

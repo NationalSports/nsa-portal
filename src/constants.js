@@ -299,7 +299,7 @@ export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
 // embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
 export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
-export const prodFilesStatusFor=(deco)=>deco==='dtf'?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
+export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
