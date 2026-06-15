@@ -516,7 +516,9 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   };
 
   const share = async () => {
-    const url = `${window.location.origin}/adidas?style=${encodeURIComponent(st.colorways[0].sku)}`;
+    // Build the link off the current path so it works whether the catalog is on
+    // /adidas or proxied onto nationalsportsapparel.com/livelook.
+    const url = `${window.location.origin}${window.location.pathname}?style=${encodeURIComponent(st.colorways[0].sku)}`;
     if (navigator.share) {
       try { await navigator.share({ title: `${st.name} — NSA adidas catalog`, url }); return; } catch { /* fall through to copy */ }
     }
@@ -928,7 +930,9 @@ export default function AdidasInventory() {
     const em = signInEmail.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || signInState === 'sending') return;
     setSignInState('sending');
-    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + '/adidas' } });
+    // Return the coach to wherever they signed in (/adidas or the proxied
+    // /livelook). This exact URL must be allow-listed in Supabase Auth redirects.
+    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + window.location.pathname } });
     setSignInState(error ? 'error' : 'sent');
   };
   const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
