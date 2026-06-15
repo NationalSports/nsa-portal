@@ -101,6 +101,15 @@ const catalogPath = () => window.location.pathname.replace(/\/+$/, '') || '/adid
 // the parent page, so this has to be opted into here.
 const isEmbedded = () => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } };
 
+// "Adidas" + "W LS Pregame" → "Adidas W LS Pregame". Won't double up when the
+// name already leads with the brand (only a leading "adidas" is stripped for
+// display, so future non-adidas lines keep their brand in the name).
+const withBrand = (brand, name) => {
+  const n = String(name || '');
+  if (!brand) return n;
+  return n.toLowerCase().startsWith(String(brand).toLowerCase()) ? n : `${brand} ${n}`;
+};
+
 // ── Category / color / gender / sport derivation ─────────────────────
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
@@ -443,6 +452,7 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
+          {st.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{st.brand}</div>}
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 17, lineHeight: 1.15, textTransform: 'uppercase' }}>{st.name}</div>
           <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>
             {st.category}{st.sport ? ' · ' + st.sport : ''}
@@ -551,6 +561,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
       <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: '20px 24px 10px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ flex: 1 }}>
+            {st.brand && <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{st.brand}</div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 28, margin: 0, textTransform: 'uppercase', lineHeight: 1.05 }}>{st.name}</h2>
               {gb && <span className="ai-badge" style={{ background: gb.bg, color: gb.fg }}>{st.gender}</span>}
@@ -701,7 +712,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
 }
 
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, onClose, notify, account }) {
+function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account }) {
   const [coach, setCoach] = useState(() => {
     const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
     // Signed-in coach account prefills anything the browser doesn't remember
@@ -727,6 +738,20 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
   const units = list.reduce((a, l) => a + l.qty, 0);
   const canSend = list.length > 0 && coach.name.trim() && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(coach.email.trim());
 
+  // Group the flat list by colorway (SKU) so every size of an item sits together
+  // (small → large) under one brand-prefixed heading. Each size row keeps its
+  // original list index so the qty/remove callbacks still target the right line.
+  const groups = (() => {
+    const m = new Map();
+    list.forEach((l, i) => {
+      if (!m.has(l.sku)) m.set(l.sku, { sku: l.sku, brand: l.brand, name: l.name, color: l.color, lines: [] });
+      m.get(l.sku).lines.push({ ...l, i });
+    });
+    const out = [...m.values()];
+    out.forEach((g) => g.lines.sort((a, b) => sizeRank(a.size) - sizeRank(b.size)));
+    return out;
+  })();
+
   const submit = async () => {
     if (!canSend || state === 'sending') return;
     setState('sending');
@@ -743,7 +768,7 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
           team_name: coach.team.trim(),
           notes: notes.trim(),
           customer_id: (account && account.customerId) || null,
-          lines: list.map((l) => ({ sku: l.sku, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
+          lines: list.map((l) => ({ sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
         }),
       });
       const d = await res.json().catch(() => ({}));
@@ -783,32 +808,39 @@ function OrderDrawer({ list, updateLine, setDecoration, removeLine, clearList, o
                   Your list is empty — open a style and type quantities under the sizes you need.
                 </p>
               )}
-              {list.map((l, i) => (
-                <div key={l.sku + '|' + l.size} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #F0F1F4' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{l.name}</div>
-                    <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
-                      {l.color} · {sizeLabel(l.size)} · <span style={{ fontFamily: 'monospace' }}>{l.sku}</span>
-                      {l.inbound && <span style={{ color: '#92580B', fontWeight: 600 }}> · inbound {fmtDate(l.inbound)}</span>}
-                    </div>
-                    <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 4, color: l.decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
-                      value={l.decoration || ''} onChange={(e) => setDecoration(i, e.target.value)} aria-label="Decoration">
-                      <option value="">Blank (no decoration)</option>
-                      <option>Screen print</option>
-                      <option>Embroidery</option>
-                      <option>Heat press</option>
-                    </select>
+              {groups.map((g) => (
+                <div key={g.sku} style={{ padding: '12px 0', borderBottom: '1px solid #F0F1F4' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{withBrand(g.brand, g.name)}</div>
+                  <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
+                    {g.color} · <span style={{ fontFamily: 'monospace' }}>{g.sku}</span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 'none' }}>
-                    <button className="ai-qbtn" onClick={() => updateLine(i, l.qty - 1)} aria-label="Decrease">−</button>
-                    <input className="ai-input" style={{ width: 48, textAlign: 'center', padding: '4px 4px', fontWeight: 700 }} value={l.qty}
-                      onChange={(e) => updateLine(i, parseInt(e.target.value) || 0)} inputMode="numeric" />
-                    <button className="ai-qbtn" onClick={() => updateLine(i, l.qty + 1)} aria-label="Increase">+</button>
+                  <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 6, color: g.lines[0].decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
+                    value={g.lines[0].decoration || ''} onChange={(e) => setSkuDecoration(g.sku, e.target.value)} aria-label={`Decoration for ${g.name}`}>
+                    <option value="">Blank (no decoration)</option>
+                    <option>Screen print</option>
+                    <option>Embroidery</option>
+                    <option>Heat press</option>
+                  </select>
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {g.lines.map((l) => (
+                      <div key={l.sku + '|' + l.size} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ width: 64, flex: 'none', fontSize: 12.5, fontWeight: 700 }}>
+                          {sizeLabel(l.size)}
+                          {l.inbound && <span style={{ display: 'block', color: '#92580B', fontWeight: 600, fontSize: 10 }}>inbound {fmtDate(l.inbound)}</span>}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 'none' }}>
+                          <button className="ai-qbtn" onClick={() => updateLine(l.i, l.qty - 1)} aria-label="Decrease">−</button>
+                          <input className="ai-input" style={{ width: 48, textAlign: 'center', padding: '4px 4px', fontWeight: 700 }} value={l.qty}
+                            onChange={(e) => updateLine(l.i, parseInt(e.target.value) || 0)} inputMode="numeric" />
+                          <button className="ai-qbtn" onClick={() => updateLine(l.i, l.qty + 1)} aria-label="Increase">+</button>
+                        </div>
+                        <div style={{ flex: 1, textAlign: 'right', fontSize: 13, fontWeight: 700 }}>
+                          {l.price ? fmtPrice(l.price * l.qty) : '—'}
+                        </div>
+                        <button onClick={() => removeLine(l.i)} aria-label={`Remove size ${sizeLabel(l.size)}`} style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
+                      </div>
+                    ))}
                   </div>
-                  <div style={{ width: 58, textAlign: 'right', fontSize: 13, fontWeight: 700, flex: 'none' }}>
-                    {l.price ? fmtPrice(l.price * l.qty) : '—'}
-                  </div>
-                  <button onClick={() => removeLine(i)} aria-label="Remove" style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
                 </div>
               ))}
               {list.length > 0 && (
@@ -979,14 +1011,16 @@ export default function AdidasInventory() {
       const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
       if (n === 0) return i >= 0 ? prev.filter((_, j) => j !== i) : prev;
       if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: n } : l));
-      return [...prev, { sku: cw.sku, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null }];
+      return [...prev, { sku: cw.sku, brand: st.brand, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null }];
     });
   }, [mutateList, yourPriceFn]);
   const updateLine = useCallback((i, qty) => {
     mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
   }, [mutateList]);
-  const setDecoration = useCallback((i, deco) => {
-    mutateList((prev) => prev.map((l, j) => (j === i ? { ...l, decoration: deco || null } : l)));
+  // Decoration is chosen per item (colorway), so it applies to every size of
+  // that SKU on the list at once.
+  const setSkuDecoration = useCallback((sku, deco) => {
+    mutateList((prev) => prev.map((l) => (l.sku === sku ? { ...l, decoration: deco || null } : l)));
   }, [mutateList]);
   const removeLine = useCallback((i) => mutateList((prev) => prev.filter((_, j) => j !== i)), [mutateList]);
   const clearList = useCallback(() => mutateList(() => []), [mutateList]);
@@ -1002,7 +1036,7 @@ export default function AdidasInventory() {
         const [prods, inv, inHouseRows] = await Promise.all([
           fetchAllPages(() => supabase
             .from('products')
-            .select('id,sku,name,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source')
+            .select('id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source')
             .ilike('brand', 'adidas')
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
@@ -1093,6 +1127,7 @@ export default function AdidasInventory() {
           if (!st) {
             st = {
               key,
+              brand: p.brand || 'Adidas',
               name: displayName,
               category: cat,
               gender: deriveGender(p.name, p.sku, cat),
@@ -1456,7 +1491,7 @@ export default function AdidasInventory() {
         <OrderDrawer
           list={list}
           updateLine={updateLine}
-          setDecoration={setDecoration}
+          setSkuDecoration={setSkuDecoration}
           removeLine={removeLine}
           clearList={clearList}
           onClose={() => setDrawerOpen(false)}
