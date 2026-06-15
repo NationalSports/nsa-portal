@@ -28,12 +28,14 @@ jobs:
       # supabase_migrations.schema_migrations. SUPABASE_DB_URL is a Postgres
       # connection string (a read-only role is plenty) stored as a repo secret.
       - name: Fetch live migrations
+        id: fetch
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "SUPABASE_DB_URL secret not set — add it in repo Settings → Secrets." >&2
-            exit 2
+            echo "::notice::SUPABASE_DB_URL secret not set — skipping drift check. Add it in repo Settings → Secrets to enable the guard."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           psql "$SUPABASE_DB_URL" -At -c \
             "select coalesce(json_agg(json_build_object('version', version, 'name', name) order by version), '[]') \
@@ -41,4 +43,5 @@ jobs:
             > live-migrations.json
 
       - name: Check for drift
+        if: steps.fetch.outputs.skip != 'true'
         run: node scripts/check-schema-drift.js --live live-migrations.json
