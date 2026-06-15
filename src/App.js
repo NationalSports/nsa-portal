@@ -240,29 +240,65 @@ const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyCo
 // ── OMG store-pull stock pills (in-house + vendor availability per item) ──
 const _STOCK_PILL={display:'inline-block',fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:3,border:'1px solid transparent',whiteSpace:'nowrap',letterSpacing:0.2};
 const _STOCK_STYLE={full:['#dcfce7','#166534','✓'],partial:['#fef9c3','#854d0e','◑'],none:['#fee2e2','#991b1b','✗'],incoming:['#e0f2fe','#075985','⏳'],unknown:['#f1f5f9','#64748b','–']};
-const _stockTitle=(label,s,eta)=>{const sizes=Object.keys(s.bySize||{});const head=label+(s.status==='unknown'?': not checked / no data':'');if(!sizes.length)return head;const parts=sizes.map(sz=>sz+': '+(s.bySize[sz]>=999?'in stock':s.bySize[sz]));return label+' — '+parts.join(', ')+(eta?' · ETA '+new Date(eta).toLocaleDateString():'');};
+const _stockEsc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// Hover-popover HTML: the real per-size stock for one source (have vs. ordered),
+// a backorder ETA when present, or a plain-English note when there's no data.
+const _stockPopHtml=(label,s,ordered,eta)=>{
+  const bySize=s.bySize||{};
+  const head=`<div style="font-weight:800;font-size:11px;color:#0f172a;margin-bottom:3px">${_stockEsc(label)}</div>`;
+  if((s.status||'unknown')==='unknown'){
+    const note=s.hasApi===false?'No live inventory feed for this vendor — stock can’t be verified automatically.'
+      :s.error?'Stock lookup failed. Use “Re-check stock” to retry.'
+      :'Not stocked in the NSA catalog — no in-house record for this SKU.';
+    return head+`<div style="font-size:11px;color:#64748b;max-width:210px">${_stockEsc(note)}</div>`;
+  }
+  const sizes=Object.keys(ordered&&Object.keys(ordered).length?ordered:bySize);
+  const body=sizes.map(sz=>{
+    const have=bySize[sz]||0;const need=ordered?ordered[sz]:undefined;
+    const disp=have>=999?'in stock':have; // Momentec only reports a binary in-stock flag (999)
+    const col=have<=0?'#b91c1c':(need!=null&&have<need)?'#b45309':'#166534';
+    return `<tr><td style="padding:1px 12px 1px 0;font-weight:700;color:#475569">${_stockEsc(sz)}</td><td style="padding:1px 0;font-weight:800;color:${col}">${_stockEsc(disp)}${need!=null?`<span style="color:#94a3b8;font-weight:600"> / need ${_stockEsc(need)}</span>`:''}</td></tr>`;
+  }).join('');
+  const etaLine=eta?`<div style="margin-top:4px;font-size:10px;font-weight:700;color:#075985">Backorder ETA ${_stockEsc(new Date(eta).toLocaleDateString())}</div>`:'';
+  return head+`<table style="border-collapse:collapse;font-size:11px"><tbody>${body||'<tr><td style="color:#94a3b8">no sizes</td></tr>'}</tbody></table>${etaLine}`;
+};
+const _hideStockPop=()=>{const el=document.getElementById('omg-stock-pop');if(el)el.remove()};
+const _showStockPop=(e,html)=>{
+  _hideStockPop();
+  const r=e.currentTarget.getBoundingClientRect();
+  const pop=document.createElement('div');pop.id='omg-stock-pop';
+  pop.style.cssText='position:fixed;z-index:9998;pointer-events:none;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,0.18);padding:8px 11px;min-width:110px';
+  pop.innerHTML=html;document.body.appendChild(pop);
+  const pr=pop.getBoundingClientRect();
+  let left=r.left;if(left+pr.width>window.innerWidth-8)left=window.innerWidth-pr.width-8;
+  let top=r.bottom+6;if(top+pr.height>window.innerHeight-8)top=r.top-pr.height-6;
+  pop.style.left=Math.max(8,left)+'px';pop.style.top=Math.max(8,top)+'px';
+};
 // One pill. kind='inhouse'|'vendor'. Vendors with no stock API render an honest
-// "no API" chip rather than a fake check mark.
-function StockPill({label,s,kind,hasApi,eta}){
-  if(kind==='vendor'&&hasApi===false)return <span title="No live inventory API for this vendor — stock can't be verified automatically" style={{..._STOCK_PILL,background:'#f1f5f9',color:'#94a3b8'}}>{label}: no API</span>;
+// "no API" chip rather than a fake check mark. Hovering any pill shows the real
+// per-size levels in a popover.
+function StockPill({label,s,kind,hasApi,eta,ordered}){
+  const html=_stockPopHtml(label,s,ordered,eta);
+  const hover={onMouseEnter:e=>_showStockPop(e,html),onMouseLeave:_hideStockPop};
+  if(kind==='vendor'&&hasApi===false)return <span {...hover} style={{..._STOCK_PILL,background:'#f1f5f9',color:'#94a3b8',cursor:'help'}}>{label}: no API</span>;
   const status=s.status||'unknown';const[bg,fg,icon]=_STOCK_STYLE[status]||_STOCK_STYLE.unknown;
   let txt=icon; // 'full' → green check alone reads "in stock"; hover for the per-size detail
   if(status==='partial')txt=icon+(s.short&&s.short.length?' short '+s.short.join(', '):' partial');
   else if(status==='none')txt=icon+' out';
   else if(status==='incoming')txt=icon+(eta?' ETA '+new Date(eta).toLocaleDateString([],{month:'numeric',day:'numeric'}):' incoming');
   else if(status==='unknown')txt=kind==='vendor'?(s.error?'? error':'? n/a'):'no record';
-  return <span title={_stockTitle(label,s,eta)} style={{..._STOCK_PILL,background:bg,color:fg}}>{label}: {txt}</span>;
+  return <span {...hover} style={{..._STOCK_PILL,background:bg,color:fg,cursor:'help'}}>{label}: {txt}</span>;
 }
 // The cell: in-house pill + vendor pill, with a flag when an item is in stock
 // nowhere (neither in-house nor confirmed at the vendor).
 function OmgStockCell({stock,loading}){
   if(!stock)return <span style={{fontSize:10,color:'#94a3b8'}}>{loading?'checking…':'—'}</span>;
-  const{inhouse,vendor}=stock;
+  const{inhouse,vendor,ordered}=stock;
   const nowhere=(inhouse.status==='none'||inhouse.status==='unknown')&&vendor.status==='none';
   return <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start'}}>
     {nowhere&&<span title="Not in stock in-house or at the vendor — needs sourcing / special order" style={{..._STOCK_PILL,background:'#fef2f2',color:'#b91c1c',border:'1px solid #fca5a5'}}>⚠ not in stock</span>}
-    <StockPill label="🏠 In-house" kind="inhouse" s={inhouse}/>
-    <StockPill label={vendor.label||'Vendor'} kind="vendor" s={vendor} hasApi={vendor.hasApi} eta={vendor.eta}/>
+    <StockPill label="🏠 In-house" kind="inhouse" s={inhouse} ordered={ordered}/>
+    <StockPill label={vendor.label||'Vendor'} kind="vendor" s={vendor} hasApi={vendor.hasApi} eta={vendor.eta} ordered={ordered}/>
   </div>;
 }
 
