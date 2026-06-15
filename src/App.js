@@ -233,8 +233,39 @@ const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
+
+// ── OMG store-pull stock pills (in-house + vendor availability per item) ──
+const _STOCK_PILL={display:'inline-block',fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:3,border:'1px solid transparent',whiteSpace:'nowrap',letterSpacing:0.2};
+const _STOCK_STYLE={full:['#dcfce7','#166534','✓'],partial:['#fef9c3','#854d0e','◑'],none:['#fee2e2','#991b1b','✗'],incoming:['#e0f2fe','#075985','⏳'],unknown:['#f1f5f9','#64748b','–']};
+const _stockTitle=(label,s,eta)=>{const sizes=Object.keys(s.bySize||{});const head=label+(s.status==='unknown'?': not checked / no data':'');if(!sizes.length)return head;const parts=sizes.map(sz=>sz+': '+(s.bySize[sz]>=999?'in stock':s.bySize[sz]));return label+' — '+parts.join(', ')+(eta?' · ETA '+new Date(eta).toLocaleDateString():'');};
+// One pill. kind='inhouse'|'vendor'. Vendors with no stock API render an honest
+// "no API" chip rather than a fake check mark.
+function StockPill({label,s,kind,hasApi,eta}){
+  if(kind==='vendor'&&hasApi===false)return <span title="No live inventory API for this vendor — stock can't be verified automatically" style={{..._STOCK_PILL,background:'#f1f5f9',color:'#94a3b8'}}>{label}: no API</span>;
+  const status=s.status||'unknown';const[bg,fg,icon]=_STOCK_STYLE[status]||_STOCK_STYLE.unknown;
+  let txt=icon;
+  if(status==='full')txt='✓ in stock'; // binary (Momentec) and counted vendors both read "in stock"
+  else if(status==='partial')txt=icon+(s.short&&s.short.length?' short '+s.short.join(', '):' partial');
+  else if(status==='none')txt=icon+' out';
+  else if(status==='incoming')txt=icon+(eta?' ETA '+new Date(eta).toLocaleDateString([],{month:'numeric',day:'numeric'}):' incoming');
+  else txt=kind==='vendor'?(s.error?'? error':'? n/a'):'no record';
+  return <span title={_stockTitle(label,s,eta)} style={{..._STOCK_PILL,background:bg,color:fg}}>{label}: {txt}</span>;
+}
+// The cell: in-house pill + vendor pill, with a flag when an item is in stock
+// nowhere (neither in-house nor confirmed at the vendor).
+function OmgStockCell({stock,loading}){
+  if(!stock)return <span style={{fontSize:10,color:'#94a3b8'}}>{loading?'checking…':'—'}</span>;
+  const{inhouse,vendor}=stock;
+  const nowhere=(inhouse.status==='none'||inhouse.status==='unknown')&&vendor.status==='none';
+  return <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start'}}>
+    {nowhere&&<span title="Not in stock in-house or at the vendor — needs sourcing / special order" style={{..._STOCK_PILL,background:'#fef2f2',color:'#b91c1c',border:'1px solid #fca5a5'}}>⚠ not in stock</span>}
+    <StockPill label="🏠 In-house" kind="inhouse" s={inhouse}/>
+    <StockPill label={vendor.label||'Vendor'} kind="vendor" s={vendor} hasApi={vendor.hasApi} eta={vendor.eta}/>
+  </div>;
+}
 
 // ── Error boundary for isolated component crashes ──
 class ComponentErrorBoundary extends React.Component{
@@ -5222,7 +5253,7 @@ export default function App(){
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
-  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -5647,6 +5678,100 @@ export default function App(){
     setOmgPriceLoading(false);
     nf(`Updated ${found}/${targets.length} cost${found===1?'':'s'}` + (zero ? ` · ${zero} had no catalog/API match (enter manually)` : ''));
   };
+  // Short pill label for an inventory source. Falls back to the vendor's real
+  // name (e.g. a custom "Flag" vendor) so the pill says where stock was checked.
+  const _invSrcLabel = (src, vRec) => ({ adidas:'Adidas', ss:'S&S', sm:'SanMar', rs:'Richardson', mt:'Momentec' }[src]) || (vRec?.name) || '';
+  // ── Stock check: per ordered size, is it on hand in-house and at the vendor? ──
+  // Mirrors omgLookupCosts (catalog + supplier APIs), but for availability rather
+  // than price. Two pills per item: in-house (NSA warehouse, from the catalog's
+  // _inv) and vendor (adidas/agron via the synced inventory_unified view; S&S /
+  // SanMar / Richardson / Momentec via their live APIs). Vendors with no stock
+  // API (e.g. a "Flag" vendor) come back hasApi:false so we never fake a check.
+  const omgLookupInventory = async (store, { force = false, quiet = false } = {}) => {
+    const products = store?.products || [];
+    const targets = products.filter(p => p.sku && (force || !p._stock));
+    if (!targets.length) return;
+    setOmgInvLoading(true);
+    try {
+      // 1) Adidas/Agron stock for every SKU in one query over the union view.
+      const adidasBySku = {};
+      const rawSkus = [...new Set(products.map(p => String(p.sku||'').trim()).filter(Boolean))];
+      const skuVariants = [...new Set([...rawSkus, ...rawSkus.map(s => s.toUpperCase())])];
+      if (supabase && skuVariants.length) {
+        try {
+          const { data } = await supabase.from('inventory_unified')
+            .select('sku,size,stock_qty,future_delivery_qty,future_delivery_date').in('sku', skuVariants);
+          (data||[]).forEach(r => { const k = String(r.sku||'').toUpperCase(); (adidasBySku[k] = adidasBySku[k] || []).push(r); });
+        } catch (e) { console.log('[OMG stock] inventory_unified query failed:', e.message); }
+      }
+      // 2) Per item — in-house from the catalog, vendor from its source.
+      const summarize = (bySize, orderedSizes, ordered, incomingBySize) => {
+        if (!bySize) return { status: 'unknown', short: orderedSizes.slice(), bySize: {} };
+        if (!orderedSizes.length) return { status: Object.values(bySize).some(q=>q>0) ? 'full' : 'none', short: [], bySize };
+        let covered = 0, available = 0; const short = [];
+        orderedSizes.forEach(sz => { const have = bySize[sz]||0, need = ordered[sz]||0; if (have>0) available++; if (have>=need) covered++; else short.push(sz); });
+        let status = covered===orderedSizes.length ? 'full' : available>0 ? 'partial'
+          : (incomingBySize && orderedSizes.some(sz => (incomingBySize[sz]||0)>0)) ? 'incoming' : 'none';
+        return { status, short, bySize };
+      };
+      await Promise.allSettled(targets.map(async (p) => {
+        const skuUp = String(p.sku||'').trim().toUpperCase();
+        // Ordered sizes → normalized (inseam stripped, e.g. "M 7" → "M") qty map.
+        const ordered = {};
+        Object.entries(p.sizes||{}).forEach(([sz,q]) => {
+          if (!sz || !(Number(q)>0)) return;
+          const base = String(sz).replace(/\s+\d+(?:\.\d+)?"?$/,'').trim() || sz;
+          const n = normSzName(base); ordered[n] = (ordered[n]||0) + Number(q);
+        });
+        const orderedSizes = Object.keys(ordered);
+        // In-house: catalog row's _inv (match SKU like the cost lookup does).
+        const cat = prod.find(cp => { const c=String(cp.sku||'').trim().toUpperCase(); return c && (c===skuUp||c.includes(skuUp)||skuUp.includes(c)); });
+        const inhouseRaw = cat && cat._inv && Object.keys(cat._inv).length ? cat._inv : null;
+        let inhouse;
+        if (inhouseRaw) { const bs={}; Object.entries(inhouseRaw).forEach(([sz,q]) => { bs[normSzName(String(sz).trim())] = Number(q)||0; }); inhouse = summarize(bs, orderedSizes, ordered, null); }
+        else inhouse = { status: 'unknown', short: orderedSizes.slice(), bySize: {} };
+        // Vendor source: the vendor we buy from (api_provider), else the adidas feed.
+        const vRec = vend.find(v => v.id === p.vendor_id);
+        let src = vendorInvSource(vRec, { brand: p.manufacturer });
+        if ((!src || src==='adidas') && adidasBySku[skuUp]) src = 'adidas';
+        let vendor;
+        if (src === 'adidas') {
+          const bs={}, inc={}; let eta=null;
+          (adidasBySku[skuUp]||[]).forEach(r => {
+            const n = normSzName(String(r.size||'').trim());
+            bs[n] = (bs[n]||0) + (Number(r.stock_qty)||0);
+            const fq = Number(r.future_delivery_qty)||0;
+            if (fq>0) { inc[n] = (inc[n]||0)+fq; if (r.future_delivery_date && (!eta || r.future_delivery_date<eta)) eta=r.future_delivery_date; }
+          });
+          vendor = { src, label:_invSrcLabel(src,vRec), hasApi:true, eta, ...summarize(bs, orderedSizes, ordered, inc) };
+        } else if (['ss','sm','rs','mt'].includes(src)) {
+          try {
+            const inv = await fetchVendorSizeInventory(src, { sku:p.sku, color:p.color, sizes:p.sizes, available_sizes:orderedSizes, _mtId:p._mtId });
+            const bs={}; Object.entries(inv.sizes||{}).forEach(([sz,q]) => { bs[normSzName(String(sz).trim())] = Number(q)||0; });
+            vendor = { src, label:_invSrcLabel(src,vRec), hasApi:true, eta:inv.nextAvail||null, ...summarize(bs, orderedSizes, ordered, null) };
+          } catch (e) { console.log('[OMG stock] vendor API failed for', p.sku, e.message); vendor = { src, label:_invSrcLabel(src,vRec), hasApi:true, eta:null, status:'unknown', short:orderedSizes.slice(), bySize:{}, error:true }; }
+        } else {
+          vendor = { src:'', label:_invSrcLabel('',vRec), hasApi:false, eta:null, status:'unknown', short:orderedSizes.slice(), bySize:{} };
+        }
+        p._stock = { checked: new Date().toISOString(), ordered, inhouse, vendor };
+      }));
+      const upd = { ...store, products: [...products] };
+      setOmgStores(prev => prev.map(st => st.id===store.id ? upd : st));
+      setOmgSel(prev => prev && prev.id===store.id ? upd : prev);
+      if (force && !quiet) { const out = targets.filter(p => p._stock && p._stock.inhouse.status!=='full' && (p._stock.vendor.status==='none'||p._stock.vendor.status==='incoming')).length; nf(`Stock checked for ${targets.length} item${targets.length===1?'':'s'}` + (out ? ` · ${out} not in stock in-house or at the vendor` : '')); }
+    } finally { setOmgInvLoading(false); }
+  };
+  // Auto-check stock when a store with products is opened (covers import too, since
+  // importing sets the products and re-selects the store). Only fetches rows that
+  // don't already have a _stock result, and de-dupes concurrent runs per store.
+  useEffect(() => {
+    const s = omgSel;
+    if (!s || !(s.products||[]).length) return;
+    if (omgInvFetching.current.has(s.id)) return;
+    if (!(s.products||[]).some(p => p.sku && !p._stock)) return;
+    omgInvFetching.current.add(s.id);
+    Promise.resolve(omgLookupInventory(s)).finally(() => omgInvFetching.current.delete(s.id));
+  }, [omgSel]);
   // A SKU is "obviously not a real one" when it's blank or a compound of
   // multiple style numbers (OMG sometimes ships "IP9746//IS1111"). Detection
   // only — we never rewrite the SKU; the rep corrects it (which re-sources the
@@ -5731,7 +5856,7 @@ export default function App(){
         }
       } finally { setOmgPriceLoading(false); }
     }
-    const newProds = products.map((pr, j) => j === index ? { ...pr, sku: newSku, vendor_id: vendorId || null, cost, _cost_source: costSrc, product_id: productId || null, brand } : pr);
+    const newProds = products.map((pr, j) => j === index ? { ...pr, sku: newSku, vendor_id: vendorId || null, cost, _cost_source: costSrc, product_id: productId || null, brand, _stock: undefined } : pr);
     const upd = { ...store, products: newProds };
     setOmgStores(prev => prev.map(st => st.id === store.id ? upd : st));
     setOmgSel(upd);
@@ -16205,6 +16330,9 @@ export default function App(){
                 {(s.products||[]).length>0&&(()=>{const z=(s.products||[]).filter(p=>!(p.cost>0)).length;return(
                   <button className="btn btn-sm" disabled={omgPriceLoading} title="Re-check every item's cost against the NSA catalog and supplier APIs (S&S, SanMar, Richardson, Momentec). Costs you typed by hand are kept." style={{fontSize:10,padding:'2px 8px',background:z?'#fef3c7':'#eff6ff',color:z?'#92400e':'#1e40af',border:`1px solid ${z?'#fbbf24':'#93c5fd'}`}} onClick={()=>omgLookupCosts(s)}>{omgPriceLoading?'⏳ Checking prices…':`🔄 Refresh API Prices${z?` (${z} at $0)`:''}`}</button>
                 )})()}
+                {(s.products||[]).length>0&&(
+                  <button className="btn btn-sm" disabled={omgInvLoading} title="Re-check in-house + vendor stock (Adidas/Agron, S&S, SanMar, Richardson, Momentec) for the sizes each item ordered. Runs automatically on import; use this to refresh." style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #93c5fd'}} onClick={()=>omgLookupInventory(s,{force:true})}>{omgInvLoading?'⏳ Checking stock…':'📦 Re-check stock'}</button>
+                )}
                 {(s.products||[]).length>0&&(()=>{
                   const customer=cust.find(c=>c.id===s.customer_id);
                   const repId=s.rep_id||customer?.primary_rep_id;
@@ -16244,7 +16372,7 @@ export default function App(){
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const ns=new Set();(s.products||[]).forEach((p,j)=>{if(!p.no_deco&&(p.decorations||[]).length===0)ns.add(j)});setOmgBulkSel(ns)}}>Select items needing art</button>
               {omgBulkSel.size>0&&<button className="btn btn-sm" style={{fontSize:11,color:'#64748b'}} onClick={()=>setOmgBulkSel(new Set())}>Clear ({omgBulkSel.size})</button>}
             </div>
-            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Stock</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
@@ -16389,6 +16517,7 @@ export default function App(){
                   </table>;
                 })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
+                <td><OmgStockCell stock={p._stock} loading={omgInvLoading}/></td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
             </>)}

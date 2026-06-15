@@ -69,6 +69,15 @@ assigned or be marked **No Deco** (shoes, socks, equipment).
 - Use **Select items needing art** to jump to the ones still missing it.
 - Pull existing customer logos from the **Customer logo…** dropdown.
 
+Each row also shows a **Stock** column with two pills, checked automatically on
+import (use **📦 Re-check stock** to refresh): **🏠 In-house** (NSA warehouse)
+and the **vendor** (Adidas/Agron, S&S, SanMar, Richardson, or Momentec). They
+read the specific sizes that store ordered — **✓ in stock**, **◑ short** (lists
+the short sizes), **✗ out**, or **⏳ ETA** for adidas backorders. An item that's
+not on hand in-house **or** at the vendor is flagged **⚠ not in stock** so you
+know it needs sourcing when you build POs (Step 7). Vendors with no live stock
+feed (e.g. a custom *Flag* vendor) show **no API** instead of a check.
+
 ## Step 5 — Set up the Parent Order Portal
 
 Scroll to **📦 Parent Order Portal** (or use the button at the top). Three steps,
