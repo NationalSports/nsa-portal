@@ -95,6 +95,12 @@ async function copyText(t) {
 // sign-in redirect match the canonical (slash-free) URLs in the auth allow-list.
 const catalogPath = () => window.location.pathname.replace(/\/+$/, '') || '/adidas';
 
+// Embedded mode: the marketing site iframes the catalog under its own site
+// chrome (/livelook → .../adidas?embed=1). Hide our own page header + footer so
+// the site header isn't doubled up. A cross-origin iframe can't be styled from
+// the parent page, so this has to be opted into here.
+const isEmbedded = () => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } };
+
 // ── Category / color / gender / sport derivation ─────────────────────
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
@@ -1301,11 +1307,13 @@ export default function AdidasInventory() {
   const openData = openStyle && visible.find((v) => v.st.key === openStyle);
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
 
+  const embedded = isEmbedded();
   return (
     <div className="ai-root" style={{ fontFamily: BODY }}>
       <Styles />
 
-      {/* Header */}
+      {/* Header — hidden when embedded; the marketing site supplies its own */}
+      {!embedded && (
       <header style={{ background: '#191919', color: '#fff' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '26px 20px 22px' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
@@ -1356,6 +1364,7 @@ export default function AdidasInventory() {
           </div>
         </div>
       </header>
+      )}
 
       {/* Filter bar */}
       <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'rgba(244,245,247,.94)', backdropFilter: 'blur(8px)', borderBottom: '1px solid #E6E8EC' }}>
@@ -1516,6 +1525,7 @@ export default function AdidasInventory() {
 
       {toast && <div key={toast.ts} className="ai-toast">{toast.msg}</div>}
 
+      {!embedded && (
       <footer style={{ background: '#191919', color: '#9AA1AC', fontSize: 12.5, lineHeight: 1.6 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
           Availability reflects the adidas B2B warehouse and is updated automatically — quantities are not guaranteed until ordered.
@@ -1526,6 +1536,7 @@ export default function AdidasInventory() {
           </span>
         </div>
       </footer>
+      )}
     </div>
   );
 }
