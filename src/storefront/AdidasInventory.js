@@ -29,12 +29,21 @@ const SIZE_ORDER = [
   'ST', 'MT', 'LT', 'XLT', '2XLT', '3XLT', '4XLT',
   'OSFA', 'ONE SIZE', 'OS', 'NS',
 ];
-const sizeRank = (s) => {
+export const sizeRank = (s) => {
   const up = String(s || '').trim().toUpperCase();
   const i = SIZE_ORDER.indexOf(up);
   if (i !== -1) return i;
   const m = up.match(/^(\d+(?:\.\d+)?)(-)?$/); // footwear: "10" or "10-" (= 10.5)
   if (m) return 500 + parseFloat(m[1]) + (m[2] ? 0.5 : 0);
+  // Apparel sized by length: a base size followed by an inch number — shorts
+  // run "S 3\"", "XL5\"", "2XL3" (spacing/quote vary in the feed). Rank by the
+  // base size, then the inseam as a fine tiebreak (3" before 5") so each size's
+  // lengths stay together and the run reads XS→2XL instead of alphabetically.
+  const c = up.match(/^([0-9A-Z/]+?)\s*(\d{1,2})\s*"?$/);
+  if (c) {
+    const base = SIZE_ORDER.indexOf(c[1]);
+    if (base !== -1) return base + parseFloat(c[2]) / 100;
+  }
   return 400; // unknown labels between apparel and footwear
 };
 const sizeLabel = (s) => {
@@ -85,16 +94,17 @@ async function copyText(t) {
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
 const normCategory = (c) => CATEGORY_ALIASES[c] || c || 'Other';
-// Split the broad "Bags" bucket into Backpacks / Duffels by style name so coaches
-// can filter them apart; everything else (sackpacks, coolers, totes, wheel bags,
-// lunch bags, bottles) stays "Bags". Display-only — the DB category and tier
-// pricing are unchanged (auTierDisc only special-cases Footwear).
-const BAG_SPLIT = [['Backpacks', /BACKPACK/], ['Duffels', /DUFFEL|DUFFLE/]];
-const refineCategory = (cat, name) => {
-  if (cat !== 'Bags') return cat;
-  const n = String(name || '').toUpperCase();
-  for (const [c, re] of BAG_SPLIT) if (re.test(n)) return c;
-  return 'Bags';
+// Bags browse as one "Bags" category (backpacks, duffels, totes, coolers, …).
+// The marquee team duffels (Defender, Team Issue) merchandise to the very top,
+// then any other duffel — coaches shop bags by these first. Sort-only: the DB
+// category and tier pricing are unchanged (auTierDisc only special-cases
+// Footwear). Returns 0 for non-bags so it's a no-op everywhere else.
+const bagMerchBoost = (st) => {
+  if (st.category !== 'Bags') return 0;
+  const n = st.name.toUpperCase();
+  if (/DEFENDER|TEAM ISSUE/.test(n)) return 400; // marquee team duffels lead bags
+  if (/DUFFEL|DUFFLE/.test(n)) return 200;        // then other duffels
+  return 0;
 };
 
 // Fine-grained color families — Navy vs Royal (and Gold vs Yellow, Maroon vs
@@ -203,7 +213,7 @@ const CATEGORY_TOKENS = {
   hood: 'Hoods', hoodie: 'Hoods', sweatshirt: 'Hoods', fleece: 'Hoods',
   polo: 'Polos', short: 'Shorts', pant: 'Pants', jogger: 'Pants', tight: 'Pants',
   sock: 'Socks', hat: 'Hats', cap: 'Hats', beanie: 'Hats', visor: 'Hats',
-  bag: 'Bags', backpack: 'Backpacks', duffel: 'Duffels', duffle: 'Duffels',
+  bag: 'Bags', // backpack/duffel aren't categories anymore — they text-match the name below
   shoe: 'Footwear', cleat: 'Footwear', sneaker: 'Footwear', footwear: 'Footwear', turf: 'Footwear',
   crew: 'Crew', jacket: 'Outerwear', coat: 'Outerwear', vest: 'Outerwear', windbreaker: 'Outerwear',
   zip: '1/4 Zips',
@@ -394,6 +404,9 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
     return best;
   };
   const cover = pickCover(matchCws) || pickCover(st.colorways);
+  // SKU of the pictured colorway (so the code matches the image shown); falls
+  // back to the first matching/any colorway when none of them carry an image.
+  const coverSku = (cover && cover.sku) || (matchCws[0] || st.colorways[0]).sku;
   const price = st.priceMin === st.priceMax
     ? fmtPrice(st.priceMin)
     : `${fmtPrice(st.priceMin)}–${fmtPrice(st.priceMax)}`;
@@ -423,6 +436,9 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
           <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>
             {st.category}{st.sport ? ' · ' + st.sport : ''}
           </div>
+          {coverSku && (
+            <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{coverSku}</div>
+          )}
         </div>
         <ColorDots colorways={matchCws.length ? matchCws : st.colorways} />
         {incomingOnly ? (
@@ -853,7 +869,7 @@ export default function AdidasInventory() {
   }, [colorOpen]);
   const [sizeSel, setSizeSel] = useState([]);
   const [strongOnly, setStrongOnly] = useState(false);
-  const [includeIncoming, setIncludeIncoming] = useState(false);
+  const [includeIncoming, setIncludeIncoming] = useState(true); // on by default — inbound restocks count as available
   // "Need by" date: only show gear in stock now or inbound at least 4 weeks
   // before that date (time for decoration + delivery).
   const [needBy, setNeedBy] = useState('');
@@ -1035,7 +1051,7 @@ export default function AdidasInventory() {
           sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
           const availNow = (s) => (s.q || 0) + (s.ih || 0);
           const inStock = new Set(sizes.filter((s) => availNow(s) > 0).map((s) => s.size));
-          const cat = refineCategory(normCategory(p.category), p.name);
+          const cat = normCategory(p.category);
           const colorInfo = classifyColor(p.color_category, p.color);
           const cw = {
             sku: p.sku,
@@ -1128,10 +1144,11 @@ export default function AdidasInventory() {
       if (!matchCws.length) continue;
       out.push({ st, matchCws });
     }
-    // With team colors picked, float styles whose colorways hit more of them
+    // With team colors picked, float styles whose colorways hit more of them;
+    // ties broken by the bag merch boost so duffels still lead within Bags.
     if (colorSel.length) {
       const score = ({ matchCws }) => Math.max(...matchCws.map((c) => colorSel.filter((x) => c.tags.has(x)).length));
-      out.sort((a, b) => score(b) - score(a));
+      out.sort((a, b) => score(b) - score(a) || bagMerchBoost(b.st) - bagMerchBoost(a.st));
       return out;
     }
     // Default merchandising order (stable sort keeps category/name ties):
@@ -1146,6 +1163,7 @@ export default function AdidasInventory() {
       let s = 0;
       if (ih > 0) s += 1000 + Math.min(ih, 500) / 5;
       s += popScore(v.st);
+      s += bagMerchBoost(v.st); // duffels (Defender / Team Issue first) lead the Bags category
       s += Math.min(units, 2000) / 20;
       s += Math.max(...v.matchCws.map((c) => MERCH_PRIORITY[c.family] ?? 1)) * 10;
       if (!v.st.colorways.some((c) => c.img)) s -= 500;
