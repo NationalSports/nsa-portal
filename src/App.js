@@ -1862,8 +1862,10 @@ const _dbSaveCustomer = async (c) => {
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     let{error:custErr}=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'}));
     if(custErr){
-      // Retry without optional columns if they don't exist yet (art_files: 00027, search_tags: 00085)
-      const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags');
+      // Retry without optional columns that may not exist on an un-migrated DB (art_files: 00027,
+      // search_tags: 00085, shipping_attention: referenced by _custCols + the UI but has no migration
+      // yet) so the core row still saves instead of hard-failing the whole upsert on an unknown column.
+      const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags'&&c2!=='shipping_attention');
       const retry=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'}));
       if(retry.error){if(_isAuthError(retry.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
       else{console.warn('[DB] customer saved without optional columns (run latest migrations)')}
