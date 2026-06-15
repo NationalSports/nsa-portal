@@ -3040,7 +3040,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position)+(d.reversible?' (Rev)':''):'Numbers @ '+d.position+(d.front_and_back?' (F+B)':'')+(d.reversible?' (Rev)':'');
         decoBreak.push({label,sell:pds,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
       const pRev=(()=>{if(item._sizeSells&&szQty>0){let r=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)r+=n*(item._sizeSells[sz]||item.unit_sell)});return r}return qty*item.unit_sell})();
-      const pCost=(()=>{if(item._sizeCosts&&szQty>0){let c=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)c+=n*(item._sizeCosts[sz]||item.nsa_cost)});return c}return qty*item.nsa_cost})();
+      // Topstar digitizing/vector lines bill the customer (unit_sell) but carry their cost on the
+      // linked decoration PO (so.deco_pos), not nsa_cost — so the line would otherwise read $0 cost
+      // (100% margin). Surface that PO cost (actual bill if applied, else expected) for the line's
+      // cost + margin display only; nsa_cost stays 0 so order/report totals don't double-count it
+      // (calcTotals already sums the deco PO cost separately).
+      const _tsPo=item._topstar?(o.deco_pos||[]).find(dp=>dp.po_id===item._topstar_po):null;
+      const _tsUnit=_tsPo?(safeNum(_tsPo._bill_cost)>0?safeNum(_tsPo._bill_cost):safeNum(_tsPo.qty||0)*safeNum(_tsPo.unit_cost||0))/(qty||1):0;
+      const _costEa=_tsPo?_tsUnit:safeNum(item.nsa_cost);// per-each cost for display (Topstar reads from its PO)
+      const pCost=(()=>{if(item._sizeCosts&&szQty>0){let c=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)c+=n*(item._sizeCosts[sz]||item.nsa_cost)});return c}return qty*_costEa})();
       const pMg=pRev-pCost;
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
       const defaultSzList=item.is_footwear?FOOTWEAR_DEFAULT_SIZES:['S','M','L','XL','2XL'];
@@ -3084,11 +3092,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
                 {item._sizeSells&&szQty>0&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}>(avg)</span>}
-                {item.is_custom&&!item.customer_supplied&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
+                {item.is_custom&&!item.customer_supplied&&(_tsPo?<span style={{fontSize:12,color:'#64748b'}} title="Cost comes from the linked Topstar PO — edit the decoration PO to change it">Cost: <strong>${_costEa.toFixed(2)}</strong></span>:<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>)}
                 {item.customer_supplied&&<span style={{fontSize:11,color:'#0e7490'}}>$0 garment — decoration charges below</span>}
                 {item.is_free_promo&&<span style={{fontSize:11,color:'#be185d'}}>$0 promo garment — deco charges apply</span>}
                 {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=auCostMult(item.brand,item.is_footwear);uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-auDisc(item.is_footwear,item.pricing_group))))}}}/></span>}
-                {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:item.nsa_cost)).toFixed(2)}x)</span>}
+                {!isAU(item.brand)&&_costEa>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:_costEa)).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{position:'relative'}}>
@@ -3632,7 +3640,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             return null})}
           <div style={{display:'flex',justifyContent:'space-between',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,alignItems:'center',flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontSize:11,color:'#64748b'}}>Cost: <$In value={item._sizeCosts&&szQty>0?rQ(pCost/szQty):safeNum(item.nsa_cost)} onChange={v=>{if(item._sizeCosts&&szQty>0){const avg=pCost/szQty;const ratio=avg>0?v/avg:0;const nc={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{nc[sz]=rQ(safeNum(c)*ratio)});uI(idx,'_sizeCosts',nc)}uI(idx,'nsa_cost',v)}} w={56}/>/ea{item._sizeCosts&&Object.keys(item._sizeCosts).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}> (avg)</span>}</span>
+              {_tsPo?<span style={{fontSize:11,color:'#64748b'}} title="Cost comes from the linked Topstar PO — edit the decoration PO to change it">Cost: <strong>${_tsUnit.toFixed(2)}</strong>/ea</span>:<span style={{fontSize:11,color:'#64748b'}}>Cost: <$In value={item._sizeCosts&&szQty>0?rQ(pCost/szQty):safeNum(item.nsa_cost)} onChange={v=>{if(item._sizeCosts&&szQty>0){const avg=pCost/szQty;const ratio=avg>0?v/avg:0;const nc={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{nc[sz]=rQ(safeNum(c)*ratio)});uI(idx,'_sizeCosts',nc)}uI(idx,'nsa_cost',v)}} w={56}/>/ea{item._sizeCosts&&Object.keys(item._sizeCosts).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}> (avg)</span>}</span>}
               <span style={{fontSize:11,color:'#64748b'}}>Sell: <strong>${(()=>{if(item._sizeSells&&szQty>0){return(pRev/szQty).toFixed(2)}return item.unit_sell?.toFixed(2)})()}</strong>/ea{item._sizeSells&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}> (avg)</span>}</span>
               {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:11,color:'#64748b'}}>Retail: ${item.retail_price?.toFixed(2)}</span>}
             </div>
