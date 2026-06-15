@@ -468,13 +468,15 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   const [alertSize, setAlertSize] = useState('');
   const [alertBusy, setAlertBusy] = useState(false);
   const [inboundOpen, setInboundOpen] = useState({}); // sku → expanded inbound rows
+  const [zoomImg, setZoomImg] = useState(null); // {img,alt} for the click-to-enlarge lightbox
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    // Escape closes the enlarged image first (if open), otherwise the modal.
+    const onKey = (e) => { if (e.key === 'Escape') { if (zoomImg) setZoomImg(null); else onClose(); } };
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [onClose]);
+  }, [onClose, zoomImg]);
 
   const submitAlert = async (cw) => {
     if (alertBusy || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(alertEmail.trim())) return;
@@ -515,6 +517,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   const thumb = oneSize ? 140 : 76;
 
   return (
+    <>
     <div className="ai-modal-bg" onClick={onClose}>
       <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: '20px 24px 10px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -552,9 +555,16 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
             const oosSizes = cw.sizes.filter((s) => !availNow(s));
             return (
               <div key={cw.sku} className="ai-cwrow" style={{ ...(oneSize ? { alignItems: 'center' } : null), ...(matchSet.has(cw.sku) ? null : { opacity: .55 }) }}>
-                <div style={{ width: thumb, height: thumb, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                <button type="button" disabled={!cw.img}
+                  onClick={() => cw.img && setZoomImg({ img: cw.img, alt: cw.color || cw.family })}
+                  title={cw.img ? 'Click to enlarge' : undefined}
+                  aria-label={cw.img ? `Enlarge ${cw.color || cw.family} image` : undefined}
+                  style={{ width: thumb, height: thumb, flex: 'none', background: '#FAFBFC', border: '1px solid #EEF0F3', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative', padding: 0, fontFamily: 'inherit', cursor: cw.img ? 'zoom-in' : 'default' }}>
                   <ImageBox img={cw.img} alt={cw.color} />
-                </div>
+                  {cw.img && (
+                    <span aria-hidden="true" style={{ position: 'absolute', bottom: 4, right: 4, background: 'rgba(25,25,25,.6)', color: '#fff', borderRadius: 6, fontSize: 11, lineHeight: 1, padding: '3px 5px', fontWeight: 700 }}>⤢</span>
+                  )}
+                </button>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span className="ai-dot" style={{ background: COLOR_DOTS[cw.family] || '#CBD5E1' }} />
@@ -647,6 +657,17 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
         </div>
       </div>
     </div>
+    {zoomImg && (
+      <div onClick={() => setZoomImg(null)}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,18,.86)', zIndex: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '5vh 5vw', cursor: 'zoom-out' }}>
+        <img src={zoomImg.img} alt={zoomImg.alt} onClick={(e) => e.stopPropagation()}
+          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', background: '#fff', borderRadius: 12, boxShadow: '0 30px 90px rgba(0,0,0,.55)', cursor: 'default' }} />
+        <button onClick={() => setZoomImg(null)} aria-label="Close enlarged image"
+          style={{ position: 'fixed', top: 16, right: 18, border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', borderRadius: 10, width: 40, height: 40, fontSize: 19, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+        <div aria-hidden="true" style={{ position: 'fixed', left: 0, right: 0, bottom: 16, textAlign: 'center', color: '#E7E9ED', fontSize: 13, fontWeight: 600, pointerEvents: 'none' }}>{zoomImg.alt} · tap anywhere to close</div>
+      </div>
+    )}
+    </>
   );
 }
 
