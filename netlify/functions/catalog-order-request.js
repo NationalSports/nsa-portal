@@ -46,6 +46,19 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'No items in the request' }) };
     }
 
+    // Optional coach-attached images (logo / mockup / reference). Email-only —
+    // they're downscaled in the browser, attached to the rep email, not stored.
+    const MAX_IMAGES = 6;
+    let imgBudget = 7000000; // base64 chars (~5 MB) total across all images
+    const imgAttachments = [];
+    for (const im of (Array.isArray(body.images) ? body.images.slice(0, MAX_IMAGES) : [])) {
+      const name = String((im && im.name) || 'image').replace(/[\r\n]+/g, ' ').slice(0, 80);
+      const content = typeof (im && im.content) === 'string' ? im.content : '';
+      if (!content || content.length > imgBudget) continue;
+      imgBudget -= content.length;
+      imgAttachments.push({ content, name });
+    }
+
     // 1. Store the structured request (the portal can turn this into an estimate)
     const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
     const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -107,6 +120,7 @@ exports.handler = async (event) => {
             ${notes ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Notes</td><td style="padding:5px 10px">${esc(notes)}</td></tr>` : ''}
             ${requestId ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Request ID</td><td style="padding:5px 10px;font-family:monospace;font-size:12px">${esc(requestId)}</td></tr>` : ''}
           </table>
+          ${imgAttachments.length ? `<p style="color:#334155;font-size:13px;margin:0 0 12px">📎 <strong>${imgAttachments.length} image${imgAttachments.length === 1 ? '' : 's'}</strong> attached by the coach (logo / mockup / reference) — see this email's attachments.</p>` : ''}
           ${ctaHtml}
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="background:#f8fafc;color:#64748b;font-weight:600;text-align:left">
@@ -137,7 +151,7 @@ exports.handler = async (event) => {
         replyTo: { email: coach_email, name: coach_name },
         subject: `Order request: ${coach_name}${team_name ? ' (' + team_name + ')' : ''} — ${lines.length} line${lines.length === 1 ? '' : 's'}, ${totalUnits} units`,
         htmlContent,
-        attachment: [{ content: Buffer.from(csv).toString('base64'), name: `order_request_${(team_name || coach_name).replace(/[^a-zA-Z0-9-]/g, '_')}.csv` }],
+        attachment: [{ content: Buffer.from(csv).toString('base64'), name: `order_request_${(team_name || coach_name).replace(/[^a-zA-Z0-9-]/g, '_')}.csv` }, ...imgAttachments],
       }),
     });
     const emailed = res.ok;
