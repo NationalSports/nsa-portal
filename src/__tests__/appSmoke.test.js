@@ -35,3 +35,14 @@ beforeAll(() => {
 test('App mounts without throwing (no TDZ / init crash)', () => {
   expect(() => render(<App />)).not.toThrow();
 });
+
+test('Admin dashboard renders without throwing (exercises sales box, to-do, notifications)', () => {
+  // Seed an admin user so cu is populated and the admin dashboard view renders
+  // (login gate is skipped). Data arrays are empty (no DB), so widgets should
+  // fall back to their empty states rather than crash.
+  window.localStorage.setItem('nsa_user', JSON.stringify({
+    id: '00000000-0000-0000-0000-000000000001', name: 'Test Admin', role: 'admin',
+  }));
+  expect(() => render(<App />)).not.toThrow();
+  window.localStorage.removeItem('nsa_user');
+});

@@ -3392,7 +3392,7 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
-  const[dashSalesYr,setDashSalesYr]=useState(new Date().getFullYear());// year shown in the dashboard "Sales by Month" widget
+  const[dashSalesPeriod,setDashSalesPeriod]=useState('this_month');// dashboard sales box window: this_month|last_month|last_3|ytd|last_12
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
@@ -7210,42 +7210,60 @@ export default function App(){
 
     // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
     const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();const t=dt.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(dt.toDateString()===now.toDateString())return'Today '+t;const y=new Date(now);y.setDate(now.getDate()-1);if(dt.toDateString()===y.toDateString())return'Yesterday '+t;return dt.toLocaleDateString([],{month:'short',day:'numeric'})+' '+t}catch{return''}};
-    // Sales-by-month report card. scopeRepId=null → whole company (admin); pass a rep id to scope to
-    // that rep's booked orders (customer's primary rep, else the SO creator). Revenue uses calcOrderTotals
-    // (product + deco sell, ex ship/tax) to match the Reports page. SO created_at is text "M/D/YYYY, h:mm".
-    const _renderSalesByMonth=(scopeRepId)=>{
+    // Dashboard sales box. scopeRepId=null → company view broken down BY REP (leaderboard for the
+    // selected period); pass a rep id → that rep's own sales broken down by month within the period.
+    // Period options: This Month (default), Last Month, Last 3 Months, Year to Date, Last 12 Months.
+    // Revenue uses calcOrderTotals (product + deco, ex ship/tax) to match the Reports page; an SO is
+    // attributed to a rep via the customer's primary rep, else the SO creator. created_at is "M/D/YYYY".
+    const _renderSalesBox=(scopeRepId)=>{
       const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      const _parseSaleDt=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return{m:parseInt(m[1])-1,y}};
-      const scopedSOs=scopeRepId?sos.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return(c?.primary_rep_id||so.created_by)===scopeRepId}):sos;
-      const years=[...new Set(scopedSOs.map(s=>_parseSaleDt(s.created_at)?.y).filter(Boolean))].sort((a,b)=>b-a);
-      const yr=years.includes(dashSalesYr)?dashSalesYr:(years[0]||new Date().getFullYear());
-      const monthly=MONTHS.map(mn=>({month:mn,revenue:0,orders:0}));
-      scopedSOs.forEach(so=>{const dt=_parseSaleDt(so.created_at);if(!dt||dt.y!==yr)return;const b=monthly[dt.m];if(!b)return;b.revenue+=calcOrderTotals(so).rev;b.orders++});
-      const totalRev=monthly.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthly.reduce((a,m)=>a+m.orders,0);
-      const maxRev=Math.max(...monthly.map(m=>m.revenue),1);const isNowYr=yr===new Date().getFullYear();
+      const _saleDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))};
+      const now=new Date(),cY=now.getFullYear(),cM=now.getMonth();
+      const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
+      const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
+      const inPeriod=(so)=>{const dt=_saleDate(so.created_at);return dt&&dt>=pStart&&dt<pEnd};
       const _$=(n)=>'$'+Math.round(n).toLocaleString();const _$k=(n)=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
       const _lbl={fontSize:10,color:'#64748b',textTransform:'uppercase',fontWeight:700,letterSpacing:0.4};
+      let segments=[],title;
+      if(scopeRepId){
+        // One rep's own sales, broken out by month within the period.
+        title='📈 My Sales';
+        const byMonth=new Map();
+        sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);if((c?.primary_rep_id||so.created_by)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()+'-'+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:dt.getFullYear()*12+dt.getMonth(),rev:0,orders:0};seg.rev+=calcOrderTotals(so).rev;seg.orders++;byMonth.set(key,seg)});
+        segments=[...byMonth.values()].sort((a,b)=>a.sortKey-b.sortKey);
+      }else{
+        // Whole company, broken out by rep (leaderboard, highest first).
+        title='📊 Sales by Rep';
+        const byRep=new Map();
+        sos.forEach(so=>{if(!inPeriod(so))return;const c=cust.find(x=>x.id===so.customer_id);const repId=c?.primary_rep_id||so.created_by;if(!repId)return;const seg=byRep.get(repId)||{label:(REPS.find(r=>r.id===repId)?.name||'—').split(' ')[0],rev:0,orders:0};seg.rev+=calcOrderTotals(so).rev;seg.orders++;byRep.set(repId,seg)});
+        segments=[...byRep.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev);
+      }
+      const totalRev=segments.reduce((a,s)=>a+s.rev,0);const totalOrders=segments.reduce((a,s)=>a+s.orders,0);
+      const maxRev=Math.max(...segments.map(s=>s.rev),1);
       return(<div className="card">
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h2>📈 Sales by Month{scopeRepId?'':' · Company'}</h2>
-          <select value={yr} onChange={e=>setDashSalesYr(parseInt(e.target.value))} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-            {(years.length>0?years:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+          <h2>{title}</h2>
+          <select value={dashSalesPeriod} onChange={e=>setDashSalesPeriod(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+            {PERIODS.map(p=><option key={p[0]} value={p[0]}>{p[1]}</option>)}
           </select>
         </div>
-        <div className="card-body" style={{padding:'14px 16px'}}>
+        <div className="card-body" style={{padding:'14px 16px',maxHeight:372,overflow:'auto'}}>
           <div style={{display:'flex',gap:24,marginBottom:14,flexWrap:'wrap'}}>
-            <div><div style={_lbl}>Revenue {yr}</div><div style={{fontSize:22,fontWeight:800,color:'#059669'}}>{_$(totalRev)}</div></div>
+            <div><div style={_lbl}>Revenue</div><div style={{fontSize:22,fontWeight:800,color:'#059669'}}>{_$(totalRev)}</div></div>
             <div><div style={_lbl}>Orders</div><div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{totalOrders}</div></div>
-            <div><div style={_lbl}>Avg / Order</div><div style={{fontSize:22,fontWeight:800,color:'#7c3aed'}}>{totalOrders>0?_$(totalRev/totalOrders):'—'}</div></div>
+            {scopeRepId?<div><div style={_lbl}>Avg / Order</div><div style={{fontSize:22,fontWeight:800,color:'#7c3aed'}}>{totalOrders>0?_$(totalRev/totalOrders):'—'}</div></div>
+              :<div><div style={_lbl}>Reps</div><div style={{fontSize:22,fontWeight:800,color:'#7c3aed'}}>{segments.length}</div></div>}
           </div>
-          {totalOrders===0?<div className="empty" style={{padding:'24px 8px'}}>No orders booked in {yr}</div>:
-          <div style={{display:'flex',alignItems:'flex-end',gap:3,height:150,padding:'0 2px'}}>
-            {monthly.map((m,i)=>{const h=(m.revenue/maxRev)*120;const isNow=isNowYr&&i===new Date().getMonth();
-              return<div key={i} title={m.month+' '+yr+': '+_$(m.revenue)+' · '+m.orders+' order'+(m.orders!==1?'s':'')} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
-                <span style={{fontSize:9,fontWeight:700,color:m.revenue>0?'#059669':'#cbd5e1',whiteSpace:'nowrap'}}>{m.revenue>0?_$k(m.revenue):''}</span>
-                <div style={{width:'100%',maxWidth:34,height:Math.max(h,2),background:m.revenue>0?(isNow?'#059669':'#6ee7b7'):'#f1f5f9',borderRadius:'4px 4px 0 0',transition:'height 0.3s'}}/>
-                <span style={{fontSize:9,color:isNow?'#047857':'#94a3b8',fontWeight:isNow?800:400}}>{m.month}</span>
-              </div>})}
+          {segments.length===0?<div className="empty" style={{padding:'24px 8px'}}>No sales in this period</div>:
+          <div style={{display:'flex',flexDirection:'column',gap:7}}>
+            {segments.map((s,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8}} title={s.label+': '+_$(s.rev)+' · '+s.orders+' order'+(s.orders!==1?'s':'')}>
+              <div style={{width:64,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{!scopeRepId&&i===0?'🥇 ':''}{s.label}</div>
+              <div style={{flex:1,background:'#f1f5f9',borderRadius:6,height:18,position:'relative',overflow:'hidden'}}>
+                <div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.rev/maxRev)*100)+'%',background:!scopeRepId&&i===0?'#059669':'#6ee7b7',borderRadius:6,transition:'width 0.3s'}}/>
+              </div>
+              <div style={{width:58,textAlign:'right',fontSize:12,fontWeight:700,color:'#059669',flexShrink:0}}>{_$k(s.rev)}</div>
+              <div style={{width:26,textAlign:'right',fontSize:10,color:'#94a3b8',flexShrink:0}}>{s.orders}</div>
+            </div>)}
           </div>}
         </div>
       </div>);
@@ -7300,7 +7318,7 @@ export default function App(){
             </div>)}
           </div>)})()}
         </div></div>
-      {_renderSalesByMonth(null)}
+      {_renderSalesBox(null)}
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
@@ -7421,7 +7439,7 @@ export default function App(){
               </div></div>})}
         </div></div>
     </div>
-    <div style={{marginBottom:16}}>{_renderSalesByMonth(cu.id)}</div>
+    <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
     const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
