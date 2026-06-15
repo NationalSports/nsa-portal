@@ -127,6 +127,11 @@ function extractItems(raw) {
     const cells = rowsMap[y].slice().sort((a, b) => a.x - b.x);
     const rowText = cells.map((c) => c.s).join(' ');
     if (/dealer info|returns\s*&|disclaimer|page \d+ of/i.test(rowText)) break; // footer
+    // "Item N of M" separates line items — it's a marker, not a data row. Close
+    // the current item and SKIP the row without bucketing it: otherwise the N/M
+    // digits get assigned to the qty (and size) columns and concatenated, so the
+    // 3rd of 3 items ends up with qty "33" instead of its real quantity.
+    if (/item\s+\d+\s+of\s+\d+/i.test(rowText)) { flush(); continue; }
     const bucket = { details: [], color: [], size: [], options: [], qty: [] };
     cells.forEach((c) => { const s = c.s.trim(); if (s) bucket[colOf(c.x)].push(s); });
     if (!cur) cur = { product: '', color: '', size: '', qty: 0 };
@@ -134,7 +139,6 @@ function extractItems(raw) {
     if (bucket.color.length) cur.color = (cur.color ? cur.color + ' ' : '') + bucket.color.join(' ');
     if (bucket.size.length && !cur.size) cur.size = bucket.size.join(' ');
     if (bucket.qty.length) { const n = parseInt(bucket.qty.join('').replace(/\D/g, ''), 10); if (n) cur.qty = n; }
-    if (/item\s+\d+\s+of\s+\d+/i.test(rowText)) flush();
   }
   flush();
   return items.map((it) => ({ product: it.product.replace(/\s+/g, ' ').trim(), color: it.color.replace(/\s+/g, ' ').trim(), size: (it.size || '').trim(), qty: it.qty || 1 }))

@@ -5688,21 +5688,27 @@ export default function App(){
     let vendorId = p0.vendor_id || null;
     let cost = p0.cost || 0;
     let costSrc = p0._cost_source || '';
+    let productId = p0.product_id || null;   // catalog row id — carries the SKU's stock/PO match into the SO
+    let brand = p0.brand || '';
     let matched = false;
     if (changed) {
       const skuClean = newSku.toUpperCase();
+      productId = null; brand = '';           // new SKU → drop the previous catalog link and re-resolve below
       setOmgPriceLoading(true);
       try {
         // 1) NSA catalog (in-memory)
         const catMatch = prod.find(cp => { const c=(cp.sku||'').trim().toUpperCase(); return c && (c===skuClean||c.includes(skuClean)||skuClean.includes(c)); });
+        if (catMatch) { productId = catMatch.id || null; if (catMatch.brand) brand = catMatch.brand; }
         if (catMatch?.vendor_id) { vendorId = catMatch.vendor_id; matched = true; }
         if (catMatch && parseFloat(catMatch.nsa_cost) > 0) { cost = parseFloat(catMatch.nsa_cost); costSrc = 'catalog'; matched = true; }
         else {
           // 2) Supabase catalog fallback
           if (supabase) {
             try {
-              const { data } = await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku', skuClean).limit(1);
+              const { data } = await supabase.from('products').select('id,sku,brand,nsa_cost,vendor_id').ilike('sku', skuClean).limit(1);
               const row = data?.[0];
+              if (row?.id) productId = row.id;
+              if (row?.brand) brand = row.brand;
               if (row?.vendor_id) { vendorId = row.vendor_id; matched = true; }
               if (row && parseFloat(row.nsa_cost) > 0) { cost = parseFloat(row.nsa_cost); costSrc = 'catalog'; matched = true; }
             } catch (e) { console.log(`[OMG SKU] DB lookup failed for ${newSku}: ${e.message}`); }
@@ -5725,7 +5731,7 @@ export default function App(){
         }
       } finally { setOmgPriceLoading(false); }
     }
-    const newProds = products.map((pr, j) => j === index ? { ...pr, sku: newSku, vendor_id: vendorId || null, cost, _cost_source: costSrc } : pr);
+    const newProds = products.map((pr, j) => j === index ? { ...pr, sku: newSku, vendor_id: vendorId || null, cost, _cost_source: costSrc, product_id: productId || null, brand } : pr);
     const upd = { ...store, products: newProds };
     setOmgStores(prev => prev.map(st => st.id === store.id ? upd : st));
     setOmgSel(upd);
@@ -15811,8 +15817,10 @@ export default function App(){
                 const decos=(p.decorations||[]);
                 const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
                 return{
-                  sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
-                  color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
+                  sku:p.sku,name:p.name,brand:p.brand||p.manufacturer||catP?.brand||'',
+                  // product_id/vendor/cost come from the rep's resolved SKU first (set when they
+                  // correct a SKU in Store Products — incl. an S&S swap), then the exact catalog match.
+                  color:p.color,product_id:p.product_id||catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
                   nsa_cost:p.cost||catP?.nsa_cost||0,
                   retail_price:p.retail||0,
                   unit_sell:p.retail||0,
