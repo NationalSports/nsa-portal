@@ -80,6 +80,17 @@ async function copyText(t) {
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
 const normCategory = (c) => CATEGORY_ALIASES[c] || c || 'Other';
+// Split the broad "Bags" bucket into Backpacks / Duffels by style name so coaches
+// can filter them apart; everything else (sackpacks, coolers, totes, wheel bags,
+// lunch bags, bottles) stays "Bags". Display-only — the DB category and tier
+// pricing are unchanged (auTierDisc only special-cases Footwear).
+const BAG_SPLIT = [['Backpacks', /BACKPACK/], ['Duffels', /DUFFEL|DUFFLE/]];
+const refineCategory = (cat, name) => {
+  if (cat !== 'Bags') return cat;
+  const n = String(name || '').toUpperCase();
+  for (const [c, re] of BAG_SPLIT) if (re.test(n)) return c;
+  return 'Bags';
+};
 
 // Fine-grained color families — Navy vs Royal (and Gold vs Yellow, Maroon vs
 // Red) are different team colors, so they're first-class here even though the
@@ -187,7 +198,7 @@ const CATEGORY_TOKENS = {
   hood: 'Hoods', hoodie: 'Hoods', sweatshirt: 'Hoods', fleece: 'Hoods',
   polo: 'Polos', short: 'Shorts', pant: 'Pants', jogger: 'Pants', tight: 'Pants',
   sock: 'Socks', hat: 'Hats', cap: 'Hats', beanie: 'Hats', visor: 'Hats',
-  bag: 'Bags', backpack: 'Bags', duffel: 'Bags',
+  bag: 'Bags', backpack: 'Backpacks', duffel: 'Duffels', duffle: 'Duffels',
   shoe: 'Footwear', cleat: 'Footwear', sneaker: 'Footwear', footwear: 'Footwear', turf: 'Footwear',
   crew: 'Crew', jacket: 'Outerwear', coat: 'Outerwear', vest: 'Outerwear', windbreaker: 'Outerwear',
   zip: '1/4 Zips',
@@ -987,7 +998,7 @@ export default function AdidasInventory() {
           sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
           const availNow = (s) => (s.q || 0) + (s.ih || 0);
           const inStock = new Set(sizes.filter((s) => availNow(s) > 0).map((s) => s.size));
-          const cat = normCategory(p.category);
+          const cat = refineCategory(normCategory(p.category), p.name);
           const colorInfo = classifyColor(p.color_category, p.color);
           const cw = {
             sku: p.sku,
