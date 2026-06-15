@@ -607,6 +607,38 @@ describe('Job Building — buildJobs()', () => {
     };
     expect(BL.buildJobs(o)[0].art_status).toBe('art_complete');
   });
+
+  // Regression: a file merely sitting in prod_files (e.g. an order-sheet PDF, or art dropped in
+  // before the real separations exist) must NOT graduate an approved screen-print job to
+  // art_complete — that jumps it past the production-files stage and into the production line
+  // ("in production") with the "Production Files by Design" checkbox never clicked. Only the
+  // explicit confirmation (prod_files_attached) — or an embroidery .dst — may skip the stage.
+  test('approved screen print WITH stray prod_files but no checkbox stays production_files_needed', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'order-sheet.pdf' }, { name: 'art.png' }] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('production_files_needed');
+  });
+
+  test('approved screen print with prod_files_attached=true → art_complete', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'seps.eps' }], prod_files_attached: true }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('art_complete');
+  });
+
+  test('approved DTF WITH stray prod_files but no checkbox stays order_dtf_transfers', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'dtf', status: 'approved', prod_files: [{ name: 'preview.png' }] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('order_dtf_transfers');
+  });
 });
 
 // ═══════════════════════════════════════════════
