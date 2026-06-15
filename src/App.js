@@ -650,10 +650,14 @@ const aggregateAdidasRows = (rows) => {
   return { sizes, lastSynced };
 };
 
+// Reads the synced B2B inventory union (adidas Cowork CLICK + Agron + Under
+// Armour Armour House/S&S + Nike SanMar). Keyed by SKU, which is disjoint across
+// brands, so an adidas SKU returns only its adidas rows, a UA SKU only UA, etc.
+// Named "adidas" for legacy reasons — it's the order screen's B2B stock lookup.
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
-    const { data, error } = await supabase.from('adidas_inventory').select('*').eq('sku', sku);
+    const { data, error } = await supabase.from('inventory_unified').select('*').eq('sku', sku);
     if (error) { console.warn('[Adidas B2B] Fetch error:', error.message); return { sizes: {}, lastSynced: null }; }
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
     return aggregateAdidasRows(data);
@@ -683,7 +687,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
     const bySku = {};
     for (let i = 0; i < batches.length; i += POOL) {
       const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
-        supabase.from('adidas_inventory').select('*').in('sku', batch)
+        supabase.from('inventory_unified').select('*').in('sku', batch)
           .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
           .catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
       ));
@@ -5799,10 +5803,13 @@ export default function App(){
         let inhouse;
         if (inhouseRaw) { const bs={}; Object.entries(inhouseRaw).forEach(([sz,q]) => { bs[normSzName(String(sz).trim())] = Number(q)||0; }); inhouse = summarize(bs, orderedSizes, ordered, null); }
         else inhouse = { status: 'unknown', short: orderedSizes.slice(), bySize: {} };
-        // Vendor source: the vendor we buy from (api_provider), else the adidas feed.
+        // Vendor source: a live-API vendor (ss/sm/rs/mt) we buy from, else the
+        // synced union-view feed. Any brand with inventory_unified rows (adidas
+        // CLICK/Agron, UA Armour House/S&S, Nike SanMar) routes through the
+        // synced-view branch below — keyed by SKU, which is unique across brands.
         const vRec = vend.find(v => v.id === p.vendor_id);
         let src = vendorInvSource(vRec, { brand: p.manufacturer });
-        if ((!src || src==='adidas') && adidasBySku[skuUp]) src = 'adidas';
+        if ((!src || src==='adidas' || src==='ua' || src==='nike') && adidasBySku[skuUp]) src = 'adidas';
         let vendor;
         if (src === 'adidas') {
           const bs={}, inc={}; let eta=null;
