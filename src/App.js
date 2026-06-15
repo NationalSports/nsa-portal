@@ -246,12 +246,11 @@ const _stockTitle=(label,s,eta)=>{const sizes=Object.keys(s.bySize||{});const he
 function StockPill({label,s,kind,hasApi,eta}){
   if(kind==='vendor'&&hasApi===false)return <span title="No live inventory API for this vendor — stock can't be verified automatically" style={{..._STOCK_PILL,background:'#f1f5f9',color:'#94a3b8'}}>{label}: no API</span>;
   const status=s.status||'unknown';const[bg,fg,icon]=_STOCK_STYLE[status]||_STOCK_STYLE.unknown;
-  let txt=icon;
-  if(status==='full')txt='✓ in stock'; // binary (Momentec) and counted vendors both read "in stock"
-  else if(status==='partial')txt=icon+(s.short&&s.short.length?' short '+s.short.join(', '):' partial');
+  let txt=icon; // 'full' → green check alone reads "in stock"; hover for the per-size detail
+  if(status==='partial')txt=icon+(s.short&&s.short.length?' short '+s.short.join(', '):' partial');
   else if(status==='none')txt=icon+' out';
   else if(status==='incoming')txt=icon+(eta?' ETA '+new Date(eta).toLocaleDateString([],{month:'numeric',day:'numeric'}):' incoming');
-  else txt=kind==='vendor'?(s.error?'? error':'? n/a'):'no record';
+  else if(status==='unknown')txt=kind==='vendor'?(s.error?'? error':'? n/a'):'no record';
   return <span title={_stockTitle(label,s,eta)} style={{..._STOCK_PILL,background:bg,color:fg}}>{label}: {txt}</span>;
 }
 // The cell: in-house pill + vendor pill, with a flag when an item is in stock
@@ -16372,7 +16371,7 @@ export default function App(){
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const ns=new Set();(s.products||[]).forEach((p,j)=>{if(!p.no_deco&&(p.decorations||[]).length===0)ns.add(j)});setOmgBulkSel(ns)}}>Select items needing art</button>
               {omgBulkSel.size>0&&<button className="btn btn-sm" style={{fontSize:11,color:'#64748b'}} onClick={()=>setOmgBulkSel(new Set())}>Clear ({omgBulkSel.size})</button>}
             </div>
-            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Stock</th><th>Revenue</th></tr></thead>
+            <div style={{overflowX:'auto'}}><table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Stock</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
@@ -16495,6 +16494,7 @@ export default function App(){
                     {p._cost_source&&p.cost>0&&(()=>{const M={catalog:['CAT','#22c55e'],sanmar:['SM','#2563eb'],ss:['SS','#7c3aed'],richardson:['RICH','#b45309'],momentec:['MOM','#0891b2'],manual:['✎','#64748b'],api:['API','#94a3b8']};const[lbl,col]=M[p._cost_source]||['?','#94a3b8'];return<span title={`Cost source: ${p._cost_source}`} style={{fontSize:7,color:col}}>{lbl}</span>})()}
                   </div>
                 </td>
+                <td><OmgStockCell stock={p._stock} loading={omgInvLoading}/></td>
                 <td>{(()=>{
                   const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA',
                     '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
@@ -16517,9 +16517,8 @@ export default function App(){
                   </table>;
                 })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
-                <td><OmgStockCell stock={p._stock} loading={omgInvLoading}/></td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
-              </tr>})}</tbody></table>
+              </tr>})}</tbody></table></div>
             </>)}
           </div>
         </div>
