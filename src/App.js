@@ -7236,7 +7236,7 @@ export default function App(){
             soShipConsumed[key]=used+applyShipped;
             const remainUnits=totalOrdered-applyShipped;
             if(remainUnits>0)shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
-              desc:item.sku+' · '+item.name,units:remainUnits,shipMethod:dest,shipPref:pref});
+              desc:item.sku+' · '+item.name,units:remainUnits,shipMethod:dest,shipPref:pref,itemIdxs:[ii]});
           }
         }
       });
@@ -7270,7 +7270,7 @@ export default function App(){
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
-                shipMethod:j.ship_method||'pending',shipPref});
+                shipMethod:j.ship_method||'pending',shipPref,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))]});
             }
           }
         }
@@ -7297,7 +7297,7 @@ export default function App(){
       if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft').length>0)){
         const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
         shipTasks.push({so,soId:so.id,type:'wait_complete',cName,alpha,rep,daysOut,urgent,
-          desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
+          desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete',itemIdxs:safeItems(so).map((_,i)=>i)});
       }
     });
     // Group pullTasks by SO + pick_id (one warehouse row per IF, even when an IF spans multiple SKUs).
@@ -17091,9 +17091,25 @@ export default function App(){
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     // Remaining (unshipped) items across a soMap — shared by Create Shipment and Clear/Mark-Shipped
-    const whRemainingItems=(soMap)=>{
+    // Build a map of soId -> Set of item indices that are actually ready to ship for this
+    // customer group (only the completed jobs / pulled no-deco lines, not the whole SO).
+    // A null entry — or a task whose item indices can't be resolved — means "all items"
+    // (a safe fallback that preserves the prior whole-SO behavior for legacy/malformed data).
+    const whReadyIdxBySo=(grp)=>{
+      const m={};
+      (grp?.items||[]).forEach(t=>{
+        if(m[t.soId]===null)return;// already flagged as "all"
+        const idxs=(t.itemIdxs||[]).filter(ix=>ix!=null);
+        if(!idxs.length){m[t.soId]=null;return}// unknown scope → show all
+        if(!m[t.soId])m[t.soId]=new Set();
+        idxs.forEach(ix=>m[t.soId].add(ix));
+      });
+      return m;
+    };
+    const whRemainingItems=(soMap,readyIdxBySo)=>{
       const allItems=[];const seen=new Set();
       Object.entries(soMap).forEach(([soId,so])=>{
+        const readyIdx=readyIdxBySo?.[soId];
         // Calculate already-shipped quantities per SKU+color for this SO
         const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
           const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
@@ -17102,6 +17118,7 @@ export default function App(){
         // Merge duplicate items by SKU+color before building available items
         const mergedByKey={};const mergedOrder=[];
         safeItems(so).forEach((item,iIdx)=>{
+          if(readyIdx&&!readyIdx.has(iIdx))return;// only items belonging to a ready-to-ship job
           const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
           if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
           else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
@@ -18076,6 +18093,9 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
+              // Only the items that belong to the ready-to-ship jobs/lines for this group —
+              // an SO can have other jobs still in production that must NOT appear here.
+              const readyIdxBySo=whReadyIdxBySo(grp);
               const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
               const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
@@ -18108,9 +18128,11 @@ export default function App(){
                         const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
                         Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
                       })});
-                      // Merge duplicate items by SKU+color before rendering
+                      // Merge duplicate items by SKU+color before rendering (ready-to-ship items only)
+                      const readyIdx=readyIdxBySo[soId];
                       const mergedItems=[];const seenItems={};
-                      safeItems(so).forEach(item=>{
+                      safeItems(so).forEach((item,iIdx)=>{
+                        if(readyIdx&&!readyIdx.has(iIdx))return;// skip items still in production on this SO
                         const key=item.sku+'|'+(item.color||'');
                         if(seenItems[key]){const m=seenItems[key];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
                         else{const m={sku:item.sku,name:item.name,color:item.color,sizes:{}};Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=safeNum(v)});seenItems[key]=m;mergedItems.push(m)}
@@ -18135,8 +18157,8 @@ export default function App(){
                     onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with remaining (unshipped) items from SOs
-                      const allItems=whRemainingItems(grp.soMap);
+                      // Build ship modal with remaining (unshipped) items from the ready-to-ship jobs/lines
+                      const allItems=whRemainingItems(grp.soMap,readyIdxBySo);
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button title="Clear from Ready to Ship without creating a label — marks remaining units as shipped (rep pickup, ShipStation, etc.)"
@@ -18163,7 +18185,9 @@ export default function App(){
                       const packRows=[];
                       [...grp.soIds].forEach(soId=>{
                         const so=grp.soMap[soId];if(!so)return;
-                        safeItems(so).forEach(item=>{
+                        const readyIdx=readyIdxBySo[soId];
+                        safeItems(so).forEach((item,iIdx)=>{
+                          if(readyIdx&&!readyIdx.has(iIdx))return;// only items in a ready-to-ship job
                           const szObj=safeSizes(item);
                           const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
                           if(totalQty<=0)return;
@@ -18750,7 +18774,9 @@ export default function App(){
 
         {/* ── CLEAR SHIPMENT MODAL — mark remaining units shipped with a memo (no label/tracking) ── */}
         {clearShipModal&&(()=>{
-          const remaining=whRemainingItems(clearShipModal.soMap);
+          // Scope to the ready-to-ship jobs/lines only — clearing must not mark items that are
+          // still in production (other jobs on the same SO) as shipped.
+          const remaining=whRemainingItems(clearShipModal.soMap,whReadyIdxBySo(clearShipModal.grp));
           const totUnits=remaining.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
           const reasons=['Picked up by rep','Shipped via ShipStation','Customer picked up','Other'];
           const reasonIcon={'Picked up by rep':'🚗','Shipped via ShipStation':'🛒','Customer picked up':'🏫','Other':'✏️'};
