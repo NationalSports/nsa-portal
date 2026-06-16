@@ -27618,10 +27618,16 @@ export default function App(){
         return<>
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Decoration Vendors</h3></div><div className="card-body">
           <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Manage your outside decoration vendors and their pricing. Prices auto-fill on Deco POs and outside decoration line items.</div>
-          {decoVendors.map(v=><div key={v.id} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
-            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery')}}>Edit Pricing</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
+          {decoVendors.map(v=><div key={v.id} style={{padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery')}}>Edit Pricing</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center',marginTop:6}}>
+              <span title="Used as the default Ship To on blank POs that drop-ship to this decorator" style={{fontSize:10,fontWeight:700,color:'#64748b',whiteSpace:'nowrap'}}>📦 Ship-to</span>
+              <input className="form-input" key={'dvaddr-'+v.id+':'+(v.address||'')} defaultValue={v.address||''} placeholder="Street, City, State ZIP — default Ship To when drop-shipping blanks here" style={{fontSize:11,padding:'4px 8px',flex:1}} onBlur={e=>{const val=e.target.value.trim();if(val!==(v.address||''))saveDV({...v,address:val||null,updated_at:new Date().toISOString()})}}/>
+            </div>
           </div>)}
           <div style={{display:'flex',gap:8,marginTop:8}}>
             <input className="form-input" placeholder="New vendor name..." value={dvNewName} onChange={e=>setDvNewName(e.target.value)} style={{width:200,fontSize:12}}/>
