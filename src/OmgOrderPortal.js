@@ -184,6 +184,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const [reportUrl, setReportUrl] = useState('');
   const [draftContacts, setDraftContacts] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const [shipErrors, setShipErrors] = useState([]); // [{order, msg}] from the last label run
   const [testEmail, setTestEmail] = useState('');
   const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
   const [pickIds, setPickIds] = useState(null);         // Set of order ids selected in the confirm modal (null = all)
@@ -432,21 +433,22 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const printOmgLabels = async (subset) => {
     if (shipToSchool) { flash('Ship-to-school store — bulk delivery, no per-player labels.', 'err'); return; }
     const pool = subset || orders;
-    let badAddr = 0;
+    const errors = [];
     const eligible = pool.filter((o) => {
       if (!shipPlan(o).length) return false;
-      if (validateShipAddress(o.ship_address)) { badAddr++; return false; } // skip undeliverable addresses
+      const err = validateShipAddress(o.ship_address);
+      if (err) { errors.push({ order: o.omg_order_number, msg: err }); return false; } // skip undeliverable addresses
       return true;
     });
-    if (!eligible.length) { flash(badAddr ? `${badAddr} order(s) have an incomplete/invalid address — fix it first.` : 'Nothing ready to ship — everything is shipped or short.', 'err'); return; }
+    if (!eligible.length) { setShipErrors(errors); flash(errors.length ? `${errors.length} order(s) have an invalid address — see the list below.` : 'Nothing ready to ship — everything is shipped or short.', 'err'); return; }
     setBusy('labels');
-    const labels = []; let fail = 0, runCost = 0;
+    const labels = []; let ok = 0, runCost = 0;
     for (const o of eligible) {
       const plan = shipPlan(o);
       try {
         const { labelData, trackingNumber, carrier, shipmentId, cost } = await createOmgLabel(o, plan);
         if (labelData) labels.push(labelData);
-        runCost += Number(cost) || 0;
+        runCost += Number(cost) || 0; ok++;
         // Optimistically advance each shipped line so a quick re-click won't
         // double-ship; the webhook later reconciles shipped_qty from the
         // recorded shipment, so this never double-counts.
@@ -457,13 +459,14 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
         }
         const fullyShipped = o.items.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
         await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
-      } catch { fail++; }
+      } catch (e) { errors.push({ order: o.omg_order_number, msg: (e && e.message) || 'Label failed' }); }
     }
     await recomputeSOCost();
     if (labels.length) await printPdfLabels(labels);
     await loadOrders(store);
+    setShipErrors(errors);
     setBusy('');
-    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${badAddr ? `, ${badAddr} skipped (bad address)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, fail ? 'err' : 'ok');
+    flash(`${ok} label${ok === 1 ? '' : 's'} created${errors.length ? `, ${errors.length} need attention (below)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, errors.length ? 'err' : 'ok');
   };
 
   // Reprint the last saved label for one order — no re-buy.
@@ -518,6 +521,10 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
 
       <div style={{ padding: '12px 16px' }}>
         {msg && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontWeight: 600, fontSize: 13, background: msg.kind === 'err' ? '#fef2f2' : '#f0fdf4', color: msg.kind === 'err' ? '#991b1b' : '#166534', border: `1px solid ${msg.kind === 'err' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>}
+        {shipErrors.length > 0 && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, background: '#fff7ed', border: '1px solid #fed7aa' }}>
+          <div style={{ fontWeight: 800, fontSize: 12.5, color: '#9a3412', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>⚠️ {shipErrors.length} order{shipErrors.length === 1 ? '' : 's'} couldn’t ship<button onClick={() => setShipErrors([])} style={{ ...linkBtn, marginLeft: 'auto', color: '#9a3412' }}>Dismiss</button></div>
+          {shipErrors.map((e, i) => <div key={i} style={{ fontSize: 12, color: '#7c2d12' }}><b>{e.order || '—'}</b> — {e.msg}</div>)}
+        </div>}
 
         {/* The three things to have ready — always visible, top of the section. */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
@@ -739,6 +746,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                   <div><span style={{ color: '#94a3b8' }}>Email </span>{o.buyer_email ? <b>{o.buyer_email}{o.processing_email_sent ? ' ✓ emailed' : ''}</b> : <span style={{ color: '#dc2626', fontWeight: 700 }}>missing — upload the packing slip to add</span>}</div>
                                   {o.buyer_phone && <div><span style={{ color: '#94a3b8' }}>Phone </span>{o.buyer_phone}</div>}
                                   {o.ship_address && o.ship_address.street1 && <div><span style={{ color: '#94a3b8' }}>Ship to </span>{[o.ship_address.street1, o.ship_address.city, o.ship_address.state, o.ship_address.zip].filter(Boolean).join(', ')}</div>}
+                                  {(o.label_cost != null || o.tracking_number) && <div><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}</div>}
                                 </div>
                               )}
                               {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '6px 0 10px' }}>

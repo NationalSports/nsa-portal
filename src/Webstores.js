@@ -1783,6 +1783,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
+  const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
   const shipHome = store.delivery_mode !== 'deliver_club';
   // Webstore orders + items belonging to one batched SO.
   const batchGroups = (soId) => {
@@ -1815,14 +1816,16 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
-    const labels = []; let fail = 0, held = 0, badAddr = 0;
+    const labels = []; const errs = []; let held = 0;
     for (const g of groups) {
       const o = g.order;
+      const who = o.buyer_name || o.buyer_email || o.id;
       const lines = g.items.filter((i) => !i.is_bundle_parent);
       // Units still to ship per line = ordered − already shipped − short-now.
       const plan = lines.map((i) => { const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0); return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) }; }).filter((x) => x.qty > 0);
       if (!plan.length) { held++; continue; }
-      if (validateShipAddress(o.ship_address)) { badAddr++; continue; }
+      const addrErr = validateShipAddress(o.ship_address);
+      if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
         const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
@@ -1830,7 +1833,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
         for (const x of plan) { const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id); } catch {} i.shipped_qty = sq; if (done) i.line_status = 'shipped'; }
         const allShipped = lines.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
         try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
-      } catch { fail++; }
+      } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
     // Roll the Sales Order's outbound shipping cost up = sum of its orders' label
     // costs (the webhook later reconciles these to ShipStation's actual amounts).
@@ -1840,7 +1843,8 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
     } catch {}
     if (labels.length) await printLabels(labels);
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${held ? `, ${held} fully short` : ''}${badAddr ? `, ${badAddr} bad address` : ''}.` }));
+    setSsErr((m) => ({ ...m, [soId]: errs }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -1919,6 +1923,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
                 </div>
                 {ssMsg[o.id] && <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>{ssMsg[o.id]}</div>}
+                {ssErr[o.id] && ssErr[o.id].length > 0 && <div style={{ marginTop: 4, padding: '6px 8px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 6 }}>
+                  {ssErr[o.id].map((e, i) => <div key={i} style={{ fontSize: 10.5, color: '#7c2d12' }}>⚠️ <b>{e.order}</b> — {e.msg}</div>)}
+                </div>}
               </div>
               <div style={{ display: 'flex', gap: 14, textAlign: 'right' }}>
                 <Stat label="Ordered" value={totalOrdered} />
@@ -2126,6 +2133,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
+                    {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}</div>}
                     {(o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
                       {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
                       {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}
