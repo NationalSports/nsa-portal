@@ -153,7 +153,8 @@ exports.handler = async () => {
             category: mapCategory(title),
             retail_price: retail,
             nsa_cost: cost,
-            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
+            // Nike shows RETAIL (MSRP) to coaches — no markup, no tier discount.
+            catalog_sell_price: retail > 0 ? retail : null,
             is_active: true,
             available_sizes: sizes,
             image_front_url: img || null,
