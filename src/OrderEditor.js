@@ -5039,11 +5039,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // (expected & actual both $0). The PO exists, so the rep needs a row for it. Only skip
           // truly-empty phantom records that were never assigned a PO number.
           if(!dp.po_id&&expected===0&&actual===0)return;
-          const skus=(dp.item_idxs||[]).map(ii=>safeItems(o)[ii]?.sku).filter(Boolean);
+          // Covered items + sizes for the hover panel — instead of dumping every SKU inline,
+          // the row shows the decorator (vendor col) and reveals items/sizes on hover.
+          const decoItemRows=(dp.item_idxs||[]).map(ii=>{const it=safeItems(o)[ii];if(!it)return null;
+            const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+':'+safeNum(v)).join(' ');
+            const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            return{sku:it.sku||'—',name:it.name||'',color:it.color||'',sizes,qty:q}}).filter(Boolean);
           const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
           const tsLabel=dp.topstar_service?(dp.topstar_service==='vector'?'Vector Logo':'DST File'):'';
           costLines.push({category:dp.topstar_service?'Digitizing':'Outside Deco',
-            sku:skus.join(', ')||'—',
+            sku:'',
             name:dp.topstar_service?'Topstar Digitizing — '+tsLabel:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
             vendor:dp.vendor||'—',
             qty,
@@ -5051,6 +5056,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             actual:Math.round(actual*100)/100,
             poCount:1,
             poIds:dp.po_id||'',
+            _decoItems:decoItemRows,
             allReceived:dp.status==='received'});
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
@@ -5126,7 +5132,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                   background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
                   color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
-                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}</td>
+                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}
+                  {l._decoItems&&l._decoItems.length>0&&<span className="nsa-tip" style={{marginLeft:8,fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',border:'1px solid #ede9fe',borderRadius:10,padding:'1px 8px'}}>{l._decoItems.length} item{l._decoItems.length!==1?'s':''} ⓘ
+                    <span className="nsa-tip-body"><strong style={{display:'block',marginBottom:4,color:'#c4b5fd'}}>Items on this PO</strong>{l._decoItems.map((di,k)=><span key={k} style={{display:'block',marginBottom:2}}><strong style={{color:'#fff'}}>{di.sku}</strong> {di.name}{di.color?' · '+di.color:''} <span style={{color:'#a5b4fc'}}>({di.sizes||di.qty})</span></span>)}</span>
+                  </span>}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
@@ -9307,7 +9316,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
         }});
       });
-      if(allPickIds.length===0&&allPoIds.length===0)return null;
+      // SO-level decoration POs (outside-decorator cost buckets) live on o.deco_pos, not under
+      // items — surface them in Linked Documents too so they're not invisible here.
+      const allDecoPos=(o.deco_pos||[]).filter(dp=>dp&&dp.po_id);
+      if(allPickIds.length===0&&allPoIds.length===0&&allDecoPos.length===0)return null;
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
         {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Item Fulfillments</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:allPoIds.length>0?16:0}}>
@@ -9343,6 +9355,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               {po.memo&&<div style={{fontSize:11,color:'#475569',marginTop:3,fontStyle:'italic'}}>💬 {po.memo}</div>}
             </div>)}
+          </div></>}
+        {allDecoPos.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',margin:(allPoIds.length>0||allPickIds.length>0)?'16px 0 6px':'0 0 6px'}}>Decoration POs</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {allDecoPos.map(dp=>{const exp=safeNum(dp.expected_cost||safeNum(dp.qty)*safeNum(dp.unit_cost));const act=safeNum(dp._bill_cost||0);const cnt=(dp.item_idxs||[]).length;const st=dp.status||'waiting';
+              return<div key={dp.id||dp.po_id} style={{padding:'10px 14px',border:'1px solid #ede9fe',borderRadius:8,cursor:'pointer',background:st==='received'||st==='billed'?'#f0fdf4':'#faf5ff',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:13}}>🎨</span><span style={{fontWeight:800,color:'#7c3aed',fontSize:14}}>{dp.po_id}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{dp.vendor||'Decorator'}</span>
+                  <span className="badge badge-blue" style={{fontSize:9}}>Decoration PO</span>
+                  {dp.drop_ship&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                  <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#64748b'}}>{act>0?'$'+act.toFixed(2)+' billed':exp>0?'$'+exp.toFixed(2)+' exp':'cost TBD'}</span>
+                </div>
+                <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
+                  <span style={{textTransform:'capitalize'}}>{(dp.deco_type||'').replace(/_/g,' ')||'—'}</span>
+                  <span>{safeNum(dp.qty)||0} units · {cnt} item{cnt!==1?'s':''}</span>
+                  <span className={`badge ${st==='received'||st==='billed'?'badge-green':st==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:9}}>{st.replace(/^./,c=>c.toUpperCase())}</span>
+                  {dp.created_at&&<span>📅 {dp.created_at}</span>}
+                </div>
+              </div>})}
           </div></>}
       </div></div>})()}
 
