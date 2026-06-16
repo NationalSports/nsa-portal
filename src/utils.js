@@ -278,6 +278,43 @@ export const printPdfLabels=async(base64List)=>{
   document.body.appendChild(iframe);
 };
 
+// Estimate a garment's shipping weight (oz) from its name/SKU — a local,
+// rule-based lookup (no network or AI needed, so it's instant, free and
+// deterministic): hoodie ≈ 18oz, tee ≈ 6oz, shorts ≈ 7oz, etc. Used to weigh
+// shipping labels when a catalog weight isn't set on the product.
+export function estimateWeightOz(text) {
+  const t = (text || '').toLowerCase();
+  const rules = [
+    [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
+    [/tote|sackpack|cinch|drawstring|bag/, 10],
+    [/jacket|coat|parka|fleece|pullover|hoodie|hooded|sweatshirt|quarter ?zip|1\/4 ?zip|half ?zip|1\/2 ?zip/, 18],
+    [/sweatpant|jogger|tearaway|pant|legging|tight/, 12],
+    [/short/, 7],
+    [/jersey|tank|singlet/, 5],
+    [/tee|t-?shirt|shirt|polo|jersey top|top|warmup|warm-?up/, 6],
+    [/beanie|hat|cap|visor/, 3],
+    [/sock|glove|belt|headband|wristband|scrunchie/, 2],
+    [/bottle|tumbler|mug/, 14],
+    [/ball/, 16],
+    [/blanket|towel/, 20],
+  ];
+  for (const [re, oz] of rules) if (re.test(t)) return oz;
+  return 8; // generic garment default
+}
+
+// Order ship weight (lbs): sum each line's weight (catalog override by
+// product_id, else the name/SKU estimate) × qty; fall back to the store's flat
+// label weight if nothing resolves. Bundle parents are excluded.
+export function labelWeightLbs(items, store = {}, weightByPid = {}) {
+  let oz = 0, any = false;
+  (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
+    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
+    oz += w * (i.qty || 1); any = true;
+  });
+  if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
+  return Number(store && store.label_weight_lbs) || 1;
+}
+
 export const printQrLabel=({id,qrData,lines,shipBadge})=>{
   const w=window.open('','_blank','width=420,height=620');if(!w)return;
   const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');

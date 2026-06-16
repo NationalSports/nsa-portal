@@ -1,25 +1,13 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels, estimateWeightOz, labelWeightLbs } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
-// Order ship weight (lbs): sum per-item weights (catalog override or estimate);
-// fall back to the store's flat weight if nothing resolves.
-function labelWeightLbs(items, store, weightByPid = {}) {
-  let oz = 0, any = false;
-  (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
-    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
-    oz += w * (i.qty || 1); any = true;
-  });
-  if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
-  return Number(store.label_weight_lbs) || 1;
-}
-
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
   const a = order.ship_address || {};
   const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store, imageByPid)) });
@@ -225,26 +213,6 @@ const slugify = (s) => (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-'
 
 // Rough ship weight (oz) by item type, from the name/sku keywords. Used as a
 // default in the catalog editor and as a fallback when a label is created.
-function estimateWeightOz(text) {
-  const t = (text || '').toLowerCase();
-  const rules = [
-    [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
-    [/tote|sackpack|cinch|drawstring|bag/, 10],
-    [/jacket|coat|parka|fleece|pullover|hoodie|hooded|sweatshirt|quarter ?zip|1\/4 ?zip|half ?zip|1\/2 ?zip/, 18],
-    [/sweatpant|jogger|tearaway|pant|legging|tight/, 12],
-    [/short/, 7],
-    [/jersey|tank|singlet/, 5],
-    [/tee|t-?shirt|shirt|polo|jersey top|top|warmup|warm-?up/, 6],
-    [/beanie|hat|cap|visor/, 3],
-    [/sock|glove|belt|headband|wristband|scrunchie/, 2],
-    [/bottle|tumbler|mug/, 14],
-    [/ball/, 16],
-    [/blanket|towel/, 20],
-  ];
-  for (const [re, oz] of rules) if (re.test(t)) return oz;
-  return 8; // generic garment default
-}
-
 // Map products -> which transfers they consume, then tally usage from order lines.
 // Supports both new array columns (transfer_codes, num_transfer_sets) and old single columns.
 function buildTransferMaps(catalog, bundleItems) {

@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
-import { authFetch, printPdfLabels } from './utils';
+import { authFetch, printPdfLabels, labelWeightLbs } from './utils';
 import { NSA } from './constants';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -396,7 +396,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     const payload = {
       orderId, carrierCode: cm.carrierCode, serviceCode: (store && store.shipstation_service) || cm.serviceCode,
       packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-      weight: { value: Math.max(0.1, Number(store && store.label_weight_lbs) || 1), units: 'pounds' },
+      weight: { value: labelWeightLbs(shipItems, store), units: 'pounds' },
       shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
       shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '' },
       testLabel: false,
