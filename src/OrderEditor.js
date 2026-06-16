@@ -1686,6 +1686,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     clone.product_id=catMatch?.id||null;clone.sku=style.sku;clone.name=nameWithBrand(style.styleName,style.brandName);clone.brand=style.brandName;
     clone.vendor_id=vId;clone.color=color.colorName;clone.nsa_cost=cost;clone.retail_price=catMatch?.retail_price||0;
     clone.unit_sell=sell;clone.available_sizes=availSizes.length?availSizes:fallbackSizes;
+    // Drop copied quantities for sizes the new SKU doesn't carry (e.g. orphaned OSFA) so they
+    // can't linger hidden in the grid and inflate the line total.
+    clone.sizes=Object.fromEntries(Object.entries(safeSizes(it)).filter(([sz])=>clone.available_sizes.includes(sz)));
     clone.is_custom=false;clone[liveFlag]=true;
     clone._colorImage=color.colorFrontImage||style.styleImage||'';
     clone._colorBackImage=color.colorBackImage||'';
@@ -1721,6 +1724,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
       next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
       next.available_sizes=[...(p.available_sizes||['S','M','L','XL','2XL'])];
+      // Drop quantities for sizes the new SKU doesn't carry, so an orphaned size from the old
+      // SKU (e.g. OSFA) can't linger hidden in the grid and inflate the line total.
+      next.sizes=Object.fromEntries(Object.entries(safeSizes(x)).filter(([sz])=>next.available_sizes.includes(sz)));
       next._colors=au?null:(p._colors||null);
       next.is_custom=false;
       return next;
@@ -1764,6 +1770,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       next.product_id=catMatch?.id||null;next.sku=style.sku;next.name=style.styleName;next.brand=style.brandName;
       next.vendor_id=vId;next.color=color.colorName;next.nsa_cost=cost;next.retail_price=catMatch?.retail_price||0;
       next.unit_sell=sell;next.available_sizes=availSizes.length?availSizes:fallbackSizes;
+      // Drop quantities for sizes the new SKU doesn't carry (e.g. orphaned OSFA) so they
+      // can't linger hidden in the grid and inflate the line total.
+      next.sizes=Object.fromEntries(Object.entries(safeSizes(x)).filter(([sz])=>next.available_sizes.includes(sz)));
       next.is_custom=false;next[liveFlag]=true;
       next._colorImage=color.colorFrontImage||style.styleImage||'';
       next._colorBackImage=color.colorBackImage||'';
