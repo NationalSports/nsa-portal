@@ -410,25 +410,22 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
   };
 
-  // Adjust the related Sales Order's outbound shipping cost by `delta` (label
-  // spend adds, a void subtracts). Prefer the exact SO shown in the portal
-  // (soSync.soId); fall back to the newest SO linked by omg_store_id (a store can
-  // have more than one if its SO was redone, so never assume a single row).
-  const adjustSOCost = async (delta) => {
-    if (!delta) return;
+  // Set the related Sales Order's outbound shipping cost to the sum of every
+  // order's label_cost in this store (idempotent — no incremental drift on
+  // re-runs or voids). The webhook later overwrites this with the same sum once
+  // ShipStation reports each shipment's actual billed cost. Prefer the exact SO
+  // shown in the portal (soSync.soId); fall back to the newest SO linked by
+  // omg_store_id (a store can have more than one if its SO was redone).
+  const recomputeSOCost = async () => {
+    if (!store) return;
     try {
+      const { data: ords } = await supabase.from('webstore_orders').select('label_cost').eq('store_id', store.id);
+      const total = (ords || []).reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
       let so = null;
-      if (soSync && soSync.soId) {
-        const { data } = await supabase.from('sales_orders').select('id,_shipping_cost,_shipstation_cost').eq('id', soSync.soId).maybeSingle();
-        so = data || null;
-      }
-      if (!so) {
-        const { data } = await supabase.from('sales_orders').select('id,_shipping_cost,_shipstation_cost').eq('omg_store_id', 'OMG-sale_' + saleCode).order('created_at', { ascending: false }).limit(1);
-        so = (data && data[0]) || null;
-      }
+      if (soSync && soSync.soId) { const { data } = await supabase.from('sales_orders').select('id').eq('id', soSync.soId).maybeSingle(); so = data || null; }
+      if (!so) { const { data } = await supabase.from('sales_orders').select('id').eq('omg_store_id', 'OMG-sale_' + saleCode).order('created_at', { ascending: false }).limit(1); so = (data && data[0]) || null; }
       if (!so) return;
-      const next = Math.max(0, (Number(so._shipping_cost) || Number(so._shipstation_cost) || 0) + delta);
-      await supabase.from('sales_orders').update({ _shipping_cost: next, _shipstation_cost: next }).eq('id', so.id);
+      await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', so.id);
     } catch {}
   };
 
@@ -462,11 +459,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
         await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
       } catch { fail++; }
     }
-    await adjustSOCost(runCost);
+    await recomputeSOCost();
     if (labels.length) await printPdfLabels(labels);
     await loadOrders(store);
     setBusy('');
-    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${badAddr ? `, ${badAddr} skipped (bad address)` : ''}${runCost > 0 ? ` · ${money(runCost)} to the SO` : ''}.`, fail ? 'err' : 'ok');
+    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${badAddr ? `, ${badAddr} skipped (bad address)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, fail ? 'err' : 'ok');
   };
 
   // Reprint the last saved label for one order — no re-buy.
@@ -483,11 +480,13 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     try {
       const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
       if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
-      // Roll back the shipped lines and the order's ship fields. (Voids the
-      // whole order's last shipment; multi-shipment split-voids aren't tracked.)
+      // Roll back the shipped lines, drop the recorded shipments, and clear the
+      // order's ship fields. (Voids the whole order's last shipment; multi-
+      // shipment split-voids aren't tracked.)
       await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
-      if (Number(o.label_cost)) await adjustSOCost(-Number(o.label_cost));
+      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
       await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
+      await recomputeSOCost();
       await loadOrders(store);
       flash(`Label voided for ${o.omg_order_number}.`);
     } catch (e) { flash('Void failed: ' + e.message, 'err'); } finally { setBusy(''); }
