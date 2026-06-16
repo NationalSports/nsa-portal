@@ -86,15 +86,31 @@ exports.handler = async (event) => {
 
     const totalUnits = lines.reduce((a, l) => a + l.qty, 0);
     const estTotal = lines.reduce((a, l) => a + l.qty * l.price, 0);
-    const rowsHtml = lines.map((l) => `
+    // Collapse to one row per SKU: every size's qty (and any inbound flag) shows
+    // as a compact run in the Size column; Qty + Retail are the SKU totals.
+    const SIZE_ORDER = ['3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', '4XL', '5XL', '6XL', 'ST', 'MT', 'LT', 'XLT', '2XLT', '3XLT', 'OSFA', 'ONE SIZE', 'OS', 'NS'];
+    const sizeRank = (s) => { const i = SIZE_ORDER.indexOf(String(s || '').trim().toUpperCase()); return i === -1 ? 900 : i; };
+    const groups = [];
+    const groupIdx = {};
+    lines.forEach((l) => {
+      if (groupIdx[l.sku] == null) { groupIdx[l.sku] = groups.length; groups.push({ sku: l.sku, name: l.name, color: l.color, decoration: l.decoration, lines: [] }); }
+      groups[groupIdx[l.sku]].lines.push(l);
+    });
+    groups.forEach((g) => g.lines.sort((a, b) => sizeRank(a.size) - sizeRank(b.size) || String(a.size).localeCompare(String(b.size))));
+    const rowsHtml = groups.map((g) => {
+      const qty = g.lines.reduce((a, l) => a + l.qty, 0);
+      const retail = g.lines.reduce((a, l) => a + l.qty * l.price, 0);
+      const sizeRun = g.lines.map((l) => `<span style="display:inline-block;white-space:nowrap;margin:0 12px 3px 0">${esc(l.size)}&nbsp;<strong>${l.qty}</strong>${l.inbound ? `<span style="color:#b45309;font-size:11px"> · inbound ${esc(l.inbound)}</span>` : ''}</span>`).join('');
+      return `
       <tr>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;font-family:monospace">${esc(l.sku)}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${esc(l.name)}${l.decoration ? `<div style="font-size:11px;color:#2563eb;font-weight:600">+ ${esc(l.decoration)}</div>` : ''}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${esc(l.color)}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center">${esc(l.size)}${l.inbound ? `<div style="font-size:11px;color:#b45309">inbound ${esc(l.inbound)}</div>` : ''}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center;font-weight:700">${l.qty}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:right">${l.price ? '$' + (l.price * l.qty).toFixed(2) : '—'}</td>
-      </tr>`).join('');
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;font-family:monospace;vertical-align:top">${esc(g.sku)}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;vertical-align:top">${esc(g.name)}${g.decoration ? `<div style="font-size:11px;color:#2563eb;font-weight:600">+ ${esc(g.decoration)}</div>` : ''}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;vertical-align:top">${esc(g.color)}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${sizeRun}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center;font-weight:700;vertical-align:top">${qty}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:right;vertical-align:top">${retail ? '$' + retail.toFixed(2) : '—'}</td>
+      </tr>`;
+    }).join('');
 
     const portalUrl = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
     // Deep link straight to the rep's Estimate Requests inbox, focused on this
@@ -103,7 +119,7 @@ exports.handler = async (event) => {
     const ctaHtml = requestId ? `
       <div style="text-align:center;margin:2px 0 18px">
         <a href="${portalUrl}/?catreq=${encodeURIComponent(requestId)}" style="display:inline-block;background:#191919;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:8px">Create estimate from this request →</a>
-        <div style="color:#94a3b8;font-size:11px;margin-top:7px">Opens the portal with these ${lines.length} item${lines.length === 1 ? '' : 's'} ready to drop into a draft estimate at the team's pricing.</div>
+        <div style="color:#94a3b8;font-size:11px;margin-top:7px">Opens the portal with these ${groups.length} item${groups.length === 1 ? '' : 's'} (${totalUnits} units) ready to drop into a draft estimate at the team's pricing.</div>
       </div>` : '';
 
     const htmlContent = `
@@ -125,7 +141,7 @@ exports.handler = async (event) => {
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="background:#f8fafc;color:#64748b;font-weight:600;text-align:left">
               <th style="padding:6px 10px">SKU</th><th style="padding:6px 10px">Item</th><th style="padding:6px 10px">Color</th>
-              <th style="padding:6px 10px;text-align:center">Size</th><th style="padding:6px 10px;text-align:center">Qty</th><th style="padding:6px 10px;text-align:right">Retail</th>
+              <th style="padding:6px 10px">Size</th><th style="padding:6px 10px;text-align:center">Qty</th><th style="padding:6px 10px;text-align:right">Retail</th>
             </tr>
             ${rowsHtml}
             <tr>
@@ -188,7 +204,7 @@ exports.handler = async (event) => {
                 <table style="width:100%;border-collapse:collapse;font-size:13px">
                   <tr style="background:#f8fafc;color:#64748b;font-weight:600;text-align:left">
                     <th style="padding:6px 10px">SKU</th><th style="padding:6px 10px">Item</th><th style="padding:6px 10px">Color</th>
-                    <th style="padding:6px 10px;text-align:center">Size</th><th style="padding:6px 10px;text-align:center">Qty</th><th style="padding:6px 10px;text-align:right">Retail</th>
+                    <th style="padding:6px 10px">Size</th><th style="padding:6px 10px;text-align:center">Qty</th><th style="padding:6px 10px;text-align:right">Retail</th>
                   </tr>
                   ${rowsHtml}
                   <tr>

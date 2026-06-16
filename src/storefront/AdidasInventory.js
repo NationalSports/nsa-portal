@@ -798,6 +798,10 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
     return out;
   })();
 
+  // Remove every size of one SKU at once — delete from the highest index down so
+  // the earlier indices the loop still needs don't shift underneath it.
+  const removeSku = (g) => [...g.lines].map((l) => l.i).sort((a, b) => b - a).forEach(removeLine);
+
   const submit = async () => {
     if (!canSend || state === 'sending') return;
     setState('sending');
@@ -856,11 +860,19 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                   Your list is empty — open a style and type quantities under the sizes you need.
                 </p>
               )}
-              {groups.map((g) => (
+              {groups.map((g) => {
+                const gUnits = g.lines.reduce((a, l) => a + l.qty, 0);
+                const gTotal = g.lines.reduce((a, l) => a + (l.price || 0) * l.qty, 0);
+                return (
                 <div key={g.sku} style={{ padding: '12px 0', borderBottom: '1px solid #F0F1F4' }}>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{withBrand(g.brand, g.name)}</div>
-                  <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
-                    {g.color} · <span style={{ fontFamily: 'monospace' }}>{g.sku}</span>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{withBrand(g.brand, g.name)}</div>
+                      <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
+                        {g.color} · <span style={{ fontFamily: 'monospace' }}>{g.sku}</span>
+                      </div>
+                    </div>
+                    <button onClick={() => removeSku(g)} aria-label={`Remove ${g.name}`} style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
                   </div>
                   <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 6, color: g.lines[0].decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
                     value={g.lines[0].decoration || ''} onChange={(e) => setSkuDecoration(g.sku, e.target.value)} aria-label={`Decoration for ${g.name}`}>
@@ -869,28 +881,24 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                     <option>Embroidery</option>
                     <option>Heat press</option>
                   </select>
-                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {/* Every size for this item sits on one line — type a qty under each (0 removes it). */}
+                  <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-start' }}>
                     {g.lines.map((l) => (
-                      <div key={l.sku + '|' + l.size} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ width: 64, flex: 'none', fontSize: 12.5, fontWeight: 700 }}>
-                          {sizeLabel(l.size)}
-                          {l.inbound && <span style={{ display: 'block', color: '#92580B', fontWeight: 600, fontSize: 10 }}>inbound {fmtDate(l.inbound)}</span>}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 'none' }}>
-                          <button className="ai-qbtn" onClick={() => updateLine(l.i, l.qty - 1)} aria-label="Decrease">−</button>
-                          <input className="ai-input" style={{ width: 48, textAlign: 'center', padding: '4px 4px', fontWeight: 700 }} value={l.qty}
-                            onChange={(e) => updateLine(l.i, parseInt(e.target.value) || 0)} inputMode="numeric" />
-                          <button className="ai-qbtn" onClick={() => updateLine(l.i, l.qty + 1)} aria-label="Increase">+</button>
-                        </div>
-                        <div style={{ flex: 1, textAlign: 'right', fontSize: 13, fontWeight: 700 }}>
-                          {l.price ? fmtPrice(l.price * l.qty) : '—'}
-                        </div>
-                        <button onClick={() => removeLine(l.i)} aria-label={`Remove size ${sizeLabel(l.size)}`} style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
+                      <div key={l.sku + '|' + l.size} className={'ai-sizecell' + (l.inbound ? ' inbound' : '')} title={l.inbound ? `Inbound ${fmtDate(l.inbound)}` : undefined}>
+                        <span className="lbl">{sizeLabel(l.size)}</span>
+                        <input className="ai-qtyin" placeholder="0" inputMode="numeric" aria-label={`Quantity, size ${sizeLabel(l.size)}`}
+                          value={l.qty} onChange={(e) => updateLine(l.i, parseInt(e.target.value.replace(/\D/g, '')) || 0)} />
+                        {l.inbound && <span style={{ color: '#92580B', fontWeight: 600, fontSize: 9.5, lineHeight: 1 }}>{fmtDate(l.inbound)}</span>}
                       </div>
                     ))}
                   </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 8, fontSize: 12.5 }}>
+                    <span style={{ color: '#6A7180' }}>{gUnits} unit{gUnits === 1 ? '' : 's'}</span>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>{gTotal ? fmtPrice(gTotal) : '—'}</span>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
               {list.length > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 4px', fontSize: 13.5, fontWeight: 700 }}>
                   <span>{units} unit{units === 1 ? '' : 's'} · {account ? 'your team pricing' : 'retail reference'}</span>
