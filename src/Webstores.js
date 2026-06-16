@@ -4,6 +4,7 @@ import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
+import { PDFDocument } from 'pdf-lib';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -89,10 +90,42 @@ function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
   </body></html>`);
 }
 
-// Render base64 PDF labels into one printable window.
-function printLabels(labels) {
-  const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
-  printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+// Merge per-order ShipStation base64 PDFs into one multi-page 4x6 document.
+// Chrome doesn't reliably rasterize stacked <embed> PDF plugins when printing,
+// so we hand the browser a single combined PDF instead.
+async function mergeLabelPdfs(base64List) {
+  const out = await PDFDocument.create();
+  for (const b64 of base64List) {
+    const bytes = Uint8Array.from(atob(String(b64).replace(/\s/g, '')), (c) => c.charCodeAt(0));
+    const src = await PDFDocument.load(bytes);
+    const pages = await out.copyPages(src, src.getPageIndices());
+    pages.forEach((p) => out.addPage(p));
+  }
+  return out.save();
+}
+
+// Merge the labels into one PDF and print it via a hidden iframe — the same
+// approach the single-label flow uses, which prints reliably on Chrome. Falls
+// back to the stacked-embed window if the merge fails for any reason.
+async function printLabels(labels) {
+  let url;
+  try {
+    const bytes = await mergeLabelPdfs(labels);
+    url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  } catch (e) {
+    const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
+    printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+    return;
+  }
+  const iframe = document.createElement('iframe');
+  iframe.style.display = 'none';
+  iframe.src = url;
+  iframe.onload = () => {
+    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
+    catch (e) { window.open(url, '_blank'); }
+    setTimeout(() => { try { document.body.removeChild(iframe); URL.revokeObjectURL(url); } catch {} }, 60000);
+  };
+  document.body.appendChild(iframe);
 }
 
 // Print an HTML doc via a popup window (packing lists / player reports).
@@ -1847,7 +1880,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
         if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
       } catch { fail++; }
     }
-    if (labels.length) printLabels(labels);
+    if (labels.length) await printLabels(labels);
     setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
