@@ -59,13 +59,21 @@ exports.handler = async () => {
   });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Proven SanMar SOAP path — call the deployed proxy (creds live there).
-  const sm = async (service, action, body) => {
-    const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j.error) throw new Error(service + '/' + action + ': ' + (j.error || res.status));
-    return j;
+  // Retry transient failures (SanMar rate-limits / proxy hiccups) with backoff so
+  // one flaky call doesn't drop a whole style from the run.
+  const sm = async (service, action, body, tries = 3) => {
+    let lastErr;
+    for (let t = 0; t < tries; t++) {
+      try {
+        const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(service + '/' + action + ': ' + (j.error || res.status));
+        return j;
+      } catch (e) { lastErr = e; if (t < tries - 1) await sleep(600 * (t + 1)); }
+    }
+    throw lastErr;
   };
 
   try {
@@ -90,7 +98,7 @@ exports.handler = async () => {
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
       try {
-        if (i > 0) await sleep(700); // SanMar rate limit
+        if (i > 0) await sleep(900); // pace SanMar to avoid rate-limit errors
         // 1) Product info (basic + image + price), one record per style/color/size.
         const prod = await sm('product', 'getProductInfoByStyleColorSize', { style, color: '', size: '' });
         const items = arr(prod.items).map((raw) => ({ ...(raw.productBasicInfo || {}), ...(raw.productImageInfo || {}), ...(raw.productPriceInfo || {}), ...raw }));
@@ -99,10 +107,12 @@ exports.handler = async () => {
         const brandText = String(items[0].brandName || items[0].brand || 'Nike');
         if (!/nike/i.test(brandText) && !/^NK/i.test(style)) { /* still proceed, style was explicitly seeded */ }
 
-        // 2) Live inventory for the whole style (PromoStandards), keyed by color+size.
+        // 2) Live inventory for the whole style (PromoStandards getInventoryLevels),
+        //    keyed by color+size. productID = style with the default productIDtype
+        //    ('Supplier'); SanMar rejects productIDtype 'Style' ("125: Not Supported").
         const stockByCS = {}; // `${colorLower}|${sizeLabel}` -> qty
         try {
-          const inv = await sm('promostandards', 'getInventoryLevels', { productID: style, productIDtype: 'Style' });
+          const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
           const variations = arr(inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
             || inv?.ProductVariationInventoryArray?.ProductVariationInventory
             || inv?.inventory || inv?.items);
@@ -143,7 +153,8 @@ exports.handler = async () => {
             category: mapCategory(title),
             retail_price: retail,
             nsa_cost: cost,
-            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
+            // Nike shows RETAIL (MSRP) to coaches — no markup, no tier discount.
+            catalog_sell_price: retail > 0 ? retail : null,
             is_active: true,
             available_sizes: sizes,
             image_front_url: img || null,
@@ -177,7 +188,9 @@ exports.handler = async () => {
         invRows += invUpserts.length;
       } catch (e) {
         errors.push(style + ': ' + e.message);
-        if (errors.length > 25) break;
+        // Don't abort the whole 108-style run on a few transient errors; only bail
+        // if almost everything is failing (auth/outage). sm() already retries each call.
+        if (errors.length > 90) break;
       }
     }
 
