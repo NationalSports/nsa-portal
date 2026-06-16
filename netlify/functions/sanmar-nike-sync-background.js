@@ -99,10 +99,12 @@ exports.handler = async () => {
         const brandText = String(items[0].brandName || items[0].brand || 'Nike');
         if (!/nike/i.test(brandText) && !/^NK/i.test(style)) { /* still proceed, style was explicitly seeded */ }
 
-        // 2) Live inventory for the whole style (PromoStandards), keyed by color+size.
+        // 2) Live inventory for the whole style (PromoStandards getInventoryLevels),
+        //    keyed by color+size. productID = style with the default productIDtype
+        //    ('Supplier'); SanMar rejects productIDtype 'Style' ("125: Not Supported").
         const stockByCS = {}; // `${colorLower}|${sizeLabel}` -> qty
         try {
-          const inv = await sm('promostandards', 'getInventoryLevels', { productID: style, productIDtype: 'Style' });
+          const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
           const variations = arr(inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
             || inv?.ProductVariationInventoryArray?.ProductVariationInventory
             || inv?.inventory || inv?.items);
