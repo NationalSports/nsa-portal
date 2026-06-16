@@ -59,13 +59,21 @@ exports.handler = async () => {
   });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Proven SanMar SOAP path — call the deployed proxy (creds live there).
-  const sm = async (service, action, body) => {
-    const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j.error) throw new Error(service + '/' + action + ': ' + (j.error || res.status));
-    return j;
+  // Retry transient failures (SanMar rate-limits / proxy hiccups) with backoff so
+  // one flaky call doesn't drop a whole style from the run.
+  const sm = async (service, action, body, tries = 3) => {
+    let lastErr;
+    for (let t = 0; t < tries; t++) {
+      try {
+        const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(service + '/' + action + ': ' + (j.error || res.status));
+        return j;
+      } catch (e) { lastErr = e; if (t < tries - 1) await sleep(600 * (t + 1)); }
+    }
+    throw lastErr;
   };
 
   try {
@@ -90,7 +98,7 @@ exports.handler = async () => {
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
       try {
-        if (i > 0) await sleep(700); // SanMar rate limit
+        if (i > 0) await sleep(900); // pace SanMar to avoid rate-limit errors
         // 1) Product info (basic + image + price), one record per style/color/size.
         const prod = await sm('product', 'getProductInfoByStyleColorSize', { style, color: '', size: '' });
         const items = arr(prod.items).map((raw) => ({ ...(raw.productBasicInfo || {}), ...(raw.productImageInfo || {}), ...(raw.productPriceInfo || {}), ...raw }));
@@ -179,7 +187,9 @@ exports.handler = async () => {
         invRows += invUpserts.length;
       } catch (e) {
         errors.push(style + ': ' + e.message);
-        if (errors.length > 25) break;
+        // Don't abort the whole 108-style run on a few transient errors; only bail
+        // if almost everything is failing (auth/outage). sm() already retries each call.
+        if (errors.length > 90) break;
       }
     }
 
