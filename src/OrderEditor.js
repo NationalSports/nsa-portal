@@ -91,6 +91,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
   const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  // Approve a job's art, routing it to either 'art_complete' (a production separation is CONFIRMED)
+  // or its production-files stage (the artist still owes the separation). stampProd marks the
+  // per-design prod_files_attached flag so a confirmed job stays out of the seps stage on the next
+  // buildJobs pass. The approve / "mark complete" actions gate on artProdFilesConfirmed first and
+  // open the artApproveGate prompt when nothing is confirmed — a vector .ai merely sitting in
+  // prod_files is NOT a production separation and must never silently complete the job.
+  const _approveArtTo=(jobId,artIds,targetStatus,stampProd)=>{
+    const curO=oRef.current;
+    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
+    const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
+    const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');
+    nf('✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
+  };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.
   const jobGarmentLines=(jj)=>(jj.items||[]).map(gi=>{
@@ -355,6 +369,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Validation runs in uSz on blur instead — see input at the size grid below.
   const[sizingDraft,setSizingDraft]=useState({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
+  const[artApproveGate,setArtApproveGate]=useState(null);// {jobId,artIds,deco,artName} — production-files gate shown when approving/completing art that has no CONFIRMED separation (a vector .ai in prod_files is not one)
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
   const[vendorModal,setVendorModal]=useState(null);// {itemIdx} — reassign which vendor an item is ordered from
@@ -5347,6 +5362,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>;
     })()}
 
+    {/* PRODUCTION-FILES GATE — approving / completing art with no CONFIRMED separation.
+        A file simply sitting in the production folder (e.g. a vector .ai mockup) is NOT the
+        print-ready separation, so the rep must explicitly say which path applies. */}
+    {artApproveGate&&(()=>{const g=artApproveGate;const _deco=g.deco||'screen_print';const _seps=prodFilesStatusFor(_deco);const _emb=_deco==='embroidery';const _dtf=_deco==='dtf'||_deco==='heat_press';
+      const _sepWord=_emb?'embroidery (DST) file':_dtf?'DTF transfer':'print-ready color separation';
+      return<div className="modal-overlay" onClick={()=>setArtApproveGate(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>🏭 Production File Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>No production separation is confirmed for <strong>{g.artName||'this design'}</strong>. A file in the production folder isn't automatically the separation — a vector <strong>.ai</strong> or mockup is <em>not</em> a {_sepWord}. How do you want to proceed?</div>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            <button type="button" onClick={()=>{_approveArtTo(g.jobId,g.artIds,'art_complete',true);setArtApproveGate(null)}} style={{textAlign:'left',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #86efac',borderRadius:10,cursor:'pointer'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>✅ The production file is attached</div>
+              <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>I've added the {_sepWord}. Confirm it and send the job straight to production.</div>
+            </button>
+            <button type="button" onClick={()=>{_approveArtTo(g.jobId,g.artIds,_seps,false);setArtApproveGate(null)}} style={{textAlign:'left',padding:'12px 16px',background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:10,cursor:'pointer'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>🎨 Send to artist for the production file</div>
+              <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>Approve the art, but the artist still needs to create the {_sepWord} before it can go to production.</div>
+            </button>
+          </div>
+        </div>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setArtApproveGate(null)}>Cancel</button></div>
+      </div></div>;
+    })()}
+
     {/* ROSTER UPLOAD DRAG & DROP MODAL */}
     {rosterUploadModal&&(()=>{const rum=rosterUploadModal;
       const processFile=(f)=>{if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
@@ -7782,7 +7821,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>)}
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const _apArtIds=j._art_ids||[j.art_file_id].filter(Boolean);const _allReady=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));const _apDeco=(af.find(a=>a.id===j.art_file_id)?.deco_type)||j.deco_type;const _apSt=_allReady?'art_complete':prodFilesStatusFor(_apDeco);const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:_apSt,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — '+(_apSt==='art_complete'?'production files attached, ready for production!':_apSt==='order_dtf_transfers'?'order DTF transfers':_apSt==='upload_emb_files'?'upload embroidery files':'awaiting prod files'))}}>✅ Approve Artwork</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));if(_apArtIds.length===0||_allConfirmed){_approveArtTo(j.id,_apArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
@@ -7801,7 +7840,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {(PROD_FILES_STATUSES.includes(j.art_status)||_unconfirmedProd)&&(()=>{const _pIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _pDeco=(af.find(a=>_pIds.includes(a.id))?.deco_type)||j.deco_type;const _pEmb=_pDeco==='embroidery';const _pDtf=_pDeco==='dtf'||_pDeco==='heat_press';const _pTarget=_pIds[0];const _pPFCount=_pIds.reduce((n,aid)=>{const a=af.find(x=>x.id===aid);return n+((a?.prod_files||[]).length)},0);const _pDst=_pIds.some(aid=>{const a=af.find(x=>x.id===aid);return a&&[...(a.prod_files||[]),...(a.files||[])].some(isDstFile)});const _pTitle=_pEmb?(_pDst?'Art Approved — DST On File':'Art Approved — Upload Embroidery Production Files'):_pDtf?'Art Approved — Order DTF Transfers':'Art Approved — Waiting for Production Files';const _pMsg=_pEmb?(_pDst?'The coach approved this art and a DST is already attached — production files are ready. Mark complete to send it to production.':'The coach approved this art. Upload the DST + PDF for the printer, then mark it complete. Already sent them? Just mark complete.'):_pDtf?'The coach approved this art. Order the DTF transfer films, then click Films Ordered to complete this job.':'The artist needs to upload final production files before this job can go to production.';
               const _completeEmb=()=>{const curO=oRef.current;const _by=cu?.name||'Rep';const updArt2=(curO.art_files||[]).map(a=>{if(!_pIds.includes(a.id))return a;return(a.prod_files||[]).length>0?{...a,status:'approved',prod_files_attached:true}:{...a,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🧵 Embroidery production files marked complete')};
               const _orderDtf=()=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>_pIds.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🎞️ DTF films marked ordered — art complete')};
-              const _completeProd=()=>{const curO=oRef.current;const updArt2=(curO.art_files||[]).map(a=>_pIds.includes(a.id)?{...a,status:'approved',prod_files_attached:true}:a);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('✅ Art complete — production files attached')};
               const _uploadEmb=()=>{setDstUploadModal({target:_pTarget})};
               return<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -7820,7 +7858,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#0891b2',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_orderDtf}>🎞️ Films Ordered — Mark Complete</button>
               </div>}
               {!_pEmb&&!_pDtf&&(_pPFCount>0||_pDst)&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_completeProd}>✓ Production Files Attached — Mark Art Complete</button>
+                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>setArtApproveGate({jobId:j.id,artIds:_pIds,deco:_pDeco,artName:j.art_name})}>✓ Mark Art Complete</button>
               </div>}
             </div>;})()}
             {j.art_status==='art_complete'&&!_needsMockCheck&&!_unconfirmedProd&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
@@ -8007,7 +8045,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#dc2626',color:'white',border:'none',padding:'3px 8px',marginRight:4}} onClick={()=>{const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}}>Recall Art</button>}
                 {hasAnyReqs&&<button className="btn btn-sm" style={{fontSize:10,background:'#6d28d9',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}>
                   Update Art</button>}</>})()}
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=j._art_ids||[j.art_file_id].filter(Boolean);const _allReady=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));const _apDeco=(af.find(a=>(j._art_ids||[j.art_file_id]).includes(a.id))?.deco_type)||j.deco_type;const _apSt=_allReady?'art_complete':prodFilesStatusFor(_apDeco);const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:_apSt,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=_appArtIds.length>0?af.map(a=>_appArtIds.includes(a.id)?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art approved — '+(_apSt==='art_complete'?'production files attached, ready for production!':_apSt==='order_dtf_transfers'?'order DTF transfers':_apSt==='upload_emb_files'?'upload embroidery files':'awaiting prod files'))}}>Approve Art</button>}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apDeco=(af.find(a=>_appArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));if(_appArtIds.length===0||_allConfirmed){_approveArtTo(j.id,_appArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_appArtIds,deco:_apDeco,artName:j.art_name})}}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
