@@ -349,7 +349,7 @@ function Styles() {
         .ai-sizecell .avail{font-size:10.5px;font-weight:700;line-height:1}
         .ai-qtyin{width:44px;border:1px solid #D8DCE2;border-radius:6px;padding:3px 2px;font-size:12.5px;font-weight:700;text-align:center;font-family:inherit;outline:none;background:#fff}
         .ai-qtyin:focus{border-color:#191919}
-        .ai-qtyin:not(:placeholder-shown){border-color:#191919;background:#191919;color:#fff}
+        .ai-qtyin:not(:placeholder-shown){border-color:#191919;background:#fff;color:#191919}
         @keyframes ai-toast-in{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       `}</style>
     </>
