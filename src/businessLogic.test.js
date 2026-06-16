@@ -941,6 +941,23 @@ describe('Job Building', () => {
     const jobs = buildJobs(so);
     expect(jobs[0].art_status).toBe('waiting_approval');
   });
+
+  test('qty_only item (Custom — no size breakdown) totals its est_qty, not 0', () => {
+    // Regression: a custom / no-size-breakdown line keeps its quantity in est_qty with an empty
+    // sizes map. Summing sizes yields 0, so the job showed "0 items" even with real OSFA quantity.
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 10,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }],
+      })],
+      art_files: [makeArtFile()],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+    expect(jobs[0].items[0].units).toBe(10);
+  });
 });
 
 // ═══════════════════════════════════════════════

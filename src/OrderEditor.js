@@ -2245,7 +2245,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const sibBefore=splitDeco?safeDecos(it).filter((dd,ddi)=>dd!==splitDeco&&dd.split_group===splitDeco.split_group&&dd.split_sizes&&ddi<decos[0].di):[];
         const baseSizes=splitDeco?(splitDeco.split_sizes||{}):safeSizes(it);
         let itemTotal=0,itemFulfilled=0;const giSizes={};
-        Object.entries(baseSizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+        // qty_only items (Custom — no size breakdown) hold their quantity in est_qty with an empty
+        // sizes map; POs/picks track them under a single 'QTY' bucket. Mirror allocateJobFulfillment /
+        // jItemStatus so the job totals its units and counts receipts instead of reading 0/0. Split-art
+        // decos always carry real split_sizes, so this fallback only ever applies to size-less lines.
+        let szEntries=Object.entries(baseSizes).filter(([,v])=>safeNum(v)>0);
+        if(!splitDeco&&szEntries.length===0&&safeNum(it.est_qty)>0)szEntries=[['QTY',safeNum(it.est_qty)]];
+        szEntries.forEach(([sz,v])=>{
           const cap=safeNum(v);itemTotal+=cap;giSizes[sz]=cap;
           const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
@@ -2364,7 +2370,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // item size/receiving edits — without re-splitting the hand-merged grouping.
     const recalcedMerged=mergedJobs.map(j=>{
       let total=0,fulfilled=0;
-      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
