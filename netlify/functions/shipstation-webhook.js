@@ -66,17 +66,25 @@ exports.handler = async (event) => {
         if (existing && existing.length) continue;
       }
 
-      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null }));
+      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null, lineItemKey: i.lineItemKey || null }));
       await sb.from('webstore_shipments').insert({
         order_id: order.id, store_id: order.store_id, tracking_number: tracking,
         carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
         items: shipItems, emailed: false,
       });
 
-      // Mark shipped line items (match by sku); flag the order shipped.
+      // Mark the exact shipped lines. Prefer lineItemKey (the order-item id we
+      // set when creating the order) so partial shipments — incl. the same SKU
+      // in different sizes — mark only the lines that actually went out. Fall
+      // back to SKU match for any older orders created without a key.
+      const lineKeys = shipItems.map((i) => i.lineItemKey).filter(Boolean);
       const skus = shipItems.map((i) => i.sku).filter(Boolean);
-      if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
-      await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, shipped_at: new Date().toISOString() }).eq('id', order.id);
+      if (lineKeys.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('id', lineKeys);
+      else if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
+      // Only stamp the order as fully shipped once every (non-bundle) line is shipped.
+      const { data: remaining } = await sb.from('webstore_order_items').select('id').eq('order_id', order.id).eq('is_bundle_parent', false).neq('line_status', 'shipped').neq('line_status', 'cancelled');
+      const fullyShipped = !remaining || remaining.length === 0;
+      await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', order.id);
 
       // Email the buyer.
       if (order.buyer_email) await sendShipEmail(sb, order, sh, shipItems, tracking);

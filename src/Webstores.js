@@ -140,6 +140,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
     billTo: { name: order.buyer_name || a.name || 'Customer' },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
+      lineItemKey: i.id, // echoed back on the shipment so the webhook marks the exact line shipped
       sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
@@ -2059,13 +2060,14 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
+              const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
               <React.Fragment key={o.id}>
               <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
-                <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
+                <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
@@ -2077,7 +2079,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
                 <tr style={{ background: '#f8fafc' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
                         {lineItems.map((i) => (
                           <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
@@ -2085,6 +2087,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
+                            <td style={td}>{i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
                             <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
                           </tr>
                         ))}

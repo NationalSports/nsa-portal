@@ -355,7 +355,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       orderNumber: 'WS-' + o.id, orderKey: 'ws-' + o.id, orderDate: o.created_at || new Date().toISOString(), orderStatus: 'awaiting_shipment',
       customerUsername: storeName || saleCode, customerEmail: o.buyer_email || '', billTo: { name: o.buyer_name || a.name || 'Customer' },
       shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '', residential: true },
-      items: o.items.map((i) => ({ sku: i.sku || '', name: [i.name || i.sku, i.size && ('Size ' + i.size), i.player_name].filter(Boolean).join(' · '), quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0, imageUrl: i.image_url || undefined, options: [i.size && { name: 'Size', value: i.size }, i.color && { name: 'Color', value: i.color }].filter(Boolean) })),
+      items: o.items.map((i) => ({ lineItemKey: i.id, sku: i.sku || '', name: [i.name || i.sku, i.size && ('Size ' + i.size), i.player_name].filter(Boolean).join(' · '), quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0, imageUrl: i.image_url || undefined, options: [i.size && { name: 'Size', value: i.size }, i.color && { name: 'Color', value: i.color }].filter(Boolean) })),
       amountPaid: Number(o.total) || 0,
       advancedOptions: { source: 'NSA OMG', customField1: storeName || '', customField2: saleCode || '', ...(store && store.shipstation_store_id ? { storeId: Number(store.shipstation_store_id) || undefined } : {}) },
     };
@@ -440,9 +440,13 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
         const { labelData, trackingNumber, carrier, cost } = await createOmgLabel(o, shipItems);
         if (labelData) labels.push(labelData);
         runCost += Number(cost) || 0;
-        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, shipped_at: new Date().toISOString() }).eq('id', o.id);
         const shipIds = shipItems.map((i) => i.id);
         if (shipIds.length) await supabase.from('webstore_order_items').update({ line_status: 'shipped' }).in('id', shipIds);
+        // Stamp shipped_at only when the whole order is out the door — held short
+        // lines keep it open so "what's still to ship" stays visible.
+        const shippedSet = new Set(shipIds);
+        const fullyShipped = o.items.every((i) => i.line_status === 'shipped' || shippedSet.has(i.id));
+        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
       } catch { fail++; }
     }
     await addCostToSO(runCost);
@@ -667,7 +671,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                             : <td style={{ ...td, textAlign: 'center' }} title={o.buyer_email || 'No email — expand to add'}>{o.buyer_email
                                 ? <span style={{ color: o.processing_email_sent ? '#166534' : '#16a34a', fontSize: 14 }}>{o.processing_email_sent ? '✓' : '●'}</span>
                                 : <span style={{ color: '#dc2626', fontSize: 14 }} title="No email">⚠</span>}</td>}
-                          <td style={td}>{o.items.length}{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {missing} short</span>}</td>
+                          <td style={td}>{(() => { const shp = o.items.filter((i) => i.line_status === 'shipped').length; return <>{o.items.length}{shp > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shp} shipped</span>}{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {missing} short</span>}</>; })()}</td>
                           <td style={td}><StatusPill s={st} /></td>
                           <td style={td}>{money(o.total)}</td>
                           <td style={td} onClick={(e) => e.stopPropagation()}>
@@ -714,7 +718,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
-                                  {['Item', 'Color', 'Size', 'Qty', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
+                                  {['Item', 'Color', 'Size', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
                                 </tr></thead>
                                 <tbody>
                                   {o.items.map((i) => (
@@ -723,6 +727,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                       <td style={td}>{i.color || '—'}</td>
                                       <td style={td}>{i.size || '—'}</td>
                                       <td style={td}>{i.qty}</td>
+                                      <td style={td}>{i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
                                       <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(o.id, i.id, e.target.value)} style={{ ...cell, width: 64, ...(Number(i.missing_qty) > 0 ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} /></td>
                                     </tr>
                                   ))}
