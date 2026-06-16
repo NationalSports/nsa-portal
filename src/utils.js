@@ -1,6 +1,7 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
 import { supabase as _sbAuthClient } from './lib/supabase';
+import { PDFDocument } from 'pdf-lib';
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
@@ -251,6 +252,32 @@ export const printDoc=opts=>{
 // from api.qrserver.com; we wait for it to finish loading (with a safety
 // timeout) before triggering print, otherwise the browser prints an empty
 // box where the QR should be.
+// Merge an array of base64 PDF labels into one multi-page document and print it
+// via a hidden iframe. Chrome doesn't reliably rasterize stacked <embed> PDF
+// plugins, so a single combined PDF is the dependable path on the PC where bulk
+// printing happens. Falls back to opening the merged PDF in a new tab.
+export const printPdfLabels=async(base64List)=>{
+  const list=(base64List||[]).filter(Boolean);
+  if(!list.length)return;
+  const out=await PDFDocument.create();
+  for(const b64 of list){
+    const bytes=Uint8Array.from(atob(String(b64).replace(/\s/g,'')),(c)=>c.charCodeAt(0));
+    const src=await PDFDocument.load(bytes);
+    const pages=await out.copyPages(src,src.getPageIndices());
+    pages.forEach((p)=>out.addPage(p));
+  }
+  const url=URL.createObjectURL(new Blob([await out.save()],{type:'application/pdf'}));
+  const iframe=document.createElement('iframe');
+  iframe.style.display='none';
+  iframe.src=url;
+  iframe.onload=()=>{
+    try{iframe.contentWindow.focus();iframe.contentWindow.print();}
+    catch(e){window.open(url,'_blank');}
+    setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(url);}catch{}},60000);
+  };
+  document.body.appendChild(iframe);
+};
+
 export const printQrLabel=({id,qrData,lines,shipBadge})=>{
   const w=window.open('','_blank','width=420,height=620');if(!w)return;
   const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');

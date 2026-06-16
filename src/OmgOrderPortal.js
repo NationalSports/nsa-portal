@@ -13,9 +13,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
-import { authFetch } from './utils';
+import { authFetch, printPdfLabels } from './utils';
+import { NSA } from './constants';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -171,7 +173,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO }) {
   // Ship-to-school stores are bulk-delivered to the club; no per-player labels.
   const shipToSchool = deliveryMode === 'deliver_school';
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
@@ -378,6 +380,78 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     flash(`Pushed ${ok} order(s) to ShipStation${fail ? `, ${fail} failed` : ''}.`, fail ? 'err' : 'ok');
   };
 
+  // ── In-portal label creation (bulk shipping happens here, not in ShipStation).
+  // Lines flagged short (missing_qty > 0) are held; already-shipped lines are
+  // skipped so re-runs ship only what's newly in-hand and the order stays open
+  // until everything goes out. Label cost is summed onto the related SO. ──
+  const shippableLines = (o) => o.items.filter((i) => i.line_status !== 'shipped' && (Number(i.missing_qty) || 0) === 0 && (Number(i.qty) || 0) > 0);
+
+  const createOmgLabel = async (o, shipItems) => {
+    const a = o.ship_address || {};
+    const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssPayload({ ...o, items: shipItems })) });
+    const orderId = ss && ss.orderId;
+    if (!orderId) throw new Error('ShipStation order not created');
+    if (store && Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
+    const cm = SS_CARRIERS[((store && store.shipstation_carrier) || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+    const payload = {
+      orderId, carrierCode: cm.carrierCode, serviceCode: (store && store.shipstation_service) || cm.serviceCode,
+      packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+      weight: { value: Math.max(0.1, Number(store && store.label_weight_lbs) || 1), units: 'pounds' },
+      shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
+      shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '' },
+      testLabel: false,
+    };
+    const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
+    return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  };
+
+  // Add this run's label spend to the related Sales Order's outbound shipping
+  // cost. Prefer the exact SO shown in the portal (soSync.soId); fall back to the
+  // newest SO linked by omg_store_id = 'OMG-sale_<code>' (a store can have more
+  // than one if its SO was redone, so never assume a single row).
+  const addCostToSO = async (runCost) => {
+    if (!(runCost > 0)) return;
+    try {
+      let so = null;
+      if (soSync && soSync.soId) {
+        const { data } = await supabase.from('sales_orders').select('id,_shipping_cost,_shipstation_cost').eq('id', soSync.soId).maybeSingle();
+        so = data || null;
+      }
+      if (!so) {
+        const { data } = await supabase.from('sales_orders').select('id,_shipping_cost,_shipstation_cost').eq('omg_store_id', 'OMG-sale_' + saleCode).order('created_at', { ascending: false }).limit(1);
+        so = (data && data[0]) || null;
+      }
+      if (!so) return;
+      const next = (Number(so._shipping_cost) || Number(so._shipstation_cost) || 0) + runCost;
+      await supabase.from('sales_orders').update({ _shipping_cost: next, _shipstation_cost: next }).eq('id', so.id);
+    } catch {}
+  };
+
+  const printOmgLabels = async (subset) => {
+    if (shipToSchool) { flash('Ship-to-school store — bulk delivery, no per-player labels.', 'err'); return; }
+    const pool = subset || orders;
+    const eligible = pool.filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip && shippableLines(o).length);
+    if (!eligible.length) { flash('Nothing ready to ship — add addresses, or every in-hand line is already labeled.', 'err'); return; }
+    setBusy('labels');
+    const labels = []; let fail = 0, runCost = 0;
+    for (const o of eligible) {
+      const shipItems = shippableLines(o);
+      try {
+        const { labelData, trackingNumber, carrier, cost } = await createOmgLabel(o, shipItems);
+        if (labelData) labels.push(labelData);
+        runCost += Number(cost) || 0;
+        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, shipped_at: new Date().toISOString() }).eq('id', o.id);
+        const shipIds = shipItems.map((i) => i.id);
+        if (shipIds.length) await supabase.from('webstore_order_items').update({ line_status: 'shipped' }).in('id', shipIds);
+      } catch { fail++; }
+    }
+    await addCostToSO(runCost);
+    if (labels.length) await printPdfLabels(labels);
+    await loadOrders(store);
+    setBusy('');
+    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${runCost > 0 ? ` · ${money(runCost)} added to the Sales Order` : ''}.`, fail ? 'err' : 'ok');
+  };
+
   const updateDraft = (idx, field, value) => setDraftContacts((cs) => cs.map((c, i) => i === idx ? { ...c, [field]: value } : c));
   // Map order number → its parsed-slip draft index, so the orders table itself
   // becomes the review surface (one section instead of a separate grid).
@@ -555,6 +629,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
               {soSync && soSync.storeStage
                 ? <span style={{ fontSize: 11.5, color: '#166534', fontWeight: 700 }}>🔄 Auto-syncing from SO {soSync.soId} · {soSync.soStatus.replace(/_/g, ' ')}</span>
                 : <span style={{ fontSize: 11.5, color: '#94a3b8' }}>🔄 Status auto-syncs from the Sales Order during fulfillment</span>}
+              {soSync && soSync.soId && onOpenSO && <button onClick={onOpenSO} style={{ ...linkBtn, color: '#2563eb', fontWeight: 700 }} title="Open the linked Sales Order">📋 Open SO {soSync.soId} →</button>}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
               {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
@@ -563,7 +638,10 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               {shipToSchool
                 ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
-                : <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }}>{busy === 'ss-all' ? 'Pushing…' : `🚚 Push ${withAddress} to ShipStation`}</button>}
+                : <>
+                    <button onClick={() => printOmgLabels()} disabled={busy === 'labels' || !withAddress} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: withAddress ? 'pointer' : 'not-allowed', opacity: withAddress ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${withAddress} label${withAddress === 1 ? '' : 's'}`}</button>
+                    <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }} title="Alternative: push to ShipStation and buy the labels there instead">{busy === 'ss-all' ? 'Pushing…' : '🚚 Push to ShipStation'}</button>
+                  </>}
             </div>}
 
             {/* Orders table (expandable) — doubles as the contact-review surface */}
@@ -630,6 +708,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                 ))}
                                 {!shipToSchool && <>
                                   <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
+                                  <button onClick={() => printOmgLabels([o])} disabled={busy === 'labels'} style={{ padding: '7px 13px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{busy === 'labels' ? 'Creating…' : '🏷️ Create & print label'}</button>
                                   <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
                                 </>}
                               </div>}

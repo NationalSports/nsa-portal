@@ -1,10 +1,9 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
-import { PDFDocument } from 'pdf-lib';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -90,42 +89,17 @@ function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
   </body></html>`);
 }
 
-// Merge per-order ShipStation base64 PDFs into one multi-page 4x6 document.
-// Chrome doesn't reliably rasterize stacked <embed> PDF plugins when printing,
-// so we hand the browser a single combined PDF instead.
-async function mergeLabelPdfs(base64List) {
-  const out = await PDFDocument.create();
-  for (const b64 of base64List) {
-    const bytes = Uint8Array.from(atob(String(b64).replace(/\s/g, '')), (c) => c.charCodeAt(0));
-    const src = await PDFDocument.load(bytes);
-    const pages = await out.copyPages(src, src.getPageIndices());
-    pages.forEach((p) => out.addPage(p));
-  }
-  return out.save();
-}
-
-// Merge the labels into one PDF and print it via a hidden iframe — the same
-// approach the single-label flow uses, which prints reliably on Chrome. Falls
-// back to the stacked-embed window if the merge fails for any reason.
+// Merge the per-order ShipStation base64 PDFs into one document and print it.
+// Chrome doesn't reliably rasterize stacked <embed> PDF plugins, so we hand the
+// browser a single combined PDF (shared with the OMG label flow). Falls back to
+// the stacked-embed window if the merge fails for any reason.
 async function printLabels(labels) {
-  let url;
   try {
-    const bytes = await mergeLabelPdfs(labels);
-    url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    await printPdfLabels(labels);
   } catch (e) {
     const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
     printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
-    return;
   }
-  const iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = url;
-  iframe.onload = () => {
-    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
-    catch (e) { window.open(url, '_blank'); }
-    setTimeout(() => { try { document.body.removeChild(iframe); URL.revokeObjectURL(url); } catch {} }, 60000);
-  };
-  document.body.appendChild(iframe);
 }
 
 // Print an HTML doc via a popup window (packing lists / player reports).
@@ -1872,16 +1846,19 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
-    const labels = []; let fail = 0;
+    const labels = []; let fail = 0, held = 0;
     for (const g of groups) {
+      // Hold lines flagged short — ship what's in hand; the order stays open.
+      const shipItems = g.items.filter((i) => (Number(i.missing_qty) || 0) === 0);
+      if (!shipItems.length) { held++; continue; }
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store, weightByPid, imageByPid);
+        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, shipItems, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
         if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
       } catch { fail++; }
     }
     if (labels.length) await printLabels(labels);
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}.` }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}${held ? `, ${held} held (all lines short)` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -2057,6 +2034,18 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
   const [fPay, setFPay] = useState('all');         // all | paid | unpaid
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
   const [editId, setEditId] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [, setTick] = useState(0);
+  const colCount = 9 + (numbersEnabled ? 1 : 0);
+  // Flag a line short. Mutate the shared item object so the Batches tab's ship
+  // flow (which reads the same orderItems references) holds it back without a
+  // reload, then persist and re-render.
+  const setItemMissing = async (item, v) => {
+    const q = Math.max(0, Math.min(Number(item.qty) || 0, Number(v) || 0));
+    item.missing_qty = q;
+    setTick((t) => t + 1);
+    try { await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', item.id); } catch {}
+  };
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const enrich = (o) => {
@@ -2095,22 +2084,51 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
+            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {filtered.map(({ o, items, players, numbers, lineStatus }) => (
-              <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+            {filtered.map(({ o, items, players, numbers, lineStatus }) => {
+              const isOpen = expanded === o.id;
+              const lineItems = items.filter((i) => !i.is_bundle_parent);
+              const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
+              return (
+              <React.Fragment key={o.id}>
+              <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
-                <td style={td}>{items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0)}</td>
+                <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
                 <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
-                <td style={{ ...td, textAlign: 'right' }}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
+                <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
-            ))}
+              {isOpen && (
+                <tr style={{ background: '#f8fafc' }}>
+                  <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {lineItems.map((i) => (
+                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                            <td style={td}>{i.sku || i.name || '—'}</td>
+                            <td style={td}>{i.size || '—'}</td>
+                            <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
+                            <td style={td}>{i.qty}</td>
+                            <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div></div>
