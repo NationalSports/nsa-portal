@@ -25,6 +25,14 @@ describe('artProdFilesConfirmed — explicit gate for skipping the separations s
     expect(artProdFilesConfirmed(af)).toBe(false); // approval must not skip the stage
   });
 
+  test('a vector .ai in the production folder is NOT the separation (reported: "Crest Only White.ai")', () => {
+    // The system "sees a file located in the production folder and assumes it's THE production file."
+    // A vector/mockup .ai is not a print-ready separation, so approval must prompt — not auto-complete.
+    const af = { deco_type: 'screen_print', prod_files: [{ url: 'http://x/Crest Only White.ai', name: 'Crest Only White.ai' }] };
+    expect(artProdFilesReady(af)).toBe(true); // a file IS present in the folder
+    expect(artProdFilesConfirmed(af)).toBe(false); // but it is not confirmed — the gate must open
+  });
+
   test('checked checkbox (prod_files_attached) confirms', () => {
     const af = { deco_type: 'screen_print', prod_files: [], prod_files_attached: true };
     expect(artProdFilesConfirmed(af)).toBe(true);
