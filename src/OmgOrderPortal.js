@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
-import { authFetch, printPdfLabels, labelWeightLbs } from './utils';
+import { authFetch, printPdfLabels, labelWeightLbs, validateShipAddress } from './utils';
 import { NSA } from './constants';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -384,10 +384,15 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   // Lines flagged short (missing_qty > 0) are held; already-shipped lines are
   // skipped so re-runs ship only what's newly in-hand and the order stays open
   // until everything goes out. Label cost is summed onto the related SO. ──
-  const shippableLines = (o) => o.items.filter((i) => i.line_status !== 'shipped' && (Number(i.missing_qty) || 0) === 0 && (Number(i.qty) || 0) > 0);
+  // Units still to ship on a line = ordered − already shipped − short-right-now.
+  const shipPlan = (o) => o.items.map((i) => {
+    const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0);
+    return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) };
+  }).filter((x) => x.qty > 0);
 
-  const createOmgLabel = async (o, shipItems) => {
+  const createOmgLabel = async (o, plan) => {
     const a = o.ship_address || {};
+    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
     const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssPayload({ ...o, items: shipItems })) });
     const orderId = ss && ss.orderId;
     if (!orderId) throw new Error('ShipStation order not created');
@@ -402,15 +407,15 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       testLabel: false,
     };
     const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-    return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+    return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
   };
 
-  // Add this run's label spend to the related Sales Order's outbound shipping
-  // cost. Prefer the exact SO shown in the portal (soSync.soId); fall back to the
-  // newest SO linked by omg_store_id = 'OMG-sale_<code>' (a store can have more
-  // than one if its SO was redone, so never assume a single row).
-  const addCostToSO = async (runCost) => {
-    if (!(runCost > 0)) return;
+  // Adjust the related Sales Order's outbound shipping cost by `delta` (label
+  // spend adds, a void subtracts). Prefer the exact SO shown in the portal
+  // (soSync.soId); fall back to the newest SO linked by omg_store_id (a store can
+  // have more than one if its SO was redone, so never assume a single row).
+  const adjustSOCost = async (delta) => {
+    if (!delta) return;
     try {
       let so = null;
       if (soSync && soSync.soId) {
@@ -422,7 +427,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
         so = (data && data[0]) || null;
       }
       if (!so) return;
-      const next = (Number(so._shipping_cost) || Number(so._shipstation_cost) || 0) + runCost;
+      const next = Math.max(0, (Number(so._shipping_cost) || Number(so._shipstation_cost) || 0) + delta);
       await supabase.from('sales_orders').update({ _shipping_cost: next, _shipstation_cost: next }).eq('id', so.id);
     } catch {}
   };
@@ -430,30 +435,62 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const printOmgLabels = async (subset) => {
     if (shipToSchool) { flash('Ship-to-school store — bulk delivery, no per-player labels.', 'err'); return; }
     const pool = subset || orders;
-    const eligible = pool.filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip && shippableLines(o).length);
-    if (!eligible.length) { flash('Nothing ready to ship — add addresses, or every in-hand line is already labeled.', 'err'); return; }
+    let badAddr = 0;
+    const eligible = pool.filter((o) => {
+      if (!shipPlan(o).length) return false;
+      if (validateShipAddress(o.ship_address)) { badAddr++; return false; } // skip undeliverable addresses
+      return true;
+    });
+    if (!eligible.length) { flash(badAddr ? `${badAddr} order(s) have an incomplete/invalid address — fix it first.` : 'Nothing ready to ship — everything is shipped or short.', 'err'); return; }
     setBusy('labels');
     const labels = []; let fail = 0, runCost = 0;
     for (const o of eligible) {
-      const shipItems = shippableLines(o);
+      const plan = shipPlan(o);
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createOmgLabel(o, shipItems);
+        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createOmgLabel(o, plan);
         if (labelData) labels.push(labelData);
         runCost += Number(cost) || 0;
-        const shipIds = shipItems.map((i) => i.id);
-        if (shipIds.length) await supabase.from('webstore_order_items').update({ line_status: 'shipped' }).in('id', shipIds);
-        // Stamp shipped_at only when the whole order is out the door — held short
-        // lines keep it open so "what's still to ship" stays visible.
-        const shippedSet = new Set(shipIds);
-        const fullyShipped = o.items.every((i) => i.line_status === 'shipped' || shippedSet.has(i.id));
-        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
+        // Optimistically advance each shipped line so a quick re-click won't
+        // double-ship; the webhook later reconciles shipped_qty from the
+        // recorded shipment, so this never double-counts.
+        for (const x of plan) {
+          const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0);
+          await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id);
+          i.shipped_qty = sq; if (done) i.line_status = 'shipped';
+        }
+        const fullyShipped = o.items.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
       } catch { fail++; }
     }
-    await addCostToSO(runCost);
+    await adjustSOCost(runCost);
     if (labels.length) await printPdfLabels(labels);
     await loadOrders(store);
     setBusy('');
-    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${runCost > 0 ? ` · ${money(runCost)} added to the Sales Order` : ''}.`, fail ? 'err' : 'ok');
+    flash(`${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${badAddr ? `, ${badAddr} skipped (bad address)` : ''}${runCost > 0 ? ` · ${money(runCost)} to the SO` : ''}.`, fail ? 'err' : 'ok');
+  };
+
+  // Reprint the last saved label for one order — no re-buy.
+  const reprintOmgLabel = async (o) => {
+    if (!o.label_data) { flash('No saved label to reprint — create the label first.', 'err'); return; }
+    try { await printPdfLabels([o.label_data]); } catch { flash('Could not open the label.', 'err'); }
+  };
+
+  // Void the last label in ShipStation and roll the order's shipping back.
+  const voidOmgLabel = async (o) => {
+    if (!o.shipstation_shipment_id) { flash('No ShipStation shipment on file to void.', 'err'); return; }
+    if (!window.confirm(`Void the label for order ${o.omg_order_number}? This cancels it in ShipStation and reopens the order.`)) return;
+    setBusy('void-' + o.id);
+    try {
+      const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
+      if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
+      // Roll back the shipped lines and the order's ship fields. (Voids the
+      // whole order's last shipment; multi-shipment split-voids aren't tracked.)
+      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
+      if (Number(o.label_cost)) await adjustSOCost(-Number(o.label_cost));
+      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
+      await loadOrders(store);
+      flash(`Label voided for ${o.omg_order_number}.`);
+    } catch (e) { flash('Void failed: ' + e.message, 'err'); } finally { setBusy(''); }
   };
 
   const updateDraft = (idx, field, value) => setDraftContacts((cs) => cs.map((c, i) => i === idx ? { ...c, [field]: value } : c));
@@ -713,6 +750,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                 {!shipToSchool && <>
                                   <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
                                   <button onClick={() => printOmgLabels([o])} disabled={busy === 'labels'} style={{ padding: '7px 13px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{busy === 'labels' ? 'Creating…' : '🏷️ Create & print label'}</button>
+                                  {o.label_data && <button onClick={() => reprintOmgLabel(o)} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>🔁 Reprint</button>}
+                                  {o.shipstation_shipment_id && <button onClick={() => voidOmgLabel(o)} disabled={busy === 'void-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5, color: '#b91c1c', borderColor: '#fecaca' }}>{busy === 'void-' + o.id ? 'Voiding…' : '✖ Void'}</button>}
                                   <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
                                 </>}
                               </div>}
@@ -727,7 +766,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                       <td style={td}>{i.color || '—'}</td>
                                       <td style={td}>{i.size || '—'}</td>
                                       <td style={td}>{i.qty}</td>
-                                      <td style={td}>{i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                                      <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
                                       <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(o.id, i.id, e.target.value)} style={{ ...cell, width: 64, ...(Number(i.missing_qty) > 0 ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} /></td>
                                     </tr>
                                   ))}

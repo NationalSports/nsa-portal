@@ -73,17 +73,31 @@ exports.handler = async (event) => {
         items: shipItems, emailed: false,
       });
 
-      // Mark the exact shipped lines. Prefer lineItemKey (the order-item id we
-      // set when creating the order) so partial shipments — incl. the same SKU
-      // in different sizes — mark only the lines that actually went out. Fall
-      // back to SKU match for any older orders created without a key.
-      const lineKeys = shipItems.map((i) => i.lineItemKey).filter(Boolean);
-      const skus = shipItems.map((i) => i.sku).filter(Boolean);
-      if (lineKeys.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('id', lineKeys);
-      else if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
-      // Only stamp the order as fully shipped once every (non-bundle) line is shipped.
-      const { data: remaining } = await sb.from('webstore_order_items').select('id').eq('order_id', order.id).eq('is_bundle_parent', false).neq('line_status', 'shipped').neq('line_status', 'cancelled');
-      const fullyShipped = !remaining || remaining.length === 0;
+      // Recompute shipped quantity per line from ALL recorded shipments for this
+      // order (authoritative + idempotent even if the webhook double-fires).
+      // Match by lineItemKey — the order-item id we set when creating the order —
+      // so partial shipments, incl. the same SKU in different sizes, are exact.
+      const { data: allShips } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
+      const shippedByLine = {};
+      (allShips || []).forEach((s) => (s.items || []).forEach((it) => { if (it.lineItemKey) shippedByLine[it.lineItemKey] = (shippedByLine[it.lineItemKey] || 0) + (Number(it.qty) || 0); }));
+      const { data: orderItems } = await sb.from('webstore_order_items').select('id,sku,qty,is_bundle_parent,line_status').eq('order_id', order.id);
+      const lines = (orderItems || []).filter((i) => !i.is_bundle_parent);
+      if (Object.keys(shippedByLine).length) {
+        for (const i of lines) {
+          const sq = shippedByLine[i.id] || 0;
+          if (sq <= 0) continue;
+          const done = sq >= (Number(i.qty) || 0);
+          await sb.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id);
+          if (done) i.line_status = 'shipped';
+        }
+      } else {
+        // Legacy order created without line keys — fall back to a (qty-blind) SKU match.
+        const skus = shipItems.map((i) => i.sku).filter(Boolean);
+        if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
+        lines.forEach((i) => { if (skus.includes(i.sku)) i.line_status = 'shipped'; });
+      }
+      // Stamp the order fully shipped only once every (non-bundle) line is shipped.
+      const fullyShipped = lines.length > 0 && lines.every((i) => i.line_status === 'shipped');
       await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', order.id);
 
       // Email the buyer.

@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels, estimateWeightOz, labelWeightLbs } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 
@@ -24,7 +24,7 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
 }
 
 // Printable club fundraising payout statement.
@@ -1815,19 +1815,25 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
-    const labels = []; let fail = 0, held = 0;
+    const labels = []; let fail = 0, held = 0, badAddr = 0;
     for (const g of groups) {
-      // Hold lines flagged short — ship what's in hand; the order stays open.
-      const shipItems = g.items.filter((i) => (Number(i.missing_qty) || 0) === 0);
-      if (!shipItems.length) { held++; continue; }
+      const o = g.order;
+      const lines = g.items.filter((i) => !i.is_bundle_parent);
+      // Units still to ship per line = ordered − already shipped − short-now.
+      const plan = lines.map((i) => { const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0); return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) }; }).filter((x) => x.qty > 0);
+      if (!plan.length) { held++; continue; }
+      if (validateShipAddress(o.ship_address)) { badAddr++; continue; }
+      const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, shipItems, store, weightByPid, imageByPid);
+        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
-        if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
+        for (const x of plan) { const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id); } catch {} i.shipped_qty = sq; if (done) i.line_status = 'shipped'; }
+        const allShipped = lines.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
       } catch { fail++; }
     }
     if (labels.length) await printLabels(labels);
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}${held ? `, ${held} held (all lines short)` : ''}.` }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${fail ? `, ${fail} failed` : ''}${held ? `, ${held} fully short` : ''}${badAddr ? `, ${badAddr} bad address` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -2015,6 +2021,22 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
     setTick((t) => t + 1);
     try { await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', item.id); } catch {}
   };
+  // Reprint the order's last saved label (no re-buy).
+  const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
+  // Void the order's last label in ShipStation and reopen the shipped lines.
+  const voidLabel = async (o) => {
+    if (!o.shipstation_shipment_id) return;
+    if (!window.confirm(`Void the label for ${o.buyer_name || 'this order'}? This cancels it in ShipStation and reopens the order.`)) return;
+    try {
+      const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
+      if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
+      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
+      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
+      o.label_data = null; o.shipstation_shipment_id = null;
+      (itemsByOrder[o.id] || []).forEach((i) => { if (i.line_status === 'shipped') { i.line_status = 'bagging'; i.shipped_qty = 0; } });
+      setTick((t) => t + 1);
+    } catch (e) { window.alert('Void failed: ' + e.message); }
+  };
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const enrich = (o) => {
@@ -2087,13 +2109,17 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
-                            <td style={td}>{i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                            <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
                             <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
+                    {(o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                      {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
+                      {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}
+                    </div>}
                   </td>
                 </tr>
               )}

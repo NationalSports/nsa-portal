@@ -278,6 +278,26 @@ export const printPdfLabels=async(base64List)=>{
   document.body.appendChild(iframe);
 };
 
+// Light pre-flight validation of a ship-to address before buying a label —
+// catches the common, label-wasting mistakes (missing fields, a state that
+// isn't a 2-letter code, a ZIP that isn't 5 or 9 digits). Returns an error
+// string, or null when it looks shippable. Note: this is format validation, not
+// full USPS/CASS deliverability verification.
+export const validateShipAddress = (a = {}) => {
+  const miss = [];
+  if (!a.street1 || !String(a.street1).trim()) miss.push('street');
+  if (!a.city || !String(a.city).trim()) miss.push('city');
+  if (!a.state || !String(a.state).trim()) miss.push('state');
+  if (!a.zip || !String(a.zip).trim()) miss.push('ZIP');
+  if (miss.length) return 'Missing ' + miss.join(', ');
+  const country = String(a.country || 'US').toUpperCase();
+  if (country === 'US' || country === 'USA') {
+    if (!/^[A-Za-z]{2}$/.test(String(a.state).trim())) return 'State must be a 2-letter code (e.g. CA)';
+    if (!/^\d{5}(-\d{4})?$/.test(String(a.zip).trim())) return 'ZIP must be 5 digits (or ZIP+4)';
+  }
+  return null;
+};
+
 // Estimate a garment's shipping weight (oz) from its name/SKU — a local,
 // rule-based lookup (no network or AI needed, so it's instant, free and
 // deterministic): hoodie ≈ 18oz, tee ≈ 6oz, shorts ≈ 7oz, etc. Used to weigh
