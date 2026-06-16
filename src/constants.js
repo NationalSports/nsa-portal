@@ -262,7 +262,7 @@ export const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000025',name:'Kelly Bean',role:'rep'},
   // CSR
   {id:'00000000-0000-0000-0000-000000000030',name:'Sharon Day-Monroe',role:'csr'},
-  {id:'00000000-0000-0000-0000-000000000031',name:'Rachel Najara',role:'csr'},
+  {id:'00000000-0000-0000-0000-000000000031',name:'Rachel Najera',role:'csr'},
   {id:'00000000-0000-0000-0000-000000000032',name:'Tegan Peterson',role:'csr'},
   {id:'00000000-0000-0000-0000-000000000033',name:'Tamara Rodriguez',role:'csr'},
   // Accounting

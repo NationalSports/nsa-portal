@@ -16880,12 +16880,12 @@ export default function App(){
             <span style={{flex:'0 0 auto',padding:'3px 8px',borderRadius:8,fontSize:11,fontWeight:700,background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
             <div style={{flex:'0 0 90px',fontSize:12,fontWeight:600,color:'#374151',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{rep?.name}</div>
             <div style={{flex:'0 0 130px',textAlign:'right'}}>
-              {s.close_date&&<div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>closes {s.close_date}</div>}
+              {_refDate&&<div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{s.status==='closed'?'closed':'closes'} {_refDate}</div>}
               {_daysLeft!==null&&<span style={{display:'inline-block',marginTop:2,padding:'1px 6px',borderRadius:4,fontSize:10,fontWeight:800,
                 background:_daysLeft>14?'#dcfce7':_daysLeft>0?'#fef3c7':'#fee2e2',
                 color:_daysLeft>14?'#166534':_daysLeft>0?'#92400e':'#dc2626'}}>
                 {_daysLeft>0?`${_daysLeft}d left`:`${Math.abs(_daysLeft)}d overdue`}</span>}
-              {!s.close_date&&!s._last_synced&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
+              {!_refDate&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
             </div>
             <div style={{flex:'0 0 90px',textAlign:'right'}}>
               <div style={{fontSize:15,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
