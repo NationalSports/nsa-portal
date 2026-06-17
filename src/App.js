@@ -16,7 +16,7 @@ import { jsPDF } from 'jspdf';
 import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
@@ -19205,7 +19205,7 @@ export default function App(){
                           :{company:m.cust?.name||'',street1:m.cust?.shipping_address_line1||'',street2:m.cust?.shipping_address_line2||'',city:m.cust?.shipping_city||'',state:m.cust?.shipping_state||'',zip:m.cust?.shipping_zip||'',phone:m.cust?.contacts?.[0]?.phone||''};
                         return{...m,shipToMode:'customer',destTouched:false,attn:'',decoId:'',destAddr:a};
                       }
-                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:'',decoId:'',destAddr:{company:NSA.name,street1:NSA.addr,street2:'',city:NSA.city,state:NSA.state,zip:NSA.zip,phone:NSA.phone}};
+                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:'',decoId:'',destAddr:{company:NSA.name,street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
                       return{...m,shipToMode:'deco',destTouched:true,attn:'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
                     })}>{lbl}</button>;
                 })}
@@ -19297,9 +19297,11 @@ export default function App(){
                       const _mode=manualShipModal.shipToMode||'customer';
                       const _da=manualShipModal.destAddr||{};
                       const _attn=(manualShipModal.attn||'').trim();
+                      const _org=(_da.company||'').trim()||(_mode==='warehouse'?NSA.name:(c2?.name||''));
+                      // Attention prints as its own "ATTN: …" line above the company on the label.
                       const _shipToOverride=(_mode==='customer'&&!manualShipModal.destTouched&&!_attn)?null:{
-                        name:_attn||(_da.company||'').trim()||c2?.name||'',
-                        company:(_da.company||'').trim()||(_mode==='warehouse'?NSA.name:(c2?.name||'')),
+                        name:_attn?('ATTN: '+_attn):_org,
+                        company:_org,
                         street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),
                         city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),
                         postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),
