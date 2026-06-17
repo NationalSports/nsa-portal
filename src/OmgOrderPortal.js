@@ -10,11 +10,20 @@
 //      enriches the orders (the player report has no contact info).
 //   3. Sends each parent a private "order is being processed" link.
 //   4. Lets the warehouse drive status, flag shortages, and push to ShipStation.
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
-import { authFetch, printPdfLabels, labelWeightLbs, validateShipAddress } from './utils';
+import { authFetch, printPdfLabels, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
 import { NSA } from './constants';
+
+// Per-line incoming-stock status pill (computed from billed/received/need).
+const TRACK_PILL = {
+  shipped: { label: '✓ Shipped', color: '#166534', bg: '#dcfce7' },
+  ready: { label: 'Ready', color: '#166534', bg: '#dcfce7' },
+  partial: { label: 'Partial', color: '#92400e', bg: '#fef3c7' },
+  incoming: { label: 'Incoming', color: '#1d4ed8', bg: '#dbeafe' },
+  backordered: { label: 'Backordered', color: '#b91c1c', bg: '#fee2e2' },
+};
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -186,7 +195,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO, cu }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO, cu, linkedSO, products }) {
   // Ship-to-school stores are bulk-delivered to the club; no per-player labels.
   const shipToSchool = deliveryMode === 'deliver_school';
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
@@ -620,6 +629,10 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const trackUrl = (o) => `${window.location.origin}/shop/order/${o.status_token}`;
   const withEmail = orders.filter((o) => o.buyer_email).length;
   const withAddress = orders.filter((o) => o.ship_address && o.ship_address.street1).length;
+  // Per-line incoming-stock tracking (Billed/Received/Need), FIFO-allocated to
+  // the earliest orders first. OMG is made-to-order, so on-IF isn't counted.
+  const tracking = useMemo(() => computeOrderTracking({ orders, so: linkedSO, products, includeIF: false }), [orders, linkedSO, products]);
+  const hasSO = !!linkedSO;
   const notified = orders.filter((o) => o.processing_email_sent).length;
   // Most recent send time across all notified orders (for the success UI).
   const lastSentAt = orders.reduce((max, o) => (o.processing_email_sent_at && (!max || o.processing_email_sent_at > max)) ? o.processing_email_sent_at : max, null);
@@ -886,22 +899,33 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
-                                  {['Item', 'Color', 'Size', 'Qty', 'Ship', 'Shipping'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
+                                  {[['Item', ''], ['Color', ''], ['Size', ''], ['Ordered', 'c'], ['Billed', 'c'], ['Received', 'c'], ['Need', 'c'], ['Status', 'c'], ['Shipping', 'c']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Billed' ? 'Units the vendor has shipped (from uploaded bills)' : h === 'Received' ? 'Units received into the warehouse, allocated earliest-orders-first' : h === 'Need' ? 'Units still owed to this order' : undefined}>{h}</th>)}
                                 </tr></thead>
                                 <tbody>
-                                  {o.items.map((i) => (
-                                    <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
-                                      <td style={td}>{i.name || i.sku || '—'}</td>
-                                      <td style={td}>{i.color || '—'}</td>
-                                      <td style={td}>{i.size || '—'}</td>
-                                      <td style={td}>{i.qty}</td>
-                                      <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
-                                      <td style={td}>{(() => { const qty = Number(i.qty) || 0; const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const short = ship < qty; return <input type="number" min={0} max={qty} value={ship} onChange={(e) => setItemShipping(o.id, i, e.target.value)} title={short ? `${qty - ship} held short` : 'All shipping'} style={{ ...cell, width: 64, ...(short ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} />; })()}</td>
-                                    </tr>
-                                  ))}
+                                  {o.items.map((i) => {
+                                    const t = tracking[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, need: Number(i.qty) || 0, status: 'backordered' };
+                                    const qty = Number(i.qty) || 0;
+                                    const ctd = { ...td, textAlign: 'center' };
+                                    const num = (n, strong) => <span style={{ color: n > 0 ? '#0f172a' : '#cbd5e1', fontWeight: strong ? 700 : 500 }}>{n}</span>;
+                                    const pill = TRACK_PILL[t.status] || TRACK_PILL.backordered;
+                                    const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const short = ship < qty;
+                                    return (
+                                      <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                                        <td style={td}>{i.name || i.sku || '—'}</td>
+                                        <td style={td}>{i.color || '—'}</td>
+                                        <td style={td}>{i.size || '—'}</td>
+                                        <td style={ctd}>{num(qty, true)}</td>
+                                        <td style={ctd}>{hasSO ? num(t.billed) : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                                        <td style={ctd}>{hasSO ? <span style={{ color: t.received >= qty && qty > 0 ? '#166534' : t.received > 0 ? '#0f172a' : '#cbd5e1', fontWeight: t.received > 0 ? 700 : 500 }}>{t.received}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                                        <td style={ctd}>{!hasSO ? <span style={{ color: '#cbd5e1' }}>—</span> : t.need > 0 ? <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: '1px 8px', fontWeight: 800 }}>{t.need}</span> : <span style={{ color: '#16a34a', fontWeight: 800 }} title="Fully covered">✓</span>}</td>
+                                        <td style={ctd}>{hasSO ? <span style={{ background: pill.bg, color: pill.color, borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' }}>{pill.label}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                                        <td style={ctd}><input type="number" min={0} max={qty} value={ship} onChange={(e) => setItemShipping(o.id, i, e.target.value)} title={short ? `${qty - ship} held short` : 'All shipping'} style={{ ...cell, width: 58, textAlign: 'center', ...(short ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} /></td>
+                                      </tr>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
-                              <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>“Shipping” starts at the full quantity — lower it to hold items short. Held items stay on the order and show a “delayed” notice on the parent’s tracking page.</div>
+                              <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>{hasSO ? 'Billed = vendor shipped (from uploaded bills) · Received = in the warehouse, given to the earliest orders first · Need = still owed. ' : 'Incoming columns appear once this store’s Sales Order is created. '}“Shipping” starts full — lower it to hold items short (the parent sees a “delayed” notice).</div>
 
                               {/* Customer message thread — stays attached to the order; the
                                   parent reads & replies on their portal page. */}

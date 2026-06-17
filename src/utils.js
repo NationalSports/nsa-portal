@@ -299,6 +299,84 @@ export const printPdfLabels=async(base64List)=>{
   return added;
 };
 
+// ── Per-item incoming-stock tracking + FIFO allocation ──
+// Given a store's webstore orders and its linked Sales Order, work out — per
+// order line — how many units are Billed (vendor shipped, from the bill-PDF
+// parse → so_item_po_lines.billed), Received (so_item_po_lines.received), on IF
+// (item-fulfilled from in-house stock → so_item_pick_lines.sizes) and what's
+// still needed. Incoming units are allocated to the EARLIEST orders first
+// (FIFO by order number) per (product/sku + size) bucket, so the front of the
+// line fills before later orders. Pure function — safe to call on every render.
+//
+//   orders   : [{ id, omg_order_number, items:[{id, product_id, sku, size, qty,
+//                 shipped_qty, line_status }] }]
+//   so       : the linked Sales Order { items:[{ product_id, sku, po_lines:[{
+//                 billed:{size:qty}, received:{size:qty} }], pick_lines:[{
+//                 sizes:{size:qty} }] }] } — or null if not batched yet
+//   products : catalog rows carrying on-hand inventory as p._inv = {size:qty}
+//   includeIF: webstores fulfill from stock, so count on-IF toward coverage
+// Returns { [lineId]: { ordered, billed, received, onIf, onHand, need, status } }.
+// Non-size metadata keys that live alongside the spread size quantities on a
+// loaded pick line — everything else with a numeric value is a size→qty.
+const PICK_META = new Set(['pick_id', 'status', 'ship_dest', 'created_at', 'updated_at', 'memo', 'expected_date', 'po_id', 'vendor', 'tracking', 'tracking_numbers', 'billed', 'received', 'cancelled', 'shipments', '_billed', '_tracking_numbers', 'id', 'so_item_id', 'line_status', 'color', 'sku', 'name', 'notes', 'item_index']);
+export function computeOrderTracking({ orders = [], so = null, products = [], includeIF = false }) {
+  const norm = (s) => String(s == null ? '' : s).trim().toUpperCase();
+  // Match supply↔demand by SKU first — it's the field both OMG and webstore
+  // lines reliably carry (product_id is often null on imported OMG lines).
+  const keyOf = (pid, sku, size) => (norm(sku) || pid || '?') + '|' + norm(size);
+  const sumSizes = (obj, size) => Number((obj || {})[size] || (obj || {})[norm(size)] || 0) || 0;
+
+  // On-hand inventory lookup by product_id → {size: qty}.
+  const invByPid = {};
+  (products || []).forEach((p) => { if (p && p.id) invByPid[p.id] = p._inv || {}; });
+
+  // Supply pools per bucket, summed across the SO item's PO + pick lines.
+  const supply = {}; // key → { billed, received, onIf }
+  (so && so.items ? so.items : []).forEach((it) => {
+    const pid = it.product_id, sku = it.sku;
+    const add = (size, field, n) => { const k = keyOf(pid, sku, size); (supply[k] = supply[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
+    (it.po_lines || []).forEach((po) => {
+      // billed/received stay nested ({size:qty}); ordered sizes are spread to
+      // top-level on the loaded PO line, which we don't need here.
+      const sizes = new Set([...Object.keys(po.billed || {}), ...Object.keys(po.received || {})]);
+      sizes.forEach((sz) => { add(sz, 'billed', sumSizes(po.billed, sz)); add(sz, 'received', sumSizes(po.received, sz)); });
+    });
+    // Pick lines have their size quantities spread to TOP-LEVEL keys (App load
+    // does {...rest, ...sizes}). Count every non-meta numeric key as on-IF stock.
+    (it.pick_lines || []).forEach((pk) => {
+      Object.keys(pk || {}).forEach((kk) => {
+        if (PICK_META.has(kk)) return;
+        const n = Number(pk[kk]); if (!n) return;
+        add(kk, 'onIf', n);
+      });
+    });
+  });
+
+  // Demand lines, oldest order first (FIFO front-of-line gets stock first).
+  const sorted = [...orders].sort((a, b) => String(a.omg_order_number || '').localeCompare(String(b.omg_order_number || ''), undefined, { numeric: true }));
+  const pools = {}; Object.keys(supply).forEach((k) => { pools[k] = { ...supply[k] }; });
+  const out = {};
+  sorted.forEach((o) => {
+    (o.items || []).forEach((i) => {
+      if (i.is_bundle_parent) return;
+      const k = keyOf(i.product_id, i.sku, i.size);
+      const p = pools[k] || { billed: 0, received: 0, onIf: 0 };
+      const qty = Number(i.qty) || 0;
+      const take = (field) => { const n = Math.max(0, Math.min(p[field] || 0, qty)); p[field] = (p[field] || 0) - n; return n; };
+      const onIf = take('onIf');
+      const received = take('received');
+      const billed = take('billed');
+      pools[k] = p;
+      const onHand = sumSizes(invByPid[i.product_id], i.size);
+      const covered = received + (includeIF ? onIf : 0);
+      const shipped = i.line_status === 'shipped' || (Number(i.shipped_qty) || 0) >= qty;
+      const status = shipped ? 'shipped' : covered >= qty && qty > 0 ? 'ready' : covered > 0 ? 'partial' : billed > 0 ? 'incoming' : 'backordered';
+      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status };
+    });
+  });
+  return out;
+}
+
 // Light pre-flight validation of a ship-to address before buying a label —
 // catches the common, label-wasting mistakes (missing fields, a state that
 // isn't a 2-letter code, a ZIP that isn't 5 or 9 digits). Returns an error

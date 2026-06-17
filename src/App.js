@@ -16683,7 +16683,7 @@ export default function App(){
             so backordered sizes hold their parents back. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} cu={cu} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} cu={cu} linkedSO={sos.find(x=>x.omg_store_id===s.id)||null} products={prod} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 
