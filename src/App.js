@@ -19205,15 +19205,15 @@ export default function App(){
                           :{company:m.cust?.name||'',street1:m.cust?.shipping_address_line1||'',street2:m.cust?.shipping_address_line2||'',city:m.cust?.shipping_city||'',state:m.cust?.shipping_state||'',zip:m.cust?.shipping_zip||'',phone:m.cust?.contacts?.[0]?.phone||''};
                         return{...m,shipToMode:'customer',destTouched:false,attn:'',decoId:'',destAddr:a};
                       }
-                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:'',decoId:'',destAddr:{company:NSA.name,street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
-                      return{...m,shipToMode:'deco',destTouched:true,attn:'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
+                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:NSA.name,street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
+                      return{...m,shipToMode:'deco',destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
                     })}>{lbl}</button>;
                 })}
               </div>
               {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
                 <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
                   onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
-                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:dv?.contact_name||'',
+                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||'',
                       destAddr:{company:dv?.name||'',street1:dv?.address_line1||'',street2:dv?.address_line2||'',city:dv?.city||'',state:dv?.state||'',zip:dv?.zip||'',phone:dv?.phone||''}}))}}>
                   <option value="">Select decorator…</option>
                   {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
