@@ -7460,6 +7460,16 @@ export default function App(){
         if(picks.length===0)return;                     // never set up for a stock pull
         if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
         const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        // Only sizes the warehouse actually pulled against can come up "short on pull". Every size that was
+        // on the IF leaves a key on the pulled pick line (even when 0 were found, e.g. {L:0}); a size the
+        // order now asks for that no pulled pick ever carried was ADDED after the pull finished. Increasing
+        // a line's quantities/sizes after its IF closed isn't a stock shortfall — it's new demand the normal
+        // ordering flow handles — so don't compare it against the old pull. Skip the line when that happens,
+        // otherwise a post-pull edit raises a phantom "Short on pull — Create PO" alert for units the
+        // warehouse was never asked to pull.
+        const pulledSizeKeys=new Set();
+        picks.forEach(pk=>Object.keys(pk).forEach(k=>{if(SZ_ORD.includes(k))pulledSizeKeys.add(k)}));
+        if(szKeys.some(sz=>(it.sizes[sz]||0)>0&&!pulledSizeKeys.has(sz)))return; // line edited after its pull → not a short
         const short={};let shortTot=0;
         szKeys.forEach(sz=>{
           const ordered=it.sizes[sz]||0;if(ordered<=0)return;
