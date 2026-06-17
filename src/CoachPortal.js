@@ -258,6 +258,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePaymentSuccess=(result)=>{
+    // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
+    // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
+    // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
+    // buyer isn't falsely told the payment failed.
+    if(result.status==='processing'){
+      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],processing:true});
+      setShowPay(null);setInvView(null);setPayLoading(false);
+      return;
+    }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
     // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
@@ -313,7 +322,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const collected=(paymentIntent.amount||0)/100;
           if(matched.length){
             const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
-            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched});
+            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
           }else{
             // Invoices not loaded into this view — reconcile server-side directly, then confirm.
             fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});

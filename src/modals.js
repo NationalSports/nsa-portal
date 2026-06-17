@@ -543,8 +543,13 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
     const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
-    }else if(result.paymentIntent&&result.paymentIntent.status==='succeeded'){
-      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null});
+    }else if(result.paymentIntent&&(result.paymentIntent.status==='succeeded'||result.paymentIntent.status==='processing')){
+      // ACH/bank debits (and some cards) settle asynchronously — confirmPayment returns status
+      // 'processing', NOT 'succeeded'. Treat that as a (pending) success: the funds are submitted.
+      // Previously this fell through to the error branch and told the customer the payment "was not
+      // completed," which scared people into thinking it failed (and re-paying). The invoice is only
+      // marked paid once Stripe confirms settlement via the webhook — never here for ACH.
+      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null,status:result.paymentIntent.status});
     }else{
       setError('Payment was not completed. Please try again.');setProcessing(false);
     }
