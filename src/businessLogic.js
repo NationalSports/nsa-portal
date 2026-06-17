@@ -145,8 +145,11 @@ const buildJobs = (o) => {
         const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
         const part = 'art_' + d.art_file_id;
-        // A split-art design buckets on its own so it becomes a separate job (one logo per job).
-        const bk = d.split_group ? dt + '::__split__::' + d.split_group + '::' + di : dt;
+        // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
+        // split across several lines — and a standalone copy of it — all consolidate into ONE job.
+        // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
+        // bundle into a single combined job (the established Split-Art behavior).
+        const bk = d.split_group ? 'art::' + d.art_file_id : dt;
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
@@ -163,8 +166,10 @@ const buildJobs = (o) => {
     });
     Object.entries(decosByType).forEach(([bk, decos]) => {
       const dt = decos[0]._dt || bk;
-      const parts = decos.map(x => x.part).sort();
-      const sig = bk.indexOf('::__split__::') >= 0 ? dt + '::' + bk + '::' + parts.join('|') : dt + '::' + parts.join('|');
+      // De-dupe parts so the same logo applied at two positions on one garment keys the same as a
+      // single application (one art = one signature = one job).
+      const parts = Array.from(new Set(decos.map(x => x.part))).sort();
+      const sig = dt + '::' + parts.join('|');
       if (sig) itemSigs.push({ idx, it, sig, decos });
     });
   });
@@ -216,14 +221,17 @@ const buildJobs = (o) => {
       let units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
       if (!splitDeco && units === 0 && safeNum(it.est_qty) > 0) units = safeNum(it.est_qty);
       const out = { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units, fulfilled: 0 };
-      if (splitDeco) out.sizes = Object.assign({}, splitDeco.split_sizes);
+      // Per-ITEM split group: a consolidated art job spans several split lines, so each item carries
+      // its own line's split group. allocateJobFulfillment keys received-unit apportioning on this so
+      // sibling designs on a shared line never both count the same garments.
+      if (splitDeco) { out.sizes = Object.assign({}, splitDeco.split_sizes); out.split_group = splitDeco.split_group; }
       return out;
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
       _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
-      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: (firstEntry.decos.length === 1 && firstEntry.decos[0].d.split_group) || null, items, _auto: true };
+      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: null, items, _auto: true };
   });
 };
 
@@ -297,7 +305,11 @@ const allocateJobFulfillment = (jobs, items) => {
         res.total += v;
         const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
         const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
-        const ck = e.m.root + '::' + gi.item_idx + '::' + sz;
+        // Per-ITEM split group: consolidated art jobs span multiple split lines, so a shared line's
+        // receipts must pool by that line's split group (not the job) — otherwise two art jobs that
+        // both include the line would each claim its full receipts. Non-split items fall back to the
+        // job's family root, so unrelated jobs sharing a garment still each count it in full.
+        const ck = (gi.split_group ? 'sg:' + gi.split_group : e.m.root) + '::' + gi.item_idx + '::' + sz;
         const take = Math.min(safeNum(v), Math.max(0, pulledQty + rcvdQty - (claimed[ck] || 0)));
         claimed[ck] = (claimed[ck] || 0) + take;
         if (take > 0) fs[sz] = take;
