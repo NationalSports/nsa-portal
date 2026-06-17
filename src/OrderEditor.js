@@ -2195,10 +2195,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
-          const part=d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position);
-          // A split-art design buckets on its own so each logo becomes its own production job,
-          // instead of merging with the other split design into one combined job.
-          const bk=d.split_group?dt+'::__split__::'+d.split_group+'::'+di:dt;
+          const part=d.art_file_id?'art_'+d.art_file_id:'unassigned@'+safeStr(d.position);
+          // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
+          // split across several lines — and a standalone copy of it — all consolidate into ONE job.
+          // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
+          // bundle into a single combined job (the established Split-Art behavior).
+          const bk=(d.art_file_id&&d.split_group)?'art::'+d.art_file_id:dt;
           if(!decosByType[bk])decosByType[bk]=[];
           decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
@@ -2216,8 +2218,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Create one signature entry per deco type group (split-art designs get their own group)
       Object.entries(decosByType).forEach(([bk,decos])=>{
         const dt=decos[0]._dt||bk;
-        const parts=decos.map(x=>x.part).sort();
-        const sig=bk.indexOf('::__split__::')>=0?dt+'::'+bk+'::'+parts.join('|'):dt+'::'+parts.join('|');
+        const parts=Array.from(new Set(decos.map(x=>x.part))).sort();
+        const sig=dt+'::'+parts.join('|');
         itemSigs.push({ii,it,sig,decos,decoType:dt});
       });
     });
@@ -2261,8 +2263,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Numbers-only jobs (no art decoration) still need a mockup / setup — they
       // should start in 'needs_art' so the rep can submit them, not 'art_complete'.
       if(!hasArtDeco)worstArtSt='needs_art';
+      // A consolidated art job spans items at different positions — gather every position, not just the first item's.
+      grp.items.forEach(({decos})=>decos.forEach(({d})=>positions.add(safeStr(d.position))));
       const jobKey=grp.sig;
-      const _splitGrp=(firstEntry.decos.length===1&&firstEntry.decos[0].d.split_group)||null;
+      const _splitGrp=null;// per-item split group lives on each job item (giItem.split_group) for received-unit apportioning
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
         total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp};
@@ -2291,7 +2295,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         const decoIdxs=decos.map(x=>x.di);
         const giItem={item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled};
-        if(splitDeco){giItem.sizes={...giSizes};giItem._artSplit=true}
+        if(splitDeco){giItem.sizes={...giSizes};giItem._artSplit=true;giItem.split_group=splitDeco.split_group}
         job.items.push(giItem);
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
