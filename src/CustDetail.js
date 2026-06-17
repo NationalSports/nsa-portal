@@ -709,8 +709,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
     custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
     const allArt=[...custOwnArt,...parentArt,...orderArt].filter(a=>!/^art\s+tbd/i.test((a.name||'').trim()));
+    // De-dupe logos by name+type so one logo reused across many orders shows once — but ONLY when it has a name.
+    // Freshly added / still-unnamed art has an empty name; keying those by their unique id keeps each as its own
+    // card. Otherwise every blank-named art of the same type collapses into a single card and the "Add Art" button
+    // appears to do nothing (the new entry merges into an existing blank card, which may not even be editable).
+    const _logoKey=a=>{const nm=(a.name||'').trim().toLowerCase();return nm?nm+'||'+(a.deco_type||''):'__noname__'+(a.id||'')};
     // Group by art name+deco_type to find usage across orders
-    const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
+    const artGroups={};allArt.forEach(a=>{const key=_logoKey(a);if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
     const groups=Object.values(artGroups);
     // Helper: save customer art
     const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onRefreshCustomer(newCust)};
@@ -730,7 +735,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
       const allProd=[];const seenP=new Set();
-      const grpKey=(art.name||'').toLowerCase()+'||'+(art.deco_type||'');
+      const grpKey=_logoKey(art);
       artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
       artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel})}})});
       // Find index in ownArt for editable items
@@ -739,7 +744,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     });
     // Collapse to one card per logo (name+deco_type) — a logo reused across multiple SOs shows once.
     const _stRank={needs_approval:3,approved:2,waiting_for_art:1};
-    const _byLogo={};unifiedAll.forEach(a=>{const k=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');(_byLogo[k]=_byLogo[k]||[]).push(a)});
+    const _byLogo={};unifiedAll.forEach(a=>{const k=_logoKey(a);(_byLogo[k]=_byLogo[k]||[]).push(a)});
     const unified=Object.values(_byLogo).map(insts=>{
       const rep={...[...insts].sort((x,y)=>(_stRank[y._st]||0)-(_stRank[x._st]||0))[0]};
       rep._usedOnSOs=insts.reduce((m,x)=>(x._usedOnSOs||[]).length>m.length?x._usedOnSOs:m,[]);
