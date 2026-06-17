@@ -941,6 +941,23 @@ describe('Job Building', () => {
     const jobs = buildJobs(so);
     expect(jobs[0].art_status).toBe('waiting_approval');
   });
+
+  test('qty_only item (Custom — no size breakdown) totals its est_qty, not 0', () => {
+    // Regression: a custom / no-size-breakdown line keeps its quantity in est_qty with an empty
+    // sizes map. Summing sizes yields 0, so the job showed "0 items" even with real OSFA quantity.
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 10,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }],
+      })],
+      art_files: [makeArtFile()],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+    expect(jobs[0].items[0].units).toBe(10);
+  });
 });
 
 // ═══════════════════════════════════════════════
@@ -1166,6 +1183,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
     expect(j.fulfilled_units).toBe(50);
     expect(j.total_units).toBe(50);
+  });
+
+  test('released job with multiple qty_only items sums est_qty across items', () => {
+    // Regression: a released job (key prefixed "released_") froze its unit snapshot at 0 when its
+    // items were qty_only (count in est_qty, empty size grid). The recompute must re-derive the
+    // total by summing every item's est_qty — mirrors the SO-1121 two-cap release (50 + 50 = 100).
+    // OrderEditor.syncJobs heals these zero-total released jobs the same way (recalcedReleased).
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1121-02', key: 'released_embroidery_JOB-1121-02',
+        item_status: 'need_to_order', fulfilled_units: 0, total_units: 0,
+        items: [{ item_idx: 0 }, { item_idx: 1 }] }],
+    });
+    const items = [
+      makeSOItem({ sku: 'HTA', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }] }),
+      makeSOItem({ sku: 'P814', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-2', QTY: 50, received: { QTY: 50 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.total_units).toBe(100);
+    expect(j.fulfilled_units).toBe(100);
+    expect(j.item_status).toBe('items_received');
   });
 
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
