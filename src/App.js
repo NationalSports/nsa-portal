@@ -6933,6 +6933,12 @@ export default function App(){
         </div>})}
     </div>
   </div>;
+  // One row per SKU in the request table: each size's qty (+ any inbound flag)
+  // collapses into a single run; qty/retail are the SKU totals. Mirrors the rep
+  // email so the inbox and the email read the same.
+  const REQ_SIZE_ORDER=['3XS','2XS','XXS','XS','S','M','L','XL','2XL','XXL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','OSFA','ONE SIZE','OS','NS'];
+  const reqSizeRank=(s)=>{const i=REQ_SIZE_ORDER.indexOf(String(s||'').trim().toUpperCase());return i===-1?900:i};
+  const groupReqLines=(lines)=>{const gs=[];const idx={};(lines||[]).forEach(l=>{if(idx[l.sku]==null){idx[l.sku]=gs.length;gs.push({sku:l.sku,name:l.name,color:l.color,decoration:l.decoration,lines:[]})}gs[idx[l.sku]].lines.push(l)});gs.forEach(g=>g.lines.sort((a,b)=>reqSizeRank(a.size)-reqSizeRank(b.size)||String(a.size).localeCompare(String(b.size))));return gs};
   const renderCatReqModal=()=>catReqOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCatReqOpen(false)}>
     <div style={{background:'white',borderRadius:14,maxWidth:880,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
@@ -6941,7 +6947,7 @@ export default function App(){
       </div>
       <div style={{padding:'8px 22px 20px'}}>
         {catReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
-        {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+        {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
           const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
           return<div key={r.id} id={'catreq-'+r.id} style={{border:r.id===catReqFocus?'2px solid #191919':'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12,boxShadow:r.id===catReqFocus?'0 0 0 4px rgba(25,25,25,.08)':'none'}}>
             <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
@@ -6953,8 +6959,8 @@ export default function App(){
             </div>
             {r.notes&&<div style={{fontSize:12,color:'#475569',marginTop:6,background:'#f8fafc',borderRadius:8,padding:'6px 10px'}}>“{r.notes}”</div>}
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,marginTop:10}}>
-              <thead><tr style={{textAlign:'left',color:'#64748b'}}><th style={{padding:'4px 6px'}}>SKU</th><th style={{padding:'4px 6px'}}>Item</th><th style={{padding:'4px 6px'}}>Color</th><th style={{padding:'4px 6px'}}>Size</th><th style={{padding:'4px 6px',textAlign:'right'}}>Qty</th><th style={{padding:'4px 6px'}}>Deco</th><th style={{padding:'4px 6px'}}>Retail</th></tr></thead>
-              <tbody>{lines.map((l,i)=><tr key={i} style={{borderTop:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontFamily:'monospace'}}>{l.sku}</td><td style={{padding:'4px 6px'}}>{l.name}</td><td style={{padding:'4px 6px'}}>{l.color}</td><td style={{padding:'4px 6px'}}>{l.size}{l.inbound?<span style={{color:'#b45309'}}> (inbound {l.inbound})</span>:''}</td><td style={{padding:'4px 6px',textAlign:'right',fontWeight:700}}>{l.qty}</td><td style={{padding:'4px 6px'}}>{l.decoration||'—'}</td><td style={{padding:'4px 6px'}}>{l.price?'$'+l.price:'—'}</td></tr>)}</tbody>
+              <thead><tr style={{textAlign:'left',color:'#64748b'}}><th style={{padding:'4px 6px'}}>SKU</th><th style={{padding:'4px 6px'}}>Item</th><th style={{padding:'4px 6px'}}>Color</th><th style={{padding:'4px 6px'}}>Size</th><th style={{padding:'4px 6px',textAlign:'right'}}>Qty</th><th style={{padding:'4px 6px'}}>Deco</th><th style={{padding:'4px 6px',textAlign:'right'}}>Retail</th></tr></thead>
+              <tbody>{groups.map((g,i)=>{const qty=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);const retail=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0)*(safeNum(l.price)||0),0);return<tr key={i} style={{borderTop:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontFamily:'monospace',verticalAlign:'top'}}>{g.sku}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.name}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.color}</td><td style={{padding:'4px 6px'}}>{g.lines.map((l,j)=><span key={j} style={{display:'inline-block',whiteSpace:'nowrap',marginRight:12}}>{l.size}&nbsp;<b>{l.qty}</b>{l.inbound?<span style={{color:'#b45309',fontSize:11}}> · inbound {l.inbound}</span>:''}</span>)}</td><td style={{padding:'4px 6px',textAlign:'right',fontWeight:700,verticalAlign:'top'}}>{qty}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.decoration||'—'}</td><td style={{padding:'4px 6px',textAlign:'right',verticalAlign:'top'}}>{retail?'$'+retail:'—'}</td></tr>})}</tbody>
             </table>
             <div style={{display:'flex',gap:8,alignItems:'center',marginTop:12,flexWrap:'wrap'}}>
               {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
