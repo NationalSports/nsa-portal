@@ -1,12 +1,20 @@
-// SanMar PO submission preview modal — dry-run only.
-// Renders the line items that would be sent + the raw SOAP envelope so a
-// human can verify the payload before we wire up the real network call.
+// SanMar PO submission modal — review the exact PromoStandards v24.3 sendPO payload,
+// then place the order. env='prod' submits a LIVE production order (ships real goods);
+// env='test' targets the onboarding TEST host. Credentials (SanMar.com username +
+// password) are injected server-side by the proxy and never appear here.
 import React, { useMemo, useState } from 'react';
-import { buildSanMarPOPayload, buildSanMarPOSoap } from './sanmarPO';
+import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
+import { sanmarSubmitPO } from './vendorApis';
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', onClose }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
+  const [result, setResult] = useState(null); // { transactionId, orderNumber } on success
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const isLive = env === 'prod';
 
   const { payload, soap, lines, totals, warnings } = useMemo(() => {
     const p = buildSanMarPOPayload({ poNumber, batchPOs });
@@ -22,21 +30,65 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const blocked = lines.length === 0 || warnings.length > 0;   // missing partId / empty → cannot submit
+  const done = submitState === 'success';
+  const submitting = submitState === 'submitting';
+  const canSubmit = !blocked && confirmed && !submitting && !done;
+
+  const doSubmit = async () => {
+    if (!canSubmit) return;
+    setSubmitState('submitting');
+    setErrorMsg('');
+    try {
+      const r = await sanmarSubmitPO(payload, env);
+      setResult(r);
+      setSubmitState('success');
+      onSubmitted && onSubmitted(r);
+    } catch (e) {
+      setErrorMsg(e.message || 'Submit failed — try again or place the order manually on sanmar.com.');
+      setSubmitState('error');
+    }
+  };
+
+  // Don't let a stray outside-click dismiss the modal mid-submit (or lose the receipt).
+  const safeClose = submitting ? undefined : onClose;
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={safeClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: '90vh', overflow: 'auto' }}>
         <div className="modal-header">
-          <h2>🔍 {vendorName} API Submit — Dry Run</h2>
-          <button className="modal-close" onClick={onClose}>x</button>
+          <h2>{done ? '✅' : isLive ? '🚀' : '🧪'} {vendorName} Order — {done ? 'Submitted' : 'Review & Submit'}</h2>
+          <button className="modal-close" onClick={safeClose}>x</button>
         </div>
         <div className="modal-body">
-          <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
-            <strong style={{ color: '#b45309' }}>⚠ Dry-run preview only.</strong> No request has been sent to SanMar. This shows the exact PromoStandards v24.3 <code>sendPO</code> payload that <em>would</em> be POSTed. Credentials (SanMar.com username + password) are injected server-side and are not displayed here.
-          </div>
-
-          {warnings.length > 0 && (
+          {done ? (
+            <div style={{ padding: 14, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12, fontSize: 13, color: '#166534' }}>
+              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>✓ Order placed with SanMar{isLive ? '' : ' (TEST)'}</div>
+              <div>SanMar accepted the order and returned a transaction ID. A confirmation email will follow to your shipping-notification address.</div>
+              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <Stat label="PO Number" value={result?.orderNumber || poNumber} mono />
+                <Stat label="Transaction ID" value={result?.transactionId || '—'} mono />
+              </div>
+            </div>
+          ) : submitState === 'error' ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>⚠ Cannot submit yet — {warnings.length} line(s) missing a SanMar <code>partId</code> (Unique_Key):</strong>
+              <strong>✗ SanMar did not accept the order — nothing was placed.</strong>
+              <div style={{ marginTop: 4, fontFamily: 'monospace' }}>{errorMsg}</div>
+              <div style={{ marginTop: 6 }}>Fix the issue and retry, or place this order manually on sanmar.com.</div>
+            </div>
+          ) : isLive ? (
+            <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+              <strong style={{ color: '#b45309' }}>⚠ LIVE production order.</strong> Submitting sends this PO straight to SanMar and <strong>ships real goods</strong>. Review every line below — nothing is sent until you check the box and click <em>Submit Order</em>.
+            </div>
+          ) : (
+            <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
+              <strong>🧪 TEST environment.</strong> Submits to SanMar's onboarding TEST host — no goods ship.
+            </div>
+          )}
+
+          {!done && warnings.length > 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
+              <strong>⚠ Cannot submit — {warnings.length} line(s) missing a SanMar <code>partId</code> (Unique_Key):</strong>
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
             </div>
           )}
@@ -92,16 +144,39 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           {tab === 'xml' && (
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: 11, color: '#64748b' }}>POST → <code>test-ws.sanmar.com:8080/promostandards/POServiceBinding</code> (TEST)</span>
+                <span style={{ fontSize: 11, color: '#64748b' }}>POST → <code>{(SANMAR_PO_ENDPOINTS[env] || SANMAR_PO_ENDPOINTS.prod).replace(/^https?:\/\//, '')}</code> ({isLive ? 'LIVE' : 'TEST'})</span>
                 <button className="btn btn-sm btn-secondary" onClick={copyXml}>{copied ? '✓ Copied' : '📋 Copy XML'}</button>
               </div>
               <pre style={{ background: '#0f172a', color: '#a5f3fc', padding: 12, borderRadius: 6, fontSize: 11, overflow: 'auto', maxHeight: 420, margin: 0 }}>{soap}</pre>
             </div>
           )}
         </div>
-        <div className="modal-footer">
-          <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>For the SanMar onboarding test order, use <code>scripts/sanmar-test-po.js</code> (documented test product IDs + TEST endpoint). In-app submit requires a SanMar <code>partId</code> on every line.</span>
-          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        <div className="modal-footer" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {done ? (
+            <>
+              <span style={{ flex: 1, fontSize: 12, color: '#166534', fontWeight: 700 }}>✓ Submitted — transaction {result?.transactionId}</span>
+              <button className="btn btn-primary" onClick={onClose}>Done</button>
+            </>
+          ) : (
+            <>
+              <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: blocked ? '#94a3b8' : '#334155', cursor: blocked ? 'not-allowed' : 'pointer' }}>
+                <input type="checkbox" checked={confirmed} disabled={blocked || submitting} onChange={e => setConfirmed(e.target.checked)} />
+                {isLive
+                  ? <span>I confirm this is a real order — submit it to SanMar and ship the goods.</span>
+                  : <span>Confirm test submission to SanMar's TEST environment.</span>}
+              </label>
+              <button className="btn btn-secondary" onClick={onClose} disabled={submitting}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={doSubmit}
+                disabled={!canSubmit}
+                title={blocked ? 'Resolve missing partIds before submitting' : !confirmed ? 'Check the confirmation box first' : ''}
+                style={{ background: isLive ? '#b91c1c' : '#1e40af', borderColor: isLive ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
+              >
+                {submitting ? 'Submitting…' : isLive ? '🚀 Submit Order to SanMar' : '🧪 Submit Test Order'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -115,7 +190,7 @@ function Stat({ label, value, mono }) {
   return (
     <div style={{ padding: 8, background: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0' }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', fontFamily: mono ? 'monospace' : 'inherit' }}>{value}</div>
+      <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', fontFamily: mono ? 'monospace' : 'inherit', wordBreak: 'break-all' }}>{value}</div>
     </div>
   );
 }
