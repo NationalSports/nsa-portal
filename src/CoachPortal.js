@@ -6,6 +6,7 @@ import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts } from './utils';
 import { StripePaymentModal } from './modals';
+import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
 
 // Read-only team-store view for the coach: headline order/fundraising/batch
@@ -259,10 +260,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const handlePaymentSuccess=(result)=>{
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
+    // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
+    // default 2.9%). The old code referenced an undefined CC_FEE_PORTAL here, which threw the moment
+    // a payment succeeded — so the invoice never got marked paid and the portal hit its error boundary.
+    const ccPct=(typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:0.029);
     const updater=prev=>prev.map(inv=>{
       if(!paidInvIds.includes(inv.id))return inv;
       const bal=(inv.total||0)-(inv.paid||0);
-      const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
+      const fee=Math.round(bal*ccPct*100)/100;
       const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
       const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
       const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
@@ -273,6 +278,50 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
     setShowPay(null);setInvView(null);setPayLoading(false);
   };
+
+  // Finalize a payment that came back via a Stripe redirect (3-D Secure, wallets, etc.).
+  // StripeCheckoutForm confirms with redirect:'if_required' and return_url = this page, so when a
+  // redirect IS required the buyer lands back here with ?payment_intent..&redirect_status=.. in the
+  // URL and the in-page onSuccess never fired. Retrieve the intent with the publishable key (read-only,
+  // safe in the public portal) and run the same finalize, so the invoice updates and the buyer sees a
+  // result instead of a stale "due". The webhook reconciles server-side too; both paths are idempotent.
+  const _payReturnHandled=useRef(false);
+  useEffect(()=>{
+    if(_payReturnHandled.current)return;
+    const params=new URLSearchParams(window.location.search);
+    const clientSecret=params.get('payment_intent_client_secret');
+    const redirectStatus=params.get('redirect_status');
+    if(!clientSecret||!redirectStatus)return;
+    _payReturnHandled.current=true;
+    const cleanUrl=()=>{try{const u=new URL(window.location.href);['payment_intent','payment_intent_client_secret','redirect_status','source_type'].forEach(k=>u.searchParams.delete(k));window.history.replaceState({},document.title,u.pathname+u.search+u.hash);}catch(e){/* noop */}};
+    (async()=>{
+      try{
+        let pk=(typeof process!=='undefined'&&process.env&&process.env.REACT_APP_STRIPE_PK)||'';
+        if(!pk){const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));pk=cfg&&cfg.publishableKey;}
+        if(!pk)return;
+        const stripe=await loadStripe(pk);
+        if(!stripe)return;
+        const{paymentIntent}=await stripe.retrievePaymentIntent(clientSecret);
+        if(!paymentIntent)return;
+        if(paymentIntent.status==='succeeded'){
+          const ids=String(paymentIntent.metadata?.invoice_id||'').split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+          const matched=custInvs.filter(inv=>ids.includes(inv.id));
+          const collected=(paymentIntent.amount||0)/100;
+          if(matched.length){
+            const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
+            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched});
+          }else{
+            // Invoices not loaded yet (or already settled by the webhook) — still confirm to the buyer.
+            setPaySuccess({amount:collected,fee:0,invoices:[]});
+          }
+        }else if(paymentIntent.status==='processing'){
+          setPaySuccess({amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],processing:true});
+        }
+        // failed / requires_payment_method: the modal already showed an error before the redirect.
+      }catch(e){/* best-effort; the webhook is the source of truth */}
+      finally{cleanUrl();}
+    })();
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Estimate detail view
   if(estView){
@@ -1031,11 +1080,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <CoachStore customer={customer} />
 
         {/* Payment success banner */}
-        {paySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
-          <div style={{fontSize:32,marginBottom:8}}>✅</div>
-          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
-          <div style={{fontSize:14,color:'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to your email. Your account has been updated.</div>
+        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
+          <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
+          <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'A receipt has been sent to your email. Your account has been updated.'}</div>
         </div>}
 
         {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}
