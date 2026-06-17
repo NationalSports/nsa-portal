@@ -9108,7 +9108,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
               <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{_cm?null:(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?jobArtBadgeSt(j,afs):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}</div>
                 {(()=>{const firstGi=(j.items||[])[0];const jIt=firstGi?safeItems(o)[firstGi.item_idx]:null;
-                  const jDecos=jIt?safeDecos(jIt).filter(d=>d.kind==='art'||d.kind==='numbers'):[];
+                  // Only this job's own decorations — not every deco on the garment. A split-art line
+                  // splits its designs across sibling jobs, so reading all decos would list the other
+                  // jobs' designs here too (the "screen print · Front Center ×3" glitch).
+                  const _myIdxs=firstGi?(Array.isArray(firstGi.deco_idxs)&&firstGi.deco_idxs.length?firstGi.deco_idxs:(firstGi.deco_idx!=null?[firstGi.deco_idx]:null)):null;
+                  const jDecos=jIt?safeDecos(jIt).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&(!_myIdxs||_myIdxs.includes(di))):[];
                   if(jDecos.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{jDecos.map((d,di)=>{
                     const artF2=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;const dt=artF2?.deco_type||d.deco_type||'screen_print';
                     return<div key={di}>{dt.replace(/_/g,' ')} · {d.position||'—'}</div>}).reduce((a,v)=>[...a,v],[])}</div>;
