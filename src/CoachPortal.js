@@ -323,6 +323,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     })();
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Single source of truth for the payment modal. Each portal view (estimate/job/invoice/main) is its
+  // own early return, so the modal must be rendered in every view that can launch it — not just the
+  // main one. Previously it lived only in the main return, so tapping "Pay" from an opened invoice set
+  // showPay but never mounted the modal: the button just span on "Opening secure checkout…" forever.
+  const payModalEl = showPay ? <StripePaymentModal
+    invoices={showPay==='all'?openInvs:[showPay]}
+    customerName={customer.name}
+    customerEmail={contactEmail}
+    alphaTag={customer.alpha_tag}
+    feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
+    paymentNote={portalSettings?.paymentNote||''}
+    onSuccess={handlePaymentSuccess}
+    onClose={()=>{setShowPay(null);setPayLoading(false)}}
+  /> : null;
+
   // Estimate detail view
   if(estView){
     const est=estView;
@@ -1056,6 +1071,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
         </div>
       </div>
+      {payModalEl}
     </div>
   }
 
@@ -1326,17 +1342,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       </div>
     </div>
 
-    {/* Stripe Payment Modal */}
-    {showPay&&<StripePaymentModal
-      invoices={showPay==='all'?openInvs:[showPay]}
-      customerName={customer.name}
-      customerEmail={contactEmail}
-      alphaTag={customer.alpha_tag}
-      feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
-      paymentNote={portalSettings?.paymentNote||''}
-      onSuccess={handlePaymentSuccess}
-      onClose={()=>{setShowPay(null);setPayLoading(false)}}
-    />}
+    {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
+    {payModalEl}
   </div>
 }
 
