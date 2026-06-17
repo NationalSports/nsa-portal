@@ -6,6 +6,9 @@ import { supabase } from './lib/supabase';
 const FAMILIES = ['Black', 'White', 'Grey', 'Navy', 'Royal', 'Blue', 'Red', 'Maroon', 'Orange', 'Gold', 'Yellow', 'Green', 'Purple', 'Pink', 'Brown'];
 const HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
 const TIER_DISC = { A: '40%', B: '35%', C: '30%' };
+// Catalog brands an account can be locked to (must match CATALOG_BRANDS in
+// src/storefront/AdidasInventory.js). Empty selection = all brands.
+const CATALOG_BRANDS = ['Adidas', 'Under Armour', 'Nike'];
 
 // Per-customer coach catalog account manager. Embedded on the customer detail
 // page so the customer is always known — coaches invited here sign in on
@@ -24,6 +27,7 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
   useEffect(load, [customer && customer.id]);
 
   const sc = Array.isArray(customer && customer.school_colors) ? customer.school_colors : [];
+  const ab = Array.isArray(customer && customer.allowed_brands) ? customer.allowed_brands : [];
   const tier = (customer && customer.adidas_ua_tier) || 'B';
 
   const invite = async (email, name) => {
@@ -63,6 +67,16 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, school_colors: cur }); }
   };
 
+  // Brand access: none selected = all brands; otherwise the account's coaches
+  // only see these brands in the catalog. Saved immediately to the customer.
+  const toggleBrand = async (b) => {
+    const cur = ab;
+    const next = cur.includes(b) ? cur.filter((x) => x !== b) : [...cur, b];
+    if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: next });
+    const { error } = await supabase.from('customers').update({ allowed_brands: next.length ? next : null }).eq('id', customer.id);
+    if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: cur }); }
+  };
+
   return (
     <div className="card">
       <div className="card-header"><h2>🎽 Catalog Access</h2></div>
@@ -72,6 +86,25 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
           and automatically see <strong>{customer && customer.name}</strong>'s pricing
           {TIER_DISC[tier] ? <> — <strong>Tier {tier} ({TIER_DISC[tier]} off)</strong></> : null} and school colors.
         </p>
+
+        {/* Brand access */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+            Brands {ab.length ? '(' + ab.length + ' of ' + CATALOG_BRANDS.length + ')' : '— all brands'}
+          </div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {CATALOG_BRANDS.map((b) => {
+              const on = ab.includes(b);
+              return (
+                <button key={b} onClick={() => toggleBrand(b)}
+                  style={{ border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569', borderRadius: 999, padding: '3px 11px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  {b}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Limits which brands this account's coaches see in the catalog. None selected = all brands.</div>
+        </div>
 
         {/* School colors */}
         <div style={{ marginBottom: 18 }}>

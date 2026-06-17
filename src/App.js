@@ -6987,6 +6987,8 @@ export default function App(){
   const[coachForm,setCoachForm]=useState({email:'',name:'',customer_id:null,q:''});
   const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
   const CATALOG_COLOR_HEX={Black:'#191919',White:'#FFFFFF',Grey:'#9AA1AC',Navy:'#1B2A4A',Royal:'#2148C7',Blue:'#3B82F6',Red:'#C8102E',Maroon:'#6B1F2A',Orange:'#EA580C',Gold:'#C9A227',Yellow:'#EAB308',Green:'#15803D',Purple:'#6D28D9',Pink:'#EC4899',Brown:'#7C4A21'};
+  // Catalog brands an account can be locked to (must match CATALOG_BRANDS in src/storefront/AdidasInventory.js). Empty = all brands.
+  const CATALOG_BRANDS=['Adidas','Under Armour','Nike'];
   const loadCoachAccts=()=>{if(!supabase)return;supabase.from('coach_accounts').select('*').order('created_at',{ascending:false}).then(r=>{if(!r.error)setCoachAccts(r.data||[]);else{setCoachAccts([]);nf('Coach accounts: '+r.error.message,'error')}})};
   useEffect(()=>{if(coachAcctsOpen)loadCoachAccts()},[coachAcctsOpen]);// eslint-disable-line react-hooks/exhaustive-deps
   const sendCoachInvite=async(email,name,custId)=>{
@@ -7018,6 +7020,15 @@ export default function App(){
     const{error}=await supabase.from('customers').update({school_colors:next.length?next:null}).eq('id',custId);
     if(error){nf(error.message,'error');setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:cur}:c))}
   };
+  // Brand access: none selected = all brands; otherwise this account's coaches only see these brands in the catalog. Saved immediately to the customer.
+  const toggleAllowedBrand=async(custId,b)=>{
+    const c2=cust.find(c=>c.id===custId);
+    const cur=Array.isArray(c2?.allowed_brands)?c2.allowed_brands:[];
+    const next=cur.includes(b)?cur.filter(x=>x!==b):[...cur,b];
+    setCust(prev=>prev.map(c=>c.id===custId?{...c,allowed_brands:next}:c));
+    const{error}=await supabase.from('customers').update({allowed_brands:next.length?next:null}).eq('id',custId);
+    if(error){nf(error.message,'error');setCust(prev=>prev.map(c=>c.id===custId?{...c,allowed_brands:cur}:c))}
+  };
   const renderCoachAcctsModal=()=>coachAcctsOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCoachAcctsOpen(false)}>
     <div style={{background:'white',borderRadius:14,maxWidth:820,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
@@ -7044,7 +7055,7 @@ export default function App(){
       <div style={{padding:'6px 22px 18px'}}>
         {coachAccts===null&&<div className="empty" style={{padding:20}}>Loading…</div>}
         {coachAccts&&coachAccts.length===0&&<div className="empty" style={{padding:20}}>No coach accounts yet</div>}
-        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const sc=(c2&&Array.isArray(c2.school_colors))?c2.school_colors:[];
+        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const sc=(c2&&Array.isArray(c2.school_colors))?c2.school_colors:[];const ab=(c2&&Array.isArray(c2.allowed_brands))?c2.allowed_brands:[];
           return<div key={a.id} style={{borderBottom:'1px solid #f1f5f9',padding:'10px 0',display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap',opacity:a.status==='active'?1:.55}}>
             <div style={{flex:'1 1 200px',minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700}}>{a.name||a.email}</div>
@@ -7056,6 +7067,12 @@ export default function App(){
                 {CATALOG_COLOR_FAMILIES.map(fam=>{const on=sc.includes(fam);return<button key={fam} title={fam} onClick={()=>toggleSchoolColor(a.customer_id,fam)} style={{display:'inline-flex',alignItems:'center',gap:3,border:'1px solid '+(on?'#191919':'#e2e8f0'),background:on?'#191919':'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'2px 7px',fontSize:10,fontWeight:600,cursor:'pointer'}}>
                   <span style={{width:10,height:10,borderRadius:'50%',background:CATALOG_COLOR_HEX[fam],border:'1px solid rgba(0,0,0,.15)',display:'inline-block',flexShrink:0}}/>{fam}
                 </button>})}
+              </div>
+            </div>
+            <div style={{flex:'1 1 200px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.3,marginBottom:4}}>Brands {ab.length?'('+ab.length+' of '+CATALOG_BRANDS.length+')':'— all'}</div>
+              <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                {CATALOG_BRANDS.map(b=>{const on=ab.includes(b);return<button key={b} onClick={()=>toggleAllowedBrand(a.customer_id,b)} style={{border:'1px solid '+(on?'#191919':'#e2e8f0'),background:on?'#191919':'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'2px 9px',fontSize:10,fontWeight:600,cursor:'pointer'}}>{b}</button>})}
               </div>
             </div>
             <div style={{display:'flex',gap:6}}>
