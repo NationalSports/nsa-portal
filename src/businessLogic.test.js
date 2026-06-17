@@ -1072,6 +1072,53 @@ describe('Split Art', () => {
     expect(a.item_status).toBe('items_received');
     expect(b.item_status).toBe('items_received');
   });
+
+  // Three-way split: a line carrying three logos, each with its own per-size allocation.
+  test('a three-way split produces one job per design, each sized to its own allocation', () => {
+    const jobs = buildJobs(makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' }), makeArtFile({ id: 'afC', name: 'Lancers' })],
+      items: [makeSOItem({
+        sizes: { S: 12, M: 12 },
+        decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 5, M: 4 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 4, M: 4 } },
+          { kind: 'art', art_file_id: 'afC', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 3, M: 4 } },
+        ],
+      })],
+      jobs: [],
+    }));
+    expect(jobs).toHaveLength(3);
+    const a = jobs.find(j => j.art_file_id === 'afA');
+    const b = jobs.find(j => j.art_file_id === 'afB');
+    const c = jobs.find(j => j.art_file_id === 'afC');
+    expect(a.total_units).toBe(9);  // 5 + 4
+    expect(b.total_units).toBe(8);  // 4 + 4
+    expect(c.total_units).toBe(7);  // 3 + 4
+    expect(a.items[0].sizes).toEqual({ S: 5, M: 4 });
+    expect(c.items[0].sizes).toEqual({ S: 3, M: 4 });
+    // Each design is its own single-art job, and the line is counted exactly once.
+    expect(jobs.every(j => (j._art_ids || []).length === 1)).toBe(true);
+    expect([a, b, c].every(j => j.split_group === 'sg9')).toBe(true);
+    expect(jobs.reduce((sum, j) => sum + j.total_units, 0)).toBe(24);
+  });
+
+  test('three-way split partitions partial receipts across all siblings — no double-count', () => {
+    // Line S:12 split 5/4/3; only 7 of the S blanks have arrived.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg9', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 5 } }], total_units: 5, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg9', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-3', split_group: 'sg9', art_file_id: 'afC', items: [{ item_idx: 0, sizes: { S: 3 } }], total_units: 3, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 12 }, po_lines: [{ po_id: 'PO-1', S: 12, received: { S: 7 } }] })];
+    const [a, b, c] = recalcJobFulfillment(so, items);
+    // 7 received fills design A's 5 first, then 2 toward B, none to C — never counted as 7+7+7.
+    expect(a.fulfilled_units).toBe(5);
+    expect(b.fulfilled_units).toBe(2);
+    expect(c.fulfilled_units).toBe(0);
+    expect(a.fulfilled_units + b.fulfilled_units + c.fulfilled_units).toBe(7);
+  });
 });
 
 // ═══════════════════════════════════════════════

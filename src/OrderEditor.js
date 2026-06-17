@@ -1950,7 +1950,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const full={};Object.entries(safeSizes(it)).forEach(([sz,v])=>{if(safeNum(v)>0)full[sz]=safeNum(v)});
     let designs;
     if(splitArts.length>=2){
-      designs=splitArts.slice(0,2).map(d=>({art_file_id:d.art_file_id||'',position:d.position||'Front Center',sizes:{...(d.split_sizes||{})}}));
+      designs=splitArts.slice(0,3).map(d=>({art_file_id:d.art_file_id||'',position:d.position||'Front Center',sizes:{...(d.split_sizes||{})}}));
     }else{
       const cur=arts[0];
       designs=[{art_file_id:cur?.art_file_id||'',position:cur?.position||'Front Center',sizes:{...full}},
@@ -7098,13 +7098,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const balanced=lineQty>0&&lineSizes.every(([sz])=>leftFor(sz)===0);
       const overAny=lineSizes.some(([sz])=>leftFor(sz)<0);
       const activeCount=designs.filter((d,di)=>dTotal(di)>0).length;
-      const setSz=(di,sz,val)=>{const lq=safeNum(safeSizes(it)[sz]);let n=Math.max(0,parseInt(val,10)||0);if(n>lq)n=lq;setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:(mm.designs.length===2?{...d,sizes:{...d.sizes,[sz]:Math.max(0,lq-n)}}:d))}))};
+      const setSz=(di,sz,val)=>{const lq=safeNum(safeSizes(it)[sz]);let n=Math.max(0,parseInt(val,10)||0);if(n>lq)n=lq;setSplitArtModal(mm=>{const ds=mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:d);const last=ds.length-1;if(ds.length===2){const other=di===0?1:0;ds[other]={...ds[other],sizes:{...ds[other].sizes,[sz]:Math.max(0,lq-n)}};}else if(di!==last){const used=ds.reduce((a,d,i)=>i===last?a:a+safeNum(d.sizes?.[sz]),0);ds[last]={...ds[last],sizes:{...ds[last].sizes,[sz]:Math.max(0,lq-used)}};}return{...mm,designs:ds}})};
       const setArt=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,art_file_id:v}:d)}));
       const setPos=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,position:v}:d)}));
-      const fillEven=()=>setSplitArtModal(mm=>{const ds=mm.designs.map(d=>({...d,sizes:{}}));lineSizes.forEach(([sz,v])=>{const half=Math.floor(safeNum(v)/2);if(ds[0])ds[0].sizes[sz]=half;if(ds[1])ds[1].sizes[sz]=safeNum(v)-half});return{...mm,designs:ds}});
+      const fillEven=()=>setSplitArtModal(mm=>{const ds=mm.designs.map(d=>({...d,sizes:{}}));const n=ds.length||1;lineSizes.forEach(([sz,v])=>{const tot=safeNum(v);const base=Math.floor(tot/n);const rem=tot-base*n;ds.forEach((d,i)=>{d.sizes[sz]=base+(i<rem?1:0)})});return{...mm,designs:ds}});
       const fillAll=(di)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>{if(i!==di)return{...d,sizes:{}};const sizes={};lineSizes.forEach(([sz,v])=>{sizes[sz]=safeNum(v)});return{...d,sizes}})}));
+      const addDesign=()=>setSplitArtModal(mm=>mm.designs.length>=3?mm:({...mm,designs:[...mm.designs,{art_file_id:'',position:mm.designs[0]?.position||'Front Center',sizes:{}}]}));
+      const removeDesign=(ri)=>setSplitArtModal(mm=>{if(mm.designs.length<=2)return mm;const removed=mm.designs[ri];const ds=mm.designs.filter((_,i)=>i!==ri).map((d,i)=>i===0?{...d,sizes:{...d.sizes}}:d);Object.entries(removed?.sizes||{}).forEach(([sz,v])=>{ds[0].sizes[sz]=safeNum(ds[0].sizes[sz])+safeNum(v)});return{...mm,designs:ds}});
       const artName=di=>{const id=designs[di]?.art_file_id;if(!id)return'(needs art)';const a=af.find(x=>x.id===id);return a?.name||'(art)'};
-      const colors=['#7c3aed','#0891b2'];
+      const colors=['#7c3aed','#0891b2','#db2777'];const tints=['#f5f3ff','#ecfeff','#fdf2f8'];
       const previewJobs=designs.map((d,di)=>({di,t:dTotal(di)})).filter(x=>x.t>0);
       return<div className="modal-overlay" style={{zIndex:10002}} onClick={()=>setSplitArtModal(null)}>
         <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'92vh',overflow:'auto'}}>
@@ -7113,7 +7115,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="modal-close" style={{color:'white'}} onClick={()=>setSplitArtModal(null)}>×</button>
           </div>
           <div style={{padding:'16px 20px'}}>
-            <p style={{fontSize:12,color:'#64748b',marginTop:0,marginBottom:14}}>Pick two designs, then type how many of each size goes to one — the other design fills in the rest automatically. This line splits into a separate production job per design, each priced at its own quantity.</p>
+            <p style={{fontSize:12,color:'#64748b',marginTop:0,marginBottom:14}}>Pick two or three designs, then type how many of each size goes to each — the last design fills in the rest automatically. This line splits into a separate production job per design, each priced at its own quantity.</p>
             <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
               {designs.map((d,di)=><div key={di} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span style={{width:70,fontSize:12,fontWeight:800,color:colors[di]||'#475569'}}>Design {di+1}</span>
@@ -7123,8 +7125,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </select>
                 <select className="form-select" style={{width:140,fontSize:12}} value={d.position||'Front Center'} onChange={e=>setPos(di,e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>fillAll(di)} title="Put every piece on this design">All →</button>
+                {designs.length>2&&<button className="btn btn-sm btn-secondary" style={{fontSize:13,lineHeight:1,color:'#dc2626',padding:'2px 8px'}} onClick={()=>removeDesign(di)} title="Remove this design">×</button>}
               </div>)}
-              <div><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={fillEven}>⚖️ Even split</button></div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={fillEven}>⚖️ Even split</button>
+                {designs.length<3&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#7c3aed',borderColor:'#c4b5fd'}} onClick={addDesign}>➕ Add a third design</button>}
+              </div>
             </div>
             <div style={{overflowX:'auto'}}>
               <table style={{borderCollapse:'collapse',width:'100%',fontSize:12}}>
@@ -7141,7 +7147,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </tr>
                   {designs.map((d,di)=><tr key={di}>
                     <td style={{padding:'4px 8px',fontWeight:700,color:colors[di]||'#475569',whiteSpace:'nowrap',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis'}}>{di+1}. {artName(di)}</td>
-                    {lineSizes.map(([sz,v])=>{const val=safeNum(d.sizes?.[sz]);const bad=leftFor(sz)<0;return<td key={sz} style={{padding:'3px 4px',textAlign:'center'}}><input type="number" min="0" max={v} value={d.sizes?.[sz]||''} placeholder="0" onChange={e=>setSz(di,sz,e.target.value)} style={{width:42,textAlign:'center',border:'1px solid '+(bad?'#fca5a5':'#cbd5e1'),borderRadius:4,padding:'3px 2px',fontSize:12,fontWeight:600,background:val>0?(di===0?'#f5f3ff':'#ecfeff'):'white'}}/></td>})}
+                    {lineSizes.map(([sz,v])=>{const val=safeNum(d.sizes?.[sz]);const bad=leftFor(sz)<0;return<td key={sz} style={{padding:'3px 4px',textAlign:'center'}}><input type="number" min="0" max={v} value={d.sizes?.[sz]||''} placeholder="0" onChange={e=>setSz(di,sz,e.target.value)} style={{width:42,textAlign:'center',border:'1px solid '+(bad?'#fca5a5':'#cbd5e1'),borderRadius:4,padding:'3px 2px',fontSize:12,fontWeight:600,background:val>0?(tints[di]||'#f1f5f9'):'white'}}/></td>})}
                     <td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,color:colors[di]||'#475569'}}>{dTotal(di)}</td>
                   </tr>)}
                   <tr style={{borderTop:'2px solid #e2e8f0'}}>
