@@ -6677,7 +6677,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){nf(podRes.error,'error');return}
           _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
-          const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
+          // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
+          // inconsistent casing/spacing across passes (e.g. "PO6639 SBBV SP" vs "PO6639 SBBV sp").
+          // Matching is exact everywhere downstream, so that used to fragment one PO into several
+          // near-duplicates whose size totals no longer reconciled with the SO. Match PO numbers
+          // already on the order ignoring case/whitespace and reuse the existing spelling.
+          const _poNorm=s=>String(s||'').trim().replace(/\s+/g,' ').toLowerCase();
+          let effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
+          if(preexistingPO){
+            const _typedNorm=_poNorm(effectivePoId);
+            for(const _it of o.items){const _m=(_it.po_lines||[]).find(pl=>_poNorm(pl.po_id)===_typedNorm);if(_m){effectivePoId=_m.po_id;break}}
+          }
           const isDropShip=poDropShip;
           // Save PO lines back to order items (immutable)
           const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
@@ -6709,8 +6719,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
             const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
             if(hasQty){
-              updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
-              newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
+              // Re-applying the same preexisting PO to an item (matched case/space-insensitively) should
+              // grow the existing line, not append a second one — appending splits the PO so its size
+              // totals stop reconciling with the SO. Only fold into a compatible line (same drop-ship
+              // mode, not batch-queued); adding ordered units doesn't disturb existing receipts/bills.
+              const mergeIdx=preexistingPO?updatedItems[idx].po_lines.findIndex(pl=>_poNorm(pl.po_id)===_poNorm(effectivePoId)&&!!pl.drop_ship===!!isDropShip&&pl.status!=='queued'):-1;
+              if(mergeIdx>=0){
+                const ex={...updatedItems[idx].po_lines[mergeIdx]};
+                Object.entries(lineSizes).forEach(([sz,v])=>{if(v>0)ex[sz]=safeNum(ex[sz])+v});
+                if(ex.unit_cost==null&&unitCostVal)ex.unit_cost=unitCostVal;
+                updatedItems[idx].po_lines=updatedItems[idx].po_lines.map((p,j)=>j===mergeIdx?ex:p);
+                newPoLines.push({lineIdx:idx,poIdx:mergeIdx});
+              }else{
+                updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
+              }
             }
           });
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
