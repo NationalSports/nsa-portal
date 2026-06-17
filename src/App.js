@@ -19068,7 +19068,11 @@ export default function App(){
                           const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                           if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
                         });
-                        setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{}});
+                        const _sel=resolveOrderShipTo(so,c2);
+                        const _destAddr=_sel&&_sel.street
+                          ?{company:c2?.name||'',street1:_sel.street,street2:'',city:_sel.city||'',state:_sel.state||'',zip:_sel.zip||'',phone:c2?.contacts?.[0]?.phone||''}
+                          :{company:c2?.name||'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};
+                        setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{},shipToMode:'customer',decoId:'',attn:'',destTouched:false,destAddr:_destAddr});
                       }}
                       onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
                       onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
@@ -19186,6 +19190,64 @@ export default function App(){
               </div>;
             })()}
 
+            {/* SHIP TO — choose recipient: customer (school), our warehouse, or a decorator */}
+            <div style={{marginBottom:12,padding:10,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Ship To</div>
+              <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+                {[['customer','📦 Customer'],['warehouse','🏠 Our Warehouse'],['deco','🎨 Decorator']].map(([mode,lbl])=>{
+                  const active=(manualShipModal.shipToMode||'customer')===mode;
+                  return<button key={mode} type="button" className="btn btn-sm" style={{fontSize:11,fontWeight:700,padding:'4px 12px',border:'1px solid '+(active?'#92400e':'#cbd5e1'),background:active?'#92400e':'white',color:active?'white':'#475569'}}
+                    onClick={()=>setManualShipModal(m=>{
+                      if(mode==='customer'){
+                        const sel=resolveOrderShipTo(m.so,m.cust);
+                        const a=sel&&sel.street
+                          ?{company:m.cust?.name||'',street1:sel.street,street2:'',city:sel.city||'',state:sel.state||'',zip:sel.zip||'',phone:m.cust?.contacts?.[0]?.phone||''}
+                          :{company:m.cust?.name||'',street1:m.cust?.shipping_address_line1||'',street2:m.cust?.shipping_address_line2||'',city:m.cust?.shipping_city||'',state:m.cust?.shipping_state||'',zip:m.cust?.shipping_zip||'',phone:m.cust?.contacts?.[0]?.phone||''};
+                        return{...m,shipToMode:'customer',destTouched:false,attn:'',decoId:'',destAddr:a};
+                      }
+                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:'',decoId:'',destAddr:{company:NSA.name,street1:NSA.addr,street2:'',city:NSA.city,state:NSA.state,zip:NSA.zip,phone:NSA.phone}};
+                      return{...m,shipToMode:'deco',destTouched:true,attn:'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
+                    })}>{lbl}</button>;
+                })}
+              </div>
+              {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
+                <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
+                  onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
+                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:dv?.contact_name||'',
+                      destAddr:{company:dv?.name||'',street1:dv?.address_line1||'',street2:dv?.address_line2||'',city:dv?.city||'',state:dv?.state||'',zip:dv?.zip||'',phone:dv?.phone||''}}))}}>
+                  <option value="">Select decorator…</option>
+                  {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below (add it in Settings → Deco Vendors to save for next time).</div>}
+              </div>}
+              <div style={{display:'grid',gap:6}}>
+                <div style={{display:'flex',gap:6}}>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Company / Recipient</label>
+                    <input className="form-input" style={{fontSize:11}} value={(manualShipModal.destAddr||{}).company||''} placeholder="Recipient name"
+                      onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),company:e.target.value}}))}/>
+                  </div>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Attention (optional)</label>
+                    <input className="form-input" style={{fontSize:11}} value={manualShipModal.attn||''} placeholder="ATTN: name"
+                      onChange={e=>setManualShipModal(m=>({...m,destTouched:true,attn:e.target.value}))}/>
+                  </div>
+                </div>
+                <input className="form-input" style={{fontSize:11}} value={(manualShipModal.destAddr||{}).street1||''} placeholder="Street address"
+                  onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),street1:e.target.value}}))}/>
+                <input className="form-input" style={{fontSize:11}} value={(manualShipModal.destAddr||{}).street2||''} placeholder="Suite / Unit (optional)"
+                  onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),street2:e.target.value}}))}/>
+                <div style={{display:'flex',gap:6}}>
+                  <input className="form-input" style={{fontSize:11,flex:2}} value={(manualShipModal.destAddr||{}).city||''} placeholder="City"
+                    onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),city:e.target.value}}))}/>
+                  <input className="form-input" style={{fontSize:11,width:60}} value={(manualShipModal.destAddr||{}).state||''} placeholder="ST" maxLength={2}
+                    onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),state:e.target.value.toUpperCase()}}))}/>
+                  <input className="form-input" style={{fontSize:11,width:90}} value={(manualShipModal.destAddr||{}).zip||''} placeholder="Zip"
+                    onChange={e=>setManualShipModal(m=>({...m,destTouched:true,destAddr:{...(m.destAddr||{}),zip:e.target.value}}))}/>
+                </div>
+              </div>
+            </div>
+
             {/* Package & Shipping details */}
             <div style={{display:'grid',gap:8,marginBottom:12}}>
               <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
@@ -19231,8 +19293,20 @@ export default function App(){
                       if(!w||w<=0){nf('Please enter package weight','error');return}
                       const dims=manualShipModal.dimensions||{};
                       if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
+                      // Ship-to override: warehouse/decorator/attention. null = ship to customer default.
+                      const _mode=manualShipModal.shipToMode||'customer';
+                      const _da=manualShipModal.destAddr||{};
+                      const _attn=(manualShipModal.attn||'').trim();
+                      const _shipToOverride=(_mode==='customer'&&!manualShipModal.destTouched&&!_attn)?null:{
+                        name:_attn||(_da.company||'').trim()||c2?.name||'',
+                        company:(_da.company||'').trim()||(_mode==='warehouse'?NSA.name:(c2?.name||'')),
+                        street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),
+                        city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),
+                        postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),
+                        residential:_mode==='customer'};
+                      if(_shipToOverride&&(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode)){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                       nf('Creating ShipStation label...');
-                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims);
+                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
                       const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                       const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                       const labelDownload=label.labelDownload||labelUrl||null;
@@ -19315,6 +19389,16 @@ export default function App(){
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
                   const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
                   if(manualShipModal.itemDesc)shipItems.push({sku:'MANUAL',name:manualShipModal.itemDesc,color:'',sizes:{}});
+                  // Destination — where this shipment is headed (customer / our warehouse / decorator)
+                  const _mode=manualShipModal.shipToMode||'customer';
+                  const _da=manualShipModal.destAddr||{};
+                  const _attn=(manualShipModal.attn||'').trim();
+                  const _destLabel=_mode==='warehouse'?'Our Warehouse':_mode==='deco'?('Decorator: '+((decoVendors.find(v=>v.id===manualShipModal.decoId)?.name)||(_da.company||'').trim()||'Decorator')):(manualShipModal.cust?.name||'Customer');
+                  const _shipTo=(_mode==='customer'&&!manualShipModal.destTouched&&!_attn)?null:{
+                    mode:_mode,attention:_attn||'',company:(_da.company||'').trim(),
+                    street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),
+                    city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),zip:(_da.zip||'').trim()};
+                  const _notePrefix=_mode==='customer'?'[MANUAL]':'[MANUAL → '+_destLabel+']';
                   const shipment={
                     id:'MSHP-'+Date.now(),
                     tracking_number:manualShipModal.tracking||'',
@@ -19326,8 +19410,10 @@ export default function App(){
                     shipping_cost:cost,
                     weight:parseFloat(manualShipModal.weight)||5,
                     manual:true,
+                    ship_to_label:_destLabel,
+                    ship_to:_shipTo,
                     items:shipItems,
-                    notes:(manualShipModal.notes?'[MANUAL] '+manualShipModal.notes:'[MANUAL]'),
+                    notes:(manualShipModal.notes?_notePrefix+' '+manualShipModal.notes:_notePrefix),
                     created_by:cu?.id||'',
                     created_at:new Date().toLocaleString()
                   };
@@ -19349,8 +19435,8 @@ export default function App(){
                     updated_at:new Date().toLocaleString()};
                   savSO(updated);
                   const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
-                  nf('Manual ship recorded for '+(manualShipModal.cust?.name||so.id)+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
-                  addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
+                  nf('Manual ship recorded → '+_destLabel+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
+                  addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',dest:_destLabel,tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
                   setManualShipModal(null);
                 }}>⚡ Confirm Manual Ship</button>
               <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
@@ -27490,6 +27576,7 @@ export default function App(){
   const[dvEdit,setDvEdit]=useState(null);// deco vendor id being edited for pricing
   const[dvTab,setDvTab]=useState('embroidery');
   const[dvNewName,setDvNewName]=useState('');
+  const[dvAddr,setDvAddr]=useState({});// draft ship-to address for the deco vendor being edited
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
@@ -27650,7 +27737,7 @@ export default function App(){
           <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Manage your outside decoration vendors and their pricing. Prices auto-fill on Deco POs and outside decoration line items.</div>
           {decoVendors.map(v=><div key={v.id} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
             <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery')}}>Edit Pricing</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery');setDvAddr({contact_name:v.contact_name||'',phone:v.phone||'',address_line1:v.address_line1||'',address_line2:v.address_line2||'',city:v.city||'',state:v.state||'',zip:v.zip||''})}}>Edit</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
           </div>)}
           <div style={{display:'flex',gap:8,marginTop:8}}>
@@ -27658,6 +27745,33 @@ export default function App(){
             <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{if(!dvNewName.trim())return;const id='dv_'+Date.now();saveDV({id,name:dvNewName.trim(),is_active:true,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
           </div>
         </div></div>
+
+        {/* SHIP-TO ADDRESS — used by Manual Ship when shipping goods to this decorator */}
+        {editVendor&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h3 style={{color:'#7c3aed'}}>Ship-To Address — {editVendor.name}</h3></div><div className="card-body">
+          <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Where the warehouse ships blanks/goods to this decorator. Prefills the Manual Ship form when you pick this decorator as the destination.</div>
+          <div style={{display:'grid',gap:8,maxWidth:520}}>
+            <div style={{display:'flex',gap:8}}>
+              <div style={{flex:1}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Attention / Contact</label>
+                <input className="form-input" style={{fontSize:12}} value={dvAddr.contact_name||''} placeholder="e.g. Receiving Dept" onChange={e=>setDvAddr(a=>({...a,contact_name:e.target.value}))}/></div>
+              <div style={{flex:1}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Phone</label>
+                <input className="form-input" style={{fontSize:12}} value={dvAddr.phone||''} placeholder="(555) 555-5555" onChange={e=>setDvAddr(a=>({...a,phone:e.target.value}))}/></div>
+            </div>
+            <div><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Street Address</label>
+              <input className="form-input" style={{fontSize:12}} value={dvAddr.address_line1||''} placeholder="123 Main St" onChange={e=>setDvAddr(a=>({...a,address_line1:e.target.value}))}/></div>
+            <div><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Suite / Unit (optional)</label>
+              <input className="form-input" style={{fontSize:12}} value={dvAddr.address_line2||''} placeholder="Ste 100" onChange={e=>setDvAddr(a=>({...a,address_line2:e.target.value}))}/></div>
+            <div style={{display:'flex',gap:8}}>
+              <div style={{flex:2}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>City</label>
+                <input className="form-input" style={{fontSize:12}} value={dvAddr.city||''} onChange={e=>setDvAddr(a=>({...a,city:e.target.value}))}/></div>
+              <div style={{width:70}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>State</label>
+                <input className="form-input" style={{fontSize:12}} value={dvAddr.state||''} maxLength={2} placeholder="CA" onChange={e=>setDvAddr(a=>({...a,state:e.target.value.toUpperCase()}))}/></div>
+              <div style={{width:110}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Zip</label>
+                <input className="form-input" style={{fontSize:12}} value={dvAddr.zip||''} onChange={e=>setDvAddr(a=>({...a,zip:e.target.value}))}/></div>
+            </div>
+            <div><button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11,fontWeight:700}}
+              onClick={()=>saveDV({...editVendor,contact_name:dvAddr.contact_name||null,phone:dvAddr.phone||null,address_line1:dvAddr.address_line1||null,address_line2:dvAddr.address_line2||null,city:dvAddr.city||null,state:dvAddr.state||null,zip:dvAddr.zip||null,updated_at:new Date().toISOString()})}>Save Address</button></div>
+          </div>
+        </div></div>}
 
         {/* PRICING EDITOR */}
         {editVendor&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h3 style={{color:'#7c3aed'}}>Pricing — {editVendor.name}</h3></div><div className="card-body">
