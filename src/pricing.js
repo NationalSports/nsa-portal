@@ -177,6 +177,9 @@ export const calcOrderMargin=(o)=>{
   // calcTotals and the Reports page already count these; include them here too so the dashboard
   // KPI margin matches instead of overstating it. Prefer the actual supplier bill, else expected.
   (o.deco_pos||[]).forEach(dp=>{const bc=_sNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=_sNum(dp.qty||0)*_sNum(dp.unit_cost||0)});
+  // Actual shipping spend (outbound from ShipStation + inbound freight) rolls into cost so margin is real
+  const actualShipCost=_sNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+_sNum(s.shipping_cost||0),0));
+  cost+=actualShipCost+_sNum(o._inbound_freight||0);
   return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0};
 };
 
