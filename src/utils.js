@@ -341,19 +341,19 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
       const sizes = new Set([...Object.keys(po.billed || {}), ...Object.keys(po.received || {})]);
       sizes.forEach((sz) => { add(sz, 'billed', sumSizes(po.billed, sz)); add(sz, 'received', sumSizes(po.received, sz)); });
     });
-    // Pick lines have their size quantities spread to TOP-LEVEL keys (App load
-    // does {...rest, ...sizes}). Count every non-meta numeric key as on-IF stock.
+    // Pick lines come in two shapes: raw from Supabase (sizes nested under
+    // `.sizes`) or hydrated by App load (sizes spread to top-level). Handle both.
     (it.pick_lines || []).forEach((pk) => {
-      Object.keys(pk || {}).forEach((kk) => {
-        if (PICK_META.has(kk)) return;
-        const n = Number(pk[kk]); if (!n) return;
-        add(kk, 'onIf', n);
-      });
+      const szObj = pk && pk.sizes && typeof pk.sizes === 'object' ? pk.sizes : null;
+      if (szObj) { Object.keys(szObj).forEach((k) => { const n = Number(szObj[k]); if (n) add(k, 'onIf', n); }); return; }
+      Object.keys(pk || {}).forEach((kk) => { if (PICK_META.has(kk)) return; const n = Number(pk[kk]); if (n) add(kk, 'onIf', n); });
     });
   });
 
   // Demand lines, oldest order first (FIFO front-of-line gets stock first).
-  const sorted = [...orders].sort((a, b) => String(a.omg_order_number || '').localeCompare(String(b.omg_order_number || ''), undefined, { numeric: true }));
+  // OMG orders sort by order number; webstore orders by creation time.
+  const fifoKey = (o) => String(o.omg_order_number || o.created_at || o.id || '');
+  const sorted = [...orders].sort((a, b) => fifoKey(a).localeCompare(fifoKey(b), undefined, { numeric: true }));
   const pools = {}; Object.keys(supply).forEach((k) => { pools[k] = { ...supply[k] }; });
   const out = {};
   sorted.forEach((o) => {

@@ -1,7 +1,7 @@
 /* eslint-disable */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 
@@ -1785,6 +1785,56 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
   const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
   const shipHome = store.delivery_mode !== 'deliver_club';
+  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store)
+  // In-house on-hand by product → {size: qty}, for the "In Inv" column.
+  const invProducts = useMemo(() => Object.values(productStock || {}).map((s) => ({ id: s.product_id, _inv: s.size_stock || {} })).filter((p) => p.id), [productStock]);
+  // Per-customer-line incoming tracking, FIFO-allocated WITHIN each batch (SO),
+  // then merged so the overall view can show every batch at once.
+  const trackByLine = useMemo(() => {
+    const merged = {};
+    (sos || []).forEach((o) => {
+      const bOrders = (orders || []).filter((w) => w.so_id === o.id).map((w) => ({ ...w, items: (orderItems || []).filter((i) => i.order_id === w.id) }));
+      Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: o.items }, products: invProducts, includeIF: true }));
+    });
+    return merged;
+  }, [sos, orders, orderItems, invProducts]);
+  const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
+  // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
+  // Need · Status) for a set of webstore orders.
+  const renderTrackTable = (wOrders) => {
+    if (!wOrders.length) return <div style={{ fontSize: 12, color: '#94a3b8', padding: '8px 0' }}>No customer orders here yet.</div>;
+    const ctd = { ...td, textAlign: 'center' };
+    const num = (n, strong) => <span style={{ color: n > 0 ? '#0f172a' : '#cbd5e1', fontWeight: strong ? 700 : 500 }}>{n}</span>;
+    return (
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+          {[['Customer', ''], ['Item', ''], ['Size', ''], ['In Inv', 'c'], ['Ordered', 'c'], ['Billed', 'c'], ['Received', 'c'], ['Need', 'c'], ['Status', 'c']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Ordered' ? 'Customer ordered (· N IF = fulfilled from in-house stock)' : h === 'Billed' ? 'Vendor shipped (from uploaded bills)' : h === 'Received' ? 'Received into the warehouse, earliest orders first' : undefined}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {wOrders.map((w) => {
+            const its = (orderItems || []).filter((i) => i.order_id === w.id && !i.is_bundle_parent);
+            return its.map((i, idx) => {
+              const t = trackByLine[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, onIf: 0, onHand: 0, need: Number(i.qty) || 0, status: 'backordered' };
+              const p = TRK[t.status] || TRK.backordered;
+              return (
+                <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={td}>{idx === 0 ? <span style={{ fontWeight: 600 }}>{w.buyer_name || w.buyer_email || '—'}</span> : ''}</td>
+                  <td style={td}>{i.name || i.sku || '—'}</td>
+                  <td style={td}>{i.size || '—'}</td>
+                  <td style={ctd}>{num(t.onHand)}</td>
+                  <td style={ctd}>{num(t.ordered, true)}{t.onIf > 0 && <span style={{ color: '#0369a1', fontWeight: 700, fontSize: 11 }}> · {t.onIf} IF</span>}</td>
+                  <td style={ctd}>{num(t.billed)}</td>
+                  <td style={ctd}><span style={{ color: t.received >= t.ordered && t.ordered > 0 ? '#166534' : t.received > 0 ? '#0f172a' : '#cbd5e1', fontWeight: t.received > 0 ? 700 : 500 }}>{t.received}</span></td>
+                  <td style={ctd}>{t.need > 0 ? <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: '1px 8px', fontWeight: 800 }}>{t.need}</span> : <span style={{ color: '#16a34a', fontWeight: 800 }} title="Fully covered">✓</span>}</td>
+                  <td style={ctd}><span style={{ background: p.b, color: p.c, borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' }}>{p.l}</span></td>
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
+    );
+  };
   // Webstore orders + items belonging to one batched SO.
   const batchGroups = (soId) => {
     const linked = orders.filter((o) => o.so_id === soId);
@@ -1869,13 +1919,14 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       if (!ids.length) { setSos([]); return; }
       const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
       const itemIds = (items || []).map((i) => i.id);
-      let picks = [], decos = [], jobs = [];
+      let picks = [], decos = [], jobs = [], pos = [];
       if (itemIds.length) {
-        const [plRes, decoRes] = await Promise.all([
+        const [plRes, decoRes, poRes] = await Promise.all([
           supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
           supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
+          supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
         ]);
-        picks = plRes.data || []; decos = decoRes.data || [];
+        picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
       }
       const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
       jobs = jobRes || [];
@@ -1883,7 +1934,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
       const decosByItem = {};
       decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
-      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
+      // Attach PO + pick lines per item so the per-customer tracking grid can
+      // read Billed/Received (PO lines) and on-IF (pick lines).
+      const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
+      const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
+      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
     })();
   }, [store.id]);
 
@@ -1904,9 +1959,23 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     return short === 0 ? { text: 'Stock OK', color: '#166534' } : { text: `Short on ${short} size${short === 1 ? '' : 's'}`, color: '#b91c1c' };
   };
 
+  const allWOrders = (orders || []).filter((w) => sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {sos.map((o) => {
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
+        {tBtn('batch', '📦 By batch')}
+        {tBtn('all', '🏬 All orders (overall)')}
+      </div>
+      {trackMode === 'all' && (
+        <div className="card"><div style={{ padding: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>All customer orders — {store.name}</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every batch combined. Incoming stock is allocated to the earliest orders first, within each batch.</div>
+          {renderTrackTable(allWOrders)}
+        </div></div>
+      )}
+      {trackMode === 'batch' && sos.map((o) => {
         const totalOrdered = o.items.reduce((a, i) => a + sumSizes(i.sizes), 0);
         const totalPicked = o.items.reduce((a, i) => a + (o.pickedByItem[i.id] || 0), 0);
         const pickPct = totalOrdered ? Math.round((totalPicked / totalOrdered) * 100) : 0;
@@ -1964,6 +2033,10 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 })}
               </tbody>
             </table>
+            <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Customer order tracking</div>
+              {renderTrackTable((orders || []).filter((w) => w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
+            </div>
             {(o.jobs || []).length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Decoration / production</div>
               {o.jobs.map((j, ji) => (
