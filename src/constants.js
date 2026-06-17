@@ -27,9 +27,9 @@ export const _artCols=['id','name','deco_type','ink_colors','thread_colors','sti
 // Columns that may not exist in art file tables — stripped on retry
 export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches','archived','prod_files_attached']);
 // Columns that may not exist in so_jobs — stripped on retry
-export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off']);
-export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off'];
-export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
+export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group']);
+export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group'];
+export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
 export const PANTONE_MAP={
@@ -215,7 +215,11 @@ export const PANTONE_MAP={
 '2905':'#9AC8E8','2915':'#60AEE0','2925':'#0098CC','2935':'#0068B0','2945':'#005898',
 '3005':'#0070BC','3015':'#006098','3025':'#005280'
 };
-export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP[s]||PANTONE_MAP[s.replace(/\s+/g,' ')]||null};
+// PANTONE_MAP keeps display casing (e.g. 'Reflex Blue'), but inks get typed in any case
+// ('Black','white','REFLEX BLUE'). Normalize keys to upper-case so named colors resolve to a
+// swatch instead of falling through to a blank fallback. Numeric codes are unaffected by case.
+const PANTONE_MAP_UC=Object.fromEntries(Object.entries(PANTONE_MAP).map(([k,v])=>[k.toUpperCase(),v]));
+export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')]||null};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
 export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
@@ -258,7 +262,7 @@ export const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000025',name:'Kelly Bean',role:'rep'},
   // CSR
   {id:'00000000-0000-0000-0000-000000000030',name:'Sharon Day-Monroe',role:'csr'},
-  {id:'00000000-0000-0000-0000-000000000031',name:'Rachel Najara',role:'csr'},
+  {id:'00000000-0000-0000-0000-000000000031',name:'Rachel Najera',role:'csr'},
   {id:'00000000-0000-0000-0000-000000000032',name:'Tegan Peterson',role:'csr'},
   {id:'00000000-0000-0000-0000-000000000033',name:'Tamara Rodriguez',role:'csr'},
   // Accounting
@@ -285,8 +289,8 @@ export const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
 ];
 export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
-  addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
-  fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
+  addr:'2238 N Glassell St Ste E',city:'Orange',state:'CA',zip:'92865',
+  fullAddr:'2238 N Glassell St Ste E, Orange, CA 92865',
   logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
@@ -295,10 +299,15 @@ export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
 // embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
 export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
-export const prodFilesStatusFor=(deco)=>deco==='dtf'?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
+export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+// Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached)
+// or, for embroidery, a .dst attached anywhere on the art. Approval flows use this to decide whether a
+// job may SKIP the production-files stage — a file merely sitting in prod_files (e.g. an order PDF) is
+// not enough; artProdFilesReady stays the looser gate for marking an already-staged job complete.
+export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete'};
 export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'}};
 
@@ -359,20 +368,27 @@ export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','
 export const APPAREL_SIZES=['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
 // Footwear sizes — men's whole + half from 4.5 to 17
 export const FOOTWEAR_SIZES=['4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17'];
-export const FOOTWEAR_DEFAULT_SIZES=['8','8.5','9','9.5','10','10.5','11','11.5','12'];
-export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA',
+// Default shoe run — 7 through 12 including half sizes (the bulk of team-shoe sell-through).
+// Staff can +Size for outliers (6, 13, 14…). Kept tight so grids stay readable.
+export const FOOTWEAR_DEFAULT_SIZES=['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
+// Numeric waist sizes for shorts/pants (even inches 26–54)
+export const NUMERIC_SIZES=['26','28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
+// Default waist run for new numeric products
+export const NUMERIC_DEFAULT_SIZES=['28','30','32','34','36','38','40'];
+export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','4XLT','5XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
   'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
-  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT',
+  '5X':'5XL','6X':'6XL','ST':'ST','MT':'MT','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT','4XLT':'4XLT','5XLT':'5XLT',
   'MENS SMALL':'S','MENS MEDIUM':'M','MENS LARGE':'L','MENS XL':'XL','MENS XXL':'2XL',
   'WOMENS SMALL':'S','WOMENS MEDIUM':'M','WOMENS LARGE':'L','WOMENS XL':'XL',
   'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
+  'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
   'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','N/A':'OSFA'};
+  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA'};  // OSFM = One Size Fits Most (UA)
 
 // Status color/label map
 export const SC={
@@ -393,6 +409,8 @@ export const SC={
 // DATA — sample seeds removed; real data loads from Supabase on startup.
 export const D_C=[];
 export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
+// Vendors whose Add-to-Batch pops the "batch ready" prompt (batch PO# + link to Batch POs page) once the queue total reaches the threshold
+export const BATCH_NOTIFY_VENDORS=['momentec','sanmar','sss'];
 export const MACHINES=[
   {id:'auto_press',name:'Auto Press',type:'screen_print'},
   {id:'manual_press',name:'Manual Press',type:'screen_print'},

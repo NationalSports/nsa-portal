@@ -1,10 +1,10 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
-import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
+import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts } from './utils';
 import { StripePaymentModal } from './modals';
 import { supabase } from './lib/supabase';
 
@@ -208,8 +208,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // strict size breakdown, so list cards match the estimate detail/internal pricing.
   const calcEstTotal=(est)=>{
     const eaf=est.art_files||[];const _eAQ={};
-    (est.items||[]).forEach(it=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const q2=_sq>0?_sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
-    const sub=(est.items||[]).reduce((a,it)=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=_sq>0?_sq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    (est.items||[]).forEach(it=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const q2=_sq>0?_sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+    const sub=(est.items||[]).reduce((a,it)=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=_sq>0?_sq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qq*2:qq);r+=eq2*dp2.sell});return a+r},0);
     const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);
     const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);
     return sub+_sh+sub*_tr;
@@ -277,8 +277,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Estimate detail view
   if(estView){
     const est=estView;
-    const eaf=safeArt(est);const _eAQ={};(est.items||[]).forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
-    const estSubtotal=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    const eaf=safeArt(est);const _eAQ={};(est.items||[]).forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+    const estSubtotal=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qq*2:qq);r+=eq2*dp2.sell});return a+r},0);
     const estShip=est.shipping_type==='pct'?estSubtotal*(est.shipping_value||0)/100:(est.shipping_value||0);
     const estTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
     const estTax=estSubtotal*estTaxRate;
@@ -294,7 +294,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'')+(szText?'<br/><span style="color:#555">'+szText+'</span>':'');
         if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
         rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(safeNum(it.unit_sell)),style:'text-align:right'},{value:_$(lineTotal),style:'text-align:right;font-weight:600'}]});
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=eq2*dp2.sell;
           const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors2=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
           const decoType2=d.deco_type||artF2?.deco_type||d.art_tbd_type||'';const decoTypeLabel2=decoType2?decoType2.replace(/_/g,' '):'';
           const colorCount2=safeNum(d.colors)||safeNum(d.tbd_colors)||artColors2;const stitchCount2=safeNum(d.stitches)||safeNum(d.tbd_stitches);
@@ -368,7 +368,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   ⏳ Some sizes available later: {delayed.map(([sz,d])=>sz+' ('+new Date(d+'T00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})+')').join(', ')}
                 </div>})()}
               {safeDecos(it).length>0&&<div style={{fontSize:11,color:'#64748b',borderTop:'1px solid #f1f5f9',paddingTop:4}}>
-                {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoLine=eq2*dp2.sell;
+                {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoLine=eq2*dp2.sell;
                   const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
                   const decoType=d.deco_type||artF2?.deco_type||d.art_tbd_type||'';const decoTypeLabel=decoType?decoType.replace(/_/g,' '):'';
                   const colorCount=safeNum(d.colors)||safeNum(d.tbd_colors)||artColors;const stitchCount=safeNum(d.stitches)||safeNum(d.tbd_stitches);
@@ -397,7 +397,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _apprTo=_apprRep?.email||'steve@nationalsportsapparel.com';
             const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
             // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
-            const _res=await _portalAction({
+            const _res=await _portalAction({alphaTag:customer.alpha_tag,
               estimates:[{id:est.id,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt}],
               email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
@@ -421,7 +421,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_reqText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
-                const _res=await _portalAction({
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   estimates:[{id:est.id,update_requests:_newReqs,updated_at:_updatedAt}],
                   email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
                 });
@@ -460,8 +460,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(soView&&!jobView){
     const so=soView;
     const soAF=safeArt(so);
-    const _soAQ={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_soAQ[d.art_file_id]=(_soAQ[d.art_file_id]||0)+q2}})});
-    const soSubtotal=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qq;const dp2=dP(d,qq,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    const _soAQ={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_soAQ[d.art_file_id]=(_soAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+    const soSubtotal=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qq;const dp2=dP(d,qq,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qq*2:qq);r+=eq2*dp2.sell});return a+r},0);
     const soShip=so.shipping_type==='pct'?soSubtotal*(so.shipping_value||0)/100:(so.shipping_value||0);
     const soTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
     const soTax=soSubtotal*soTaxRate;
@@ -505,7 +505,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
           {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
             let recvQ=0;Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);recvQ+=Math.min(v,pQ+rQ)});
-            let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:qty;decoTotal+=eq2*dp2.sell});
+            let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);decoTotal+=eq2*dp2.sell});
             const lineTotal=qty*safeNum(it.unit_sell)+decoTotal;
             const _prd=(prod||[]).find(pp=>pp.id===it.product_id||pp.sku===it.sku);
             const itImg=_prd?.image_url||(_prd?.images&&_prd.images[0])||it._colorImage||'';
@@ -609,8 +609,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
     (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
     const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+    // Mock links: a garment the rep linked to another garment shows a "same mockup as X"
+    // note instead of repeating the image; the source garment shows it once with an
+    // "also applies to" caption. Unlinked garments keep their own per-item mock.
+    const _linkOfC=gi=>resolveMockLink(_jobArtFiles,gi.sku,gi.color);
+    const _depsOfC=gi=>mockLinkDependents(_jobArtFiles,gi.sku,gi.color);
     const mockups=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
-    const _hasAnyItemMockup=gi=>{const _mk=gi.sku+'|'+(gi.color||'');return _jobArtFiles.some(_af=>{const m=_af?.item_mockups||{};const v=m[_mk]&&m[_mk].length>0?m[_mk]:(m[gi.sku]||[]);return _filterDisplayable(v).length>0})};
+    const _hasAnyItemMockup=gi=>{const src=_linkOfC(gi);if(src)return _filterDisplayable(mockLinkSourceFiles(_jobArtFiles,src)).length>0;const _mk=gi.sku+'|'+(gi.color||'');return _jobArtFiles.some(_af=>{const m=_af?.item_mockups||{};const v=m[_mk]&&m[_mk].length>0?m[_mk]:(m[gi.sku]||[]);return _filterDisplayable(v).length>0})};
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
@@ -630,12 +635,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>
         <div style={{padding:'20px 24px'}}>
-          {/* ── Per-item mockups + art details ── */}
+          {/* ── Per-item mockups + art details (linked garments reference their source's mock) ── */}
           {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];
+            const _mySrc=_linkOfC(gi);
+            const _myDeps=_depsOfC(gi).filter(k=>items.some(g=>(g.sku+'|'+(g.color||''))===k));
             const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
-            const _itemArtFiles=[...new Set([artFile?.id,...(j._art_ids||[]),..._itemArtIds].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+            const _itemArtFiles=(_itemArtIds.length>0?_itemArtIds:[...new Set([artFile?.id,...(j._art_ids||[])].filter(Boolean))]).map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
             const _mk=gi.sku+'|'+(gi.color||'');
-            const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const itemMockups=_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
+            const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
+            // Linked garment → no images of its own (a note references the source); else per-item.
+            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
             const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
@@ -657,13 +666,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const sortedSizes=sizes.map(([sz])=>sz);
             return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:12,marginBottom:14,overflow:'hidden'}}>
             {/* Item mockup images */}
-            {itemMockups.length>0&&<div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+            {_mySrc?<div style={{padding:'8px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center',cursor:'pointer'}} onClick={()=>{const sf=_filterDisplayable(mockLinkSourceFiles(_jobArtFiles,_mySrc))[0];const u=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';if(u&&isUrl(u))setLightbox(u)}}>🔗 Same mockup as {_mySrc.split('|')[0]} — tap to view</div>
+            :itemMockups.length>0&&<><div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
               {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);
                 return<div key={fi} style={{background:'white',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
                   {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:itemMockups.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                   :<div style={{height:180,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
                 </div>})}
-            </div>}
+            </div>{_myDeps.length>0&&<div style={{padding:'6px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>One mockup — also applies to {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}</>}
             {/* Item header */}
             <div style={{padding:'12px 14px'}}>
               <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:10}}>
@@ -794,7 +804,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
-                const _res=await _portalAction({
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   jobs:[{so_id:liveSO.id,id:j.id,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
                   artFiles:jArtIds.map(aid=>({so_id:liveSO.id,id:aid,status:'approved'})),
                   touchSO:liveSO.id,
@@ -816,7 +826,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_fb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
-                const _res=await _portalAction({
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   jobs:[{so_id:liveSO.id,id:j.id,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}],
                   artFiles:rArtIds.map(aid=>{const a=safeArt(liveSO).find(x=>x.id===aid);return{so_id:liveSO.id,id:aid,status:'waiting_for_art',notes:((a&&a.notes)?a.notes+'\n':'')+'Coach feedback: '+_fb}}),
                   touchSO:liveSO.id,
@@ -849,6 +859,58 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(invView){
     const inv=invView;const bal=(inv.total||0)-(inv.paid||0);
     const linkedSO=inv.so_id?custSOs.find(s=>s.id===inv.so_id):null;
+    // Generate a printable/downloadable invoice PDF — mirrors the estimate download and
+    // the admin invoice layout, but shows the school PO number (not the internal SO).
+    const downloadInvPdf=()=>{
+      const _$=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const poNum=inv._po_number||linkedSO?.po_number;
+      const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
+      const rows=[];let subTotal=0;
+      const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
+      const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+      if(soItems.length>0){
+        soItems.forEach(it=>{
+          const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+          const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
+          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
+          if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+            const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
+            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+          });
+        });
+      }else{
+        (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty,style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:_$(rate),style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
+      }
+      const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
+      const _tax=inv.tax||0;
+      const billAddr=customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':'');
+      const terms=inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice';
+      printDoc({
+        title:customer?.name||'Customer',docNum:inv.id,docType:'INVOICE',date:inv.date,
+        headerRight:'<div class="ta">'+_$(inv.total||0)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
+        infoBoxes:[
+          {label:'Bill To',value:customer?.name||'—',sub:billAddr||''},
+          {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
+          {label:'PO Number',value:poNum||'—'},
+          {label:'Payment Terms',value:terms,sub:'Rep: '+(rep?.name||'—')},
+        ],
+        tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+          rows:[...rows,
+            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+            ...(_ship>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(_ship),style:'text-align:right;border:none'}]}]:[]),
+            ...(_tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(_tax),style:'text-align:right;border:none'}]}]:[]),
+            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total||0)+'</strong>',style:'text-align:right'}]},
+            ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+            ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+          ]}],
+        footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
+      });
+    };
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:550,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
         <div style={{background:'linear-gradient(135deg,#991b1b,#dc2626)',color:'white',padding:'20px 24px',position:'relative'}}>
@@ -864,6 +926,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,color:'#64748b'}}>Amount Due</div>
             <div style={{fontSize:36,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div>
             {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
+            <div style={{marginTop:14}}><button style={{background:'#1e3a5f',color:'white',border:'none',borderRadius:10,padding:'11px 24px',fontSize:14,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 6px rgba(30,58,95,0.25)'}} onClick={downloadInvPdf}>📄 Download Invoice PDF</button></div>
           </div>
           {/* Order details from linked sales order */}
           {linkedSO&&(()=>{const soAF=linkedSO.art_files||[];const soJobs=safeJobs(linkedSO);
@@ -906,20 +969,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span>Expected Date</span><span style={{fontWeight:600,color:'#1e3a5f'}}>{linkedSO.expected_date}</span>
             </div>}
           </div>})()}
-          {/* Invoice line items (if no linked SO or for reference) */}
-          {inv.items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
-            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
-              <div><div style={{fontWeight:600,fontSize:13}}>{li.name||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
-              <div style={{fontWeight:700,fontSize:13}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
-            </div>)}
-          </div>}
-          {inv.items?.length>0&&linkedSO&&<div style={{marginBottom:16}}>
+          {/* Invoice line items — only shown when there's no linked SO. When an SO is
+              linked, the Order Details section above already lists every item (with
+              correct pricing and sizes), so we don't repeat them here. */}
+          {inv.line_items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
-            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
-              <div><div style={{fontWeight:600,fontSize:12}}>{li.name||li.sku}</div><div style={{fontSize:10,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
-              <div style={{fontWeight:700,fontSize:12}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
-            </div>)}
+            {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;
+              return<div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <div><div style={{fontWeight:600,fontSize:13}}>{safeStr(li._name||li.name||li.desc)||li._sku||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{safeNum(li.qty)} × ${rate.toFixed(2)}</div></div>
+              <div style={{fontWeight:700,fontSize:13}}>${amt.toFixed(2)}</div>
+            </div>})}
           </div>}
           {/* Cost breakdown: subtotal, shipping, tax */}
           {(()=>{const _sub=(inv.total||0)-(inv.shipping||0)-(inv.tax||0);

@@ -22,14 +22,15 @@ const safeJobs = (o) => safeArr(o?.jobs);
 const rQ = v => Math.round(v * 4) / 4;
 const rT = v => Math.round(v * 10) / 10;
 const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 70, null, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
-const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[8, 8.5, 8, 7.5], [9, 8.5, 8, 8], [10, 9.5, 9, 9], [12, 12.5, 12, 10]], mk: 1.6 };
+// fl = minimum per-piece sell price (floor); mirrors EM.fl in pricing.js / App.js.
+const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[8, 8.5, 8, 7.5], [9, 8.5, 8, 8], [10, 9.5, 9, 9], [12, 12.5, 12, 10]], mk: 1.6, fl: 8 };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
 const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front Chest (12"x4")', cost: 4.5, sell: 7.5 }];
 
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q, c, s = true) { const bi = SP.bk.findIndex(b => q >= b.min && q <= b.max); if (bi < 0 || c < 1 || c > 5) return 0; const v = SP.pr[bi]?.[c - 1]; if (v == null) return 0; if (bi === 0) return s ? v : rQ(v / SP.mk); return s ? rT(v * SP.mk) : v }
 // EM.pr stores cost; sell = rT(cost × EM.mk).
-function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? rT(v * EM.mk) : v }
+function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
 function npP(q, tw = false, s = true) { const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
 
 function dP(d, q, artFiles, cq) {
@@ -37,16 +38,21 @@ function dP(d, q, artFiles, cq) {
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
       if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
+      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
       if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
       if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
+      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
       if (art.deco_type === 'dtf' || art.deco_type === 'heat_press') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
   if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
-  if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : q; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override || npP(useQty || 1, d.two_color, true), cost: npP(useQty || 1, d.two_color, false), _nq: useQty * mult } };
+  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
+  if (d.kind === 'numbers' || d.type === 'number_press') {
+    // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
+    if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || safeNum(d.num_qty) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
+    const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : (safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
+    // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
+    return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
   if (d.kind === 'outside_deco') return { sell: d.sell_override || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
@@ -139,23 +145,26 @@ const buildJobs = (o) => {
         const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
         const part = 'art_' + d.art_file_id;
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        // A split-art design buckets on its own so it becomes a separate job (one logo per job).
+        const bk = d.split_group ? dt + '::__split__::' + d.split_group + '::' + di : dt;
+        if (!decosByType[bk]) decosByType[bk] = [];
+        decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
         const dt = d.num_method || 'heat_transfer';
         const part = 'numbers_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        decosByType[dt].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'names') {
         const dt = d.name_method || 'heat_press';
         const part = 'names_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di });
+        decosByType[dt].push({ part, d, di, _dt: dt });
       }
     });
-    Object.entries(decosByType).forEach(([dt, decos]) => {
+    Object.entries(decosByType).forEach(([bk, decos]) => {
+      const dt = decos[0]._dt || bk;
       const parts = decos.map(x => x.part).sort();
-      const sig = dt + '::' + parts.join('|');
+      const sig = bk.indexOf('::__split__::') >= 0 ? dt + '::' + bk + '::' + parts.join('|') : dt + '::' + parts.join('|');
       if (sig) itemSigs.push({ idx, it, sig, decos });
     });
   });
@@ -176,9 +185,14 @@ const buildJobs = (o) => {
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
-          const _prodReady = af.prod_files_attached === true || (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
-          const _prodNeededSt = (af.deco_type || '') === 'dtf' ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
-          const st = af.status === 'approved' ? (_prodReady ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          // Skipping the production-files stage (landing straight on art_complete) requires EXPLICIT
+          // confirmation — the per-design prod_files_attached checkbox, or, for embroidery, a .dst that
+          // IS the production file. A file merely sitting in prod_files (e.g. an order-sheet PDF dropped
+          // in before the seps exist) is NOT enough, so an approved job waits in its production-files
+          // stage until someone confirms. Mirrors artProdFilesConfirmed in constants.js.
+          const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
+          const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
+          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
@@ -193,13 +207,19 @@ const buildJobs = (o) => {
     });
     const items = grp.items.map(({ idx, it, decos }) => {
       const decoIdxs = decos.map(x => x.di);
-      return { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
+      // Split-art job: this group is one design carrying its own per-size allocation.
+      const splitDeco = decos.length === 1 && decos[0].d.split_group && decos[0].d.split_sizes ? decos[0].d : null;
+      const szMap = splitDeco ? splitDeco.split_sizes : safeSizes(it);
+      const units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      const out = { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units, fulfilled: 0 };
+      if (splitDeco) out.sizes = Object.assign({}, splitDeco.split_sizes);
+      return out;
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
       _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
-      total_units: totalUnits, fulfilled_units: 0, split_from: null, items, _auto: true };
+      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: (firstEntry.decos.length === 1 && firstEntry.decos[0].d.split_group) || null, items, _auto: true };
   });
 };
 
@@ -224,6 +244,66 @@ const jobLiveArtIds = (j, o) => {
   return arr.filter(id => { const a = safeArr(o?.art_files).find(f => f.id === id); return a && !a.archived; });
 };
 
+// ── Split-family fulfillment apportioning ──
+// Received/pulled units are tracked on the SO line item, so every job referencing that item
+// reads the same pool. For unrelated jobs that's correct — the same physical garment fulfills
+// a front-print job AND a back-embroidery job. But a split family (a parent and the slices
+// split off it via split_from) PARTITIONS the item's units between its jobs, so within a
+// family the pool must be apportioned, never double-counted: after a split-by-received the
+// parent's open remainder would otherwise re-count the very receipts its slice was created to
+// own. Slices claim first (deepest split first — matching the receipts-go-to-the-split-first
+// convention used when a split is created); the root parent takes what's left. Each job is
+// capped at its own per-size quantities (gi.sizes when the split recorded them, else the full
+// item sizes). Returns one {total, fulfilled, fulSizes[<item index>]} entry per job, aligned
+// with the jobs array.
+const allocateJobFulfillment = (jobs, items) => {
+  const byId = {};
+  jobs.forEach(j => { if (j && j.id) byId[j.id] = j; });
+  const famMeta = (j) => {
+    let cur = j, depth = 0; const seen = {};
+    while (cur && cur.id && cur.split_from && byId[cur.split_from] && !seen[cur.id]) {
+      seen[cur.id] = 1; cur = byId[cur.split_from]; depth++;
+    }
+    // Split-art siblings (two logos sharing one line via split_group) partition that line's
+    // units, so they share one apportioning pool — otherwise each would count the same receipts.
+    // Treating the split_group as the family root makes receipts fill one design, then the next.
+    const root = (j && j.split_group) ? ('sg:' + j.split_group) : ((cur && cur.id) || (j && j.id) || '');
+    return { root, depth };
+  };
+  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (b.m.depth - a.m.depth) || (a.i - b.i));
+  const claimed = {}; // family root::item_idx::size -> units already taken by deeper slices
+  const out = new Array(jobs.length);
+  order.forEach(e => {
+    const j = jobs[e.i];
+    const res = { total: 0, fulfilled: 0, fulSizes: [] };
+    out[e.i] = res;
+    if (!j) return;
+    (j.items || []).forEach((gi, gii) => {
+      const fs = {};
+      res.fulSizes[gii] = fs;
+      const it = safeArr(items)[gi.item_idx]; if (!it) return;
+      const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
+      let entries = Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0);
+      // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track them
+      // under the 'QTY' key — mirror calcSOStatus so a custom / no-size-breakdown job still
+      // totals its units and counts receipts. Without this its total stays 0, so the job never
+      // reads items_received / isJobReady and sits on "Ordered — Waiting" even fully received.
+      if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+      entries.forEach(([sz, v]) => {
+        res.total += v;
+        const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+        const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+        const ck = e.m.root + '::' + gi.item_idx + '::' + sz;
+        const take = Math.min(safeNum(v), Math.max(0, pulledQty + rcvdQty - (claimed[ck] || 0)));
+        claimed[ck] = (claimed[ck] || 0) + take;
+        if (take > 0) fs[sz] = take;
+        res.fulfilled += take;
+      });
+    });
+  });
+  return out;
+};
+
 // ── Job Readiness Check ──
 const isJobReady = (j, o) => {
   if (j.art_status !== 'art_complete') return false;
@@ -238,18 +318,63 @@ const isJobReady = (j, o) => {
     if ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); })) continue;
     return false;
   }
-  let totalSz = 0, fulfilledSz = 0;
-  (j.items || []).forEach(gi => {
-    const it = safeItems(o)[gi.item_idx]; if (!it) return;
-    Object.entries(safeSizes(it)).filter(([, v]) => v > 0).forEach(([sz, v]) => {
-      totalSz += v;
-      const picked = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvd = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
-      fulfilledSz += Math.min(v, picked + rcvd);
-    });
-  });
-  return totalSz > 0 && fulfilledSz >= totalSz;
+  // Garments in hand — family-apportioned so a split slice and its parent never both count the
+  // same receipts (a parent left with 10 open units must not read ready off its sibling's 90).
+  const jobs = safeJobs(o);
+  let ji = jobs.indexOf(j);
+  if (ji === -1) ji = jobs.findIndex(x => x && x.id && j.id && x.id === j.id);
+  const a = allocateJobFulfillment(ji === -1 ? [j] : jobs, safeItems(o))[ji === -1 ? 0 : ji];
+  return a.total > 0 && a.fulfilled >= a.total;
 };
+
+// ── Job Fulfillment Recalculation ──
+// Recomputes every job's fulfilled/total units and item_status from its items' CURRENT
+// pulled picks + PO receipts. Every flow that changes receiving or pull state (receive
+// shipment, edit/delete a shipment receipt, pull stock, undo a pull) must run this so the
+// "Items Received" badge moves in BOTH directions — including back to partially_received
+// when a receipt is reduced (e.g. mis-shipped units un-received on the PO).
+// Split jobs carry only their subset of sizes in gi.sizes (same convention as isJobReady),
+// so honor that before falling back to the full SO item sizes — otherwise a receive after
+// a custom split would clobber both halves' totals with the full item quantity. Receipts are
+// apportioned within each split family (see allocateJobFulfillment) so a slice and its parent
+// never both count the same units, and jobs carrying per-size splits get gi.fulfilled /
+// gi.fulSizes refreshed to the apportioned amounts — stored fulSizes is what the UI's size
+// chips show (and what syncJobs preserves), so it has to track receipts in both directions.
+// NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
+// which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
+const recalcJobFulfillment = (o, items) => {
+  const alloc = allocateJobFulfillment(safeJobs(o), items);
+  return safeJobs(o).map((j, ji) => {
+    const a = alloc[ji];
+    const itemSt = a.fulfilled >= a.total && a.total > 0 ? 'items_received' : a.fulfilled > 0 ? 'partially_received' : 'need_to_order';
+    let giChanged = false;
+    const newItems = (j.items || []).map((gi, gii) => {
+      if (!gi.sizes || Object.keys(gi.sizes).length === 0) return gi;
+      const fs = a.fulSizes[gii] || {};
+      const f = Object.keys(fs).reduce((x, sz) => x + fs[sz], 0);
+      const old = gi.fulSizes || {};
+      const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
+      const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
+      if (same) return gi;
+      giChanged = true;
+      return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+    });
+    if (!giChanged && j.item_status === itemSt && j.fulfilled_units === a.fulfilled && j.total_units === a.total) return j;
+    return Object.assign({}, j, { item_status: itemSt, fulfilled_units: a.fulfilled, total_units: a.total, items: newItems });
+  });
+};
+
+// ── Ready-for-decoration transition ──
+// Given a job list from before and after a fulfillment recalc, returns the jobs that JUST
+// crossed into items_received while their artwork is already complete — i.e. the moment the
+// warehouse checks in (or pulls) the final units and the job can move straight to decoration.
+// Jobs already past hold are excluded: production has them, so there's no hand-off to flag.
+const jobsNowReadyForDeco = (prevJobs, nextJobs) => safeArr(nextJobs).filter(j => {
+  if (j.item_status !== 'items_received' || j.art_status !== 'art_complete') return false;
+  if (j.prod_status && j.prod_status !== 'hold') return false;
+  const prev = safeArr(prevJobs).find(pj => pj.id === j.id);
+  return !!prev && prev.item_status !== 'items_received';
+});
 
 // ── Linking jobs that share a decoration ("run together") ──
 // Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
@@ -362,7 +487,7 @@ function buildQBSalesOrder(so, cust, qbMapping) {
   const _aq = {};
   safeItems(so).forEach(it2 => {
     const q2 = Object.values(safeSizes(it2)).reduce((a, v) => a + safeNum(v), 0);
-    safeDecos(it2).forEach(d2 => { if (d2.kind === 'art' && d2.art_file_id) { _aq[d2.art_file_id] = (_aq[d2.art_file_id] || 0) + q2 } });
+    safeDecos(it2).forEach(d2 => { if (d2.kind === 'art' && d2.art_file_id) { _aq[d2.art_file_id] = (_aq[d2.art_file_id] || 0) + q2 * (d2.reversible ? 2 : 1) } });
   });
   const c = cust;
   const lines = [];
@@ -374,7 +499,9 @@ function buildQBSalesOrder(so, cust, qbMapping) {
       const cq = d.kind === 'art' && d.art_file_id ? _aq[d.art_file_id] : qty;
       const dp = dP(d, qty, saf, cq);
       const sell = dp.sell;
-      if (sell > 0) lines.push({ type: 'SalesItemLine', desc: 'Decoration: ' + (d.position || d.deco_type || d.kind || 'Art'), qty, rate: sell, amount: qty * sell, account: qbMapping.income_account });
+      // Bill the effective application count: _nq for numbers/names splits, ×2 for reversible garments.
+      const eq = dp._nq != null ? dp._nq : (d.reversible ? qty * 2 : qty);
+      if (sell > 0) lines.push({ type: 'SalesItemLine', desc: 'Decoration: ' + (d.position || d.deco_type || d.kind || 'Art'), qty: eq, rate: sell, amount: eq * sell, account: qbMapping.income_account });
     });
   });
   return { docType: 'SalesOrder', docNumber: so.id, customerRef: c?.name || 'Unknown', date: so.created_at, memo: so.memo, lines, total: lines.reduce((a, l) => a + l.amount, 0) };
@@ -574,13 +701,37 @@ function checkInventoryConflicts(currentSO, item, newInv, allOrders) {
   return warnings;
 }
 
+// ─── Item-edit reconciliation (data-loss guard helper) ───
+// Decide whether a client's item add/remove is a VERIFIED deliberate edit when the session's bulk item load
+// timed out — in that state the global per-table hydration flag (_itemsHydrated) is false for EVERY order, so it
+// can't be trusted per-order and would otherwise gate legitimate deletions ("Save blocked — reload the page").
+// Key insight: a timed-out/partial load leaves the client with an EMPTY item list (handled separately by the
+// zero-wipe guard), never a coherent subset of THIS order's real items. So the edit is provably deliberate when
+// the client items reconcile with the freshly-read DB rows by SKU/name: client ⊆ DB (a deletion) or DB ⊆ client
+// (an addition). The dangerous "phantom-empty load, then user adds new rows on top" case is NOT a superset of the
+// DB rows, so it returns false and stays blocked. Returns false for an empty / identity-less client list (it can
+// never be "proven loaded"). NOTE: the save guards only call this once the DB already has rows (oldItemIds > 0).
+function itemEditReconciles(clientItems, dbItems) {
+  if (!Array.isArray(clientItems) || clientItems.length === 0) return false;
+  const keyOf = (x) => String((x && (x.sku || x.name)) || '').trim();
+  const toMs = (arr) => {
+    const m = new Map();
+    (arr || []).forEach((x) => { const k = keyOf(x); if (k) m.set(k, (m.get(k) || 0) + 1); });
+    return m;
+  };
+  const subset = (a, b) => { for (const [k, n] of a) { if ((b.get(k) || 0) < n) return false; } return true; };
+  const c = toMs(clientItems), d = toMs(dbItems);
+  if (c.size === 0) return false; // client has items but none carry a SKU/name — can't verify; stay safe (blocked)
+  return subset(c, d) || subset(d, c);
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
@@ -589,4 +740,6 @@ module.exports = {
   buildQBSalesOrder, buildQBInvoice,
   // Inventory
   checkInventoryConflicts,
+  // Data-loss guards
+  itemEditReconciles,
 };

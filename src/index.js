@@ -9,9 +9,17 @@ const Storefront = React.lazy(() => import('./storefront/Storefront'));
 // from the storefront because it loads an order by token regardless of store
 // status (OMG shadow stores are archived) — see src/storefront/OrderTrack.js.
 const OrderTrack = React.lazy(() => import('./storefront/OrderTrack'));
+// Public coach-facing adidas inventory reference at /adidas — login-free like
+// the storefront; joins the adidas catalog with live Cowork availability.
+const AdidasInventory = React.lazy(() => import('./storefront/AdidasInventory'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
+// /adidas is the canonical path. /livelook is the same catalog, served at
+// nationalsportsapparel.com/livelook via a Netlify proxy rewrite from the
+// marketing site — the proxy keeps the browser URL at /livelook, so the
+// client-side router must recognize it here too.
+const isAdidasInventory = _path === '/adidas' || _path === '/adidas/' || _path === '/livelook' || _path === '/livelook/';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -70,7 +78,9 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      {isOrderTrack
+      {isAdidasInventory
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading inventory…</div>}><AdidasInventory /></React.Suspense>
+        : isOrderTrack
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>

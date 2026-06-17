@@ -8,9 +8,7 @@
 import React, { useState } from 'react';
 import { Icon, SearchSelect, ProductPicker } from './components';
 import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
-import { rQ, auTierDisc } from './pricing';
-
-const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
+import { rQ, auTierDisc, isAU } from './pricing';
 
 const initialAi = () => ({
   inputMode: 'text', parseMode: 'order', combineNameNum: false, text: '', images: [], url: '',
@@ -108,11 +106,11 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const sku = (r.sku_guess || '').trim();
       const catMatch = findCatMatch(sku, r.product_id);
       const brand = catMatch?.brand || r.brand || '';
-      const au = isAU(brand);
+      const au = isAU(brand) && !String(catMatch?.id||'').startsWith('ssa-');
       const cost = catMatch?.nsa_cost || r.vendor_price || 0;
       const retail = catMatch?.retail_price || r.vendor_retail || 0;
       const sell = au
-        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group, catMatch?.category)))
         : rQ(cost * mk);
       // One row = one garment unit. Build size counts plus parallel
       // numbers/names arrays (same index = same player) keyed by size, the
@@ -186,11 +184,11 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const catMatch = p.product_id ? (products || []).find(pr => pr.id === p.product_id) :
         (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
       const brand = catMatch?.brand || p.brand || '';
-      const au = isAU(brand);
+      const au = isAU(brand) && !String(catMatch?.id||'').startsWith('ssa-');
       const cost = catMatch?.nsa_cost || p.vendor_price || 0;
       const retail = catMatch?.retail_price || p.vendor_retail || 0;
       const sell = au
-        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group, catMatch?.category)))
         : rQ(cost * mk);
       const szKeys = Object.keys(p.sizes || {});
       return {

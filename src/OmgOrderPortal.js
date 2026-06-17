@@ -13,6 +13,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
+import { authFetch } from './utils';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
@@ -126,6 +127,11 @@ function extractItems(raw) {
     const cells = rowsMap[y].slice().sort((a, b) => a.x - b.x);
     const rowText = cells.map((c) => c.s).join(' ');
     if (/dealer info|returns\s*&|disclaimer|page \d+ of/i.test(rowText)) break; // footer
+    // "Item N of M" separates line items — it's a marker, not a data row. Close
+    // the current item and SKIP the row without bucketing it: otherwise the N/M
+    // digits get assigned to the qty (and size) columns and concatenated, so the
+    // 3rd of 3 items ends up with qty "33" instead of its real quantity.
+    if (/item\s+\d+\s+of\s+\d+/i.test(rowText)) { flush(); continue; }
     const bucket = { details: [], color: [], size: [], options: [], qty: [] };
     cells.forEach((c) => { const s = c.s.trim(); if (s) bucket[colOf(c.x)].push(s); });
     if (!cur) cur = { product: '', color: '', size: '', qty: 0 };
@@ -133,7 +139,6 @@ function extractItems(raw) {
     if (bucket.color.length) cur.color = (cur.color ? cur.color + ' ' : '') + bucket.color.join(' ');
     if (bucket.size.length && !cur.size) cur.size = bucket.size.join(' ');
     if (bucket.qty.length) { const n = parseInt(bucket.qty.join('').replace(/\D/g, ''), 10); if (n) cur.qty = n; }
-    if (/item\s+\d+\s+of\s+\d+/i.test(rowText)) flush();
   }
   flush();
   return items.map((it) => ({ product: it.product.replace(/\s+/g, ' ').trim(), color: it.color.replace(/\s+/g, ' ').trim(), size: (it.size || '').trim(), qty: it.qty || 1 }))
@@ -214,7 +219,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!reportUrl.trim()) { flash('Paste the player report link first.', 'err'); return; }
     setBusy('ingest');
     try {
-      const r = await fetch('/.netlify/functions/omg-player-report-ingest', {
+      const r = await authFetch('/.netlify/functions/omg-player-report-ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reportUrl: reportUrl.trim() }),
       });
       const d = await r.json();
@@ -259,7 +264,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!draftContacts) return;
     setBusy('enrich');
     try {
-      const r = await fetch('/.netlify/functions/omg-packing-slip-ingest', {
+      const r = await authFetch('/.netlify/functions/omg-packing-slip-ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ saleCode, storeName, orders: draftContacts }),
       });
@@ -287,7 +292,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!store) return;
     setBusy(testEmail ? 'test' : 'notify');
     try {
-      const r = await fetch('/.netlify/functions/omg-order-notify', {
+      const r = await authFetch('/.netlify/functions/omg-order-notify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId: store.id, resend, ...(testEmail ? { testEmail } : {}), ...(orderIds && orderIds.length ? { orderIds } : {}) }),
       });

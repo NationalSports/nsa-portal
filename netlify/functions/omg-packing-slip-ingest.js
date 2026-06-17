@@ -21,6 +21,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 
 const extractSku = (str) => { const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/); return m ? m[1].toUpperCase() : ''; };
 const cleanColor = (str) => (str || '').replace(/\s*\([A-Za-z0-9]{4,10}\)\s*/g, '').trim();
@@ -30,6 +31,10 @@ const baseSku = (x) => (normSku(x).split(/\s+/)[0] || '');
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
+
+  // Staff-only: patches buyer contact/shipping on orders via service role.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -60,11 +65,26 @@ exports.handler = async (event) => {
 
     // Product images from the OMG store catalog, keyed by normalized SKU.
     const imgBySku = {};
+    let storeProducts = [];
     {
       const { data: sp } = await sb.from('omg_store_products')
-        .select('sku,image_url').eq('store_id', `OMG-sale_${saleCode}`);
-      (sp || []).forEach((p) => { if (p.image_url) { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; } });
+        .select('sku,name,image_url').eq('store_id', `OMG-sale_${saleCode}`);
+      storeProducts = (sp || []).filter((p) => p.image_url);
+      storeProducts.forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
     }
+    const imgFor = (sku, productName) => {
+      if (sku) {
+        const hit = imgBySku[normSku(sku)] || imgBySku[baseSku(sku)];
+        if (hit) return hit;
+      }
+      if (productName) {
+        const lower = productName.toLowerCase();
+        const sorted = [...storeProducts].sort((a, b) => (b.name || '').length - (a.name || '').length);
+        const match = sorted.find((p) => p.name && lower.includes(p.name.toLowerCase()));
+        if (match) return match.image_url;
+      }
+      return null;
+    };
 
     let created = 0, updated = 0, itemsWritten = 0, skipped = 0;
     for (const o of orders) {
@@ -119,7 +139,7 @@ exports.handler = async (event) => {
             unit_price: 0,
             player_name: buyerName,
             line_status: 'pending',
-            image_url: imgBySku[normSku(sku)] || imgBySku[baseSku(sku)] || null,
+            image_url: imgFor(sku, i.product),
           };
         });
         const { error: iErr } = await sb.from('webstore_order_items').insert(rows);

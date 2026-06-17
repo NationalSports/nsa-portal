@@ -99,6 +99,49 @@ export const sumDepositInvoiced = (invoicesForSO) =>
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
+// ── Mock links ("use the same mockup as that garment") ──
+// Default is one mock per garment. A rep/artist can LINK a garment to another garment on
+// the job — "JD5725 uses the same mockup as 1370399-001" — so near-identical garments
+// (e.g. three black polos with the same logo) need only one mock. Stored on the job's
+// primary design (art file) as a map of garment -> source garment:
+//   art_file.mock_links = { 'JD5725|Black': '1370399-001|Black', ... }
+// The mock itself stays in the SOURCE garment's normal item_mockups bucket — linking
+// moves nothing, so unlinking restores per-garment behavior exactly. Links are flattened
+// on write (linking to an already-linked garment stores its root source), but the
+// resolver still follows chains defensively, with a cycle guard.
+export const mockLinksOf = (a) => safeObj(a?.mock_links);
+export const mockLinkKeyOf = (sku, color) => (sku || '') + '|' + (color || '');
+// Resolve the root source key this garment is linked to, or null when unlinked.
+export const resolveMockLink = (anchorArts, sku, color) => {
+  const links = {};
+  safeArr(anchorArts).forEach(a => Object.assign(links, mockLinksOf(a)));
+  let key = mockLinkKeyOf(sku, color);
+  if (!links[key]) return null;
+  const seen = new Set([key]);
+  while (links[key] && !seen.has(links[key])) { key = links[key]; seen.add(key); }
+  return key === mockLinkKeyOf(sku, color) ? null : key;
+};
+// The garments (by key) linked TO this garment, across the anchor art files.
+export const mockLinkDependents = (anchorArts, sku, color) => {
+  const key = mockLinkKeyOf(sku, color);
+  const out = [];
+  safeArr(anchorArts).forEach(a => Object.entries(mockLinksOf(a)).forEach(([m, src]) => {
+    if (src === key && m !== key && !out.includes(m)) out.push(m);
+  }));
+  return out;
+};
+// The mock files of the garment a linked garment points at: the source's per-garment
+// bucket (sku|color, falling back to the legacy bare-sku key) across the anchor arts.
+export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
+  const srcSku = (sourceKey || '').split('|')[0];
+  for (const a of safeArr(anchorArts)) {
+    const im = a?.item_mockups || {};
+    if (safeArr(im[sourceKey]).length > 0) return safeArr(im[sourceKey]);
+    if (safeArr(im[srcSku]).length > 0) return safeArr(im[srcSku]);
+  }
+  return [];
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
@@ -131,25 +174,148 @@ export const skusMissingMockups = (job, so) => {
   const missing = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
-    const decoArtIds = it ? [...new Set(safeDecos(it)
+    // Skip job items whose live SO line no longer exists (deleted or reindexed). The
+    // mockup screen drops these too (App.js itemDetails: `if(!it)return null`), so
+    // gating on a garment that can't be shown or mocked would deadlock approval.
+    if (!it) return;
+    const decoArtIds = [...new Set(safeDecos(it)
       .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
-      .map(d => d.art_file_id))] : [];
+      .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
     const artFiles = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
-    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU
-    // across colors. Older data may use a plain SKU key — accept either.
-    const mColor = gi?.color || it?.color || '';
-    const mockKey = (gi?.sku || '') + '|' + mColor;
+    // Read sku/color from the LIVE SO line, not the job snapshot: a line item's product
+    // can be swapped (e.g. A325 → A515) without rebuilding so.jobs, leaving gi.sku stale.
+    // The mockup screen keys off it.sku/it.color (App.js itemDetails), so the gate must
+    // check the same garment — otherwise it reports a phantom SKU (A325) as missing while
+    // the artist sees and mocks the real one (A515).
+    const mSku = it?.sku || gi?.sku || '';
+    const mColor = it?.color || gi?.color || '';
+    // If this garment is linked to another garment's mockup, the SOURCE garment's mock is
+    // the single source of truth for it — satisfied once the source has one, missing
+    // otherwise (the linked garment's own per-item mock is intentionally ignored while
+    // linked). Anchors: the job's primary design plus any art this garment uses.
+    const linkAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFiles].filter(Boolean);
+    const srcKey = resolveMockLink(linkAnchors, mSku, mColor);
+    if (srcKey) {
+      // Look the source's mocks up across ALL the job's art (the source garment may pull
+      // its art from a different file than this garment's anchors).
+      const allAnchors = [...new Set([...linkAnchors, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mSku) missing.push(mSku);
+      return;
+    }
+    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
+    // colors. Older data may use a plain SKU key — accept either.
+    const mockKey = mSku + '|' + mColor;
     const perSku = artFiles.flatMap(a => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
-      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[gi?.sku]);
+      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
     });
     if (perSku.length > 0) return;
-    const general = artFiles.flatMap(a => safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files));
+    // Only fall back to the shared mockup_files/files bucket for art that carries NO
+    // per-garment mockups at all (legacy single-design art). Once an art file has
+    // per-garment mockups for OTHER garments, this garment needs its own — otherwise a
+    // mock approved on a different color/style (reused art) would silently satisfy the
+    // gate. garmentsNeedingMockCheck surfaces those so the rep can confirm or redo.
+    const general = artFiles.flatMap(a => {
+      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+      if (hasPerItem) return [];
+      return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
+    });
     if (general.length > 0) return;
-    if (gi?.sku) missing.push(gi.sku);
+    if (mSku) missing.push(mSku);
   });
   return missing;
+};
+
+// Mockups are stored per garment, keyed by `sku|color` (e.g. "A2009|White"), with an
+// extra `|color_way_id` sub-key when one garment carries multiple color ways. So a mock
+// approved on a Royal tee lives under "<tee-sku>|Royal" and never appears on a White
+// hoodie. When previously-approved art is reused on a DIFFERENT color/style, the new
+// garment therefore has no mock of its own — but the art still carries the approved mock
+// from the original garment. This finds those garments so the rep can eyeball the prior
+// mock and either keep it for this garment or send for a new one (no need for the artist
+// if the mock already works). Prior mocks come from this order's own art file (other-garment
+// entries) plus `priorByArtKey` — a map of `name||deco_type` -> [{ from, files }] the caller
+// builds from the SAME artwork on the customer's OTHER orders. A reused art often arrives as an
+// empty clone while the approved mocks live on the prior order (whose art isn't always hydrated
+// in memory), so the caller fetches those from the DB and passes them in here.
+// Returns one entry per garment, each listing the art file(s) still needing a mock, with the
+// prior mocks grouped by where they were approved — so the rep can scroll through and pick:
+//   [{ sku, color, name,
+//      artFiles:[{ art_file_id, art_name, groups:[{ from, files:[{url,name}] }] }] }]
+export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
+  const items = safeArr(job?.items);
+  if (items.length === 0) return [];
+  const allArt = safeArt(so);
+  const soItems = safeItems(so);
+  // Mirror skusMissingMockups: gather every art file this job's items reference, since a
+  // job's _art_ids only carry the first item's art.
+  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
+  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
+  items.forEach(gi => {
+    const it = soItems[gi?.item_idx];
+    if (!it) return;
+    safeDecos(it).forEach(d => { if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id); });
+  });
+  const urlOf = f => typeof f === 'string' ? f : (f?.url || '');
+  const out = [];
+  items.forEach(gi => {
+    const it = soItems[gi?.item_idx];
+    if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
+    const decoArtIds = [...new Set(safeDecos(it)
+      .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+      .map(d => d.art_file_id))];
+    const useIds = decoArtIds.length > 0
+      ? decoArtIds
+      : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
+    const artFilesForItem = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
+    if (artFilesForItem.length === 0) return;
+    // Live SO line drives sku/color (the job snapshot can go stale on a product swap).
+    const mSku = it?.sku || gi?.sku || '';
+    const mColor = it?.color || gi?.color || '';
+    // A garment linked to another garment's mockup is an explicit decision — its mock
+    // comes from the source garment, so there's no reuse ambiguity to double-check.
+    const linkAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFilesForItem].filter(Boolean);
+    if (resolveMockLink(linkAnchors, mSku, mColor)) return;
+    const mockKey = mSku + '|' + mColor;
+    // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, or a
+    // color-way sub-key of this garment (sku|color|cwid).
+    const isOwnKey = k => k === mockKey || k === mSku || k.startsWith(mockKey + '|');
+    // Each art file on the garment that lacks its OWN mock but carries prior mocks from other
+    // garments needs a check — list them all, so a garment decorated by two designs (e.g. a
+    // front and a back) shows both.
+    const artFiles = [];
+    artFilesForItem.forEach(a => {
+      const im = a?.item_mockups || {};
+      const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
+      if (hasOwn) return;
+      // Gather candidate prior mocks, grouped by where they were approved (each group keeps its
+      // front/back together), deduped by URL across all sources for this art file.
+      const seen = new Set();
+      const groups = [];
+      const addGroup = (from, arr) => {
+        const files = [];
+        safeArr(arr).forEach(f => { const u = urlOf(f); if (u && !seen.has(u)) { seen.add(u); files.push({ url: u, name: (typeof f === 'object' && f?.name) || '' }); } });
+        if (files.length) groups.push({ from, files });
+      };
+      // (a) Prior per-garment mocks already on THIS art file (other garments). The shared
+      // mockup_files bucket is intentionally NOT offered here — a legacy single-design mock
+      // already displays on the job, so surfacing it would just be noise.
+      Object.entries(im).forEach(([k, arr]) => { if (!isOwnKey(k)) addGroup(k, arr); });
+      // (b) The SAME artwork reused from a prior order — the approved per-garment mocks usually
+      // live there, not on this order's (often empty) copy. Supplied by the caller as a map of
+      // `name||deco_type` -> [{ from, files }], fetched from the DB since other orders' art is
+      // not always hydrated in memory.
+      const _ak = (a?.name || '').trim().toLowerCase() + '||' + (a?.deco_type || '');
+      ((priorByArtKey && priorByArtKey[_ak]) || []).forEach(grp => addGroup(grp.from, grp.files));
+      if (groups.length === 0) return;
+      groups.sort((x, y) => y.files.length - x.files.length);
+      artFiles.push({ art_file_id: a.id, art_name: a.name || a.title || '', groups });
+    });
+    if (artFiles.length === 0) return;
+    out.push({ sku: mSku, color: mColor, name: it?.name || gi?.name || '', artFiles });
+  });
+  return out;
 };

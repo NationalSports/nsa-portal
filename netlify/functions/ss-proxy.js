@@ -42,6 +42,8 @@ exports.handler = async (event) => {
         'Authorization': `Basic ${auth}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
+        'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
       },
       ...(event.body ? { body: event.body } : {}),
     });

@@ -10,12 +10,23 @@
 //                     (?endpoint=stats&messageId=...&event=opened&limit=1)
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
+const { verifyUser } = require('./_shared');
 
 exports.handler = async (event) => {
   const apiKey = process.env.BREVO_API_KEY;
   if (!apiKey) {
     return { statusCode: 500, headers: JSON_HEADERS,
       body: JSON.stringify({ error: 'BREVO_API_KEY not configured in environment variables' }) };
+  }
+
+  // Staff-only: this forwards arbitrary content to Brevo's send API with the
+  // company key — unauthenticated it was an open relay from the verified sender
+  // domain. Public surfaces no longer need it: storefront confirmations are sent
+  // by webstore-checkout/stripe-webhook, and the public quote form notifies reps
+  // via the content-locked quote-notify function.
+  const v = await verifyUser(event);
+  if (!v.ok) {
+    return { statusCode: v.status, headers: JSON_HEADERS, body: JSON.stringify({ error: v.error }) };
   }
 
   const endpoint = (event.queryStringParameters && event.queryStringParameters.endpoint) || 'email';

@@ -2,11 +2,12 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
   calcQualifyingSpend,
+  itemEditReconciles,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -322,6 +323,19 @@ describe('Pricing Functions', () => {
       const result = dP(d, 24, artFiles, 24);
       // Sell should be a multiple of 0.10
       expect(Math.round(result.sell * 10) / 10).toBe(result.sell);
+    });
+
+    test('reversible art decoration: cq already includes ×2, no double multiplication', () => {
+      // When an art file is reversible, artQty is pre-multiplied ×2 before being passed as cq.
+      // dP must NOT multiply by _revMult a second time, or it would price at 4× the real volume.
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123' })];
+      // reversible item qty=24 → artQty passed as cq=48 (24×2)
+      const reversible = dP({ kind: 'art', art_file_id: 'af1', reversible: true }, 24, artFiles, 48);
+      // non-reversible item at effective qty=48 (baseline)
+      const baseline = dP({ kind: 'art', art_file_id: 'af1', reversible: false }, 48, artFiles, 48);
+      // Both should look up the 48-piece pricing tier and return the same per-unit price
+      expect(reversible.sell).toBe(baseline.sell);
+      expect(reversible.cost).toBe(baseline.cost);
     });
   });
 });
@@ -815,7 +829,9 @@ describe('Job Building', () => {
   });
 
   test('generates jobs from art decorations', () => {
-    const artFile = makeArtFile();
+    // prod_files_attached marks the per-design "Production Files by Design" checkbox as confirmed —
+    // required for an approved job to reach art_complete (files alone no longer skip the seps stage).
+    const artFile = makeArtFile({ prod_files_attached: true });
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 5, M: 10 },
@@ -928,6 +944,89 @@ describe('Job Building', () => {
 });
 
 // ═══════════════════════════════════════════════
+// 7b. SPLIT ART — two designs on one line → one job each
+// ═══════════════════════════════════════════════
+describe('Split Art', () => {
+  const splitSO = (over = {}) => makeSO({
+    art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' })],
+    items: [makeSOItem({
+      sizes: { S: 10, M: 20 },
+      decorations: [
+        { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sg1', split_sizes: { S: 4, M: 8 } },
+        { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sg1', split_sizes: { S: 6, M: 12 } },
+      ],
+    })],
+    jobs: [],
+    ...over,
+  });
+
+  test('a split line produces one job per design, each sized to its own allocation', () => {
+    const jobs = buildJobs(splitSO());
+    expect(jobs).toHaveLength(2);
+    const a = jobs.find(j => j.art_file_id === 'afA');
+    const b = jobs.find(j => j.art_file_id === 'afB');
+    expect(a.total_units).toBe(12); // 4 + 8
+    expect(b.total_units).toBe(18); // 6 + 12
+    expect(a.items[0].sizes).toEqual({ S: 4, M: 8 });
+    expect(b.items[0].sizes).toEqual({ S: 6, M: 12 });
+    expect(a.split_group).toBe('sg1');
+    expect(b.split_group).toBe('sg1');
+    expect(a.art_name).toBe('Friars');
+    expect(b.art_name).toBe('Servite');
+  });
+
+  test('split designs do NOT merge into one combined job, and totals never double-count the line', () => {
+    const jobs = buildJobs(splitSO());
+    expect(jobs.every(j => (j._art_ids || []).length === 1)).toBe(true);
+    expect(jobs.reduce((sum, j) => sum + j.total_units, 0)).toBe(30); // full line, counted once
+  });
+
+  test('two non-split arts on a line still merge into one job (unchanged behavior)', () => {
+    const jobs = buildJobs(makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Front' }), makeArtFile({ id: 'afB', name: 'Back' })],
+      items: [makeSOItem({ sizes: { S: 10 }, decorations: [
+        { kind: 'art', art_file_id: 'afA', position: 'Front' },
+        { kind: 'art', art_file_id: 'afB', position: 'Back' },
+      ] })],
+      jobs: [],
+    }));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+  });
+
+  test('split-art siblings (shared split_group) partition partial receipts — no double-count', () => {
+    // Line S:10 split 4/6 between two designs; only 5 of the S blanks have arrived.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg1', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg1', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 6 } }], total_units: 6, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 10, received: { S: 5 } }] })];
+    const [a, b] = recalcJobFulfillment(so, items);
+    // 5 received fills design A's 4 first, then 1 toward B — never counted as 5 + 5.
+    expect(a.fulfilled_units).toBe(4);
+    expect(b.fulfilled_units).toBe(1);
+    expect(a.fulfilled_units + b.fulfilled_units).toBe(5);
+  });
+
+  test('fully-received split line marks both design jobs items_received', () => {
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg1', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg1', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 6 } }], total_units: 6, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 10, received: { S: 10 } }] })];
+    const [a, b] = recalcJobFulfillment(so, items);
+    expect(a.fulfilled_units).toBe(4);
+    expect(b.fulfilled_units).toBe(6);
+    expect(a.item_status).toBe('items_received');
+    expect(b.item_status).toBe('items_received');
+  });
+});
+
+// ═══════════════════════════════════════════════
 // 8. JOB READINESS
 // ═══════════════════════════════════════════════
 describe('Job Readiness (isJobReady)', () => {
@@ -992,6 +1091,268 @@ describe('Job Readiness (isJobReady)', () => {
       art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
     });
     expect(isJobReady(job, so)).toBe(false);
+  });
+
+  test('ready when a qty_only item (units in est_qty) is received under the QTY bucket', () => {
+    // Custom / no-size-breakdown line: quantity lives in est_qty, sizes is empty, and POs/picks
+    // track receipts under the 'QTY' key. The job must still total its units and read ready —
+    // otherwise its total stays 0 and it sits on "Ordered — Waiting" even fully received.
+    const job = { art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0 }] };
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }],
+      })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(job, so)).toBe(true);
+  });
+
+  test('not ready when a qty_only item is on a PO but not yet received', () => {
+    const job = { art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0 }] };
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: {} }], // ordered, nothing checked in
+      })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(job, so)).toBe(false);
+  });
+
+  test('split parent with open units is not ready off its slice\'s receipts', () => {
+    // Split-by-received: the slice owns the 90 checked-in L's; the parent's 10 are still open.
+    // Both jobs read the same item-level receipt pool — the parent must not count the slice's.
+    const jobs = [
+      { id: 'JOB-1', art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+      { id: 'JOB-1-S', split_from: 'JOB-1', art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+    ];
+    const so = makeSO({
+      jobs,
+      items: [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(jobs[1], so)).toBe(true);  // slice owns its 90 received units
+    expect(isJobReady(jobs[0], so)).toBe(false); // parent's 10 are still on backorder
+  });
+});
+
+describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
+  test('fully received PO marks job items_received', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { S: 5, M: 10 },
+      po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received');
+    expect(j.fulfilled_units).toBe(15);
+    expect(j.total_units).toBe(15);
+  });
+
+  test('qty_only item received under the QTY bucket marks job items_received', () => {
+    // Regression: custom / no-size-breakdown jobs (units in est_qty, receipts under 'QTY') were
+    // stuck at total 0, so they never reached items_received and read "Ordered — Waiting" forever.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 0, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: {}, qty_only: true, est_qty: 50,
+      po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received');
+    expect(j.fulfilled_units).toBe(50);
+    expect(j.total_units).toBe(50);
+  });
+
+  test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
+    // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
+    // The job must drop out of items_received so it can be reviewed/split.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1027-03', item_status: 'items_received', fulfilled_units: 300, total_units: 300, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 },
+      po_lines: [{ po_id: 'PO-3012', XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5,
+        received: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }], // XS:5 un-received
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('partially_received');
+    expect(j.fulfilled_units).toBe(295);
+    expect(j.total_units).toBe(300);
+  });
+
+  test('un-receiving everything reverts to need_to_order', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: {} }] })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('need_to_order');
+    expect(j.fulfilled_units).toBe(0);
+  });
+
+  test('pulled picks count toward fulfillment alongside PO receipts', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { S: 5, M: 10 },
+      pick_lines: [{ pick_id: 'IF-1', status: 'pulled', S: 5 }, { pick_id: 'IF-2', status: 'pick', M: 10 }],
+      po_lines: [{ po_id: 'PO-1', M: 10, received: { M: 10 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received'); // 5 pulled + 10 received; un-pulled pick ignored
+    expect(j.fulfilled_units).toBe(15);
+  });
+
+  test('split job with its own gi.sizes keeps subset totals instead of full item sizes', () => {
+    // Custom split: remain job owns only the 5 mis-shipped XS; sibling owns the received 295.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 5, items: [{ item_idx: 0, sizes: { XS: 5 } }] },
+        { id: 'JOB-1-C1', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 295, total_units: 295,
+          items: [{ item_idx: 0, sizes: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }] },
+      ],
+    });
+    const items = [makeSOItem({
+      sizes: { XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 },
+      po_lines: [{ po_id: 'PO-3012', XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5,
+        received: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }],
+    })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(remain.total_units).toBe(5);
+    expect(remain.fulfilled_units).toBe(0);
+    expect(remain.item_status).toBe('need_to_order');
+    expect(split.total_units).toBe(295);
+    expect(split.fulfilled_units).toBe(295);
+    expect(split.item_status).toBe('items_received');
+    // Replacement XS arrives → remain job flips to items_received, split untouched
+    const items2 = [makeSOItem({
+      ...items[0],
+      po_lines: [...items[0].po_lines, { po_id: 'PO-3050', XS: 5, received: { XS: 5 } }],
+    })];
+    const [remain2, split2] = recalcJobFulfillment(so, items2);
+    expect(remain2.item_status).toBe('items_received');
+    expect(remain2.fulfilled_units).toBe(5);
+    expect(split2.total_units).toBe(295);
+  });
+
+  test('split halves sharing a size never double-count the shared receipts', () => {
+    // Split-by-received: 90 of 100 L received → slice owns the 90, parent keeps 10 open.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 10,
+          items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+        { id: 'JOB-1-S', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 90, total_units: 90,
+          items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(split.fulfilled_units).toBe(90);
+    expect(split.item_status).toBe('items_received');
+    // The parent's 10 open units must NOT read as fulfilled off the slice's receipts
+    expect(remain.fulfilled_units).toBe(0);
+    expect(remain.item_status).toBe('need_to_order');
+    // Backorder arrives → the 10 new units flow to the parent, slice untouched
+    const items2 = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 100 } }] })];
+    const [remain2, split2] = recalcJobFulfillment(so, items2);
+    expect(remain2.fulfilled_units).toBe(10);
+    expect(remain2.item_status).toBe('items_received');
+    expect(remain2.items[0].fulSizes).toEqual({ L: 10 });
+    expect(split2.fulfilled_units).toBe(90);
+    // Un-receiving pulls from the parent's allocation first, then the slice's
+    const items3 = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 85 } }] })];
+    const [remain3, split3] = recalcJobFulfillment(so, items3);
+    expect(remain3.fulfilled_units).toBe(0);
+    expect(split3.fulfilled_units).toBe(85);
+    expect(split3.item_status).toBe('partially_received');
+    expect(split3.items[0].fulSizes).toEqual({ L: 85 });
+  });
+
+  test('legacy received-split without per-size allocations: slice claims the pool before the parent', () => {
+    // Splits created before per-size allocations carry no gi.sizes; both halves cap at the full
+    // item sizes. The slice claims the receipts first so the parent no longer re-counts them.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 10, items: [{ item_idx: 0 }] },
+        { id: 'JOB-1-S', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 90, total_units: 90, items: [{ item_idx: 0 }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(split.fulfilled_units).toBe(90); // capped by the pool, not doubled
+    expect(remain.fulfilled_units).toBe(0); // leftovers only
+  });
+
+  test('unrelated jobs decorating the same item still each count the full pool', () => {
+    // Front-print and back-emb jobs on the same shirts: the same physical units fulfill both,
+    // so family apportioning must NOT kick in between jobs that aren't split from each other.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] },
+        { id: 'JOB-2', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    const [front, back] = recalcJobFulfillment(so, items);
+    expect(front.fulfilled_units).toBe(15);
+    expect(front.item_status).toBe('items_received');
+    expect(back.fulfilled_units).toBe(15);
+    expect(back.item_status).toBe('items_received');
+  });
+
+  test('returns same job reference when nothing changed', () => {
+    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] };
+    const so = makeSO({ jobs: [job] });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    expect(recalcJobFulfillment(so, items)[0]).toBe(job);
+  });
+});
+
+describe('Ready-for-decoration transition (jobsNowReadyForDeco)', () => {
+  const prevJob = (over) => ({ id: 'JOB-1', item_status: 'partially_received', art_status: 'art_complete', prod_status: 'hold', ...over });
+  const nextJob = (over) => ({ id: 'JOB-1', item_status: 'items_received', art_status: 'art_complete', prod_status: 'hold', ...over });
+
+  test('fires when the last items come in and art is complete', () => {
+    const ready = jobsNowReadyForDeco([prevJob()], [nextJob()]);
+    expect(ready.map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('does not fire when art is not complete', () => {
+    expect(jobsNowReadyForDeco([prevJob({ art_status: 'waiting_approval' })], [nextJob({ art_status: 'waiting_approval' })])).toEqual([]);
+  });
+
+  test('does not fire when the job was already items_received (no transition)', () => {
+    expect(jobsNowReadyForDeco([prevJob({ item_status: 'items_received' })], [nextJob()])).toEqual([]);
+  });
+
+  test('does not fire when items are still partial', () => {
+    expect(jobsNowReadyForDeco([prevJob()], [nextJob({ item_status: 'partially_received' })])).toEqual([]);
+  });
+
+  test('does not fire for jobs already past hold (production has them)', () => {
+    expect(jobsNowReadyForDeco([prevJob({ prod_status: 'staging' })], [nextJob({ prod_status: 'staging' })])).toEqual([]);
+  });
+
+  test('missing prod_status is treated as hold', () => {
+    const ready = jobsNowReadyForDeco([prevJob({ prod_status: undefined })], [nextJob({ prod_status: undefined })]);
+    expect(ready.map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('only the transitioning job fires when several jobs recalc together', () => {
+    const prev = [prevJob(), prevJob({ id: 'JOB-2', item_status: 'items_received' }), prevJob({ id: 'JOB-3', art_status: 'needs_art' })];
+    const next = [nextJob(), nextJob({ id: 'JOB-2' }), nextJob({ id: 'JOB-3', art_status: 'needs_art' })];
+    expect(jobsNowReadyForDeco(prev, next).map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('handles null/undefined job lists', () => {
+    expect(jobsNowReadyForDeco(null, null)).toEqual([]);
+    expect(jobsNowReadyForDeco(undefined, [nextJob()])).toEqual([]);
   });
 });
 
@@ -1860,5 +2221,54 @@ describe('Job linking (jobScreenKey / jobGroupKey)', () => {
     // ...but a manual link still wins over auto_group_off.
     const c = { art_name: 'Eagles Logo', deco_type: 'screen_print', auto_group_off: true, link_group: 'lg_9' };
     expect(jobGroupKey(c, 'P')).toBe('m:lg_9');
+  });
+});
+
+describe('Item-edit reconciliation (itemEditReconciles)', () => {
+  const db = [{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }];
+
+  // ── The cases that MUST be allowed (verified deliberate edits) ──
+  test('deletion: client is a strict SKU-subset of the DB → reconciles (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B' }], db)).toBe(true); // user removed C
+    expect(itemEditReconciles([{ sku: 'A' }], db)).toBe(true);               // user removed B and C
+  });
+
+  test('addition: client is a SKU-superset of the DB → reconciles (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }, { sku: 'D' }], db)).toBe(true);
+  });
+
+  test('falls back to name when SKU is absent (custom line items)', () => {
+    const dbNamed = [{ name: 'Custom Banner' }, { name: 'Setup Fee' }];
+    expect(itemEditReconciles([{ name: 'Custom Banner' }], dbNamed)).toBe(true); // removed the fee
+  });
+
+  test('SKU edits with the same multiset still reconcile through a delete', () => {
+    // Two real items share a SKU in the DB; user deletes one of the duplicates.
+    expect(itemEditReconciles([{ sku: 'A' }], [{ sku: 'A' }, { sku: 'A' }])).toBe(true);
+  });
+
+  // ── The cases that MUST stay blocked (potential data loss / unverifiable state) ──
+  test('phantom-empty load then user adds NEW rows on top → does NOT reconcile (block)', () => {
+    // The exact failure the guard protects against: client never loaded the real items (A,B,C) and
+    // typed fresh rows (X,Y). Neither subset holds, so it must stay blocked.
+    expect(itemEditReconciles([{ sku: 'X' }, { sku: 'Y' }], db)).toBe(false);
+  });
+
+  test('partial/garbage overlap (some real, some unknown) → does NOT reconcile (block)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'Z' }], db)).toBe(false);
+  });
+
+  test('an edited SKU combined with a deletion stays conservative (block)', () => {
+    // DB [A,B,C]; client renamed B→B2 and dropped C. B2 is not in the DB, so we cannot prove the
+    // client held the real data — fail safe and block (reload remedies it).
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B2' }], db)).toBe(false);
+  });
+
+  test('empty / identity-less / malformed client never reconciles (block)', () => {
+    expect(itemEditReconciles([], db)).toBe(false);
+    expect(itemEditReconciles([{}, {}], db)).toBe(false);          // items present but no sku/name
+    expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
+    expect(itemEditReconciles(null, db)).toBe(false);
+    expect(itemEditReconciles(undefined, db)).toBe(false);
   });
 });

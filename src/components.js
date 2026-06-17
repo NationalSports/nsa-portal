@@ -81,9 +81,46 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
-  const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach(ab=>{a.push({id:c.id,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim()})})};
-  if(!cu)return a;add(cu,'Default');addAlts(cu);if(cu.parent_id){const par=all.find(x=>x.id===cu.parent_id);if(par){add(par,par.alpha_tag);addAlts(par)}}
+  const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach((ab,i)=>{a.push({id:`${c.id}_alt_${i}`,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim()})})};
+  if(!cu)return a;add(cu,'Default');addAlts(cu);
   return a}
+
+// Resolve the ship-to selected on an order/estimate (ship_to_id) into structured fields.
+// Returns {name,text} for a custom free-text address, {name,street,city,state,zip} for an
+// alternate shipping address (id format `${customerId}_alt_${i}` — see getAddrs above),
+// or null when the order ships to the customer's default address.
+function resolveOrderShipTo(o,cu){
+  const id=o?.ship_to_id;
+  if(!id||id==='default')return null;
+  if(id==='custom')return o.ship_to_custom?{name:cu?.name||'',text:String(o.ship_to_custom)}:null;
+  if(!cu)return null;
+  const m=/_alt_(\d+)$/.exec(String(id));
+  if(m&&String(id)===cu.id+'_alt_'+m[1]){
+    const alts=(cu.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));
+    const ab=alts[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||cu.name||'',attention:ab.attention||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// <br/>-joined ship-to block for printed docs; '' when the order uses the customer default.
+function orderShipToSub(o,cu){
+  const sel=resolveOrderShipTo(o,cu);
+  if(!sel)return'';
+  if(sel.text)return sel.text.replace(/\n/g,'<br/>');
+  const attn=sel.attention?'Attn: '+sel.attention:null;
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,sel.street,cityLine].filter(Boolean).join('<br/>');
+}
+
+// Default customer shipping address sub-block for printed docs (includes attention line).
+function custShipAddrSub(cu){
+  if(!cu)return'';
+  const attn=cu.shipping_attention?'Attn: '+cu.shipping_attention:null;
+  const l1=cu.shipping_address_line1||'';const l2=cu.shipping_address_line2||'';
+  const cityLine=[cu.shipping_city,[(cu.shipping_state||''),(cu.shipping_zip||'')].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,l1,l2,cityLine].filter(Boolean).join('<br/>');
+}
 
 
 // SEND ESTIMATE MODAL
@@ -452,7 +489,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):pantoneHex(ink);return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
+            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
               <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <input className="form-input" value={ink} onChange={e=>{const inks=[...(cw.inks||[])];inks[ii]=e.target.value;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
@@ -466,4 +503,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

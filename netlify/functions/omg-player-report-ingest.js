@@ -18,6 +18,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 
 // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
 const extractSku = (str) => {
@@ -60,6 +61,10 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
   }
+
+  // Staff-only: ingests orders into webstore tables via service role.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -121,12 +126,31 @@ exports.handler = async (event) => {
     // drops OMG's " - N" variant suffix so player items match store SKUs.
     const baseSku = (x) => (normSku(x).split(/\s+/)[0] || '');
     const imgBySku = {};
+    let storeProducts = [];
     {
       const { data: sp } = await sb.from('omg_store_products')
-        .select('sku,image_url').eq('store_id', `OMG-sale_${saleCode}`);
+        .select('sku,name,image_url').eq('store_id', `OMG-sale_${saleCode}`);
       // Key by both the full and base SKU so matching works either way.
-      (sp || []).forEach((p) => { if (p.image_url) { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; } });
+      storeProducts = (sp || []).filter((p) => p.image_url);
+      storeProducts.forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
     }
+    // Find the best image for a line item: SKU lookup first, then fall back to
+    // checking whether any store-product name appears as a substring of the
+    // item's product name (handles reports where the SKU isn't in the color field).
+    const imgFor = (sku, productName) => {
+      if (sku) {
+        const hit = imgBySku[normSku(sku)] || imgBySku[baseSku(sku)];
+        if (hit) return hit;
+      }
+      if (productName) {
+        const lower = productName.toLowerCase();
+        // Sort longest name first so more-specific matches win.
+        const sorted = [...storeProducts].sort((a, b) => (b.name || '').length - (a.name || '').length);
+        const match = sorted.find((p) => p.name && lower.includes(p.name.toLowerCase()));
+        if (match) return match.image_url;
+      }
+      return null;
+    };
 
     // ── 2. Parse each section into an order + its line items ──
     let ordersUpserted = 0, itemsInserted = 0, skipped = 0;
@@ -147,18 +171,18 @@ exports.handler = async (event) => {
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
           const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
-          // Match this line to a store product's image by SKU (exact, then by the
-          // leading style code before the " - " variant suffix).
-          const img = imgBySku[normSku(sku)] || imgBySku[baseSku(sku)] || '';
+          // row.quantity is the store-wide total for this SKU/size, not the
+          // per-order quantity. Use 1 per line; presence (> 0) is the signal.
+          const ordered = row.quantity > 0;
           return {
             sku,
             name: row.product || '',
             color: cleanColor(row.color),
             size: row.size || 'OS',
-            qty: row.quantity || 0,
+            qty: ordered ? 1 : 0,
             unit_price: row.quantity ? (Number(row.paid || 0) / row.quantity) : Number(row.paid || 0),
             player_name: playerName,
-            image_url: img,
+            image_url: imgFor(sku, row.product),
             line_status: 'pending',
           };
         }).filter((li) => li.qty > 0);

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
@@ -182,7 +182,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>TaxCloud Connection</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
-          TaxCloud handles sales tax rate lookups and files returns automatically. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
+          TaxCloud handles sales tax rate lookups and tax filing. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
           <button className="btn btn-sm btn-primary" onClick={testConnection} disabled={tcStatus.loading}
@@ -263,7 +263,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>Tax Filing (AuthorizedWithCapture)</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
-          When an invoice is fully paid, the portal automatically reports the transaction to TaxCloud via <strong>AuthorizedWithCapture</strong>. This means:
+          Filing is <strong>manual</strong>: open a paid invoice and click <strong>File to TaxCloud</strong> to report the transaction via AuthorizedWithCapture. This means:
         </div>
         <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
           {[['TaxCloud calculates the exact tax for each line item based on TIC codes','#2563eb'],
@@ -387,6 +387,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       {i>0?<button className="btn btn-sm btn-secondary" onClick={()=>rmC(i)}><Icon name="trash" size={12}/></button>:<div/>}</div>)}
     <button className="btn btn-sm btn-secondary" onClick={addC}><Icon name="plus" size={12}/> Contact</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Shipping</div>
+    <input className="form-input" placeholder="Attn: (optional — individual name at this address)" value={f.shipping_attention||''} onChange={e=>sv('shipping_attention',e.target.value)} style={{marginBottom:6}}/>
     <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:8}}><AddressAutocomplete placeholder="Street" value={f.shipping_address_line1||''} onChange={v=>sv('shipping_address_line1',v)} onPlaceSelect={p=>{setF(x=>({...x,shipping_address_line1:p.street,shipping_city:p.city,shipping_state:p.state,shipping_zip:p.zip}))}}/><input className="form-input" placeholder="City *" value={f.shipping_city||''} onChange={e=>sv('shipping_city',e.target.value)} style={err.c?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ST" value={f.shipping_state||''} onChange={e=>sv('shipping_state',e.target.value)} style={err.s?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ZIP" value={f.shipping_zip||''} onChange={e=>sv('shipping_zip',e.target.value)}/></div>
     <div style={{fontSize:10,color:'#64748b',marginTop:8,marginBottom:4,fontStyle:'italic'}}>Billing address defaults to shipping address above.</div>
     {(f.alt_billing_addresses||[]).length>0&&<div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:6,marginBottom:4}}>Alternate Addresses</div>}
@@ -399,6 +400,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="Label (e.g. Coach's Home, District Office)" value={ab.label||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,label:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <button className="btn btn-sm btn-secondary" onClick={()=>sv('alt_billing_addresses',(f.alt_billing_addresses||[]).filter((_,i)=>i!==ai))} style={{padding:'2px 6px'}}><Icon name="trash" size={12}/></button>
       </div>
+      <input className="form-input" placeholder="Attn: (optional individual name)" value={ab.attention||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,attention:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11,marginBottom:4}}/>
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:6}}>
         <AddressAutocomplete placeholder="Street" value={ab.street||''} onChange={v=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:v};sv('alt_billing_addresses',a)}} onPlaceSelect={p=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:p.street,city:p.city,state:p.state,zip:p.zip};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="City" value={ab.city||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,city:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
@@ -406,7 +408,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="ZIP" value={ab.zip||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,zip:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
       </div>
     </div>)}
-    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
+    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',attention:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
@@ -467,7 +469,8 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
   React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
-  const sizePool=isFw?FOOTWEAR_SIZES:APPAREL_SIZES;
+  const isNumeric=!isFw&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
+  const sizePool=isFw?FOOTWEAR_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES);
   const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
@@ -704,16 +707,11 @@ function QuoteForm({token,supabaseClient}){
       await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
       if(andSubmit){
         setSubmitted(true);
-        // Send notification email to rep
+        // Notify the rep via the content-locked server endpoint — the public quote
+        // form is unauthenticated, so it can't use the (staff-only) brevo-proxy.
+        // quote-notify builds recipient/subject/body entirely from DB rows.
         try{
-          const{data:repData}=await supabaseClient.from('team_members').select('email,name').eq('id',qr.created_by).single();
-          if(repData?.email){
-            const itemSummary=itemRows.map((it,i)=>`${i+1}. ${it.sku||it.description} - ${it.color||'no color'} - ${Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(', ')||('Qty: '+(it.total_qty||'TBD'))}`).join('<br/>');
-            await fetch('/.netlify/functions/brevo-proxy',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
-              body:JSON.stringify({sender:{name:'NSA Quote System',email:'noreply@nationalsportsapparel.com'},to:[{email:repData.email}],
-                subject:'Quote Request Submitted — '+custName,
-                htmlContent:`<h2>Quote Request from ${custName}</h2><p><strong>${contactName||'Customer'}</strong> has submitted their quote request.</p><h3>Items:</h3><p>${itemSummary}</p><p>${globalNotes?'<strong>Notes:</strong> '+globalNotes:''}</p><p><a href="${window.location.origin}">Open NSA Portal to review</a></p>`})});
-          }
+          await fetch('/.netlify/functions/quote-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quoteRequestId:qr.id})});
         }catch(emailErr){console.warn('Email notification failed:',emailErr)}
       }
     }catch(e){setError('Save failed: '+e.message)}

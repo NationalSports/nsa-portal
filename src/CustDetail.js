@@ -4,17 +4,19 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './co
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
+import CoachCatalogAccess from './CoachCatalogAccess';
+import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
-  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
+  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
@@ -37,6 +39,31 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   const[portalApvOpen,setPortalApvOpen]=useState(false);
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
+  // NetSuite-imported (_hist) invoices keep their line items in a separate
+  // table (customer_invoice_lines) that isn't loaded with the invoice header,
+  // so they open with no `line_items` — both the on-screen detail and the
+  // downloaded PDF then render an empty item table. Lazily fetch and attach the
+  // lines the first time such an invoice is opened (at open time, not at
+  // PDF-download time, so printDoc's window.open stays within the click gesture
+  // and isn't blocked as a popup).
+  useEffect(()=>{
+    const inv=portalInvView;
+    if(!inv||!inv._hist||!supabase||!inv.netsuite_internal_id||inv.line_items?.length)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const{data,error}=await supabase
+          .from('customer_invoice_lines')
+          .select('line_seq,item,description,line_memo,quantity,rate,amount')
+          .eq('netsuite_internal_id',inv.netsuite_internal_id)
+          .order('line_seq',{ascending:true});
+        if(cancelled||error||!data||!data.length)return;
+        const line_items=data.map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
+        setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
+      }catch{/* non-fatal — leave the invoice without line detail */}
+    })();
+    return()=>{cancelled=true};
+  },[portalInvView]);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
@@ -156,7 +183,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
@@ -169,7 +196,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -681,7 +708,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const orderArt=[];
     custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
     custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
-    const allArt=[...custOwnArt,...parentArt,...orderArt];
+    const allArt=[...custOwnArt,...parentArt,...orderArt].filter(a=>!/^art\s+tbd/i.test((a.name||'').trim()));
     // Group by art name+deco_type to find usage across orders
     const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
     const groups=Object.values(artGroups);
@@ -727,6 +754,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const archiveLogo=(art,arch)=>{
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
       if((ownArt||[]).some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt?{...a,archived:arch}:a));
       nf&&nf((arch?'Archived ':'Unarchived ')+'"'+(art.name||'art')+'"');
     };
@@ -1059,6 +1087,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div></div>})()}
+  {tab==='catalog'&&<CoachCatalogAccess customer={customer} nf={nf} onUpdateCustomer={(nc)=>{setCustLocal(nc);onRefreshCustomer&&onRefreshCustomer(nc)}}/>}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
     // allOrders already merges portal invs with NetSuite hist_invoices, so hist rows
@@ -1116,7 +1145,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const accts=getBillingContacts(customer,allCustomers);
     const acctContact=accts[0]||(customer.contacts||[])[0];
     const ccAccts=accts.filter(a=>a.email&&a.email!==acctContact?.email);
-    const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+    const displayInvs=invEmailOverdueOnly?openInvs.filter(inv=>{const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;return age>30;}):openInvs;
+    const totalDue=displayInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
     return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
       <div className="modal-body">
@@ -1130,10 +1160,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Invoice list */}
         <div style={{marginBottom:14}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>INVOICES TO INCLUDE</div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span>INVOICES TO INCLUDE</span>
+            <label style={{display:'flex',alignItems:'center',gap:5,fontWeight:500,fontSize:11,color:'#dc2626',cursor:'pointer',textTransform:'none'}}>
+              <input type="checkbox" checked={invEmailOverdueOnly} onChange={e=>setInvEmailOverdueOnly(e.target.checked)} style={{accentColor:'#dc2626'}}/>
+              Overdue only (30+ days)
+            </label>
+          </div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
-              return<div key={inv.id} style={{padding:'10px 14px',borderBottom:i<openInvs.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10}}>
+            {displayInvs.length===0&&<div style={{padding:'14px',textAlign:'center',fontSize:12,color:'#94a3b8'}}>No overdue invoices</div>}
+            {displayInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
+              return<div key={inv.id} style={{padding:'10px 14px',borderBottom:i<displayInvs.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10}}>
                 <div style={{flex:1}}>
                   <div style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||'Invoice'} · {inv.date||'—'}</div>
@@ -1143,10 +1180,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <div style={{fontSize:10,color:age>30?'#dc2626':age>14?'#d97706':'#64748b'}}>{age>0?age+' days old':'Current'}</div>
                 </div>
               </div>})}
-            <div style={{padding:'10px 14px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            {displayInvs.length>0&&<div style={{padding:'10px 14px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <span style={{fontWeight:700,color:'#dc2626'}}>Total Due</span>
               <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
-            </div>
+            </div>}
           </div>
         </div>
         {/* Message */}
@@ -1156,12 +1193,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Preview */}
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
-          <strong>Preview:</strong> Email will include this message + PDF attachment{openInvs.length>1?'s':''} for {openInvs.map(i=>i.id).join(', ')}
+          <strong>Preview:</strong> Email will include this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#dc2626'}} onClick={()=>{setShowInvEmail(false);const _ccLine=ccAccts.length>0?'\nCC: '+ccAccts.map(a=>a.email).join(', '):'';alert('📧 Invoice email sent to '+(acctContact?.email||'—')+_ccLine+'\n'+openInvs.length+' invoice(s) (demo)')}}>📧 Send {openInvs.length} Invoice{openInvs.length>1?'s':''}</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0} onClick={()=>{setShowInvEmail(false);const _ccLine=ccAccts.length>0?'\nCC: '+ccAccts.map(a=>a.email).join(', '):'';alert('📧 Invoice email sent to '+(acctContact?.email||'—')+_ccLine+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
       </div>
     </div></div>})()}
 
@@ -1446,6 +1483,61 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     if(portalInvView){
       const inv=portalInvView;const bal=(inv.total||0)-(inv.paid||0);
       const linkedSO=inv.so_id?custSOs.find(s=>s.id===inv.so_id):null;
+      // Generate a printable/downloadable invoice PDF — mirrors the coach portal download
+      // and the admin invoice layout, but shows the school PO number (not the internal SO).
+      const downloadInvPdf=()=>{
+        const _$=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const _rep=(REPS||[]).find(r=>r.id===customer?.primary_rep_id);
+        const poNum=inv._po_number||linkedSO?.po_number;
+        const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
+        const rows=[];let subTotal=0;
+        const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
+        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+        if(soItems.length>0){
+          soItems.forEach(it=>{
+            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
+            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+            let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
+            if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+            safeDecos(it).forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+              const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+              const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
+              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            });
+          });
+        }else{
+          // Some NetSuite-imported lines only carry an amount (no qty/rate/desc),
+          // so render those columns blank rather than a misleading 0 / $0.00.
+          (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
+        }
+        const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
+        const _tax=inv.tax||0;
+        const billAddr=customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':'');
+        const terms=inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice';
+        printDoc({
+          title:customer?.name||'Customer',docNum:inv.id,docType:'INVOICE',date:inv.date,
+          headerRight:'<div class="ta">'+_$(inv.total||0)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
+          infoBoxes:[
+            {label:'Bill To',value:customer?.name||'—',sub:billAddr||''},
+            {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
+            {label:'PO Number',value:poNum||'—'},
+            {label:'Payment Terms',value:terms,sub:'Rep: '+(_rep?.name||'—')},
+          ],
+          tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+            rows:[...rows,
+              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+              ...(_ship>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(_ship),style:'text-align:right;border:none'}]}]:[]),
+              ...(_tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(_tax),style:'text-align:right;border:none'}]}]:[]),
+              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total||0)+'</strong>',style:'text-align:right'}]},
+              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+            ]}],
+          footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
+        });
+      };
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:550,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#991b1b,#dc2626)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalInvView(null)}>← Back</button>
@@ -1461,6 +1553,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:12,color:'#64748b'}}>Amount Due</div>
             <div style={{fontSize:36,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div>
             {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
+            <div style={{marginTop:14}}><button style={{background:'#1e3a5f',color:'white',border:'none',borderRadius:10,padding:'11px 24px',fontSize:14,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 6px rgba(30,58,95,0.25)'}} onClick={downloadInvPdf}>📄 Download Invoice PDF</button></div>
           </div>
           {/* Order details from linked sales order */}
           {linkedSO&&<div style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
@@ -1491,20 +1584,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <span>Expected Date</span><span style={{fontWeight:600,color:'#1e3a5f'}}>{linkedSO.expected_date}</span>
             </div>}
           </div>}
-          {/* Invoice line items */}
-          {inv.items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
-            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
-              <div><div style={{fontWeight:600,fontSize:13}}>{li.name||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
-              <div style={{fontWeight:700,fontSize:13}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
-            </div>)}
-          </div>}
-          {inv.items?.length>0&&linkedSO&&<div style={{marginBottom:16}}>
+          {/* Invoice line items — only shown when there's no linked SO. When an SO is
+              linked, the Order Details section above already lists every item (with
+              correct pricing and sizes), so we don't repeat them here. */}
+          {inv.line_items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
-            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
-              <div><div style={{fontWeight:600,fontSize:12}}>{li.name||li.sku}</div><div style={{fontSize:10,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
-              <div style={{fontWeight:700,fontSize:12}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
-            </div>)}
+            {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;
+              return<div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <div><div style={{fontWeight:600,fontSize:13}}>{safeStr(li._name||li.name||li.desc)||li._sku||li.sku||'Item'}</div><div style={{fontSize:11,color:'#64748b'}}>{[safeNum(li.qty)>0?safeNum(li.qty):null,rate>0?'$'+rate.toFixed(2):null].filter(v=>v!=null).join(' × ')}</div></div>
+              <div style={{fontWeight:700,fontSize:13}}>${amt.toFixed(2)}</div>
+            </div>})}
           </div>}
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>

@@ -13,12 +13,17 @@
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //      BREVO_API_KEY, PORTAL_PUBLIC_URL (or Netlify URL)
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
+
+  // Staff-only: sends buyer emails via the server-side Brevo key.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -121,10 +126,7 @@ function buildHtml({ store, order, items, portal, testFor }) {
     const det = [i.color, i.size && `Size ${i.size}`, `Qty ${i.qty || 1}`, i.player_number && `#${i.player_number}`].filter(Boolean).join(' · ');
     return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td></tr>`;
   }).join('');
-  const logoBar = `<table width="100%" style="border-collapse:collapse"><tr>
-      <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><a href="https://nationalsportsapparel.com" style="display:block"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block;border:none"></a></td>
-      <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
-    </tr></table>`;
+  const logoBar = `<div style="background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 10px 0 0;padding:14px 24px;text-align:center"><a href="https://nationalsportsapparel.com" style="display:inline-block"><img src="${nsaLogo}" alt="National Sports Apparel" height="36" style="height:36px;display:inline-block;border:none"></a></div>`;
   return `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
     ${logoBar}
     <div style="background:${primary};color:#fff;padding:20px 24px">
