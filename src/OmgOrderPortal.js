@@ -185,6 +185,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const [draftContacts, setDraftContacts] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [shipErrors, setShipErrors] = useState([]); // [{order, msg}] from the last label run
+  const [selIds, setSelIds] = useState(new Set()); // orders selected for bulk label / packing-list
+  const [editOrder, setEditOrder] = useState(null); // order whose line items are being edited
   const [testEmail, setTestEmail] = useState('');
   const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
   const [pickIds, setPickIds] = useState(null);         // Set of order ids selected in the confirm modal (null = all)
@@ -331,6 +333,68 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     const { error } = await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', itemId);
     if (error) { flash('Could not flag item: ' + error.message, 'err'); return; }
     setOrders((os) => os.map((o) => o.id === orderId ? { ...o, items: o.items.map((i) => i.id === itemId ? { ...i, missing_qty: q } : i) } : o));
+  };
+  // The 'Shipping' box shows how many of a line go out (defaults to full qty);
+  // reducing it records the remainder as short (missing_qty = qty − shipping).
+  const setItemShipping = (orderId, item, v) => {
+    const qty = Number(item.qty) || 0;
+    const ship = Math.max(0, Math.min(qty, Number(v) || 0));
+    setItemMissing(orderId, item.id, qty - ship);
+  };
+
+  // ── Order selection for bulk actions (labels + packing lists) ──
+  const toggleSelId = (id) => setSelIds((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = orders.length > 0 && selIds.size >= orders.length;
+  const toggleSelectAll = () => setSelIds((s) => (s.size >= orders.length ? new Set() : new Set(orders.map((o) => o.id))));
+  const selectedPool = () => (selIds.size ? orders.filter((o) => selIds.has(o.id)) : orders);
+
+  // Save line-item edits for one order (size/qty + removals). No money moves —
+  // OMG handles parent refunds; removed lines simply won't ship.
+  const saveOrderItems = async (orderId, rows) => {
+    try {
+      for (const r of rows) {
+        if (r._removed) { await supabase.from('webstore_order_items').delete().eq('id', r.id); continue; }
+        await supabase.from('webstore_order_items').update({ size: r.size || null, qty: Math.max(1, Number(r.qty) || 1) }).eq('id', r.id);
+      }
+      await loadOrders(store);
+      flash('Order items updated.');
+      return true;
+    } catch (e) { flash('Could not save: ' + e.message, 'err'); return false; }
+  };
+
+  // Print packing slips for the chosen orders — every line, flagging the ones
+  // held back (short / not shipping) for the packer's reference.
+  const printOmgPacking = (subset) => {
+    const list = subset || selectedPool();
+    if (!list.length) { flash('No orders to print.', 'err'); return; }
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const slips = list.map((o) => {
+      const a = o.ship_address || {};
+      const shipTo = shipToSchool ? 'Deliver to school' : [a.name || o.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
+      const rows = o.items.filter((i) => !i.is_bundle_parent).map((i) => {
+        const qty = Number(i.qty) || 0; const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const held = ship < qty;
+        return `<tr class="${held ? 'held' : ''}"><td>${esc(i.name || i.sku || '')}</td><td>${esc(i.color || '')}</td><td>${esc(i.size || '')}</td><td class="c">${qty}</td><td class="c b">${ship}</td><td>${held ? (ship === 0 ? '⛔ NOT SHIPPING' : (qty - ship) + ' short') : '✓'}</td></tr>`;
+      }).join('');
+      return `<div class="slip"><div class="hd"><div class="t">${esc(storeName || '')}</div><div class="s">Packing list · Order ${esc(o.omg_order_number || '')}</div></div>
+        <div class="meta"><b>Player:</b> ${esc(o.buyer_name || '')}<br><b>Ship to:</b><br>${shipTo || '—'}</div>
+        <table><thead><tr><th>Item</th><th>Color</th><th>Size</th><th>Qty</th><th>Shipping</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="ft">Lines marked “short / not shipping” stay on the order and ship once back in stock.</div></div>`;
+    }).join('');
+    const html = `<!doctype html><html><head><title>Packing lists</title><style>
+      *{box-sizing:border-box}body{margin:0;font-family:Helvetica,Arial,sans-serif;color:#0f172a}
+      .slip{padding:24px;page-break-after:always}
+      .hd{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #0f172a;padding-bottom:6px;margin-bottom:8px}
+      .t{font-size:20px;font-weight:800}.s{font-size:12px;color:#64748b}
+      .meta{font-size:12.5px;margin-bottom:10px;line-height:1.5}
+      table{width:100%;border-collapse:collapse;font-size:12.5px}
+      th{text-align:left;border-bottom:1px solid #cbd5e1;padding:5px 6px;font-size:10.5px;text-transform:uppercase;color:#64748b}
+      td{padding:5px 6px;border-bottom:1px solid #eef1f5}.c{text-align:center}.b{font-weight:800}
+      tr.held td{color:#b45309}
+      .ft{margin-top:10px;font-size:10.5px;color:#94a3b8}
+    </style></head><body>${slips || '<div class="slip">No orders.</div>'}</body></html>`;
+    const w = window.open('', '_blank'); if (!w) { flash('Pop-up blocked — allow pop-ups to print.', 'err'); return; }
+    w.document.write(html); w.document.close(); w.focus();
+    setTimeout(() => { try { w.print(); } catch {} }, 350);
   };
   const advanceAll = async (ls) => {
     if (!store || !orders.length) return;
@@ -683,10 +747,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
               ))}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
+              <button onClick={() => printOmgPacking()} style={{ ...secondaryBtn }} title={selIds.size ? `Packing lists for ${selIds.size} selected` : 'Packing lists for all orders'}>🖨️ Packing lists{selIds.size ? ` (${selIds.size})` : ''}</button>
               {shipToSchool
                 ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
                 : <>
-                    <button onClick={() => printOmgLabels()} disabled={busy === 'labels' || !withAddress} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: withAddress ? 'pointer' : 'not-allowed', opacity: withAddress ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${withAddress} label${withAddress === 1 ? '' : 's'}`}</button>
+                    <button onClick={() => printOmgLabels(selIds.size ? selectedPool() : undefined)} disabled={busy === 'labels' || !withAddress} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: withAddress ? 'pointer' : 'not-allowed', opacity: withAddress ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${selIds.size ? selIds.size + ' selected' : withAddress} label${(selIds.size || withAddress) === 1 ? '' : 's'}`}</button>
                     <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }} title="Alternative: push to ShipStation and buy the labels there instead">{busy === 'ss-all' ? 'Pushing…' : '🚚 Push to ShipStation'}</button>
                   </>}
             </div>}
@@ -695,6 +760,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
             <div style={{ overflowX: 'auto', border: '1px solid #eef1f5', borderRadius: 8 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead><tr style={{ textAlign: 'left', color: '#64748b', background: '#f8fafc' }}>
+                  <th style={th}><input type="checkbox" checked={allSelected} onChange={toggleSelectAll} title="Select all" /></th>
                   {['', 'Order #', 'Player', draftContacts ? 'Email' : '✉', 'Items', 'Status', 'Total', 'Link'].map((h, i) => <th key={i} style={th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -706,6 +772,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                     return (
                       <React.Fragment key={o.id}>
                         <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#f8fafc' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                          <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggleSelId(o.id)} /></td>
                           <td style={{ ...td, width: 24, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                           <td style={td}>{o.omg_order_number}</td>
                           <td style={td}>{o.buyer_name || '—'}</td>
@@ -728,7 +795,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                         </tr>
                         {isOpen && (
                           <tr style={{ background: '#f8fafc' }}>
-                            <td colSpan={8} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
+                            <td colSpan={9} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                               {/* Contact + ship-to. During review (di set) these are
                                   editable from the parsed slip; otherwise read-only. */}
                               {di != null ? (
@@ -754,6 +821,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                 {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
                                   <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                 ))}
+                                <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
+                                <button onClick={() => setEditOrder(o)} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>✏️ Edit items</button>
                                 {!shipToSchool && <>
                                   <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
                                   <button onClick={() => printOmgLabels([o])} disabled={busy === 'labels'} style={{ padding: '7px 13px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{busy === 'labels' ? 'Creating…' : '🏷️ Create & print label'}</button>
@@ -764,7 +833,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
-                                  {['Item', 'Color', 'Size', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
+                                  {['Item', 'Color', 'Size', 'Qty', 'Ship', 'Shipping'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
                                 </tr></thead>
                                 <tbody>
                                   {o.items.map((i) => (
@@ -774,12 +843,12 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                       <td style={td}>{i.size || '—'}</td>
                                       <td style={td}>{i.qty}</td>
                                       <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
-                                      <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(o.id, i.id, e.target.value)} style={{ ...cell, width: 64, ...(Number(i.missing_qty) > 0 ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} /></td>
+                                      <td style={td}>{(() => { const qty = Number(i.qty) || 0; const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const short = ship < qty; return <input type="number" min={0} max={qty} value={ship} onChange={(e) => setItemShipping(o.id, i, e.target.value)} title={short ? `${qty - ship} held short` : 'All shipping'} style={{ ...cell, width: 64, ...(short ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} />; })()}</td>
                                     </tr>
                                   ))}
                                 </tbody>
                               </table>
-                              <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Anything marked short shows a “delayed” notice on the parent’s tracking page.</div>
+                              <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>“Shipping” starts at the full quantity — lower it to hold items short. Held items stay on the order and show a “delayed” notice on the parent’s tracking page.</div>
                             </td>
                           </tr>
                         )}
@@ -793,6 +862,38 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
             </>}
           </>
         )}
+        {editOrder && <OmgItemEditModal order={editOrder} onSave={saveOrderItems} onClose={() => setEditOrder(null)} />}
+      </div>
+    </div>
+  );
+}
+
+// Edit an OMG order's line items — change size/qty or remove a line. No money
+// moves (OMG handles parent refunds); removed lines simply won't ship.
+function OmgItemEditModal({ order, onSave, onClose }) {
+  const editable = (order.items || []).filter((i) => !i.is_bundle_parent);
+  const [rows, setRows] = useState(() => editable.map((i) => ({ id: i.id, name: i.name || i.sku, sku: i.sku, color: i.color, size: i.size || '', qty: i.qty || 1, _removed: false })));
+  const [busy, setBusy] = useState(false);
+  const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
+  const save = async () => { setBusy(true); const ok = await onSave(order.id, rows); setBusy(false); if (ok) onClose(); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflow: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, maxWidth: 560, width: '100%', marginTop: 24, padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>Edit items — Order {order.omg_order_number}</h3>
+          <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Change a size or quantity, or remove a line. This changes what ships — it doesn’t move money (OMG handles parent refunds).</div>
+        {rows.map((r) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', opacity: r._removed ? 0.4 : 1 }}>
+            <div style={{ flex: 1, fontSize: 13 }}><div style={{ fontWeight: 600 }}>{r.name || r.sku || 'Item'}</div>{r.color && <div style={{ fontSize: 11, color: '#94a3b8' }}>{r.color}</div>}</div>
+            <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 72, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />
+            <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 60, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />
+            <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12 }}>{r._removed ? 'undo' : 'remove'}</button>
+          </div>
+        ))}
+        {!rows.length && <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '8px 0' }}>No editable line items.</div>}
+        <button onClick={save} disabled={busy} style={{ marginTop: 14, padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>{busy ? 'Saving…' : 'Save changes'}</button>
       </div>
     </div>
   );
