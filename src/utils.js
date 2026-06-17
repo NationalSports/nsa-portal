@@ -264,7 +264,20 @@ export const printPdfLabels=async(base64List)=>{
     const bytes=Uint8Array.from(atob(String(b64).replace(/\s/g,'')),(c)=>c.charCodeAt(0));
     const src=await PDFDocument.load(bytes);
     const pages=await out.copyPages(src,src.getPageIndices());
-    pages.forEach((p)=>out.addPage(p));
+    pages.forEach((p)=>{
+      // ShipStation/FedEx commonly return the 4x6 label printed in the top-left
+      // of a full Letter page. Crop each oversized page down to a 4x6 so it
+      // prints clean on a thermal/label printer — and so a multi-label batch
+      // comes out as one 4x6 page per label instead of full sheets.
+      const W=288,H=432; // 4in x 6in at 72dpi
+      const sz=p.getSize();
+      if(sz.width>W+20&&sz.height>H+20){
+        const y=sz.height-H; // top-left region (PDF origin is bottom-left)
+        p.setCropBox(0,y,W,H);
+        p.setMediaBox(0,y,W,H);
+      }
+      out.addPage(p);
+    });
   }
   const url=URL.createObjectURL(new Blob([await out.save()],{type:'application/pdf'}));
   const iframe=document.createElement('iframe');

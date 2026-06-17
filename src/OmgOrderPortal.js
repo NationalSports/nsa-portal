@@ -71,13 +71,26 @@ function parsePage(lines) {
   if (omLabeled) orderNumber = omLabeled[1];
   else { const m = text.match(/\b(\d{8,10})\b/); if (m) orderNumber = m[1]; }
 
+  // Strip the OMG "Store Code: XXXX" tag (and any trailing pickup code) that the
+  // slip prints inside the address block — it isn't part of the street.
+  const cleanStreet = (s) => String(s || '').replace(/\bStore\s*Code\b\s*:?\s*\S+/ig, '').replace(/\s{2,}/g, ' ').trim();
   let address = null, name = '';
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(STATE_ZIP_RE);
     if (m) {
       const cityState = lines[i].trim();
-      const street = (lines[i - 1] || '').trim();
-      const maybeName = (lines[i - 2] || '').trim();
+      const rawStreet = (lines[i - 1] || '').trim();
+      // PDF text extraction sometimes splits "1242 Barranca Pkwy" so the house
+      // number and the street name land on separate lines (leaving street1 as a
+      // bare number). When that happens, fold the line above into the street and
+      // take the name from one line higher up.
+      let street = rawStreet, nameIdx = i - 2;
+      if (/^\d+[A-Za-z]?$/.test(rawStreet) && lines[i - 2] && !/\d/.test(lines[i - 2])) {
+        street = (rawStreet + ' ' + lines[i - 2].trim()).trim();
+        nameIdx = i - 3;
+      }
+      street = cleanStreet(street);
+      const maybeName = (lines[nameIdx] || '').trim();
       const cityMatch = cityState.match(/^(.*?),?\s*[A-Z]{2}\s+\d{5}/);
       address = {
         name: /\d/.test(maybeName) ? '' : maybeName,
@@ -350,14 +363,15 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
 
   // Save line-item edits for one order (size/qty + removals). No money moves —
   // OMG handles parent refunds; removed lines simply won't ship.
-  const saveOrderItems = async (orderId, rows) => {
+  const saveOrderItems = async (orderId, rows, patch) => {
     try {
       for (const r of rows) {
         if (r._removed) { await supabase.from('webstore_order_items').delete().eq('id', r.id); continue; }
         await supabase.from('webstore_order_items').update({ size: r.size || null, qty: Math.max(1, Number(r.qty) || 1) }).eq('id', r.id);
       }
+      if (patch && Object.keys(patch).length) await supabase.from('webstore_orders').update(patch).eq('id', orderId);
       await loadOrders(store);
-      flash('Order items updated.');
+      flash('Order updated.');
       return true;
     } catch (e) { flash('Could not save: ' + e.message, 'err'); return false; }
   };
@@ -772,7 +786,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                     const di = draftIdxByNum ? draftIdxByNum[String(o.omg_order_number)] : null;
                     return (
                       <React.Fragment key={o.id}>
-                        <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#f8fafc' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                        <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#e7ecf3' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                           <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggleSelId(o.id)} /></td>
                           <td style={{ ...td, width: 24, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                           <td style={td}>{o.omg_order_number}</td>
@@ -795,7 +809,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                           </td>
                         </tr>
                         {isOpen && (
-                          <tr style={{ background: '#f8fafc' }}>
+                          <tr style={{ background: '#e7ecf3' }}>
                             <td colSpan={9} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                               {/* Contact + ship-to. During review (di set) these are
                                   editable from the parsed slip; otherwise read-only. */}
@@ -823,7 +837,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                   <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                 ))}
                                 <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
-                                <button onClick={() => setEditOrder(o)} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>✏️ Edit items</button>
+                                <button onClick={() => setEditOrder(o)} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>✏️ Edit order</button>
                                 {!shipToSchool && <>
                                   <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
                                   <button onClick={() => printOmgLabels([o])} disabled={busy === 'labels'} style={{ padding: '7px 13px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{busy === 'labels' ? 'Creating…' : '🏷️ Create & print label'}</button>
@@ -869,22 +883,44 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   );
 }
 
-// Edit an OMG order's line items — change size/qty or remove a line. No money
-// moves (OMG handles parent refunds); removed lines simply won't ship.
+// Edit an OMG order — fix the ship-to address and the line items (size/qty or
+// remove). No money moves (OMG handles parent refunds); removed lines just
+// won't ship.
 function OmgItemEditModal({ order, onSave, onClose }) {
   const editable = (order.items || []).filter((i) => !i.is_bundle_parent);
   const [rows, setRows] = useState(() => editable.map((i) => ({ id: i.id, name: i.name || i.sku, sku: i.sku, color: i.color, size: i.size || '', qty: i.qty || 1, _removed: false })));
+  const a0 = order.ship_address || {};
+  const [addr, setAddr] = useState({ name: a0.name || order.buyer_name || '', street1: a0.street1 || '', street2: a0.street2 || '', city: a0.city || '', state: a0.state || '', zip: a0.zip || '', country: a0.country || 'US' });
+  const [phone, setPhone] = useState(order.buyer_phone || '');
   const [busy, setBusy] = useState(false);
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
-  const save = async () => { setBusy(true); const ok = await onSave(order.id, rows); setBusy(false); if (ok) onClose(); };
+  const ua = (k, v) => setAddr((s) => ({ ...s, [k]: v }));
+  const save = async () => {
+    setBusy(true);
+    const patch = { ship_address: { ...a0, ...addr }, buyer_phone: phone || null };
+    const ok = await onSave(order.id, rows, patch);
+    setBusy(false); if (ok) onClose();
+  };
+  const fld = { padding: '6px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflow: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, maxWidth: 560, width: '100%', marginTop: 24, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-          <h3 style={{ margin: 0, fontSize: 17 }}>Edit items — Order {order.omg_order_number}</h3>
+          <h3 style={{ margin: 0, fontSize: 17 }}>Edit order {order.omg_order_number}</h3>
           <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
         </div>
-        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Change a size or quantity, or remove a line. This changes what ships — it doesn’t move money (OMG handles parent refunds).</div>
+        <div style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b', margin: '6px 0 8px' }}>Ship to</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+          <input value={addr.name} onChange={(e) => ua('name', e.target.value)} placeholder="name" style={{ ...fld, flex: '1 1 160px' }} />
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="phone" style={{ ...fld, flex: '1 1 130px' }} />
+          <input value={addr.street1} onChange={(e) => ua('street1', e.target.value)} placeholder="street" style={{ ...fld, flex: '1 1 100%' }} />
+          <input value={addr.street2} onChange={(e) => ua('street2', e.target.value)} placeholder="apt / suite (optional)" style={{ ...fld, flex: '1 1 100%' }} />
+          <input value={addr.city} onChange={(e) => ua('city', e.target.value)} placeholder="city" style={{ ...fld, flex: '2 1 140px' }} />
+          <input value={addr.state} onChange={(e) => ua('state', e.target.value)} placeholder="ST" style={{ ...fld, flex: '0 1 60px' }} />
+          <input value={addr.zip} onChange={(e) => ua('zip', e.target.value)} placeholder="zip" style={{ ...fld, flex: '0 1 90px' }} />
+        </div>
+        <div style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b', marginBottom: 4 }}>Items</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>Change a size or quantity, or remove a line. This changes what ships — it doesn’t move money (OMG handles parent refunds).</div>
         {rows.map((r) => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', opacity: r._removed ? 0.4 : 1 }}>
             <div style={{ flex: 1, fontSize: 13 }}><div style={{ fontWeight: 600 }}>{r.name || r.sku || 'Item'}</div>{r.color && <div style={{ fontSize: 11, color: '#94a3b8' }}>{r.color}</div>}</div>
