@@ -2014,7 +2014,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           art_requests:(j.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),
           assigned_artist:''}];
       });
-      const updArt=touched?safeArr(e.art_files).map(a=>oldArtIds.has(a.id)?{...a,status:'waiting_for_art'}:a):e.art_files;
+      // Only reset art that's actually leaving. A job can carry the SAME art file across several
+      // items (e.g. two garments share one logo). Changing ONE item's art must not recall the
+      // shared file the OTHER items still use — that would drag an already-approved/under-review
+      // sibling back to "Waiting for Art" and lose the coach's approval. Preserve any old art id
+      // still referenced by a remaining decoration; reset only the ones now orphaned by the swap
+      // so a genuinely replaced design re-enters the art queue.
+      const _stillUsed=new Set();
+      newItems.forEach(it=>safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_stillUsed.add(d.art_file_id)}));
+      const updArt=touched?safeArr(e.art_files).map(a=>(oldArtIds.has(a.id)&&!_stillUsed.has(a.id))?{...a,status:'waiting_for_art'}:a):e.art_files;
       if(touched)setTimeout(()=>nf('Art changed — previous request recalled, job will refresh'),0);
       return{...e,items:newItems,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     });
