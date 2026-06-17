@@ -359,6 +359,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
@@ -4494,12 +4495,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       (artSourceOrders||allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
         (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:so.memo||''}));
       });
+      // Bucket every deco_type into one of three groups; "heat transfer" is the catch-all (incl. DTF, sublimation, vinyl), matching the 🔥 icon used elsewhere.
+      const _artCat=dt=>dt==='screen_print'?'screen_print':dt==='embroidery'?'embroidery':'heat_transfer';
+      // Default sort: screen print first, then embroidery, then heat transfer. Array.sort is stable, so each bucket keeps its discovery order.
+      const _catRank={screen_print:0,embroidery:1,heat_transfer:2};
+      prevArtList.sort((a,b)=>_catRank[_artCat(a.deco_type)]-_catRank[_artCat(b.deco_type)]);
+      const PREV_TABS=[{id:'all',label:'All'},{id:'screen_print',label:'🎨 Screen Print'},{id:'embroidery',label:'🧵 Embroidery'},{id:'heat_transfer',label:'🔥 Heat Transfer'}];
+      const _tabColor={all:'#64748b',screen_print:'#1e40af',embroidery:'#6d28d9',heat_transfer:'#92400e'};
+      const _catCount=c=>prevArtList.filter(a=>_artCat(a.deco_type)===c).length;
+      const visibleArt=prevArtFilter==='all'?prevArtList:prevArtList.filter(a=>_artCat(a.deco_type)===prevArtFilter);
       return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2>📂 Previous Artwork</h2><button className="modal-close" onClick={()=>setShowPrevArt(false)}>×</button></div>
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {prevArtList.map((art,i)=>{
+          <>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+              {PREV_TABS.map(t=>{const cnt=t.id==='all'?prevArtList.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
+                return<button key={t.id} style={{fontSize:11,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?col:'#e2e8f0'),background:active?col+'15':'white',color:active?col:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setPrevArtFilter(t.id)}>{t.label} ({cnt})</button>})}
+            </div>
+            {visibleArt.length===0?<div className="empty">No {prevArtFilter.replace(/_/g,' ')} artwork for this customer</div>:
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {visibleArt.map((art,i)=>{
               const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
               // Only include actual mockup sources (not prod seps/AIs) and filter to files tagged for this art when art_file_id is present.
@@ -4537,7 +4553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                 </div>
               </div>})}
-          </div>}
+          </div>}</>}
         </div>
       </div></div>})()}
 
