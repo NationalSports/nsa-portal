@@ -13,6 +13,8 @@
 // Body: JSON with params that get wrapped in SOAP envelope automatically
 // Response: JSON (parsed from SOAP XML response)
 
+const { verifyUserOrInternal } = require('./_shared');
+
 const WSDL_MAP = {
   product:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarProductInfoServicePort',
   inventory:      'https://ws.sanmar.com:8080/SanMarWebService/SanMarWebServicePort',
@@ -281,6 +283,14 @@ function parseElement(xml) {
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
+
+  // Staff-only (or a trusted internal job via the shared secret): this proxy
+  // injects the company SanMar credentials and can even submit purchase orders
+  // (service=po). The background catalog syncs call it server-to-server with the
+  // internal secret; browser callers must present a staff JWT.
+  const auth = await verifyUserOrInternal(event);
+  if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ error: auth.error }) };
+
   const username = process.env.SANMAR_USERNAME;
   const password = process.env.SANMAR_PASSWORD;
   // Customer number is often just the numeric part (e.g. "300767" from "300767-prod")

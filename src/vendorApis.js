@@ -5,13 +5,14 @@
 import { NSA } from './constants';
 import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { authFetch } from './utils';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -263,7 +264,7 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -803,7 +804,7 @@ const sanmarApiCall = async (service, action, params = {}) => {
   try {
     const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
     const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -852,7 +853,7 @@ const ssApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -893,7 +894,7 @@ const richardsonApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
