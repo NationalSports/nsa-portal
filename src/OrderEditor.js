@@ -5613,8 +5613,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let decoRev=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);const unitDeco=dp2._nq!=null?(fullQty>0?dp2._nq/fullQty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell;decoRev+=qty*unitDeco});
         // Promo items are covered by promo funds — $0 on invoice
         if(isPromoOrder&&it.is_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev:0,total:0,isPromo:true};
-        // Free promo items are given at no charge — $0 on invoice regardless of promo program
-        if(it.is_free_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev:0,total:0,isFreePromo:true};
+        // Free promo garment is $0, but its decoration (and the order's shipping/tax) is still
+        // billable — mirror the SO totals, which skip the garment rev but always count deco.
+        if(it.is_free_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev,total:decoRev,isFreePromo:true};
         // Partially promo items: discount is already baked into unit_sell and deco sell_overrides
         // (new blended-sell format with _promo_partial_qty). Legacy items without the new field fall
         // back to the prior _promo_credit subtraction for backward compatibility.
@@ -5630,7 +5631,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
-      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return 0;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
       const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
