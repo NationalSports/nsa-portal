@@ -2131,7 +2131,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const actualShipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0));
     const inboundFreight=safeNum(o._inbound_freight||0);
     cost+=actualShipCost+inboundFreight;
-    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
+    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -2680,7 +2680,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
-            ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
+            ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
