@@ -1185,6 +1185,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.total_units).toBe(50);
   });
 
+  test('released job with multiple qty_only items sums est_qty across items', () => {
+    // Regression: a released job (key prefixed "released_") froze its unit snapshot at 0 when its
+    // items were qty_only (count in est_qty, empty size grid). The recompute must re-derive the
+    // total by summing every item's est_qty — mirrors the SO-1121 two-cap release (50 + 50 = 100).
+    // OrderEditor.syncJobs heals these zero-total released jobs the same way (recalcedReleased).
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1121-02', key: 'released_embroidery_JOB-1121-02',
+        item_status: 'need_to_order', fulfilled_units: 0, total_units: 0,
+        items: [{ item_idx: 0 }, { item_idx: 1 }] }],
+    });
+    const items = [
+      makeSOItem({ sku: 'HTA', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }] }),
+      makeSOItem({ sku: 'P814', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-2', QTY: 50, received: { QTY: 50 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.total_units).toBe(100);
+    expect(j.fulfilled_units).toBe(100);
+    expect(j.item_status).toBe('items_received');
+  });
+
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
     // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
     // The job must drop out of items_received so it can be reviewed/split.
