@@ -1946,11 +1946,17 @@ const _dbSaveCustomer = async (c) => {
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     let{error:custErr}=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'}));
     if(custErr){
-      // Retry without art_files (00027) and search_tags (00085) which may not exist on un-migrated DBs.
-      const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags');
-      const retry=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'}));
-      if(retry.error){if(_isAuthError(retry.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
-      else{console.warn('[DB] customer saved without optional columns (run latest migrations)')}
+      // A missing OPTIONAL column (search_tags 00085, art_files 00027) fails the WHOLE upsert on an
+      // un-migrated DB. Strip optional columns one at a time, dropping art_files LAST — otherwise a
+      // missing search_tags column also strips art_files, silently losing customer-library artwork
+      // (the "Add Art does nothing" bug: the art never persists, then a realtime reload wipes it).
+      const _optional=['search_tags','art_files'];let _saved=false;
+      for(let _n=1;_n<=_optional.length&&!_saved;_n++){
+        const _drop=new Set(_optional.slice(0,_n));
+        const _r=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols.filter(c2=>!_drop.has(c2))),{onConflict:'id'}));
+        if(!_r.error){_saved=true;console.warn('[DB] customer saved without '+[..._drop].join(', ')+' (run latest migrations)')}
+        else if(_n===_optional.length){if(_isAuthError(_r.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',_r.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+_r.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+_r.error.message,'error');return false}
+      }
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
     if(contacts?.length){
