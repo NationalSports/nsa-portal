@@ -9132,11 +9132,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
               <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{_cm?null:(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?jobArtBadgeSt(j,afs):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}</div>
                 {(()=>{const firstGi=(j.items||[])[0];const jIt=firstGi?safeItems(o)[firstGi.item_idx]:null;
-                  const jDecos=jIt?safeDecos(jIt).filter(d=>d.kind==='art'||d.kind==='numbers'):[];
-                  if(jDecos.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{jDecos.map((d,di)=>{
-                    const artF2=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;const dt=artF2?.deco_type||d.deco_type||'screen_print';
-                    return<div key={di}>{dt.replace(/_/g,' ')} · {d.position||'—'}</div>}).reduce((a,v)=>[...a,v],[])}</div>;
-                  return<div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>})()}</td>
+                  // Only this job's own decorations, collapsed to distinct process·position lines.
+                  // A split-art line repeats the same "screen print · Front Center" once per design
+                  // (each design is an alternate on its share of the pieces, not a separate print),
+                  // so listing every deco just stutters the same line — show each combo once.
+                  const _myIdxs=firstGi?(Array.isArray(firstGi.deco_idxs)&&firstGi.deco_idxs.length?firstGi.deco_idxs:(firstGi.deco_idx!=null?[firstGi.deco_idx]:null)):null;
+                  const jDecos=jIt?safeDecos(jIt).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&(!_myIdxs||_myIdxs.includes(di))):[];
+                  const _labels=[...new Set(jDecos.map(d=>{const artF2=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;const dt=artF2?.deco_type||d.deco_type||'screen_print';return dt.replace(/_/g,' ')+' · '+(d.position||'—')}))];
+                  if(_labels.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{_labels.map((lbl,i)=><div key={i}>{lbl}</div>)}</div>;
+                  return<div style={{fontSize:10,color:'#64748b'}}>{_labels[0]||((j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||''))}</div>})()}</td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
