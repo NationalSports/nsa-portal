@@ -2,7 +2,7 @@
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
 const crypto = require('crypto');
-const { verifyUser, getSupabaseAdmin } = require('./_shared');
+const { verifyUser, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
@@ -109,6 +109,35 @@ exports.handler = async (event) => {
         headers: corsHeaders(),
         body: JSON.stringify({ clientSecret: intent.client_secret, intentId: intent.id }),
       };
+    }
+
+    if (action === 'finalize_invoice') {
+      // Mark the invoice(s) for a just-succeeded payment as paid. PUBLIC by necessity — the coach
+      // portal pays without an account and (being anonymous) is RLS-blocked from writing `invoices`
+      // itself, so this server-side step is the reliable reconciliation path. It's safe because it
+      // trusts only Stripe + our own metadata: it re-fetches the intent, requires status 'succeeded',
+      // and only ever settles invoices named in that intent's metadata. Idempotent (see _shared).
+      const { payment_intent_id } = body;
+      if (!payment_intent_id) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
+      }
+      let intent;
+      try {
+        intent = await client.paymentIntents.retrieve(payment_intent_id);
+      } catch (e) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Payment intent not found' }) };
+      }
+      if (!intent || intent.status !== 'succeeded') {
+        return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: false, status: intent ? intent.status : 'not_found' }) };
+      }
+      let result = { reconciled: [] };
+      try {
+        result = await reconcileInvoiceFromIntent(getSupabaseAdmin(), intent);
+      } catch (e) {
+        console.error('[stripe-payment] finalize_invoice reconcile error:', e.message);
+        return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Reconcile failed' }) };
+      }
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
     }
 
     if (action === 'refund') {

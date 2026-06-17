@@ -274,7 +274,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
-    if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
+    if(onUpdateInvs)onUpdateInvs(updater);// optimistic UI; the DB write below is what actually persists
+    // The public portal is anonymous and RLS-blocks direct invoice writes (the parent save above fails
+    // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
+    // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
+    if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
     setShowPay(null);setInvView(null);setPayLoading(false);
   };
@@ -311,7 +315,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
             handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched});
           }else{
-            // Invoices not loaded yet (or already settled by the webhook) — still confirm to the buyer.
+            // Invoices not loaded into this view — reconcile server-side directly, then confirm.
+            fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
             setPaySuccess({amount:collected,fee:0,invoices:[]});
           }
         }else if(paymentIntent.status==='processing'){
