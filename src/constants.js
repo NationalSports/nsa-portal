@@ -294,6 +294,9 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
+// Physical warehouse / receiving address (where goods ship back to). Distinct from the
+// company billing address in NSA above. Used by Manual Ship's "Our Warehouse" destination.
+export const NSA_WAREHOUSE={street1:'210 E Emerson Ave',street2:'Suite E',city:'Orange',state:'CA',zip:'92865'};
 
 export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
