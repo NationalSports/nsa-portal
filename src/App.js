@@ -12871,7 +12871,13 @@ export default function App(){
       return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
-    // Filters
+    // Filters. The status and aging chips always apply. The rep filter is the one exception: when the
+    // user has typed a search term we skip it, so searching an invoice number or customer name finds
+    // the match no matter which rep owns it. Without this, the "My Invoices" default rep filter
+    // silently hid invoices owned by a teammate, so an exact INV-#### search returned "No invoices
+    // match filters" even though the invoice existed (e.g. INV-1086, owned by Jered — invisible to
+    // everyone else who searched for it).
+    const _invSearch=(invF.search||'').trim().toLowerCase();
     if(invF.status==='open')fi=fi.filter(i=>i.status==='open'||i.status==='partial');
     else if(invF.status==='paid')fi=fi.filter(i=>i.status==='paid');
     if(invF.aging==='30')fi=fi.filter(i=>i._age>=1&&i._age<=30&&i.status!=='paid');
@@ -12879,9 +12885,8 @@ export default function App(){
     else if(invF.aging==='90')fi=fi.filter(i=>i._age>=61&&i._age<=90&&i.status!=='paid');
     else if(invF.aging==='120')fi=fi.filter(i=>i._age>90&&i.status!=='paid');
     else if(invF.aging==='overdue')fi=fi.filter(i=>i._overdue);
-    const invRepId=invF.rep==='_me_'?cu?.id:invF.rep;
-    if(invRepId&&invRepId!=='all')fi=fi.filter(i=>i._rep===invRepId);
-    if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||i._cname.toLowerCase().includes(s))}
+    if(!_invSearch){const invRepId=invF.rep==='_me_'?cu?.id:invF.rep;if(invRepId&&invRepId!=='all')fi=fi.filter(i=>i._rep===invRepId);}
+    if(_invSearch)fi=fi.filter(i=>(i.id||'').toLowerCase().includes(_invSearch)||(i.memo||'').toLowerCase().includes(_invSearch)||i._cname.toLowerCase().includes(_invSearch));
 
     // Sort
     fi.sort((a,b)=>{let va,vb;
