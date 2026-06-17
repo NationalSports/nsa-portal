@@ -801,6 +801,37 @@ describe('Invoice Creation', () => {
     expect(result.selTotals.subtotal).toBe(24 * 20 + 24 * 8);
   });
 
+  test('free promo garment is $0 but decoration, shipping and tax are still billed — invoice total matches SO (INV total $0 regression)', () => {
+    // Real-world INV-1078 bug: a "FREE PROMO" hoodie ($0 garment, is_free_promo) carried a
+    // screen-print up-charge. The garment must not be billed, but the decoration — plus the
+    // order's shipping and tax — still are, so the invoice total has to equal the SO total.
+    // The bug zeroed the whole line, collapsing subtotal / shipping / tax / total to $0.
+    const artFile = makeArtFile();
+    const so = makeSO({
+      items: [makeSOItem({
+        sku: 'A2009', name: 'Adidas Hoodie',
+        sizes: { M: 21 }, unit_sell: 0, nsa_cost: 0, is_free_promo: true,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front' }],
+      })],
+      art_files: [artFile],
+      shipping_type: 'flat', shipping_value: 15,
+    });
+    const cust = makeCustomer({ tax_rate: 0.0775 });
+    const decoP = dP({ kind: 'art', art_file_id: 'af1', position: 'Front' }, 21, [artFile], 21);
+    const expectedDeco = 21 * decoP.sell;
+
+    const result = createInvoice(so, [0], cust, {});
+    const soTotals = calcTotals(so, cust);
+
+    expect(expectedDeco).toBeGreaterThan(0);                     // there IS a deco charge to bill
+    expect(result.selTotals.subtotal).toBe(expectedDeco);        // garment $0, deco billed — not $0
+    expect(result.ship).toBe(15);                                // shipping still charged
+    expect(result.tax).toBeCloseTo(expectedDeco * 0.0775, 2);    // tax applies to the decoration
+    expect(result.total).toBeGreaterThan(0);                     // not the $0 collapse
+    expect(result.total).toBeCloseTo(soTotals.grand, 2);         // invoice total == sales order total
+    expect(result.total).toBeCloseTo(expectedDeco + 15 + expectedDeco * 0.0775, 2);
+  });
+
   test('line items have correct structure', () => {
     const so = makeSO({
       items: [makeSOItem({
@@ -940,6 +971,23 @@ describe('Job Building', () => {
     });
     const jobs = buildJobs(so);
     expect(jobs[0].art_status).toBe('waiting_approval');
+  });
+
+  test('qty_only item (Custom — no size breakdown) totals its est_qty, not 0', () => {
+    // Regression: a custom / no-size-breakdown line keeps its quantity in est_qty with an empty
+    // sizes map. Summing sizes yields 0, so the job showed "0 items" even with real OSFA quantity.
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 10,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }],
+      })],
+      art_files: [makeArtFile()],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+    expect(jobs[0].items[0].units).toBe(10);
   });
 });
 
@@ -1166,6 +1214,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
     expect(j.fulfilled_units).toBe(50);
     expect(j.total_units).toBe(50);
+  });
+
+  test('released job with multiple qty_only items sums est_qty across items', () => {
+    // Regression: a released job (key prefixed "released_") froze its unit snapshot at 0 when its
+    // items were qty_only (count in est_qty, empty size grid). The recompute must re-derive the
+    // total by summing every item's est_qty — mirrors the SO-1121 two-cap release (50 + 50 = 100).
+    // OrderEditor.syncJobs heals these zero-total released jobs the same way (recalcedReleased).
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1121-02', key: 'released_embroidery_JOB-1121-02',
+        item_status: 'need_to_order', fulfilled_units: 0, total_units: 0,
+        items: [{ item_idx: 0 }, { item_idx: 1 }] }],
+    });
+    const items = [
+      makeSOItem({ sku: 'HTA', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }] }),
+      makeSOItem({ sku: 'P814', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-2', QTY: 50, received: { QTY: 50 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.total_units).toBe(100);
+    expect(j.fulfilled_units).toBe(100);
+    expect(j.item_status).toBe('items_received');
   });
 
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {

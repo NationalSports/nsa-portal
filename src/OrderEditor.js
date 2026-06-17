@@ -2169,7 +2169,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const releasedJobs=safeJobs(o).filter(_isRel);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
-    // (Unlike released jobs, their unit counts are still refreshed below as item sizes change.)
+    // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
+    // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
     const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
@@ -2273,7 +2274,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const sibBefore=splitDeco?safeDecos(it).filter((dd,ddi)=>dd!==splitDeco&&dd.split_group===splitDeco.split_group&&dd.split_sizes&&ddi<decos[0].di):[];
         const baseSizes=splitDeco?(splitDeco.split_sizes||{}):safeSizes(it);
         let itemTotal=0,itemFulfilled=0;const giSizes={};
-        Object.entries(baseSizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+        // qty_only items (Custom — no size breakdown) hold their quantity in est_qty with an empty
+        // sizes map; POs/picks track them under a single 'QTY' bucket. Mirror allocateJobFulfillment /
+        // jItemStatus so the job totals its units and counts receipts instead of reading 0/0. Split-art
+        // decos always carry real split_sizes, so this fallback only ever applies to size-less lines.
+        let szEntries=Object.entries(baseSizes).filter(([,v])=>safeNum(v)>0);
+        if(!splitDeco&&szEntries.length===0&&safeNum(it.est_qty)>0)szEntries=[['QTY',safeNum(it.est_qty)]];
+        szEntries.forEach(([sz,v])=>{
           const cap=safeNum(v);itemTotal+=cap;giSizes[sz]=cap;
           const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
@@ -2403,12 +2410,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let total=0,fulfilled=0;
       // Deduplicate by item_idx+sku before recomputing — a merge that absorbed split children
       // whose garments were also regenerated onto the parent would otherwise double-count.
+      // Re-derive each row's units/fulfilled from the source line too (not just the job total),
+      // so a row that was inflated by an earlier bad merge (e.g. "0/18" when the line holds 9)
+      // heals on next open instead of keeping its stale per-row count.
       const _sk=new Set();const uniqueItems=(j.items||[]).filter(gi=>{const k=gi.item_idx+'-'+gi.sku;if(_sk.has(k))return false;_sk.add(k);return true});
-      uniqueItems.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-      return{...j,items:uniqueItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
+      return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
-    const _kept=[...newJobs,...splitJobs,...releasedJobs,...recalcedMerged];
+    // Released jobs keep their frozen unit snapshot (what was sent to production), EXCEPT a job that
+    // snapshotted 0 total units is never a valid snapshot. qty_only items (Custom — no size breakdown)
+    // carry their quantity in est_qty with an empty size grid, so a job released before the est_qty
+    // fallback existed froze its total at 0 and reads "0/0" forever even after receipt. Re-derive units
+    // (mirroring recalcedMerged) for these zero-total jobs only — genuine snapshots stay untouched.
+    const recalcedReleased=releasedJobs.map(j=>{
+      if(safeNum(j.total_units)>0)return j;
+      let total=0,fulfilled=0;
+      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      if(total===0)return j;// no real units anywhere — leave the (empty) snapshot as-is
+      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+      return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
+    });
+    const _kept=[...newJobs,...splitJobs,...recalcedReleased,...recalcedMerged];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
@@ -5605,8 +5628,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let decoRev=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);const unitDeco=dp2._nq!=null?(fullQty>0?dp2._nq/fullQty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell;decoRev+=qty*unitDeco});
         // Promo items are covered by promo funds — $0 on invoice
         if(isPromoOrder&&it.is_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev:0,total:0,isPromo:true};
-        // Free promo items are given at no charge — $0 on invoice regardless of promo program
-        if(it.is_free_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev:0,total:0,isFreePromo:true};
+        // Free promo garment is $0, but its decoration (and the order's shipping/tax) is still
+        // billable — mirror the SO totals, which skip the garment rev but always count deco.
+        if(it.is_free_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev,total:decoRev,isFreePromo:true};
         // Partially promo items: discount is already baked into unit_sell and deco sell_overrides
         // (new blended-sell format with _promo_partial_qty). Legacy items without the new field fall
         // back to the prior _promo_credit subtraction for backward compatibility.
@@ -5622,7 +5646,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
-      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return 0;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
       const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
@@ -7624,7 +7648,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Reused art with no mock for these garments yet — route the rep into the Set up job
               // wizard (scoped to this job), where they pick an approved mock (CW-matched) or send
               // it to the artist. Mirrors the normal "Set up job" opener.
-              const _openSetup=()=>{const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]),sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});const group={name:j.art_name||(j.deco_type||'').replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};setSelJob(null);setJobWizard({groups:[group],scopeJobId:j.id})};
+              const _openSetup=()=>{const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]),sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});const group={name:j.art_name||(j.deco_type||'').replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};setSelJob(null);setJobWizard({groups:[group],scopeJobId:j.id})};
               return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:'linear-gradient(135deg,#fef9c3,#fffbeb)',border:'2px solid #fde047',borderRadius:10}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:18}}>🔍</span>
@@ -8105,7 +8129,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                 {j.art_status==='needs_art'&&(j.items||[]).length>0&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}} title="Set up just this job — assign an artist, skip the artist, or build a quick mock" onClick={()=>{
-                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const decoIdxs=Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]);const allDecos=decoIdxs.map(di=>safeDecos(it||{})[di]).filter(Boolean);const artDeco=allDecos.find(d=>d.kind==='art'&&d.art_file_id)||allDecos.find(d=>d.kind==='art');const itemArtFileId=artDeco?.art_file_id||null;const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;const itemPosition=artDeco?.position||j.positions||'Front Center';return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:decoIdxs,sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,art_name:af2?.name||'',position:itemPosition};});
+                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const decoIdxs=Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]);const allDecos=decoIdxs.map(di=>safeDecos(it||{})[di]).filter(Boolean);const artDeco=allDecos.find(d=>d.kind==='art'&&d.art_file_id)||allDecos.find(d=>d.kind==='art');const itemArtFileId=artDeco?.art_file_id||null;const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;const itemPosition=artDeco?.position||j.positions||'Front Center';return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:decoIdxs,sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:gItem.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,art_name:af2?.name||'',position:itemPosition};});
                   const group={name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
                   setSelJob(null);
                   setJobWizard({groups:[group],scopeJobId:j.id});
@@ -8602,7 +8626,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;
               const itemPosition=artDeco?.position||j.positions||'Front Center';
               return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:decoIdxs,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
-                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,
+                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,
                 art_name:af2?.name||'',position:itemPosition};
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
@@ -8623,7 +8647,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const groupKey=dt+'::'+d.art_file_id;
             if(!dtMap[groupKey])dtMap[groupKey]={name:af2?.name||DECO_LABELS_W[dt]||dt.replace(/_/g,' '),deco_type:dt,items:[]};
             dtMap[groupKey].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',
-              units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0,art_file_id:d.art_file_id,
+              units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0)||safeNum(it.est_qty),fulfilled:0,art_file_id:d.art_file_id,
               art_name:af2?.name||'',position:d.position||'Front Center'});
           });
         });

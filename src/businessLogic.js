@@ -210,7 +210,11 @@ const buildJobs = (o) => {
       // Split-art job: this group is one design carrying its own per-size allocation.
       const splitDeco = decos.length === 1 && decos[0].d.split_group && decos[0].d.split_sizes ? decos[0].d : null;
       const szMap = splitDeco ? splitDeco.split_sizes : safeSizes(it);
-      const units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      // qty_only items (Custom — no size breakdown) keep their quantity in est_qty with an empty
+      // sizes map, so summing szMap yields 0. Fall back to est_qty — mirrors allocateJobFulfillment —
+      // so the freshly built job totals its real units instead of showing 0.
+      let units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      if (!splitDeco && units === 0 && safeNum(it.est_qty) > 0) units = safeNum(it.est_qty);
       const out = { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units, fulfilled: 0 };
       if (splitDeco) out.sizes = Object.assign({}, splitDeco.split_sizes);
       return out;
