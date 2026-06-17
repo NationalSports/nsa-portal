@@ -167,6 +167,7 @@ exports.handler = async (event) => {
     if (body.action === 'get_order') return await getOrder(sb, body);
     if (body.action === 'track_order') return await trackOrder(sb, body);
     if (body.action === 'update_ship') return await updateShip(sb, body);
+    if (body.action === 'post_message') return await postMessage(sb, body);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[webstore-checkout] error:', e);
@@ -379,12 +380,107 @@ async function trackOrder(sb, body) {
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
-  const [{ data: sRows }, { data: items }, { data: shipments }] = await Promise.all([
+  const [{ data: sRows }, { data: items }, { data: shipments }, messages] = await Promise.all([
     sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
     sb.from('webstore_order_items').select('*').eq('order_id', order.id),
     sb.from('webstore_shipments').select('*').eq('order_id', order.id).order('created_at', { ascending: true }),
+    loadThread(sb, order.id),
   ]);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [] }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [], messages }) };
+}
+
+// Load one order's customer↔staff thread, sanitized for the public portal. Only
+// the order's own webstore_order messages are returned (no SO/internal notes).
+async function loadThread(sb, orderId) {
+  const { data } = await sb.from('messages').select('id,text,ts,created_at,from_customer,author')
+    .eq('entity_type', 'webstore_order').eq('entity_id', String(orderId));
+  return (data || [])
+    .map((m) => ({ id: m.id, from_customer: !!m.from_customer, author: m.author || (m.from_customer ? 'You' : 'NSA Team'), text: m.text || '', ts: m.created_at || m.ts }))
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+}
+
+// A shopper posts a reply from their portal page. Token-gated (no account):
+// the secret status_token is the only credential. Inserts a customer message
+// into the shared thread and notifies the store's CSR (→ rep → fallback).
+async function postMessage(sb, body) {
+  const { token } = body;
+  const text = String(body.text || '').trim().slice(0, 4000);
+  if (!token) return bad(400, 'token required');
+  if (!text) return bad(400, 'Message is empty.');
+  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('status_token', token).limit(1);
+  if (error) return bad(500, error.message);
+  const order = orders && orders[0];
+  if (!order) return bad(404, 'Order not found');
+
+  // Resolve the store, its owning rep, and the rep's primary CSR so the reply
+  // routes to the right person's inbox (tagged_members) and email.
+  const tagged = [];
+  let notifyEmail = null, notifyName = '';
+  try {
+    const { data: store } = await sb.from('webstores').select('id,name,rep_id').eq('id', order.store_id).maybeSingle();
+    const repId = store && store.rep_id;
+    if (repId) {
+      tagged.push(String(repId));
+      const { data: asn } = await sb.from('rep_csr_assignments').select('csr_id,is_primary,is_active').eq('rep_id', repId);
+      const active = (asn || []).filter((a) => a.is_active !== false);
+      const csrId = (active.find((a) => a.is_primary) || active[0] || {}).csr_id;
+      if (csrId) tagged.push(String(csrId));
+      // Prefer the CSR's email, else the rep's.
+      const ids = [csrId, repId].filter(Boolean).map(String);
+      if (ids.length) {
+        const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
+        const pick = (people || []).find((p) => String(p.id) === String(csrId)) || (people || []).find((p) => String(p.id) === String(repId));
+        if (pick && pick.email) { notifyEmail = pick.email; notifyName = pick.full_name || ''; }
+      }
+    }
+    var storeName = (store && store.name) || 'your store';
+  } catch (e) { var storeName = 'your store'; }
+
+  const now = new Date();
+  const msg = {
+    id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7),
+    entity_type: 'webstore_order', entity_id: String(order.id),
+    so_id: order.so_id || null, author_id: null, author: order.buyer_name || 'Customer',
+    text, ts: now.toLocaleString(), dept: 'store',
+    tagged_members: tagged, from_customer: true, read_by_staff: false,
+  };
+  const { error: insErr } = await sb.from('messages').insert(msg);
+  if (insErr) return bad(502, 'Could not post your message: ' + insErr.message);
+
+  // Email the assigned CSR/rep (best-effort — never blocks the post).
+  try { await notifyStaffOfReply({ to: notifyEmail || 'stores@nationalsportsapparel.com', toName: notifyName, order, storeName, text }); } catch (e) { /* logged below */ }
+
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, messages: await loadThread(sb, order.id) }) };
+}
+
+async function notifyStaffOfReply({ to, toName, order, storeName, text }) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey || !to) return;
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
+  const adminLink = `${portal}/?omg=1`;
+  const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
+    <div style="background:#0b1f3a;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0">
+      <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${safe(storeName)}</div>
+      <div style="font-size:21px;font-weight:800;margin-top:4px">💬 New customer reply</div>
+    </div>
+    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px">
+      <p style="margin:0 0 6px"><b>${safe(order.buyer_name || 'A customer')}</b> replied on order ${order.omg_order_number ? '#' + safe(order.omg_order_number) : ''}:</p>
+      <blockquote style="margin:8px 0;padding:12px 14px;background:#f8fafc;border-left:3px solid #e11d2a;border-radius:6px;font-size:15px">${safe(text)}</blockquote>
+      <p style="font-size:13px;color:#64748b">Open the order in OMG Stores to reply — your reply emails the customer their portal link.</p>
+      <div style="margin:18px 0"><a href="${adminLink}" style="display:inline-block;background:#e11d2a;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-weight:700">Open OMG Stores →</a></div>
+    </div></div>`;
+  await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    body: JSON.stringify({
+      sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
+      to: [{ email: to, name: toName || '' }],
+      replyTo: order.buyer_email ? { email: order.buyer_email, name: order.buyer_name || '' } : undefined,
+      subject: `💬 ${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
+      htmlContent: html,
+    }),
+  });
 }
 
 // ── Buyer self-service shipping-address edit (before the order ships) ──

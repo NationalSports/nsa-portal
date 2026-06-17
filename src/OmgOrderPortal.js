@@ -186,7 +186,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO, cu }) {
   // Ship-to-school stores are bulk-delivered to the club; no per-player labels.
   const shipToSchool = deliveryMode === 'deliver_school';
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
@@ -200,6 +200,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const [shipErrors, setShipErrors] = useState([]); // [{order, msg}] from the last label run
   const [selIds, setSelIds] = useState(new Set()); // orders selected for bulk label / packing-list
   const [editOrder, setEditOrder] = useState(null); // order whose line items are being edited
+  const [msgDraft, setMsgDraft] = useState({}); // orderId -> compose text for the customer thread
+  const [msgBusy, setMsgBusy] = useState(null); // orderId currently sending
   const [testEmail, setTestEmail] = useState('');
   const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
   const [pickIds, setPickIds] = useState(null);         // Set of order ids selected in the confirm modal (null = all)
@@ -212,12 +214,23 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!st) { setOrders([]); return; }
     const { data: ords } = await supabase.from('webstore_orders').select('*').eq('store_id', st.id).order('omg_order_number');
     const ids = (ords || []).map((o) => o.id);
-    let itemsByOrder = {};
+    let itemsByOrder = {}, msgsByOrder = {};
     if (ids.length) {
-      const { data: its } = await supabase.from('webstore_order_items').select('*').in('order_id', ids);
+      const [{ data: its }, { data: msgs }] = await Promise.all([
+        supabase.from('webstore_order_items').select('*').in('order_id', ids),
+        supabase.from('messages').select('id,text,ts,created_at,from_customer,read_by_staff,author,entity_id')
+          .eq('entity_type', 'webstore_order').in('entity_id', ids.map(String)),
+      ]);
       (its || []).forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+      // entity_id is stored as text; bucket the thread back onto its order.
+      const byId = {}; (ords || []).forEach((o) => { byId[String(o.id)] = o.id; });
+      (msgs || []).forEach((m) => { const oid = byId[String(m.entity_id)]; if (oid) (msgsByOrder[oid] = msgsByOrder[oid] || []).push(m); });
     }
-    setOrders((ords || []).map((o) => ({ ...o, items: (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent) })));
+    setOrders((ords || []).map((o) => ({
+      ...o,
+      items: (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent),
+      messages: (msgsByOrder[o.id] || []).map((m) => ({ ...m, text: m.text || '', ts: m.created_at || m.ts })).sort((a, b) => new Date(a.ts) - new Date(b.ts)),
+    })));
   }, []);
 
   // Find the shadow store for this sale code (may not exist until first import).
@@ -347,6 +360,45 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (error) { flash('Could not flag item: ' + error.message, 'err'); return; }
     setOrders((os) => os.map((o) => o.id === orderId ? { ...o, items: o.items.map((i) => i.id === itemId ? { ...i, missing_qty: q } : i) } : o));
   };
+  // ── Customer messaging (two-way, attached to the order) ──
+  // Staff message → saved to the shared `messages` thread (entity_type
+  // 'webstore_order') and the parent is emailed a link to read & reply. Customer
+  // replies arrive via the public portal (webstore-checkout post_message) and
+  // show up here + in the Messages center (tagged to the store's CSR/rep).
+  const unreadReplies = (o) => (o.messages || []).filter((m) => m.from_customer && !m.read_by_staff).length;
+  const sendOrderMessage = async (o) => {
+    const text = (msgDraft[o.id] || '').trim();
+    if (!text) return;
+    setMsgBusy(o.id);
+    const now = new Date();
+    const row = {
+      id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7),
+      entity_type: 'webstore_order', entity_id: String(o.id), so_id: o.so_id || null,
+      author_id: (cu && cu.id) || null, author: (cu && cu.name) || storeName || 'NSA Team',
+      text, ts: now.toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true, tagged_members: [],
+    };
+    const { error } = await supabase.from('messages').insert(row);
+    if (error) { setMsgBusy(null); flash('Could not send message: ' + error.message, 'err'); return; }
+    setMsgDraft((d) => ({ ...d, [o.id]: '' }));
+    setOrders((os) => os.map((x) => x.id === o.id ? { ...x, messages: [...(x.messages || []), row] } : x));
+    try {
+      const r = await authFetch('/.netlify/functions/webstore-message-notify', { method: 'POST', body: JSON.stringify({ orderId: o.id, text }) });
+      const j = await r.json().catch(() => ({}));
+      if (j && j.success) flash('Message sent — the parent was emailed a link to read & reply.');
+      else if (!o.buyer_email) flash('Message saved. No buyer email on file, so no notification was sent.', 'err');
+      else flash('Message saved, but the email failed: ' + (j.error || 'unknown'), 'err');
+    } catch (e) { flash('Message saved, but the email could not be sent.', 'err'); }
+    setMsgBusy(null);
+  };
+  // Clear the "new reply" badge when staff opens an order's thread.
+  const markThreadRead = async (o) => {
+    const unread = (o.messages || []).filter((m) => m.from_customer && !m.read_by_staff);
+    if (!unread.length) return;
+    const idList = unread.map((m) => m.id);
+    setOrders((os) => os.map((x) => x.id === o.id ? { ...x, messages: (x.messages || []).map((m) => idList.includes(m.id) ? { ...m, read_by_staff: true } : m) } : x));
+    try { await supabase.from('messages').update({ read_by_staff: true }).in('id', idList); } catch {}
+  };
+
   // The 'Shipping' box shows how many of a line go out (defaults to full qty);
   // reducing it records the remainder as short (missing_qty = qty − shipping).
   const setItemShipping = (orderId, item, v) => {
@@ -773,11 +825,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                     const di = draftIdxByNum ? draftIdxByNum[String(o.omg_order_number)] : null;
                     return (
                       <React.Fragment key={o.id}>
-                        <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#e7ecf3' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                        <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#e7ecf3' : '#fff', cursor: 'pointer' }} onClick={() => { const opening = !isOpen; setExpanded(isOpen ? null : o.id); if (opening) markThreadRead(o); }}>
                           <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggleSelId(o.id)} /></td>
                           <td style={{ ...td, width: 24, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                           <td style={td}>{o.omg_order_number}</td>
-                          <td style={td}>{o.buyer_name || '—'}</td>
+                          <td style={td}>{o.buyer_name || '—'}{unreadReplies(o) > 0 && <span title={`${unreadReplies(o)} new customer ${unreadReplies(o) === 1 ? 'reply' : 'replies'}`} style={{ marginLeft: 6, background: '#dc2626', color: '#fff', borderRadius: 10, padding: '1px 7px', fontSize: 10.5, fontWeight: 800 }}>💬 {unreadReplies(o)}</span>}</td>
                           {di != null
                             ? <td style={td} onClick={(e) => e.stopPropagation()}><input value={(draftContacts[di].email) || ''} onChange={(e) => updateDraft(di, 'email', e.target.value)} placeholder="email…" style={{ ...cell, minWidth: 150, ...(draftContacts[di].email ? {} : { background: '#fff7ed', borderColor: '#fdba74' }) }} /></td>
                             : <td style={{ ...td, textAlign: 'center' }} title={o.buyer_email || 'No email — expand to add'}>{o.buyer_email
@@ -850,6 +902,28 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                 </tbody>
                               </table>
                               <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>“Shipping” starts at the full quantity — lower it to hold items short. Held items stay on the order and show a “delayed” notice on the parent’s tracking page.</div>
+
+                              {/* Customer message thread — stays attached to the order; the
+                                  parent reads & replies on their portal page. */}
+                              <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                                <div style={{ padding: '8px 12px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#334155' }}>💬 Messages with {o.buyer_name || 'the parent'}</div>
+                                <div style={{ padding: 12, maxHeight: 240, overflowY: 'auto', background: '#fff' }}>
+                                  {(o.messages || []).length === 0
+                                    ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No messages yet. Send one below — the parent gets an email with a link to read & reply.</div>
+                                    : (o.messages || []).map((m) => (
+                                        <div key={m.id} style={{ display: 'flex', justifyContent: m.from_customer ? 'flex-start' : 'flex-end', marginBottom: 8 }}>
+                                          <div style={{ maxWidth: '78%', padding: '7px 11px', borderRadius: 10, fontSize: 13, background: m.from_customer ? '#f1f5f9' : '#dcfce7', color: '#0f172a' }}>
+                                            <div style={{ fontSize: 10.5, fontWeight: 700, color: m.from_customer ? '#475569' : '#166534', marginBottom: 2 }}>{m.from_customer ? (o.buyer_name || 'Customer') : (m.author || 'NSA')}<span style={{ color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>{m.ts ? new Date(m.ts).toLocaleString() : ''}</span></div>
+                                            <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, padding: 10, borderTop: '1px solid #eef1f5', background: '#fafbfc' }}>
+                                  <input value={msgDraft[o.id] || ''} onChange={(e) => setMsgDraft((d) => ({ ...d, [o.id]: e.target.value }))} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendOrderMessage(o); } }} placeholder={o.buyer_email ? 'Message the parent…' : 'No buyer email — add one in Edit order to notify them'} style={{ ...cell, flex: 1 }} />
+                                  <button onClick={() => sendOrderMessage(o)} disabled={msgBusy === o.id || !(msgDraft[o.id] || '').trim()} style={{ ...primaryBtn, padding: '8px 16px', opacity: (msgBusy === o.id || !(msgDraft[o.id] || '').trim()) ? 0.5 : 1 }}>{msgBusy === o.id ? 'Sending…' : 'Send'}</button>
+                                </div>
+                              </div>
                             </td>
                           </tr>
                         )}

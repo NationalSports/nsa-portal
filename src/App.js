@@ -16683,7 +16683,7 @@ export default function App(){
             so backordered sizes hold their parents back. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} cu={cu} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 
@@ -25704,13 +25704,16 @@ export default function App(){
       if(last<text.length)parts.push({type:'text',value:text.slice(last)});
       return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
     };
-    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t};
-    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':'#64748b'};
-    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':'#f1f5f9'};
+    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t==='webstore_order'?'Customer':t==='issue'?'Issue':t};
+    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':t==='webstore_order'?'#b45309':'#64748b'};
+    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':t==='webstore_order'?'#fef3c7':'#f1f5f9'};
     const navigateToEntity=(m)=>{
       const eType=m.entity_type||'so';const eId=m.entity_id||m.so_id;
       if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
+      // Customer order replies live in the OMG portal (full order context: items,
+      // customer, SO, store) where staff reply & re-email the parent.
+      else if(eType==='webstore_order'){setPg('omg')}
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
     const openThread=(m)=>{
