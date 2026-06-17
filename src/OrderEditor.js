@@ -7188,6 +7188,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* JOBS TAB */}
     {isSO&&tab==='jobs'&&(()=>{
       const jobs=safeJobs(o);
+      // Cluster jobs that share the same art (name + deco type) so the same logo decorated at different
+      // print locations (e.g. Left Chest vs Front Center) sits together in the list instead of being split
+      // apart by an unrelated job in between. Preserves each art group's first-appearance order, and carries
+      // the original array index (oi) so every row action (select, split, merge, scroll-to) stays correct.
+      const _jobArtKey=j=>(j.art_name||'').toLowerCase().trim()+'||'+(j.deco_type||'');
+      const _jobOrder=[];const _jobBuckets=new Map();
+      jobs.forEach((j,i)=>{const k=_jobArtKey(j);if(!_jobBuckets.has(k)){_jobBuckets.set(k,[]);_jobOrder.push(k)}_jobBuckets.get(k).push({j,oi:i})});
+      const _clustered=_jobOrder.flatMap(k=>_jobBuckets.get(k));
 
       // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
       // merged/split/released jobs; picks up any newly added items that don't yet have a job.
@@ -9102,7 +9110,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>}
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
-          {jobs.map((j,ji)=>{
+          {_clustered.map(({j,oi})=>{const ji=oi;
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=(j.items||[]).length>0&&j.total_units>1;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
