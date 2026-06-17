@@ -9,7 +9,13 @@
 // Query parameters:
 //   path — the API endpoint path (e.g. /products, /inventory)
 
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
+  // Staff-only: this proxy injects the company Richardson API key.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+
   const apiKey = process.env.RICHARDSON_API_KEY;
   const baseUrl = (process.env.RICHARDSON_API_BASE_URL || 'https://dev-api.richardsonsports.com/api').replace(/\/+$/, '');
 

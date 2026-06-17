@@ -68,4 +68,19 @@ async function verifyUser(event) {
   return { ok: true, userId: userData.user.id, teamMemberId: tm.id, role: tm.role, admin };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser };
+// Verify the caller is EITHER an active team member (a staff browser session) OR a
+// trusted internal Netlify function presenting the shared internal secret. The
+// vendor proxies are normally staff-only, but a couple of server-side jobs (e.g.
+// sanmar-nike-sync-background) reuse a credentialed proxy over HTTP and have no
+// user JWT — they authenticate with the secret instead. The secret is a
+// server-only env var (never shipped to the browser); we accept a dedicated
+// INTERNAL_FUNCTION_SECRET or fall back to the service-role key that both
+// functions already share, so the existing sync keeps working with no new config.
+async function verifyUserOrInternal(event) {
+  const provided = event.headers?.['x-internal-secret'] || event.headers?.['X-Internal-Secret'];
+  const expected = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (provided && expected && provided === expected) return { ok: true, internal: true };
+  return verifyUser(event);
+}
+
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal };
