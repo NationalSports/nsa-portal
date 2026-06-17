@@ -258,27 +258,34 @@ export const printDoc=opts=>{
 // printing happens. Falls back to opening the merged PDF in a new tab.
 export const printPdfLabels=async(base64List)=>{
   const list=(base64List||[]).filter(Boolean);
-  if(!list.length)return;
+  if(!list.length)return 0;
   const out=await PDFDocument.create();
+  let added=0,failed=0;
   for(const b64 of list){
-    const bytes=Uint8Array.from(atob(String(b64).replace(/\s/g,'')),(c)=>c.charCodeAt(0));
-    const src=await PDFDocument.load(bytes);
-    const pages=await out.copyPages(src,src.getPageIndices());
-    pages.forEach((p)=>{
-      // ShipStation/FedEx commonly return the 4x6 label printed in the top-left
-      // of a full Letter page. Crop each oversized page down to a 4x6 so it
-      // prints clean on a thermal/label printer — and so a multi-label batch
-      // comes out as one 4x6 page per label instead of full sheets.
-      const W=288,H=432; // 4in x 6in at 72dpi
-      const sz=p.getSize();
-      if(sz.width>W+20&&sz.height>H+20){
-        const y=sz.height-H; // top-left region (PDF origin is bottom-left)
-        p.setCropBox(0,y,W,H);
-        p.setMediaBox(0,y,W,H);
-      }
-      out.addPage(p);
-    });
+    // Merge each label independently so one corrupt/unreadable PDF can't take
+    // down the whole batch (that's how "3 labels, only 2 print" happens).
+    try{
+      const bytes=Uint8Array.from(atob(String(b64).replace(/\s/g,'')),(c)=>c.charCodeAt(0));
+      const src=await PDFDocument.load(bytes);
+      const pages=await out.copyPages(src,src.getPageIndices());
+      pages.forEach((p)=>{
+        // ShipStation/FedEx commonly return the 4x6 label printed in the top-left
+        // of a full Letter page. Crop each oversized page down to a 4x6 so it
+        // prints clean on a thermal/label printer — and so a multi-label batch
+        // comes out as one 4x6 page per label instead of full sheets.
+        const W=288,H=432; // 4in x 6in at 72dpi
+        const sz=p.getSize();
+        if(sz.width>W+20&&sz.height>H+20){
+          const y=sz.height-H; // top-left region (PDF origin is bottom-left)
+          p.setCropBox(0,y,W,H);
+          p.setMediaBox(0,y,W,H);
+        }
+        out.addPage(p);
+        added++;
+      });
+    }catch(e){failed++;}
   }
+  if(!added)return 0;
   const url=URL.createObjectURL(new Blob([await out.save()],{type:'application/pdf'}));
   const iframe=document.createElement('iframe');
   iframe.style.display='none';
@@ -289,6 +296,7 @@ export const printPdfLabels=async(base64List)=>{
     setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(url);}catch{}},60000);
   };
   document.body.appendChild(iframe);
+  return added;
 };
 
 // Light pre-flight validation of a ship-to address before buying a label —

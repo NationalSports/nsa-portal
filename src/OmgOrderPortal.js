@@ -387,11 +387,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       const shipTo = shipToSchool ? 'Deliver to school' : [a.name || o.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
       const rows = o.items.filter((i) => !i.is_bundle_parent).map((i) => {
         const qty = Number(i.qty) || 0; const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const held = ship < qty;
-        return `<tr class="${held ? 'held' : ''}"><td>${esc(i.name || i.sku || '')}</td><td>${esc(i.color || '')}</td><td>${esc(i.size || '')}</td><td class="c">${qty}</td><td class="c b">${ship}</td><td>${held ? (ship === 0 ? '⛔ NOT SHIPPING' : (qty - ship) + ' short') : 'INC'}</td></tr>`;
+        return `<tr class="${held ? 'held' : ''}"><td>${esc(i.name || i.sku || '')}</td><td>${esc(i.color || '')}</td><td>${esc(i.size || '')}</td><td class="c">${qty}</td><td class="c b">${ship}</td><td>${held ? (ship === 0 ? '⛔ NOT SHIPPING' : (qty - ship) + ' short') : '✓'}</td></tr>`;
       }).join('');
       return `<div class="slip"><div class="hd"><div class="t">${esc(storeName || '')}</div><div class="s">Packing list · Order ${esc(o.omg_order_number || '')}</div></div>
         <div class="meta"><b>Player:</b> ${esc(o.buyer_name || '')}<br><b>Ship to:</b><br>${shipTo || '—'}</div>
-        <table><thead><tr><th>Item</th><th>Color</th><th>Size</th><th>Qty</th><th>Shipping</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>Item</th><th>Color</th><th>Size</th><th>Qty</th><th>Shipping</th><th>INC</th></tr></thead><tbody>${rows}</tbody></table>
         <div class="ft">Lines marked “short / not shipping” stay on the order and ship once back in stock.</div></div>`;
     }).join('');
     const html = `<!doctype html><html><head><title>Packing lists</title><style>
@@ -439,26 +439,6 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       advancedOptions: { source: 'NSA OMG', customField1: storeName || '', customField2: saleCode || '', ...(store && store.shipstation_store_id ? { storeId: Number(store.shipstation_store_id) || undefined } : {}) },
     };
   };
-  const pushToShipStation = async (o) => {
-    const a = o.ship_address || {};
-    if (!a.street1 || !a.city || !a.zip) { flash('Add a shipping address first (upload the packing slip).', 'err'); return; }
-    setBusy('ss-' + o.id);
-    try {
-      const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssPayload(o)) });
-      if (!ss || !ss.orderId) throw new Error('ShipStation did not accept the order.');
-      flash(`Order ${o.omg_order_number} sent to ShipStation — buy the label there; the parent is emailed on ship.`);
-    } catch (e) { flash('ShipStation: ' + e.message, 'err'); } finally { setBusy(''); }
-  };
-  const pushAllToShipStation = async (subset) => {
-    const ready = (subset || orders).filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip);
-    if (!ready.length) { flash('No orders have a shipping address yet — upload the packing slip first.', 'err'); return; }
-    setBusy('ss-all');
-    let ok = 0, fail = 0;
-    for (const o of ready) { try { await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssPayload(o)) }); ok++; } catch { fail++; } }
-    setBusy('');
-    flash(`Pushed ${ok} order(s) to ShipStation${fail ? `, ${fail} failed` : ''}.`, fail ? 'err' : 'ok');
-  };
-
   // ── In-portal label creation (bulk shipping happens here, not in ShipStation).
   // Lines flagged short (missing_qty > 0) are held; already-shipped lines are
   // skipped so re-runs ship only what's newly in-hand and the order stays open
@@ -511,14 +491,21 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   const printOmgLabels = async (subset) => {
     if (shipToSchool) { flash('Ship-to-school store — bulk delivery, no per-player labels.', 'err'); return; }
     const pool = subset || orders;
+    const selected = pool.length;
     const errors = [];
     const eligible = pool.filter((o) => {
-      if (!shipPlan(o).length) return false;
+      // Surface *why* a selected order is being skipped instead of silently
+      // dropping it — otherwise "3 checked, 2 printed" looks like a lost label.
+      if (!shipPlan(o).length) {
+        const allShipped = o.items.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        errors.push({ order: o.omg_order_number, msg: allShipped ? 'Already fully shipped — use Reprint for another copy' : 'Nothing to ship — every line is held short' });
+        return false;
+      }
       const err = validateShipAddress(o.ship_address);
       if (err) { errors.push({ order: o.omg_order_number, msg: err }); return false; } // skip undeliverable addresses
       return true;
     });
-    if (!eligible.length) { setShipErrors(errors); flash(errors.length ? `${errors.length} order(s) have an invalid address — see the list below.` : 'Nothing ready to ship — everything is shipped or short.', 'err'); return; }
+    if (!eligible.length) { setShipErrors(errors); flash(errors.length ? `Nothing printed — all ${selected} selected order${selected === 1 ? '' : 's'} were skipped (see the list below).` : 'Nothing ready to ship — everything is shipped or short.', 'err'); return; }
     setBusy('labels');
     const labels = []; let ok = 0, runCost = 0;
     for (const o of eligible) {
@@ -540,11 +527,12 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       } catch (e) { errors.push({ order: o.omg_order_number, msg: (e && e.message) || 'Label failed' }); }
     }
     await recomputeSOCost();
-    if (labels.length) await printPdfLabels(labels);
+    let printed = 0;
+    if (labels.length) printed = await printPdfLabels(labels);
     await loadOrders(store);
     setShipErrors(errors);
     setBusy('');
-    flash(`${ok} label${ok === 1 ? '' : 's'} created${errors.length ? `, ${errors.length} need attention (below)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, errors.length ? 'err' : 'ok');
+    flash(`Printed ${printed || labels.length} of ${selected} selected label${selected === 1 ? '' : 's'}${errors.length ? ` · ${errors.length} skipped (below)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, errors.length ? 'err' : 'ok');
   };
 
   // Reprint the last saved label for one order — no re-buy.
@@ -600,7 +588,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       <div style={{ padding: '12px 16px' }}>
         {msg && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontWeight: 600, fontSize: 13, background: msg.kind === 'err' ? '#fef2f2' : '#f0fdf4', color: msg.kind === 'err' ? '#991b1b' : '#166534', border: `1px solid ${msg.kind === 'err' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>}
         {shipErrors.length > 0 && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, background: '#fff7ed', border: '1px solid #fed7aa' }}>
-          <div style={{ fontWeight: 800, fontSize: 12.5, color: '#9a3412', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>⚠️ {shipErrors.length} order{shipErrors.length === 1 ? '' : 's'} couldn’t ship<button onClick={() => setShipErrors([])} style={{ ...linkBtn, marginLeft: 'auto', color: '#9a3412' }}>Dismiss</button></div>
+          <div style={{ fontWeight: 800, fontSize: 12.5, color: '#9a3412', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>⚠️ {shipErrors.length} order{shipErrors.length === 1 ? '' : 's'} skipped<button onClick={() => setShipErrors([])} style={{ ...linkBtn, marginLeft: 'auto', color: '#9a3412' }}>Dismiss</button></div>
           {shipErrors.map((e, i) => <div key={i} style={{ fontSize: 12, color: '#7c2d12' }}><b>{e.order || '—'}</b> — {e.msg}</div>)}
         </div>}
 
@@ -767,7 +755,6 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                 ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
                 : <>
                     <button onClick={() => printOmgLabels(selectedPool())} disabled={busy === 'labels' || !selIds.size} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: selIds.size ? 'pointer' : 'not-allowed', opacity: selIds.size ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${selIds.size} label${selIds.size === 1 ? '' : 's'}`}</button>
-                    <button onClick={() => pushAllToShipStation(selectedPool())} disabled={busy === 'ss-all' || !selIds.size} style={{ ...secondaryBtn, opacity: selIds.size ? 1 : 0.5, cursor: selIds.size ? 'pointer' : 'not-allowed' }} title="Alternative: push to ShipStation and buy the labels there instead">{busy === 'ss-all' ? 'Pushing…' : '🚚 Push to ShipStation'}</button>
                   </>}
             </div>}
 
@@ -843,7 +830,6 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                   <button onClick={() => printOmgLabels([o])} disabled={busy === 'labels'} style={{ padding: '7px 13px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{busy === 'labels' ? 'Creating…' : '🏷️ Create & print label'}</button>
                                   {o.label_data && <button onClick={() => reprintOmgLabel(o)} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>🔁 Reprint</button>}
                                   {o.shipstation_shipment_id && <button onClick={() => voidOmgLabel(o)} disabled={busy === 'void-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5, color: '#b91c1c', borderColor: '#fecaca' }}>{busy === 'void-' + o.id ? 'Voiding…' : '✖ Void'}</button>}
-                                  <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
                                 </>}
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
