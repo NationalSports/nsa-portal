@@ -801,6 +801,37 @@ describe('Invoice Creation', () => {
     expect(result.selTotals.subtotal).toBe(24 * 20 + 24 * 8);
   });
 
+  test('free promo garment is $0 but decoration, shipping and tax are still billed — invoice total matches SO (INV total $0 regression)', () => {
+    // Real-world INV-1078 bug: a "FREE PROMO" hoodie ($0 garment, is_free_promo) carried a
+    // screen-print up-charge. The garment must not be billed, but the decoration — plus the
+    // order's shipping and tax — still are, so the invoice total has to equal the SO total.
+    // The bug zeroed the whole line, collapsing subtotal / shipping / tax / total to $0.
+    const artFile = makeArtFile();
+    const so = makeSO({
+      items: [makeSOItem({
+        sku: 'A2009', name: 'Adidas Hoodie',
+        sizes: { M: 21 }, unit_sell: 0, nsa_cost: 0, is_free_promo: true,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front' }],
+      })],
+      art_files: [artFile],
+      shipping_type: 'flat', shipping_value: 15,
+    });
+    const cust = makeCustomer({ tax_rate: 0.0775 });
+    const decoP = dP({ kind: 'art', art_file_id: 'af1', position: 'Front' }, 21, [artFile], 21);
+    const expectedDeco = 21 * decoP.sell;
+
+    const result = createInvoice(so, [0], cust, {});
+    const soTotals = calcTotals(so, cust);
+
+    expect(expectedDeco).toBeGreaterThan(0);                     // there IS a deco charge to bill
+    expect(result.selTotals.subtotal).toBe(expectedDeco);        // garment $0, deco billed — not $0
+    expect(result.ship).toBe(15);                                // shipping still charged
+    expect(result.tax).toBeCloseTo(expectedDeco * 0.0775, 2);    // tax applies to the decoration
+    expect(result.total).toBeGreaterThan(0);                     // not the $0 collapse
+    expect(result.total).toBeCloseTo(soTotals.grand, 2);         // invoice total == sales order total
+    expect(result.total).toBeCloseTo(expectedDeco + 15 + expectedDeco * 0.0775, 2);
+  });
+
   test('line items have correct structure', () => {
     const so = makeSO({
       items: [makeSOItem({
