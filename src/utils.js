@@ -319,34 +319,47 @@ export const printPdfLabels=async(base64List)=>{
 // Non-size metadata keys that live alongside the spread size quantities on a
 // loaded pick line — everything else with a numeric value is a size→qty.
 const PICK_META = new Set(['pick_id', 'status', 'ship_dest', 'created_at', 'updated_at', 'memo', 'expected_date', 'po_id', 'vendor', 'tracking', 'tracking_numbers', 'billed', 'received', 'cancelled', 'shipments', '_billed', '_tracking_numbers', 'id', 'so_item_id', 'line_status', 'color', 'sku', 'name', 'notes', 'item_index']);
+// Non-size keys that can appear inside a sizes JSONB (drop-ship flag, unit cost).
+const SIZE_SKIP = new Set(['drop_ship', 'unit_cost', '_billed', '_tracking_numbers']);
 export function computeOrderTracking({ orders = [], so = null, products = [], includeIF = false }) {
   const norm = (s) => String(s == null ? '' : s).trim().toUpperCase();
-  // Match supply↔demand by SKU first — it's the field both OMG and webstore
-  // lines reliably carry (product_id is often null on imported OMG lines).
-  const keyOf = (pid, sku, size) => (norm(sku) || pid || '?') + '|' + norm(size);
-  const sumSizes = (obj, size) => Number((obj || {})[size] || (obj || {})[norm(size)] || 0) || 0;
+  const isSizeQty = (k, v) => !SIZE_SKIP.has(k) && !PICK_META.has(k) && typeof v !== 'boolean' && Number(v) > 0;
 
   // On-hand inventory lookup by product_id → {size: qty}.
   const invByPid = {};
   (products || []).forEach((p) => { if (p && p.id) invByPid[p.id] = p._inv || {}; });
 
-  // Supply pools per bucket, summed across the SO item's PO + pick lines.
-  const supply = {}; // key → { billed, received, onIf }
+  // Supply buckets, unified across SKU / product_id / name aliases for a given
+  // size — so an order line that carries only a name (empty sku, as OMG imports
+  // do) still matches its SO line by name, while sku/product_id match when
+  // present. Aliases point at the SAME bucket, so nothing is double-counted.
+  const buckets = []; const aliasToId = {};
+  const aliasKeys = (sku, pid, name, size) => [sku, pid, name].filter(Boolean).map((v) => norm(v) + '|' + norm(size));
+  const ensureBucket = (sku, pid, name, size) => {
+    const keys = aliasKeys(sku, pid, name, size);
+    let id = -1; for (const k of keys) { if (aliasToId[k] != null) { id = aliasToId[k]; break; } }
+    if (id < 0) { id = buckets.push({ billed: 0, received: 0, onIf: 0 }) - 1; }
+    keys.forEach((k) => { aliasToId[k] = id; });
+    return id;
+  };
+  const findBucket = (sku, pid, name, size) => { for (const k of aliasKeys(sku, pid, name, size)) { if (aliasToId[k] != null) return aliasToId[k]; } return -1; };
+
   (so && so.items ? so.items : []).forEach((it) => {
-    const pid = it.product_id, sku = it.sku;
-    const add = (size, field, n) => { const k = keyOf(pid, sku, size); (supply[k] = supply[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
+    const pid = it.product_id, sku = it.sku, name = it.name;
+    const addAt = (size, field, n) => { if (!n) return; buckets[ensureBucket(sku, pid, name, size)][field] += n; };
     (it.po_lines || []).forEach((po) => {
-      // billed/received stay nested ({size:qty}); ordered sizes are spread to
-      // top-level on the loaded PO line, which we don't need here.
-      const sizes = new Set([...Object.keys(po.billed || {}), ...Object.keys(po.received || {})]);
-      sizes.forEach((sz) => { add(sz, 'billed', sumSizes(po.billed, sz)); add(sz, 'received', sumSizes(po.received, sz)); });
+      const b = po.billed || {}, r = po.received || {};
+      new Set([...Object.keys(b), ...Object.keys(r)]).forEach((sz) => {
+        if (SIZE_SKIP.has(sz)) return;
+        addAt(sz, 'billed', Number(b[sz]) || 0);
+        addAt(sz, 'received', Number(r[sz]) || 0);
+      });
     });
     // Pick lines come in two shapes: raw from Supabase (sizes nested under
     // `.sizes`) or hydrated by App load (sizes spread to top-level). Handle both.
     (it.pick_lines || []).forEach((pk) => {
-      const szObj = pk && pk.sizes && typeof pk.sizes === 'object' ? pk.sizes : null;
-      if (szObj) { Object.keys(szObj).forEach((k) => { const n = Number(szObj[k]); if (n) add(k, 'onIf', n); }); return; }
-      Object.keys(pk || {}).forEach((kk) => { if (PICK_META.has(kk)) return; const n = Number(pk[kk]); if (n) add(kk, 'onIf', n); });
+      const szObj = pk && pk.sizes && typeof pk.sizes === 'object' ? pk.sizes : pk;
+      Object.keys(szObj || {}).forEach((kk) => { if (isSizeQty(kk, szObj[kk])) addAt(kk, 'onIf', Number(szObj[kk]) || 0); });
     });
   });
 
@@ -354,23 +367,30 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
   // OMG orders sort by order number; webstore orders by creation time.
   const fifoKey = (o) => String(o.omg_order_number || o.created_at || o.id || '');
   const sorted = [...orders].sort((a, b) => fifoKey(a).localeCompare(fifoKey(b), undefined, { numeric: true }));
-  const pools = {}; Object.keys(supply).forEach((k) => { pools[k] = { ...supply[k] }; });
+  const pools = buckets.map((b) => ({ ...b }));
   const out = {};
   sorted.forEach((o) => {
     (o.items || []).forEach((i) => {
       if (i.is_bundle_parent) return;
-      const k = keyOf(i.product_id, i.sku, i.size);
-      const p = pools[k] || { billed: 0, received: 0, onIf: 0 };
       const qty = Number(i.qty) || 0;
-      const take = (field) => { const n = Math.max(0, Math.min(p[field] || 0, qty)); p[field] = (p[field] || 0) - n; return n; };
+      const id = findBucket(i.sku, i.product_id, i.name, i.size);
+      const p = id >= 0 ? pools[id] : null;
+      const take = (field) => { if (!p) return 0; const n = Math.max(0, Math.min(p[field] || 0, qty)); p[field] -= n; return n; };
       const onIf = take('onIf');
       const received = take('received');
       const billed = take('billed');
-      pools[k] = p;
-      const onHand = sumSizes(invByPid[i.product_id], i.size);
+      const inv = invByPid[i.product_id] || {};
+      const onHand = Number(inv[i.size] || inv[norm(i.size)] || 0) || 0;
       const covered = received + (includeIF ? onIf : 0);
       const shipped = i.line_status === 'shipped' || (Number(i.shipped_qty) || 0) >= qty;
-      const status = shipped ? 'shipped' : covered >= qty && qty > 0 ? 'ready' : covered > 0 ? 'partial' : billed > 0 ? 'incoming' : 'backordered';
+      // "Backordered" only when the line is actually flagged; the normal
+      // not-yet-received state is the neutral "awaiting".
+      const status = shipped ? 'shipped'
+        : covered >= qty && qty > 0 ? 'ready'
+        : covered > 0 ? 'partial'
+        : billed > 0 ? 'incoming'
+        : i.backordered ? 'backordered'
+        : 'awaiting';
       out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status };
     });
   });

@@ -1798,7 +1798,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     });
     return merged;
   }, [sos, orders, orderItems, invProducts]);
-  const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
+  const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
   // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
   // Need · Status) for a set of webstore orders.
   const renderTrackTable = (wOrders) => {
@@ -1814,7 +1814,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
           {wOrders.map((w) => {
             const its = (orderItems || []).filter((i) => i.order_id === w.id && !i.is_bundle_parent);
             return its.map((i, idx) => {
-              const t = trackByLine[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, onIf: 0, onHand: 0, need: Number(i.qty) || 0, status: 'backordered' };
+              const t = trackByLine[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, onIf: 0, onHand: 0, need: Number(i.qty) || 0, status: 'awaiting' };
               const p = TRK[t.status] || TRK.backordered;
               return (
                 <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>

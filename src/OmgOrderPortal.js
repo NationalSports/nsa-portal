@@ -22,6 +22,7 @@ const TRACK_PILL = {
   ready: { label: 'Ready', color: '#166534', bg: '#dcfce7' },
   partial: { label: 'Partial', color: '#92400e', bg: '#fef3c7' },
   incoming: { label: 'Incoming', color: '#1d4ed8', bg: '#dbeafe' },
+  awaiting: { label: 'Awaiting', color: '#475569', bg: '#f1f5f9' },
   backordered: { label: 'Backordered', color: '#b91c1c', bg: '#fee2e2' },
 };
 
@@ -903,7 +904,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                 </tr></thead>
                                 <tbody>
                                   {o.items.map((i) => {
-                                    const t = tracking[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, need: Number(i.qty) || 0, status: 'backordered' };
+                                    const t = tracking[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, need: Number(i.qty) || 0, status: 'awaiting' };
                                     const qty = Number(i.qty) || 0;
                                     const ctd = { ...td, textAlign: 'center' };
                                     const num = (n, strong) => <span style={{ color: n > 0 ? '#0f172a' : '#cbd5e1', fontWeight: strong ? 700 : 500 }}>{n}</span>;
