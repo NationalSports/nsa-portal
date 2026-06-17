@@ -356,6 +356,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editMockJob,setEditMockJob]=useState(null);// job object whose quick mock is being re-edited in place
   const[prodSheetBusy,setProdSheetBusy]=useState(false);// generating the production-sheet PDF download
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
+  const[poAddModal,setPoAddModal]=useState(null);// {sz,n,add,poId,onAdd,onLeave} — growing an already-ordered size: add the extra units to its PO, or leave it open to order
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
@@ -1899,9 +1900,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let target=-1;
       for(let pi=lines.length-1;pi>=0;pi--){const pl=lines[pi];if(_lineInfo(pl).frozen)continue;if((pl[sz]||0)>0||pl.status==='waiting'||pl.status==='ordered'||!pl.status){target=pi;break}}
       const add=n-cur;
-      if(target>=0&&window.confirm(sz+': increasing to '+n+'. Add the extra '+add+' unit'+(add!==1?'s':'')+' to '+(lines[target].po_id||'the PO')+'? (Cancel keeps the PO unchanged — the '+add+' stay open to order or pick later.)')){
+      if(target>=0){
+        // Already-ordered size growing past its PO coverage: ask whether to push the extra units onto
+        // the open PO line, or leave the PO as-is (the extra stays open to order / pick later). These
+        // are two real choices, so use a modal with explicit "Add" / "Leave as is" buttons rather than
+        // a native confirm() whose OK/Cancel labels didn't map to them. Either button commits the new
+        // quantity; dismissing the modal abandons the edit (the size input reverts to its old value).
+        const poId=lines[target].po_id||'the PO';
         const newPls=lines.map((pl,pi)=>{if(pi!==target)return pl;return _recalcLineStatus({...pl,[sz]:(pl[sz]||0)+add})});
-        _applySizes(newPls,sz+' increased to '+n+' — added '+add+' to '+(lines[target].po_id||'PO'));
+        setPoAddModal({sz,n,add,poId,
+          onAdd:()=>{_applySizes(newPls,sz+' increased to '+n+' — added '+add+' to '+poId);setPoAddModal(null);},
+          onLeave:()=>{_applySizes(null);setPoAddModal(null);}});
         return;
       }
     }
@@ -2529,6 +2538,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn" style={{fontSize:13,fontWeight:700,background:'#16a34a',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={()=>applyPriorMock(d,false)}>✓ Already approved — use it</button>
           <button className="btn" style={{fontSize:13,fontWeight:700,background:'#2563eb',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={()=>applyPriorMock(d,true)}>📤 Send to coach for approval</button>
           <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>setMockApplyModal(null)}>Cancel</button>
+        </div>
+      </div>
+    </div></div>;})()}
+    {poAddModal&&(()=>{const d=poAddModal;const u=d.add+' unit'+(d.add!==1?'s':'');return<div className="modal-overlay" onClick={()=>setPoAddModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+      <div className="modal-header"><h2 style={{margin:0,fontSize:16}}>{d.sz}: increasing to {d.n}</h2><button className="modal-close" onClick={()=>setPoAddModal(null)}>×</button></div>
+      <div className="modal-body" style={{padding:16}}>
+        <div style={{fontSize:13,color:'#475569',marginBottom:14}}>That's <strong>{u}</strong> more than {d.poId} currently covers. Add the extra {u} to {d.poId}, or leave the PO as is?</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          <button className="btn" style={{fontSize:13,fontWeight:700,background:'#16a34a',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={d.onAdd}>✓ Add {u} to {d.poId}</button>
+          <button className="btn btn-secondary" style={{fontSize:13,fontWeight:700,padding:'10px 14px',borderRadius:8}} onClick={d.onLeave}>Leave as is — keep {d.poId} unchanged</button>
+          <div style={{fontSize:11,color:'#94a3b8',textAlign:'center',marginTop:2}}>Either keeps {d.sz} at {d.n}. “Leave as is” lets the {d.add} stay open to order or pick later.</div>
         </div>
       </div>
     </div></div>;})()}
