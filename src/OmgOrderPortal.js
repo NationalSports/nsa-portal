@@ -373,7 +373,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       const shipTo = shipToSchool ? 'Deliver to school' : [a.name || o.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
       const rows = o.items.filter((i) => !i.is_bundle_parent).map((i) => {
         const qty = Number(i.qty) || 0; const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const held = ship < qty;
-        return `<tr class="${held ? 'held' : ''}"><td>${esc(i.name || i.sku || '')}</td><td>${esc(i.color || '')}</td><td>${esc(i.size || '')}</td><td class="c">${qty}</td><td class="c b">${ship}</td><td>${held ? (ship === 0 ? '⛔ NOT SHIPPING' : (qty - ship) + ' short') : '✓'}</td></tr>`;
+        return `<tr class="${held ? 'held' : ''}"><td>${esc(i.name || i.sku || '')}</td><td>${esc(i.color || '')}</td><td>${esc(i.size || '')}</td><td class="c">${qty}</td><td class="c b">${ship}</td><td>${held ? (ship === 0 ? '⛔ NOT SHIPPING' : (qty - ship) + ' short') : 'INC'}</td></tr>`;
       }).join('');
       return `<div class="slip"><div class="hd"><div class="t">${esc(storeName || '')}</div><div class="s">Packing list · Order ${esc(o.omg_order_number || '')}</div></div>
         <div class="meta"><b>Player:</b> ${esc(o.buyer_name || '')}<br><b>Ship to:</b><br>${shipTo || '—'}</div>
@@ -435,8 +435,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       flash(`Order ${o.omg_order_number} sent to ShipStation — buy the label there; the parent is emailed on ship.`);
     } catch (e) { flash('ShipStation: ' + e.message, 'err'); } finally { setBusy(''); }
   };
-  const pushAllToShipStation = async () => {
-    const ready = orders.filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip);
+  const pushAllToShipStation = async (subset) => {
+    const ready = (subset || orders).filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip);
     if (!ready.length) { flash('No orders have a shipping address yet — upload the packing slip first.', 'err'); return; }
     setBusy('ss-all');
     let ok = 0, fail = 0;
@@ -747,12 +747,13 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
               ))}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
-              <button onClick={() => printOmgPacking()} style={{ ...secondaryBtn }} title={selIds.size ? `Packing lists for ${selIds.size} selected` : 'Packing lists for all orders'}>🖨️ Packing lists{selIds.size ? ` (${selIds.size})` : ''}</button>
+              {!selIds.size && <span style={{ fontSize: 11.5, color: '#94a3b8' }}>Check orders to print labels or packing lists</span>}
+              <button onClick={() => printOmgPacking()} disabled={!selIds.size} style={{ ...secondaryBtn, opacity: selIds.size ? 1 : 0.5, cursor: selIds.size ? 'pointer' : 'not-allowed' }} title={selIds.size ? `Packing lists for ${selIds.size} selected` : 'Select orders first'}>🖨️ Packing lists{selIds.size ? ` (${selIds.size})` : ''}</button>
               {shipToSchool
                 ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
                 : <>
-                    <button onClick={() => printOmgLabels(selIds.size ? selectedPool() : undefined)} disabled={busy === 'labels' || !withAddress} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: withAddress ? 'pointer' : 'not-allowed', opacity: withAddress ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${selIds.size ? selIds.size + ' selected' : withAddress} label${(selIds.size || withAddress) === 1 ? '' : 's'}`}</button>
-                    <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }} title="Alternative: push to ShipStation and buy the labels there instead">{busy === 'ss-all' ? 'Pushing…' : '🚚 Push to ShipStation'}</button>
+                    <button onClick={() => printOmgLabels(selectedPool())} disabled={busy === 'labels' || !selIds.size} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: selIds.size ? 'pointer' : 'not-allowed', opacity: selIds.size ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${selIds.size} label${selIds.size === 1 ? '' : 's'}`}</button>
+                    <button onClick={() => pushAllToShipStation(selectedPool())} disabled={busy === 'ss-all' || !selIds.size} style={{ ...secondaryBtn, opacity: selIds.size ? 1 : 0.5, cursor: selIds.size ? 'pointer' : 'not-allowed' }} title="Alternative: push to ShipStation and buy the labels there instead">{busy === 'ss-all' ? 'Pushing…' : '🚚 Push to ShipStation'}</button>
                   </>}
             </div>}
 
