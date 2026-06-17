@@ -53,6 +53,52 @@ exports.handler = async (event) => {
           if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
+
+        // Coach-portal invoice payments carry the invoice id(s) in metadata.invoice_id
+        // (stripe-payment.js, source 'nsa_coach_portal'). The webstore reconciliation above
+        // never matches these (no webstore_orders row for the intent), so without this block
+        // an online invoice payment is only ever recorded by the buyer's in-page success
+        // handler — which never runs if a 3-D Secure redirect took them off the page, or the
+        // tab closed. Reconcile here so the invoice is marked paid regardless. Idempotent:
+        // invoices already settled (or with no open balance) are skipped, so Stripe's webhook
+        // retries — and a racing in-page save — can't double-apply the surcharge.
+        const invIds = String((pi.metadata && pi.metadata.invoice_id) || '')
+          .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        if (invIds.length) {
+          const { data: invRows, error: invErr } = await sb.from('invoices')
+            .select('id,total,paid,cc_fee,status').in('id', invIds);
+          if (invErr) {
+            console.error('[stripe-webhook] invoice lookup failed:', invErr.message);
+          } else if (invRows && invRows.length) {
+            // Only invoices that still owe money — this is what makes redelivery idempotent.
+            const targets = invRows.filter((r) => r.status !== 'paid' && (Number(r.total) || 0) - (Number(r.paid) || 0) > 0.005);
+            const balTotal = targets.reduce((a, r) => a + ((Number(r.total) || 0) - (Number(r.paid) || 0)), 0);
+            // Surcharge actually collected = amount captured − sum of open balances, split per invoice.
+            const collected = (pi.amount_received != null ? pi.amount_received : (pi.amount || 0)) / 100;
+            const feeTotal = Math.max(0, Math.round((collected - balTotal) * 100) / 100);
+            const nowIso = new Date().toISOString();
+            const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+            for (const r of targets) {
+              const bal = (Number(r.total) || 0) - (Number(r.paid) || 0);
+              const fee = balTotal > 0 ? Math.round(feeTotal * (bal / balTotal) * 100) / 100 : 0;
+              const newTotal = Math.round(((Number(r.total) || 0) + fee) * 100) / 100; // fold surcharge into total, mirroring the in-app handler
+              const { error: updErr } = await sb.from('invoices')
+                .update({ total: newTotal, paid: newTotal, cc_fee: Math.round(((Number(r.cc_fee) || 0) + fee) * 100) / 100, status: 'paid', updated_at: nowIso })
+                .eq('id', r.id).neq('status', 'paid'); // guard so a racing in-page save can't be double-counted
+              if (updErr) { console.error('[stripe-webhook] invoice', r.id, 'update failed:', updErr.message); continue; }
+              // Best-effort audit row. invoice_payments has no cc_fee column, so it's omitted.
+              // Same ref the app writes ('Stripe <intentId>') so its payment-preservation logic
+              // dedupes against this row instead of duplicating it.
+              try {
+                const ref = 'Stripe ' + pi.id;
+                const { data: existing } = await sb.from('invoice_payments').select('id').eq('invoice_id', r.id).eq('ref', ref).limit(1);
+                if (!existing || !existing.length) {
+                  await sb.from('invoice_payments').insert({ invoice_id: r.id, amount: Math.round((bal + fee) * 100) / 100, method: 'cc', ref, date: payDate });
+                }
+              } catch (e) { console.warn('[stripe-webhook] invoice_payments audit insert skipped:', e.message); }
+            }
+          }
+        }
       }
     }
   } catch (e) {
