@@ -7,7 +7,7 @@ const {
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
   calcQualifyingSpend,
-  itemEditReconciles,
+  itemEditReconciles, itemsWithWipedQty,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -2456,5 +2456,69 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
     expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
     expect(itemEditReconciles(null, db)).toBe(false);
     expect(itemEditReconciles(undefined, db)).toBe(false);
+  });
+});
+
+describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {
+  // DB row as read by the save path: carries item_index + the persisted sizes.
+  const dbRow = (overrides = {}) => ({ item_index: 0, sku: 'NSF', name: 'Custom Jersey', product_id: null, sizes: { S: 5, M: 20, L: 20, XL: 5, '2XL': 3 }, qty_only: false, est_qty: null, ...overrides });
+
+  // ── MUST flag (silent data loss) ──
+  test('EST-1316 signature: same line, 53 units → sizes:{} is flagged', () => {
+    const db = [dbRow()];
+    const client = [{ sku: 'NSF', name: 'Customer ', sizes: {} }]; // name/price drifted, sku stayed → same line
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0]).toMatchObject({ item_index: 0, sku: 'NSF', prevQty: 53 });
+  });
+
+  test('all sizes typed to 0 (object kept, values zeroed) is still a wipe', () => {
+    const wiped = itemsWithWipedQty([{ sku: 'NSF', sizes: { S: 0, M: 0, L: 0, XL: 0, '2XL': 0 } }], [dbRow()]);
+    expect(wiped).toHaveLength(1);
+  });
+
+  test('matches by product_id when the SKU is blank (custom lines)', () => {
+    const db = [dbRow({ sku: '', product_id: 'p-123' })];
+    const client = [{ sku: '', product_id: 'p-123', sizes: {} }];
+    expect(itemsWithWipedQty(client, db)).toHaveLength(1);
+  });
+
+  // ── MUST NOT flag (deliberate, non-lossy edits) ──
+  test('partial reduction (53 → 20) is a normal edit, not a wipe', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], [dbRow()])).toEqual([]);
+  });
+
+  test('replaced slot (different sku now occupies the index) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'OTHER', sizes: {} }], [dbRow()])).toEqual([]);
+  });
+
+  test('quantity moved into est_qty (qty-only conversion) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, est_qty: 53 }], [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, qty_only: true }], [dbRow()])).toEqual([]);
+  });
+
+  test('DB line that never had quantities is never flagged', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], [dbRow({ sizes: {} })])).toEqual([]);
+  });
+
+  test('removed / reindexed slot (no client item at that index) is left to the count guards', () => {
+    expect(itemsWithWipedQty([], [dbRow()])).toEqual([]);
+    // two DB rows, client kept only index 0 with qty — index 1 has no client occupant
+    const db = [dbRow({ item_index: 0 }), dbRow({ item_index: 1, sku: 'B' })];
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], db)).toEqual([]);
+  });
+
+  test('flags only the wiped line in a mixed multi-item save', () => {
+    const db = [dbRow({ item_index: 0, sku: 'A' }), dbRow({ item_index: 1, sku: 'B' })];
+    const client = [{ sku: 'A', sizes: { M: 20 } }, { sku: 'B', sizes: {} }]; // A reduced, B wiped
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0].sku).toBe('B');
+  });
+
+  test('malformed inputs never throw and flag nothing', () => {
+    expect(itemsWithWipedQty(null, [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], null)).toEqual([]);
+    expect(itemsWithWipedQty(undefined, undefined)).toEqual([]);
   });
 });

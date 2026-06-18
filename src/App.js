@@ -19,7 +19,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -1099,7 +1099,7 @@ const _dbSaveEstimateInner = async (est) => {
     // parent and children in independent calls (and letting a failed parent write fall through) is exactly
     // what produced orphaned stub estimates and the cryptic line-item FK error reps were seeing.
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id));
+    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku,name,product_id,sizes,qty_only,est_qty').eq('estimate_id',est.id));
     // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
     // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
     if(_oldEstResp.error){
@@ -1179,6 +1179,23 @@ const _dbSaveEstimateInner = async (est) => {
           if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
           return false;
         }
+      }
+    }
+    // Per-item quantity-wipe guard: block a save that would zero out a surviving line's quantities (same
+    // slot + same sku/product) — the EST-1316 failure, where a 53-unit jersey saved down to sizes:{} and
+    // read $0 everywhere. save_estimate upserts `sizes` verbatim and the count/deco guards above never look
+    // inside a line at its quantities, so an item whose sizes silently emptied (stale snapshot, size-mode
+    // switch, edit side effect) overwrites real units with {} undetected — and since the row is upserted,
+    // never DELETEd, no estimate_items_audit snapshot is written either. Partial reductions, replaced slots,
+    // est_qty/qty-only lines, and removed items (caught by the count guards) are intentionally not flagged.
+    if(oldItemIds.length&&items?.length){
+      const _wiped=itemsWithWipedQty(items,_oldEstItems);
+      if(_wiped.length){
+        const w=_wiped[0];const label=(w.name||'').trim()||w.sku||('item '+w.item_index);
+        console.error('[DB] SAFETY: Blocking estimate save — quantities for "'+label+'" would be wiped ('+w.prevQty+' units → 0) for',est.id);
+        if(_dataLossAlert)_dataLossAlert({kind:'qty_wipe_blocked',soId:est.id,itemIndex:w.item_index,sku:w.sku,prevQty:w.prevQty,reason:'item quantities would be emptied'});
+        if(_dbNotify)_dbNotify('Save blocked — the quantities for "'+label+'" ('+w.prevQty+' units) would be lost. Reload the page to restore them.','error');
+        return false;
       }
     }
     // Atomic estimate save (replaces the old separate estimate-upsert + item/decoration writes): one

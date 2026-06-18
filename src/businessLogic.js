@@ -741,6 +741,48 @@ function itemEditReconciles(clientItems, dbItems) {
   return subset(c, d) || subset(d, c);
 }
 
+// ─── Per-item quantity-wipe detection (data-loss guard helper) ───
+// The item-count / decoration / art-file guards all reason about how many CHILD ROWS exist; none of them
+// looks INSIDE a surviving line at its quantities. The estimate save RPC (save_estimate) upserts each
+// item's `sizes` verbatim, so a line that is still present but whose `sizes` silently emptied — from a
+// stale in-memory snapshot, a size-mode switch, or an edit side effect — overwrites real units with `{}`
+// with nothing to stop it. And because that row is UPSERTed (never DELETEd), no estimate_items_audit
+// snapshot is written either, so the loss is invisible after the fact. (This is the EST-1316 failure: a
+// 53-unit jersey saved down to `sizes:{}`, reading $0 everywhere.)
+//
+// Returns the DB items whose quantities this save would wipe: a line still occupying its slot (matched by
+// item_index, then confirmed to be the SAME line by sku or product_id) whose size total drops from > 0 to
+// 0. Deliberate, non-lossy edits are intentionally NOT flagged: a partial reduction (53 → 20), a replaced
+// slot (different sku/product), an item whose count moved to est_qty, and qty-only / service lines. To
+// remove a line a rep deletes it (caught by the count guards) rather than zeroing every size, so a full
+// in-place wipe is treated as unintended. `clientItems` is indexed by item_index (its array position, the
+// value the save writes); each `dbItems` row carries its own `item_index`.
+function itemsWithWipedQty(clientItems, dbItems) {
+  const out = [];
+  if (!Array.isArray(clientItems) || !Array.isArray(dbItems)) return out;
+  const total = (sizes) => {
+    if (!sizes || typeof sizes !== 'object') return 0;
+    let t = 0;
+    for (const k in sizes) { const n = safeNum(sizes[k]); if (n > 0) t += n; }
+    return t;
+  };
+  dbItems.forEach((db) => {
+    const idx = db && db.item_index;
+    if (typeof idx !== 'number') return;
+    const oldQty = total(db.sizes);
+    if (oldQty <= 0) return;                          // DB line had no quantities — nothing to lose
+    const ci = clientItems[idx];
+    if (!ci) return;                                  // slot removed / reindexed — the count guards cover it
+    const ciSku = String(ci.sku || '').trim();
+    const dbSku = String(db.sku || '').trim();
+    const sameLine = (ciSku && ciSku === dbSku) || (ci.product_id && ci.product_id === db.product_id);
+    if (!sameLine) return;                            // a different line now occupies the slot — deliberate replacement
+    if (ci.qty_only || safeNum(ci.est_qty) > 0) return; // quantity lives in est_qty, not in sizes
+    if (total(ci.sizes) === 0) out.push({ item_index: idx, sku: db.sku, name: db.name, prevQty: oldQty });
+  });
+  return out;
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -757,5 +799,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles,
+  itemEditReconciles, itemsWithWipedQty,
 };
