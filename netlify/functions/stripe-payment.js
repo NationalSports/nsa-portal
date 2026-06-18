@@ -84,9 +84,12 @@ exports.handler = async (event) => {
       }
 
       // Same payer + same invoice(s) + same amount on the same day → same intent
-      // (Stripe replays the original response for ~24h on a matching key).
+      // (Stripe replays the original response for ~24h on a matching key). The leading version token
+      // scopes the key to the current create-params; bump it whenever those params change (e.g.
+      // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
+      // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v2', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({

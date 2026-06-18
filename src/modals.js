@@ -532,11 +532,13 @@ function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
-  const[payType,setPayType]=useState('card');// selected method — surcharge applies to cards only
+  // Default to NO surcharge: the PaymentIntent is created at the base amount, and the 2.9% is added
+  // only when the buyer EXPLICITLY taps the Card tab (payType==='card'), at which point we bump the
+  // intent amount before charging. Link's express surface doesn't fire a usable change event and
+  // hides whether it's bank- or card-funded, so this guarantees a bank/Link payer is never wrongly
+  // surcharged (the complaint). Trade-off: a card paid through Link express skips the fee — fine.
+  const[payType,setPayType]=useState('');// '' until a method is picked; only 'card' is surcharged
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  // Only card payments carry the 2.9% surcharge. Bank/ACH AND Link (which can be bank-funded and
-  // reports its type as 'link', not 'us_bank_account') ride free — better to skip the fee on a
-  // card-funded Link than to wrongly surcharge a bank payment, which is the complaint we're fixing.
   const isCard=payType==='card';
   const fee=isCard?Math.round(amount*_feePct*100)/100:0;
   const total=amount+fee;
@@ -599,8 +601,8 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const[error,setError]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-  const fee=Math.round(totalDue*_feePct*100)/100;
-  const totalCharge=totalDue+fee;
+  // Create the intent at the BASE amount (no surcharge); the checkout form bumps it 2.9% only if the
+  // buyer picks the Card tab — so bank/Link never starts with a fee baked in.
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
   useEffect(()=>{
@@ -623,7 +625,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
             action:'create_intent',
-            amount_cents:Math.round(totalCharge*100),
+            amount_cents:Math.round(totalDue*100),
             customer_name:customerName,
             customer_email:customerEmail,
             invoice_id:invoiceIds,
