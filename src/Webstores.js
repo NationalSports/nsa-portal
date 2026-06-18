@@ -341,7 +341,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes, logoRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
@@ -351,6 +351,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
+      supabase.from('webstore_logos').select('*').eq('store_id', sid).order('created_at'),
     ]);
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
@@ -378,6 +379,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       claims: claimRes.data || [],
       transfers: transferRes.data || [],
       coupons: couponRes.data || [],
+      logos: logoRes.data || [],
     });
     setDetailLoading(false);
   }, []);
@@ -496,6 +498,40 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     const { error } = await supabase.from('webstore_products').update(fields).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Item updated'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // ── Logo & Art Studio ──
+  const addLogo = useCallback(async (row) => {
+    const { error } = await supabase.from('webstore_logos').insert({ store_id: sel.id, ...row });
+    if (error) { flash('Could not save logo: ' + error.message); return; }
+    flash('Logo saved'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const removeLogo = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_logos').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Logo removed'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Apply one decoration (a logo at a placement) to many items at once. Any
+  // existing decoration at the same placement is replaced, so re-applying updates
+  // in place rather than stacking duplicates.
+  const applyLogoToItems = useCallback(async (itemIds, decoration) => {
+    const cat = detail?.catalog || [];
+    for (const id of itemIds) {
+      const item = cat.find((c) => c.id === id);
+      if (!item) continue;
+      const existing = Array.isArray(item.decorations) ? item.decorations : [];
+      const next = existing.filter((d) => d.placement !== decoration.placement).concat([decoration]);
+      await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
+    }
+    flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
+  }, [detail, sel, flash, loadDetail]);
+
+  const setItemDecorations = useCallback(async (itemId, decorations) => {
+    const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', itemId);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
   const updateTransfer = useCallback(async (id, fields) => {
