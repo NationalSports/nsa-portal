@@ -6361,7 +6361,56 @@ export default function App(){
     const defExp=fourWeeks.toISOString().split('T')[0];
     const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
     setESO(so);setESOC(c||null);setPg('orders');return so};
-  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
+  // Re-fetch an estimate's items + decorations from the DB and rebuild the items
+  // array exactly as the main loader does (the estimates map above), so converting
+  // a partially-loaded estimate still carries every per-line decoration.
+  const _refetchEstimateForConvert=async est=>{
+    const{data:rawItems,error:ie}=await supabase.from('estimate_items').select('*').eq('estimate_id',est.id);
+    if(ie)throw ie;
+    const itemIds=(rawItems||[]).map(i=>i.id);
+    let rawDecos=[];
+    if(itemIds.length){
+      const{data:dd,error:de}=await supabase.from('estimate_item_decorations').select('*').in('estimate_item_id',itemIds);
+      if(de)throw de;
+      rawDecos=dd||[];
+    }
+    // Dedup phantom duplicate items per item_index (keep the one with the most
+    // decorations; newest id breaks ties) — mirrors the loader.
+    const _childCount=it=>rawDecos.filter(d=>d.estimate_item_id===it.id).length;
+    const _byIdx=new Map();
+    (rawItems||[]).forEach(it=>{
+      const cur=_byIdx.get(it.item_index);
+      if(!cur){_byIdx.set(it.item_index,it);return;}
+      const a=_childCount(it),b=_childCount(cur);
+      if(a>b||(a===b&&it.id>cur.id))_byIdx.set(it.item_index,it);
+    });
+    const items=[..._byIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      const decorations=rawDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{
+        const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;
+        if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';
+        return rest;
+      });
+      const{id:_,estimate_id:__,item_index:___,...rest}=item;
+      return{...rest,decorations};
+    });
+    return{...est,items,_itemsHydrated:true,_decosHydrated:true};
+  };
+  const convertSO=async est=>{
+    // Auto-heal a partially-loaded estimate before converting. The loader flags
+    // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
+    // estimate_items timed out on the last load — in that state est.items can be
+    // present while their per-line `decorations` arrays are empty, and cloning that
+    // hollow state below would silently produce a sales order with no
+    // so_item_decorations rows (art survives because it's an order-level field; the
+    // new-SO save path's deco-loss guards don't catch it because a brand new SO has
+    // no prior rows to compare against). Re-fetch + rebuild the items so the
+    // decorations carry; fail closed only if the re-fetch can't run.
+    if(est._itemsHydrated===false||est._decosHydrated===false){
+      if(!supabase){nf("This estimate hasn't finished loading — reload the page and try again before converting.",'error');return;}
+      try{est=await _refetchEstimateForConvert(est);}
+      catch(e){console.error('[convertSO] decoration re-fetch failed:',e);nf("Couldn't load this estimate's decorations to convert it — reload the page and try again.",'error');return;}
+    }
+    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
     // Calculate promo amount if promo is applied
