@@ -1254,7 +1254,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
                     </td>
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ background: '#f8fafc', padding: 0 }}>
-                    <CatalogItemEditor item={p} defaultName={stock?.name} designOptions={designOptions} numberSets={numberSets} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                    <CatalogItemEditor item={p} defaultName={stock?.name} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                   </td></tr>}
                   </React.Fragment>
                 );
@@ -1268,7 +1268,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets = [], onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, availableSizes = [], designOptions = [], numberSets = [], onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [name, setName] = useState(item.display_name || '');
   const [price, setPrice] = useState(item.retail_price || 0);
@@ -1289,6 +1289,13 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
+  // Per-store size selection: which of the product's available sizes this store
+  // shows. Default = all on; saving a strict subset hides the rest on the storefront.
+  const allSizes = Array.isArray(availableSizes) ? availableSizes : [];
+  const [offeredSizes, setOfferedSizes] = useState(
+    Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
+  );
+  const toggleSize = (sz) => setOfferedSizes((cur) => cur.includes(sz) ? cur.filter((s) => s !== sz) : [...cur, sz]);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
 
   const addExtraImage = async (e) => {
@@ -1305,6 +1312,9 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
+      // null = every available size (default). Store a subset only when one is set.
+      const _allOn = allSizes.length === 0 || offeredSizes.length === 0 || offeredSizes.length >= allSizes.length;
+      fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));
     }
     onSave(fields);
   };
@@ -1319,6 +1329,27 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
         <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
       </div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here). Shipping labels use the total order weight.</div>
+      {!isBundle && allSizes.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
+            Sizes offered <span style={{ fontWeight: 400, color: '#94a3b8' }}>· tap to toggle (all on by default)</span>
+          </div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+            {allSizes.map((sz) => {
+              const on = offeredSizes.includes(sz);
+              return (
+                <button key={sz} type="button" onClick={() => toggleSize(sz)}
+                  style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>
+                  {sz}
+                </button>
+              );
+            })}
+          </div>
+          {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && (
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>
+          )}
+        </div>
+      )}
       {!isBundle && <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
         <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />

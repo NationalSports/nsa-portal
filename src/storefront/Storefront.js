@@ -386,7 +386,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   if (!p) return <Splash>Product not found.</Splash>;
-  const sizesArr = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  // Honor the store's per-product size selection (sizes_offered); null = all.
+  const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
+  const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
   const nameUp = Number(p.name_upcharge) || 0;
   const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = sizesArr.length > 0;
@@ -405,7 +407,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
     });
     setAdded(true); setTimeout(() => setAdded(false), 1500);
   };
-  const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  const sizes = sizesArr;
   const onHand = effOnHand(p);
   const incoming = isIncoming(p);
   const imgUrl = img === 'back' && p.image_back_url ? p.image_back_url : p.image_front_url;
