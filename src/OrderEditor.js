@@ -1653,7 +1653,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return String(d.kind||'');
     }).sort().join(' | ');};
   // Reorder the line items so items with the same decoration are grouped together.
-  const sortByDeco=()=>{const items=safeItems(o);const next=[...items].map((it,i)=>({it,i})).sort((a,b)=>{const ka=decoSortKey(a.it),kb=decoSortKey(b.it);return ka<kb?-1:ka>kb?1:a.i-b.i}).map(x=>x.it);sv('items',next);setCollapsedItems({});nf('Sorted line items by decoration')};
+  // Jobs and deco POs reference items by array index, so remap those references to the
+  // items' new positions in the same update — otherwise they'd point at the wrong rows.
+  const sortByDeco=()=>{const items=safeItems(o);
+    const entries=items.map((it,i)=>({it,i})).sort((a,b)=>{const ka=decoSortKey(a.it),kb=decoSortKey(b.it);return ka<kb?-1:ka>kb?1:a.i-b.i});
+    if(entries.every((e,i)=>e.i===i)){nf('Already sorted by decoration');return}
+    const remap={};entries.forEach((e,newI)=>{remap[e.i]=newI});
+    const ri=ii=>remap[ii]!=null?remap[ii]:ii;
+    const next=entries.map(e=>e.it);
+    setO(e=>({...e,items:next,
+      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).map(gi=>({...gi,item_idx:ri(gi.item_idx)}))})),
+      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).map(ri)})),
+      updated_at:new Date().toLocaleString()}));
+    setDirty(true);setCollapsedItems({});nf('Sorted line items by decoration')};
   // Collapse / expand controls for the compact line-item view.
   const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
