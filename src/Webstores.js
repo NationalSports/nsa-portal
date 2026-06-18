@@ -4,7 +4,7 @@ import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
-import { CatalogKitStyles, KitScope, DISPLAY, FilterBtn, ShowMore } from './ui/catalogKit';
+import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import { ART_PLACEMENTS } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
@@ -1022,10 +1022,18 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
 
   const parents = cust.filter((c) => !c.parent_id);
   return (
-    <div style={{ maxWidth: 760 }}>
-      <button className="btn btn-sm btn-secondary" onClick={onCancel} style={{ marginBottom: 12 }}>← Cancel</button>
-      <h2 style={{ margin: '0 0 14px' }}>{store ? 'Edit store' : 'New store'}</h2>
-      {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{error}</div>}
+    <div className="ws-form" style={{ maxWidth: 780, fontFamily: BODY, color: '#191919', paddingBottom: 8 }}>
+      <CatalogKitStyles />
+      <style>{`
+        .ws-form .form-input,.ws-form .form-select,.ws-form textarea{width:100%;box-sizing:border-box;border:1px solid #e2e6ec;border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;color:#191919;background:#fff;outline:none;transition:border-color .12s,box-shadow .12s}
+        .ws-form .form-input::placeholder,.ws-form textarea::placeholder{color:#aab1bd}
+        .ws-form .form-input:focus,.ws-form .form-select:focus,.ws-form textarea:focus{border-color:#191919;box-shadow:0 0 0 3px rgba(25,25,25,.07)}
+        .ws-form .form-select{cursor:pointer;appearance:auto}
+      `}</style>
+      <button onClick={onCancel} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e2e6ec', borderRadius: 9, padding: '7px 13px', fontSize: 13, fontWeight: 700, color: '#3A4150', cursor: 'pointer', marginBottom: 16 }}>← Back</button>
+      <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
+      <div style={{ color: '#6A7180', fontSize: 13.5, marginTop: 5, marginBottom: 18 }}>{store ? 'Update this store’s setup.' : 'Set up the store — you’ll add products and artwork after it’s created.'}</div>
+      {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
 
       <Section title="Basics">
         <Row label="Store name"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="Tartan FC Team Store" /></Row>
@@ -1103,9 +1111,9 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         <Row label="Hero blurb"><textarea className="form-input" rows={2} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official Tartan FC team store — gear up for the season!" /></Row>
       </Section>
 
-      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-        <button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? 'Saving…' : store ? 'Save changes' : 'Create store'}</button>
-        <button className="btn btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button>
+      <div style={{ position: 'sticky', bottom: 0, background: 'rgba(247,248,250,.92)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '14px 0', display: 'flex', gap: 10, marginTop: 10 }}>
+        <button disabled={busy} onClick={submit} style={{ background: busy ? '#6A7180' : '#191919', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : store ? 'Save changes' : 'Create store'}</button>
+        <button disabled={busy} onClick={onCancel} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>Cancel</button>
       </div>
     </div>
   );
@@ -1115,7 +1123,7 @@ function ColorField({ label, value, onChange, fallback }) {
   const v = value || fallback;
   return (
     <div style={{ marginBottom: 12 }}>
-      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: '#64748b' }}>{label}</label>
+      <label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback} onChange={(e) => onChange(e.target.value)} style={{ width: 44, height: 38, padding: 0, border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', background: 'none' }} />
         <input className="form-input" style={{ width: 120 }} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={fallback} />
@@ -1125,18 +1133,21 @@ function ColorField({ label, value, onChange, fallback }) {
 }
 
 function Section({ title, children }) {
-  return <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
-    <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, marginBottom: 12 }}>{title}</div>
-    {children}
-  </div></div>;
+  return <div style={{ background: '#fff', border: '1px solid #eef0f3', borderRadius: 14, marginBottom: 14, boxShadow: '0 1px 2px rgba(16,24,40,.04)' }}>
+    <div style={{ padding: '13px 18px', borderBottom: '1px solid #f3f4f7', fontFamily: DISPLAY, fontWeight: 800, fontSize: 14.5, textTransform: 'uppercase', letterSpacing: '.06em', color: '#191919' }}>{title}</div>
+    <div style={{ padding: 18 }}>{children}</div>
+  </div>;
 }
 function Row({ label, children }) {
-  return <div style={{ marginBottom: 12, flex: 1 }}><label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: '#64748b' }}>{label}</label>{children}</div>;
+  return <div style={{ marginBottom: 14, flex: 1 }}><label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>{children}</div>;
 }
 function Toggle({ label, checked, onChange }) {
-  return <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', cursor: 'pointer', fontSize: 13 }}>
-    <input type="checkbox" checked={!!checked} onChange={(e) => onChange(e.target.checked)} style={{ width: 16, height: 16 }} />{label}
-  </label>;
+  return <div role="switch" aria-checked={!!checked} onClick={() => onChange(!checked)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '7px 0', cursor: 'pointer', fontSize: 13.5, color: '#3A4150', userSelect: 'none' }}>
+    <span style={{ position: 'relative', width: 38, height: 22, borderRadius: 999, background: checked ? '#166534' : '#cbd5e1', transition: 'background .15s', flexShrink: 0 }}>
+      <span style={{ position: 'absolute', top: 2, left: checked ? 18 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .15s', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
+    </span>
+    <span>{label}</span>
+  </div>;
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
