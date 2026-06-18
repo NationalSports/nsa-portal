@@ -1,28 +1,25 @@
 // supabase/functions/coach-store-submit/index.ts
-// ─────────────────────────────────────────────────────────
-// A coach builds a team store in their (public) portal and submits it for
-// approval. The portal is link-gated, not auth-gated, so this function is the
-// real guard: it runs with the service role and re-validates EVERYTHING the
-// client sent before writing anything.
-//
-//  • Identity   — the customer must exist and its alpha_tag must match the
-//                 portal link the coach is using.
-//  • Pool       — every chosen item must belong to the allowed pool: a staff
-//                 template's items if a template_id is given, otherwise the
-//                 coach_store_config allow-list (brands/categories).
-//  • Pricing    — prices/fundraising are taken from the template/config on the
-//                 SERVER and re-applied, so a tampered client price is ignored.
-//  • Stock      — anything not in stock right now (in-house OR vendor) is dropped.
-//
-// On success it inserts a webstores row as status='draft', created_via='coach'
-// (so staff can review and publish it from the admin builder) plus its products.
-// ─────────────────────────────────────────────────────────
+// A coach builds a team store in their (public, link-gated) portal and submits
+// it for approval. This function runs with the service role and re-validates
+// everything the client sent before writing:
+//   - Identity: the customer must exist and its alpha_tag must match the link.
+//   - Pool: every item must be in the allowed pool (a template's items if a
+//     template_id is given, else the coach_store_config allow-list).
+//   - Pricing: prices/fundraising are taken from the server, so a tampered
+//     client price is ignored; the coach fundraise is clamped to the cap.
+//   - Stock: anything not in stock right now (in-house OR vendor) is dropped.
+// On success it inserts a draft store (created_via='coach') plus its products,
+// then best-effort emails staff that there's a submission to review.
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY") || "";
+// Ops inbox to alert on every coach submission. The rep (passed as notify_to by
+// the portal) is also alerted; if neither resolves, we just skip the email.
+const NOTIFY_EMAIL = Deno.env.get("COACH_STORE_NOTIFY_EMAIL") || "";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -35,6 +32,31 @@ const str = (v: unknown) => (typeof v === "string" ? v : "").trim();
 
 function slugify(s: string): string {
   return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team-store";
+}
+
+const esc = (s: string) => String(s || "").replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c] as string));
+
+// Best-effort staff alert when a coach submits a store. Never throws - a failed
+// email must not fail the submission (the admin badge is the durable signal).
+async function notifyStaff(teamName: string, storeName: string, count: number, extraRecipients: string[]) {
+  if (!BREVO_API_KEY) return;
+  const to = [...new Set([NOTIFY_EMAIL, ...extraRecipients].map((e) => (e || "").trim()).filter((e) => e.includes("@")))];
+  if (!to.length) return;
+  const html = `<p>A coach just submitted a team store for approval.</p>
+<ul><li><b>Team:</b> ${esc(teamName)}</li><li><b>Store:</b> ${esc(storeName)}</li><li><b>Items:</b> ${count}</li></ul>
+<p>Open the Webstores admin and look for the amber &ldquo;Coach submission &mdash; review&rdquo; badge to set shipping &amp; sale dates and publish it.</p>`;
+  try {
+    await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json", "api-key": BREVO_API_KEY },
+      body: JSON.stringify({
+        sender: { name: "NSA Store Builder", email: "noreply@nationalsportsapparel.com" },
+        to: to.map((email) => ({ email })),
+        subject: `New coach store to review: ${storeName}`,
+        htmlContent: html,
+      }),
+    });
+  } catch (_) { /* best-effort */ }
 }
 
 serve(async (req: Request) => {
@@ -55,10 +77,17 @@ serve(async (req: Request) => {
     if (!name) return bad("Please name your store.");
     if (!productIds.length) return bad("Pick at least one item for your store.");
 
-    // 1) Identity — the alpha_tag the portal was opened with must match the team.
+    // 1) Identity - the alpha_tag the portal was opened with must match the team.
     const { data: cust } = await admin.from("customers").select("id,alpha_tag,name").eq("id", customerId).maybeSingle();
     if (!cust) return bad("We couldn't find your team.");
     if (str(cust.alpha_tag).toLowerCase() !== alphaTag.toLowerCase()) return bad("This store link doesn't match your team.");
+
+    // Coach pool config (loaded once - also gives us the fundraise cap on both paths).
+    const { data: cfg } = await admin.from("coach_store_config").select("*").eq("id", 1).maybeSingle();
+    const fundCap = Number.isFinite(Number(cfg?.max_fundraise)) ? Number(cfg?.max_fundraise) : 25;
+    // Store-wide per-item fundraise the coach asked for, clamped to the cap.
+    // 0 (or unset) = leave each item's own/template fundraise untouched.
+    const coachFund = Math.min(Math.max(0, Number(body?.fundraise) || 0), fundCap);
 
     // 2) Allowed pool + LOCKED prices (server-authoritative).
     type Locked = { retail_price: number; fundraise_amount: number; sku: string | null; display_name: string | null; image_url: string | null; takes_number: boolean; takes_name: boolean; name_upcharge: number };
@@ -80,7 +109,6 @@ serve(async (req: Request) => {
         });
       }
     } else {
-      const { data: cfg } = await admin.from("coach_store_config").select("*").eq("id", 1).maybeSingle();
       const brands: string[] = cfg?.allowed_brands || [];
       const cats: string[] = cfg?.allowed_categories || [];
       const dFund = Number(cfg?.default_fundraise) || 0;
@@ -102,7 +130,7 @@ serve(async (req: Request) => {
     let chosen = productIds.filter((id) => allowed.has(id));
     if (!chosen.length) return bad("None of the selected items are available for self-serve stores.");
 
-    // 3) In-stock enforcement — drop anything with nothing on hand right now
+    // 3) In-stock enforcement - drop anything with nothing on hand right now
     //    (in-house warehouse OR vendor). Coaches never get to list dead stock.
     const skuById = new Map<string, string | null>();
     for (const id of chosen) skuById.set(id, allowed.get(id)!.sku);
@@ -144,13 +172,16 @@ serve(async (req: Request) => {
       return {
         store_id: store.id, product_id: id, sku: a.sku, kind: "single",
         display_name: a.display_name, image_url: a.image_url,
-        retail_price: a.retail_price, fundraise_amount: a.fundraise_amount,
+        retail_price: a.retail_price, fundraise_amount: coachFund > 0 ? coachFund : a.fundraise_amount,
         takes_number: a.takes_number, takes_name: a.takes_name, name_upcharge: a.name_upcharge,
         sort_order: i, active: true,
       };
     });
     const { error: pErr } = await admin.from("webstore_products").insert(rows);
     if (pErr) return bad(`Your store was created but items couldn't be added: ${pErr.message}`, { store_id: store.id });
+
+    const notifyExtra: string[] = Array.isArray(body?.notify_to) ? body.notify_to.map((x: any) => (typeof x === "string" ? x : x?.email)).filter(Boolean) : [];
+    await notifyStaff(cust.name || alphaTag, name, rows.length, notifyExtra);
 
     return ok({ store_id: store.id, slug: store.slug, count: rows.length, dropped: productIds.length - rows.length });
   } catch (e) {
