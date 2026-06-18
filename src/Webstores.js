@@ -341,7 +341,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes, logoRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
@@ -351,7 +351,6 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
-      supabase.from('webstore_logos').select('*').eq('store_id', sid).order('created_at'),
     ]);
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
@@ -368,6 +367,20 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     const orders = ordRes.data || [];
     const orderIds = new Set(orders.map((o) => o.id));
     const stockByWp = {}; (stockRes.data || []).forEach((s) => { stockByWp[s.webstore_product_id] = s; });
+    // Customer art LIBRARY (+ parent-customer cascade) — the source for the Art
+    // panel. Staff-readable; applied art is denormalized onto items so the public
+    // storefront never needs to read it.
+    let libraryArt = [];
+    if (store.customer_id) {
+      const { data: cust } = await supabase.from('customers').select('id,parent_id,art_files,alpha_tag,name').eq('id', store.customer_id).maybeSingle();
+      const own = (cust?.art_files || []).map((a) => ({ ...a, _src: 'library', _srcLabel: 'Team library', _srcCustId: cust.id }));
+      let parentArt = [];
+      if (cust?.parent_id) {
+        const { data: par } = await supabase.from('customers').select('art_files,alpha_tag,name').eq('id', cust.parent_id).maybeSingle();
+        parentArt = (par?.art_files || []).map((a) => ({ ...a, _src: 'parent', _srcLabel: (par?.alpha_tag || par?.name || 'Parent') + ' library', _srcCustId: cust.parent_id }));
+      }
+      libraryArt = [...own, ...parentArt].filter((a) => !a.archived);
+    }
     setDetail({
       catalog,
       costByPid,
@@ -379,7 +392,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       claims: claimRes.data || [],
       transfers: transferRes.data || [],
       coupons: couponRes.data || [],
-      logos: logoRes.data || [],
+      libraryArt,
     });
     setDetailLoading(false);
   }, []);
@@ -501,16 +514,23 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   }, [sel, flash, loadDetail]);
 
   // ── Logo & Art Studio ──
-  const addLogo = useCallback(async (row) => {
-    const { error } = await supabase.from('webstore_logos').insert({ store_id: sel.id, ...row });
-    if (error) { flash('Could not save logo: ' + error.message); return; }
-    flash('Logo saved'); loadDetail(sel);
-  }, [sel, flash, loadDetail]);
-
-  const removeLogo = useCallback(async (id) => {
-    const { error } = await supabase.from('webstore_logos').delete().eq('id', id);
-    if (error) { flash('Error: ' + error.message); return; }
-    flash('Logo removed'); loadDetail(sel);
+  // Save a recolored logo variant back onto the owning customer's art-library
+  // record (customers.art_files[].variants) so it's reusable on future store and
+  // order mockups — keyed by a color label, de-duped on re-save.
+  const saveArtVariant = useCallback(async (customerId, artId, variant) => {
+    if (!customerId || !artId) return null;
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+    const arts = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const next = arts.map((a) => {
+      if (a.id !== artId) return a;
+      const variants = Array.isArray(a.variants) ? a.variants : [];
+      const rest = variants.filter((v) => (v.label || '').toLowerCase() !== (variant.label || '').toLowerCase());
+      return { ...a, variants: [...rest, variant] };
+    });
+    const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', customerId);
+    if (error) { flash('Could not save variant: ' + error.message); return null; }
+    flash('Logo variant saved to library'); loadDetail(sel);
+    return variant;
   }, [sel, flash, loadDetail]);
 
   // Apply one decoration (a logo at a placement) to many items at once. Any
@@ -787,6 +807,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
+          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} />
@@ -1071,7 +1092,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
@@ -1094,6 +1115,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
   const TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
+    { id: 'art', label: 'Art & Logos' },
     { id: 'orders', label: `Orders (${orders.length})` },
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
@@ -1154,6 +1176,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -1992,6 +2015,174 @@ function AiMatchCard({ p, on, onToggle }) {
         </div>
       </div>
     </button>
+  );
+}
+
+// ── Art & Logos ── Pull from the customer's art library, see every colorway of
+// a style at once, recolor the logo per garment color (saved back to the library
+// as a reusable variant), and apply to many items in one click. Applied art is
+// written to webstore_products.decorations so the storefront can render the mock.
+const ART_PLACEMENTS = [
+  { id: 'left_chest', label: 'Left chest', x: 67, y: 33, w: 20 },
+  { id: 'full_front', label: 'Full front', x: 50, y: 46, w: 50 },
+  { id: 'full_back', label: 'Full back', x: 50, y: 44, w: 54 },
+  { id: 'left_sleeve', label: 'L. sleeve', x: 83, y: 58, w: 13 },
+  { id: 'right_sleeve', label: 'R. sleeve', x: 17, y: 58, w: 13 },
+  { id: 'center', label: 'Center', x: 50, y: 50, w: 38 },
+];
+const artImgUrl = (art) => {
+  if (!art) return null;
+  const cands = [art.preview_url, ...((art.mockup_files || []).map((f) => f?.url)), ...((art.files || []).map((f) => f?.url))].filter(Boolean);
+  return cands.find((u) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(u)) || null;
+};
+const artSourceUrl = (art) => (art?.files || []).map((f) => f?.url).find(Boolean) || artImgUrl(art) || null;
+const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
+const hexRgb = (hex) => { const h = (hex || '#000').replace('#', ''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; };
+const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly'];
+const guessDark = (name) => { const s = (name || '').toLowerCase(); return DARK_WORDS.some((w) => s.includes(w)); };
+const cssTint = (choice) => choice === 'white' ? 'brightness(0) invert(1)' : choice === 'black' ? 'brightness(0)' : 'none';
+
+// Recolor a logo to a single solid color, returning an uploadable Blob.
+// SVG: force every fill/stroke to the color. PNG/raster: tint opaque pixels.
+async function recolorToBlob(url, hex) {
+  if (isSvg(url)) {
+    let txt = await fetch(url).then((r) => r.text());
+    txt = txt
+      .replace(/fill:\s*#[0-9a-fA-F]{3,6}/g, `fill:${hex}`).replace(/fill="#[0-9a-fA-F]{3,6}"/g, `fill="${hex}"`)
+      .replace(/stroke:\s*#[0-9a-fA-F]{3,6}/g, `stroke:${hex}`).replace(/stroke="#[0-9a-fA-F]{3,6}"/g, `stroke="${hex}"`);
+    return new Blob([txt], { type: 'image/svg+xml' });
+  }
+  const img = await new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+  const c = document.createElement('canvas'); c.width = img.naturalWidth || 400; c.height = img.naturalHeight || 400;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+  const d = ctx.getImageData(0, 0, c.width, c.height); const px = d.data; const [r, g, b] = hexRgb(hex);
+  for (let i = 0; i < px.length; i += 4) { if (px[i + 3] > 8) { px[i] = r; px[i + 1] = g; px[i + 2] = b; } }
+  ctx.putImageData(d, 0, 0);
+  return await new Promise((res) => c.toBlob(res, 'image/png'));
+}
+
+function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorations, onSaveArtVariant }) {
+  const singles = (catalog || []).filter((c) => c.kind === 'single');
+  const [activeId, setActiveId] = useState(libraryArt[0]?.id || null);
+  const [placement, setPlacement] = useState('left_chest');
+  const [excluded, setExcluded] = useState(() => new Set());
+  const [colorByItem, setColorByItem] = useState({}); // item id -> 'original' | 'white' | 'black'
+  const [applying, setApplying] = useState(false);
+  const [done, setDone] = useState('');
+
+  const activeArt = libraryArt.find((a) => a.id === activeId) || null;
+  const activeUrl = artImgUrl(activeArt);
+  const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
+
+  // Group store items into styles, each with its colorways.
+  const groups = [];
+  { const m = new Map();
+    for (const it of singles) {
+      const st = stockByWp[it.id] || {};
+      const key = (it.display_name || st.name || it.sku || '').toUpperCase();
+      let g = m.get(key);
+      if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
+      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, color: st.color || '', decorations: it.decorations || [] });
+    }
+  }
+  const choiceOf = (item) => colorByItem[item.id] || (guessDark(item.color) ? 'white' : 'original');
+  const setChoice = (id, c) => setColorByItem((m) => ({ ...m, [id]: c }));
+  const toggleItem = (id) => setExcluded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const includedItems = singles.filter((it) => !excluded.has(it.id));
+
+  const apply = async () => {
+    if (!activeArt || !activeUrl) return;
+    setApplying(true); setDone('');
+    try {
+      const custId = activeArt._srcCustId;
+      // Group the included items by their color choice so each recolor uploads once.
+      const byChoice = { original: [], white: [], black: [] };
+      for (const it of includedItems) byChoice[choiceOf(it)]?.push(it.id);
+      const variantCache = {}; // choice -> art_url
+      for (const choice of ['original', 'white', 'black']) {
+        const ids = byChoice[choice]; if (!ids.length) continue;
+        let artUrl = activeUrl;
+        if (choice !== 'original') {
+          const hex = choice === 'white' ? '#ffffff' : '#000000';
+          const blob = await recolorToBlob(activeUrl, hex);
+          const ext = isSvg(activeUrl) ? 'svg' : 'png';
+          const file = new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${choice}.${ext}`, { type: blob.type });
+          artUrl = await cloudUpload(file, 'nsa-store-art');
+          variantCache[choice] = artUrl;
+          // Save the recolored logo back to the library for reuse on future mocks.
+          if (custId && onSaveArtVariant) await onSaveArtVariant(custId, activeArt.id, { label: choice === 'white' ? 'White' : 'Black', color: hex, art_url: artUrl, source: activeUrl });
+        }
+        await onApplyLogo(ids, { art_id: activeArt.id, art_url: artUrl, source_url: artSourceUrl(activeArt), placement, color_label: choice });
+      }
+      setDone(`Applied to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}.`);
+    } catch (e) { setDone('Error: ' + (e.message || e)); }
+    setApplying(false);
+  };
+
+  if (!libraryArt.length) {
+    return <div className="card"><div style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+      No art in this team's library yet. Add artwork to the customer's art library (it's shared with order artwork), then it'll show here to apply to the store.
+    </div></div>;
+  }
+
+  return (
+    <div>
+      {/* Library picker + placement */}
+      <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, marginBottom: 8 }}>1 · Pick a logo</div>
+        <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+          {libraryArt.map((a) => { const u = artImgUrl(a); const on = a.id === activeId; return (
+            <button key={a.id} onClick={() => setActiveId(a.id)} title={a.name} style={{ flex: '0 0 auto', width: 96, border: on ? '2px solid #191919' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
+              <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+                {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700 }}>{(a.files || [])[0] ? 'AI / no preview' : 'No art'}</span>}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
+              <div style={{ fontSize: 9.5, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.4 }}>{a._srcLabel}</div>
+            </button>
+          ); })}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Placement</span>
+          {ART_PLACEMENTS.map((p) => (
+            <button key={p.id} onClick={() => setPlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
+          ))}
+        </div>
+        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600 }}>This logo has no PNG/SVG preview (likely .ai only). Add a PNG or SVG version to its library record to mock and recolor it.</div>}
+      </div></div>
+
+      {/* Colorway boards */}
+      <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, margin: '4px 2px 10px' }}>3 · Place on every colorway — recolor the logo per garment, then apply</div>
+      {groups.map((g) => (
+        <div key={g.key} className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>{g.name} <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>· {g.items.length} color{g.items.length === 1 ? '' : 's'}</span></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
+            {g.items.map((item) => { const ch = choiceOf(item); const inc = !excluded.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
+              <div key={item.id} style={{ border: inc ? '1px solid #e2e8f0' : '1px dashed #cbd5e1', borderRadius: 10, padding: 8, opacity: inc ? 1 : 0.5, background: '#fff' }}>
+                <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
+                  {item.img ? <img src={item.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
+                  {activeUrl && inc && <img src={activeUrl} alt="" style={{ position: 'absolute', left: `${place.x}%`, top: `${place.y}%`, width: `${place.w}%`, transform: 'translate(-50%,-50%)', filter: cssTint(ch), pointerEvents: 'none' }} />}
+                  <button onClick={() => toggleItem(item.id)} title={inc ? 'Exclude' : 'Include'} style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: 6, border: 'none', cursor: 'pointer', background: inc ? '#191919' : 'rgba(255,255,255,.9)', color: '#fff', fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }}>{inc ? '✓' : ''}</button>
+                  {has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
+                </div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, marginTop: 6 }}>{item.color || '—'}</div>
+                <div style={{ display: 'flex', gap: 4, marginTop: 5 }}>
+                  {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => (
+                    <button key={c} onClick={() => setChoice(item.id, c)} style={{ flex: 1, fontSize: 10.5, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: ch === c ? '1px solid #191919' : '1px solid #d1d5db', background: ch === c ? '#191919' : '#fff', color: ch === c ? '#fff' : '#475569' }}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+            ); })}
+          </div>
+        </div></div>
+      ))}
+
+      {/* Sticky apply bar */}
+      <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12 }}>
+        {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
+        <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'} · {place.label}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+        <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : `Apply logo to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}`}</button>
+      </div>
+    </div>
   );
 }
 
