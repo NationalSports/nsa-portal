@@ -6,6 +6,7 @@ import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
+import { ART_PLACEMENTS } from './lib/artPlacements';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -2022,14 +2023,6 @@ function AiMatchCard({ p, on, onToggle }) {
 // a style at once, recolor the logo per garment color (saved back to the library
 // as a reusable variant), and apply to many items in one click. Applied art is
 // written to webstore_products.decorations so the storefront can render the mock.
-const ART_PLACEMENTS = [
-  { id: 'left_chest', label: 'Left chest', x: 67, y: 33, w: 20 },
-  { id: 'full_front', label: 'Full front', x: 50, y: 46, w: 50 },
-  { id: 'full_back', label: 'Full back', x: 50, y: 44, w: 54 },
-  { id: 'left_sleeve', label: 'L. sleeve', x: 83, y: 58, w: 13 },
-  { id: 'right_sleeve', label: 'R. sleeve', x: 17, y: 58, w: 13 },
-  { id: 'center', label: 'Center', x: 50, y: 50, w: 38 },
-];
 const artImgUrl = (art) => {
   if (!art) return null;
   const cands = [art.preview_url, ...((art.mockup_files || []).map((f) => f?.url)), ...((art.files || []).map((f) => f?.url))].filter(Boolean);

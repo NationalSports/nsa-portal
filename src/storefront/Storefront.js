@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+import { placementById } from '../lib/artPlacements';
 
 const STRIPE_PK = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
 let _stripePromise = null;
@@ -305,6 +306,16 @@ function bundleBadge(count) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
+// Applied logo art (from webstore_products.decorations) composited on the
+// garment image at its placement — the on-screen mock shoppers see.
+function DecoOverlay({ decorations }) {
+  if (!Array.isArray(decorations)) return null;
+  return <>{decorations.filter((d) => d && d.art_url).map((d, i) => {
+    const pl = placementById(d.placement);
+    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
+  })}</>;
+}
+
 function BundleCollage({ comps, theme }) {
   const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
   if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
@@ -351,6 +362,7 @@ function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
           : p.image_front_url
             ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <Placeholder theme={theme} label={p.name || store.name} />}
+        {!isBundle && <DecoOverlay decorations={p.decorations} />}
       </div>
       {/* Count chip for packages — reinforces "this is multiple items" */}
       {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
@@ -417,8 +429,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
       <BackLink store={store} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 44, alignItems: 'start' }}>
         <div>
-          <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
+            {img !== 'back' && <DecoOverlay decorations={p.decorations} />}
           </div>
           {p.image_back_url && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
