@@ -7,6 +7,7 @@ import { NSA } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import { ART_PLACEMENTS } from './lib/artPlacements';
+import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -534,6 +535,43 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     return variant;
   }, [sel, flash, loadDetail]);
 
+  // Save Quick Mock Builder output for a store: (1) merge the mocks/files/scenes
+  // back onto the customer's shared art library (so order mockups can reuse them),
+  // and (2) set each store item's image to its baked mock so the storefront shows it.
+  const saveStoreMocks = useCallback(async ({ mocksByGarment, filesByLocation, sceneByGarment }, artIds, customerId) => {
+    const _u = (f) => typeof f === 'string' ? f : (f?.url || '');
+    if (customerId && (artIds || []).length) {
+      const { data: cust } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+      const arts = Array.isArray(cust?.art_files) ? cust.art_files : [];
+      const next = arts.map((a) => {
+        if (!artIds.includes(a.id)) return a;
+        const upd = { ...a };
+        const locFiles = (filesByLocation || {})[a.id] || [];
+        if (locFiles.length) { const have = new Set((a.files || []).map(_u)); upd.files = [...(a.files || []), ...locFiles.filter((f) => !have.has(_u(f)))]; }
+        const im = {}; Object.entries(mocksByGarment || {}).forEach(([k, arr]) => { if (arr && arr.length) im[k] = arr.map((m) => ({ ...m, art_file_id: a.id })); });
+        if (Object.keys(im).length) upd.item_mockups = { ...(a.item_mockups || {}), ...im };
+        if (sceneByGarment && Object.keys(sceneByGarment).length) upd.qm_scenes = { ...(a.qm_scenes || {}), ...sceneByGarment };
+        return upd;
+      });
+      const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', customerId);
+      if (error) flash('Could not save to library: ' + error.message);
+    }
+    const cat = detail?.catalog || []; const sbw = detail?.stockByWp || {};
+    let applied = 0;
+    for (const [key, arr] of Object.entries(mocksByGarment || {})) {
+      if (!arr || !arr.length) continue;
+      const sep = key.indexOf('|'); const sku = sep >= 0 ? key.slice(0, sep) : key; const color = sep >= 0 ? key.slice(sep + 1) : '';
+      const front = arr.find((m) => !m.side || m.side === 'front') || arr[0];
+      if (!front || !front.url) continue;
+      const item = cat.find((c) => c.sku === sku && (sbw[c.id]?.color || '') === color) || cat.find((c) => c.sku === sku);
+      // The baked mock becomes the item image; clear any overlay decoration so the
+      // logo isn't stamped twice (baked + CSS overlay).
+      if (item) { await supabase.from('webstore_products').update({ image_url: front.url, decorations: [] }).eq('id', item.id); applied++; }
+    }
+    flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
+    loadDetail(sel);
+  }, [detail, sel, flash, loadDetail]);
+
   // Apply one decoration (a logo at a placement) to many items at once. Any
   // existing decoration at the same placement is replaced, so re-applying updates
   // in place rather than stacking duplicates.
@@ -808,7 +846,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant}
+          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} />
@@ -1093,8 +1131,9 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onFlash, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
+  const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -1131,6 +1170,20 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
   // product_id -> available sizes, for the order editor's size dropdown.
   const availSizes = {};
   Object.values(stockByWp).forEach((s) => { if (s.product_id && Array.isArray(s.available_sizes)) availSizes[s.product_id] = s.available_sizes; });
+
+  // ── Quick Mock Builder inputs (store items as garments, OWN library art as layers) ──
+  const _qmOwnArt = (detail?.libraryArt || []).filter((a) => a._src === 'library');
+  const _qmU = (f) => typeof f === 'string' ? f : (f && f.url) || '';
+  const _qmIsImg = (u) => /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u || '');
+  const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
+  const qmLocations = _qmOwnArt.map((a) => {
+    const urls = [a.preview_url, ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
+    const files = []; const seen = new Set();
+    urls.forEach((u) => { if (!u || seen.has(u) || !_qmIsImg(u)) return; seen.add(u); files.push({ name: (u.split('/').pop() || 'art').split('?')[0], url: u, preview: { url: u } }); });
+    return { artFileId: a.id, name: a.name || 'Logo', position: '', existingFiles: (a.files || []), files, preview: files[0] ? files[0].preview : null, garmentKeys: [] };
+  });
+  const qmInitialMocks = {}; const qmInitialScene = {};
+  _qmOwnArt.forEach((a) => { Object.entries(a.item_mockups || {}).forEach(([k, arr]) => { if (arr && arr.length) qmInitialMocks[k] = [...(qmInitialMocks[k] || []), ...arr]; }); Object.entries(a.qm_scenes || {}).forEach(([k, objs]) => { if (objs && objs.length && !qmInitialScene[k]) qmInitialScene[k] = objs; }); });
 
   return (
     <>
@@ -1177,7 +1230,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmOwnArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -1187,6 +1240,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
+      {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} nf={(m) => onFlash && onFlash(m)}
+        onClose={() => setShowMock(false)}
+        onSave={async (payload) => { if (onSaveMocks) await onSaveMocks(payload, _qmOwnArt.map((a) => a.id), s.customer_id); setShowMock(false); }} />}
     </>
   );
 }
@@ -2054,7 +2110,7 @@ async function recolorToBlob(url, hex) {
   return await new Promise((res) => c.toBlob(res, 'image/png'));
 }
 
-function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorations, onSaveArtVariant }) {
+function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(libraryArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -2120,7 +2176,11 @@ function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorati
 
   return (
     <div>
-      {/* Library picker + placement */}
+      <button onClick={onOpenMockBuilder} disabled={!canMock} title={canMock ? 'Open the full mock builder' : 'Needs library art and at least one store item'} style={{ width: '100%', textAlign: 'left', border: 'none', cursor: canMock ? 'pointer' : 'not-allowed', background: canMock ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff', borderRadius: 12, padding: '14px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
+        <span style={{ fontSize: 13, fontWeight: 800, background: 'rgba(255,255,255,.18)', border: '1px solid rgba(255,255,255,.35)', borderRadius: 9, padding: '9px 15px', whiteSpace: 'nowrap' }}>Open →</span>
+      </button>
+      {/* Library picker + placement (quick decoration overlay path) */}
       <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, marginBottom: 8 }}>1 · Pick a logo</div>
         <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
