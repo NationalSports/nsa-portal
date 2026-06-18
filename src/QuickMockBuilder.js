@@ -309,7 +309,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       const set = new Set();
       const walk = o => { if (typeof o.getObjects === 'function') { o.getObjects().forEach(walk); return; } [o.fill, o.stroke].forEach(c => { if (c && c !== 'transparent' && c !== '') { const hx = fabricColorToHex(c); if (hx) set.add(hx.toLowerCase()); } }); };
       walk(obj);
-      return [...set].slice(0, 12);
+      const vout = []; [...set].forEach(hx => { const rgb = hexToRgb(hx); if (vout.length < 6 && !vout.some(o => rgbDist(hexToRgb(o), rgb) < 42)) vout.push(hx); }); return vout;
     }
     try {
       const el = obj.getElement();
@@ -329,11 +329,14 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         bk.count++; bk.r += d[i]; bk.g += d[i + 1]; bk.b += d[i + 2];
       }
       if (!total) return [];
-      const reps = Object.values(buckets).filter(b => b.count / total >= 0.02)
-        .sort((a, b) => b.count - a.count).slice(0, 8)
+      // Only colors that cover a meaningful share of the art, most-used first,
+      // then collapse near-duplicates hard so the picker shows a few clean swatches
+      // (a logo's real ink colors) instead of dozens of anti-aliased near-greys.
+      const reps = Object.values(buckets).filter(b => b.count / total >= 0.045)
+        .sort((a, b) => b.count - a.count).slice(0, 14)
         .map(b => '#' + [b.r, b.g, b.b].map(s => Math.round(s / b.count).toString(16).padStart(2, '0')).join(''));
       const out = [];
-      reps.forEach(hx => { const rgb = hexToRgb(hx); if (!out.some(o => rgbDist(hexToRgb(o), rgb) < 40)) out.push(hx); });
+      reps.forEach(hx => { const rgb = hexToRgb(hx); if (out.length < 6 && !out.some(o => rgbDist(hexToRgb(o), rgb) < 58)) out.push(hx); });
       return out;
     } catch (e) { return []; }
   };
@@ -374,6 +377,14 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       }
       ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll(); done();
     } catch (e) { nf && nf('Could not recolor this art — try re-placing it', 'error'); }
+  };
+
+  // Native eyedropper — sample any color straight off the artwork (or anywhere on
+  // screen) and target it for recolor, instead of hunting through swatches.
+  const eyedrop = async () => {
+    if (typeof window === 'undefined' || !window.EyeDropper) { nf && nf('This browser has no eyedropper — pick a swatch instead (try Chrome or Edge)', 'error'); return; }
+    try { const res = await new window.EyeDropper().open(); if (res && res.sRGBHex) setPickedColor(res.sRGBHex.toLowerCase()); }
+    catch (_) { /* user cancelled */ }
   };
 
   // Detect the art's colors whenever an art layer is selected, so the user can pick
@@ -651,20 +662,34 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
                   <Icon name="trash" size={11} /> Delete
                 </button>
-                <div style={{display: 'flex', alignItems: 'center', gap: 4}} title="Pick which color of the logo to change, then pick what to change it to.">
-                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600}}>Change:</span>
-                  <button onClick={() => setPickedColor(null)} title="Recolor the whole design" style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid ' + (!pickedColor ? '#7c3aed' : '#cbd5e1'), background: !pickedColor ? '#ede9fe' : '#fff', color: !pickedColor ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 600}}>All</button>
-                  {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 8; return <button key={c} onClick={() => setPickedColor(c)} title={'Change this color (' + c + ')'} style={{width: 18, height: 18, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0, border: sel ? '2px solid #7c3aed' : '1px solid #cbd5e1', boxShadow: sel ? '0 0 0 2px #ede9fe' : 'none'}} />; })}
-                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600, marginLeft: 4}}>to:</span>
-                  <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
-                  <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
-                  <input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 22, height: 20, padding: 0, border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer', background: '#fff'}} />
-                  <button onClick={() => recolorActive(null, true)} disabled={!pickedColor} title={pickedColor ? 'Remove this color (make it transparent)' : 'Pick a color above first, then remove it'} style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid #cbd5e1', background: pickedColor ? '#fff' : '#f1f5f9', color: pickedColor ? '#b91c1c' : '#94a3b8', cursor: pickedColor ? 'pointer' : 'not-allowed', fontWeight: 600, marginLeft: 2}}>Remove</button>
-                </div>
                 <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
                 </button>
               </div>
+
+              {/* Recolor — a roomy two-step picker: choose a color in the logo (or
+                  eyedrop it straight off the art), then change it. */}
+              {artColors.length > 0 ? (
+                <div style={{background: '#faf9ff', border: '1px solid #ede9fe', borderRadius: 10, padding: '11px 13px', marginBottom: 10}}>
+                  <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
+                    <span style={{fontSize: 11, fontWeight: 800, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 0.5}}>Recolor</span>
+                    <span style={{fontSize: 12.5, color: '#475569', fontWeight: 700}}>1 · Pick a color</span>
+                    <button onClick={() => setPickedColor(null)} title="Recolor the whole design at once" style={{fontSize: 11.5, padding: '5px 12px', borderRadius: 999, border: '1px solid ' + (!pickedColor ? '#7c3aed' : '#cbd5e1'), background: !pickedColor ? '#ede9fe' : '#fff', color: !pickedColor ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 700}}>Whole design</button>
+                    {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 12; return <button key={c} onClick={() => setPickedColor(c)} title={c} style={{width: 32, height: 32, borderRadius: 9, background: c, cursor: 'pointer', padding: 0, border: sel ? '3px solid #7c3aed' : '1px solid #cbd5e1', boxShadow: sel ? '0 0 0 3px #ede9fe' : 'none'}} />; })}
+                    <button onClick={eyedrop} title="Eyedropper — click any color in the artwork" style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, padding: '6px 12px', borderRadius: 999, border: '1px solid #cbd5e1', background: '#fff', color: '#475569', cursor: 'pointer'}}><span aria-hidden="true" style={{fontSize: 14, lineHeight: 1}}>🎯</span> Eyedropper</button>
+                  </div>
+                  <div style={{display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap'}}>
+                    <span style={{fontSize: 12.5, color: '#475569', fontWeight: 700}}>2 · Change {pickedColor ? 'it' : 'everything'} to</span>
+                    <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 30, height: 30, borderRadius: 9, background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                    <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 30, height: 30, borderRadius: 9, background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                    <label style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: '#475569', cursor: 'pointer'}}>Custom<input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 34, height: 28, padding: 0, border: '1px solid #cbd5e1', borderRadius: 7, cursor: 'pointer', background: '#fff'}} /></label>
+                    {pickedColor && <span style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', fontWeight: 600}}>targeting<span style={{width: 16, height: 16, borderRadius: 4, background: pickedColor, border: '1px solid #cbd5e1'}} />{pickedColor}</span>}
+                    <button onClick={() => recolorActive(null, true)} disabled={!pickedColor} title={pickedColor ? 'Make this color transparent' : 'Pick a color first'} style={{fontSize: 11.5, padding: '6px 12px', borderRadius: 999, border: '1px solid ' + (pickedColor ? '#fecaca' : '#e2e8f0'), background: pickedColor ? '#fff' : '#f8fafc', color: pickedColor ? '#b91c1c' : '#94a3b8', cursor: pickedColor ? 'pointer' : 'not-allowed', fontWeight: 700, marginLeft: 'auto'}}>Remove color</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{fontSize: 12, color: '#94a3b8', marginBottom: 10, fontWeight: 600}}>Tip: click a placed logo on the garment to recolor it.</div>
+              )}
               <div
                 onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('canvas'); }}
                 onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'canvas' ? null : d); }}
