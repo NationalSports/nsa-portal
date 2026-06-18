@@ -532,10 +532,13 @@ function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
-  const[payType,setPayType]=useState('card');// selected method — bank/ACH is surcharge-free, cards aren't
+  const[payType,setPayType]=useState('card');// selected method — surcharge applies to cards only
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  const isBank=payType==='us_bank_account';
-  const fee=isBank?0:Math.round(amount*_feePct*100)/100;
+  // Only card payments carry the 2.9% surcharge. Bank/ACH AND Link (which can be bank-funded and
+  // reports its type as 'link', not 'us_bank_account') ride free — better to skip the fee on a
+  // card-funded Link than to wrongly surcharge a bank payment, which is the complaint we're fixing.
+  const isCard=payType==='card';
+  const fee=isCard?Math.round(amount*_feePct*100)/100:0;
   const total=amount+fee;
 
   const handleSubmit=async(e)=>{
@@ -573,9 +576,9 @@ function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
       <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
-      {isBank
-        ?<div style={{display:'flex',justifyContent:'space-between',color:'#16a34a'}}><span>Bank payment — no processing fee</span><span>$0.00</span></div>
-        :<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>}
+      {isCard
+        ?<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>
+        :<div style={{display:'flex',justifyContent:'space-between',color:'#16a34a'}}><span>No processing fee</span><span>$0.00</span></div>}
       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
     </div>
     <div style={{display:'flex',gap:8}}>
