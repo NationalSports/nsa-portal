@@ -1946,11 +1946,17 @@ const _dbSaveCustomer = async (c) => {
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     let{error:custErr}=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'}));
     if(custErr){
-      // Retry without art_files (00027) and search_tags (00085) which may not exist on un-migrated DBs.
-      const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags');
-      const retry=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'}));
-      if(retry.error){if(_isAuthError(retry.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
-      else{console.warn('[DB] customer saved without optional columns (run latest migrations)')}
+      // A missing OPTIONAL column (search_tags 00085, art_files 00027) fails the WHOLE upsert on an
+      // un-migrated DB. Strip optional columns one at a time, dropping art_files LAST — otherwise a
+      // missing search_tags column also strips art_files, silently losing customer-library artwork
+      // (the "Add Art does nothing" bug: the art never persists, then a realtime reload wipes it).
+      const _optional=['search_tags','art_files'];let _saved=false;
+      for(let _n=1;_n<=_optional.length&&!_saved;_n++){
+        const _drop=new Set(_optional.slice(0,_n));
+        const _r=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols.filter(c2=>!_drop.has(c2))),{onConflict:'id'}));
+        if(!_r.error){_saved=true;console.warn('[DB] customer saved without '+[..._drop].join(', ')+' (run latest migrations)')}
+        else if(_n===_optional.length){if(_isAuthError(_r.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',_r.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+_r.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+_r.error.message,'error');return false}
+      }
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
     if(contacts?.length){
@@ -6991,6 +6997,8 @@ export default function App(){
   const[coachForm,setCoachForm]=useState({email:'',name:'',customer_id:null,q:''});
   const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
   const CATALOG_COLOR_HEX={Black:'#191919',White:'#FFFFFF',Grey:'#9AA1AC',Navy:'#1B2A4A',Royal:'#2148C7',Blue:'#3B82F6',Red:'#C8102E',Maroon:'#6B1F2A',Orange:'#EA580C',Gold:'#C9A227',Yellow:'#EAB308',Green:'#15803D',Purple:'#6D28D9',Pink:'#EC4899',Brown:'#7C4A21'};
+  // Catalog brands an account can be locked to (must match CATALOG_BRANDS in src/storefront/AdidasInventory.js). Empty = all brands.
+  const CATALOG_BRANDS=['Adidas','Under Armour','Nike'];
   const loadCoachAccts=()=>{if(!supabase)return;supabase.from('coach_accounts').select('*').order('created_at',{ascending:false}).then(r=>{if(!r.error)setCoachAccts(r.data||[]);else{setCoachAccts([]);nf('Coach accounts: '+r.error.message,'error')}})};
   useEffect(()=>{if(coachAcctsOpen)loadCoachAccts()},[coachAcctsOpen]);// eslint-disable-line react-hooks/exhaustive-deps
   const sendCoachInvite=async(email,name,custId)=>{
@@ -7022,6 +7030,15 @@ export default function App(){
     const{error}=await supabase.from('customers').update({school_colors:next.length?next:null}).eq('id',custId);
     if(error){nf(error.message,'error');setCust(prev=>prev.map(c=>c.id===custId?{...c,school_colors:cur}:c))}
   };
+  // Brand access: none selected = all brands; otherwise this account's coaches only see these brands in the catalog. Saved immediately to the customer.
+  const toggleAllowedBrand=async(custId,b)=>{
+    const c2=cust.find(c=>c.id===custId);
+    const cur=Array.isArray(c2?.allowed_brands)?c2.allowed_brands:[];
+    const next=cur.includes(b)?cur.filter(x=>x!==b):[...cur,b];
+    setCust(prev=>prev.map(c=>c.id===custId?{...c,allowed_brands:next}:c));
+    const{error}=await supabase.from('customers').update({allowed_brands:next.length?next:null}).eq('id',custId);
+    if(error){nf(error.message,'error');setCust(prev=>prev.map(c=>c.id===custId?{...c,allowed_brands:cur}:c))}
+  };
   const renderCoachAcctsModal=()=>coachAcctsOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCoachAcctsOpen(false)}>
     <div style={{background:'white',borderRadius:14,maxWidth:820,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
@@ -7048,7 +7065,7 @@ export default function App(){
       <div style={{padding:'6px 22px 18px'}}>
         {coachAccts===null&&<div className="empty" style={{padding:20}}>Loading…</div>}
         {coachAccts&&coachAccts.length===0&&<div className="empty" style={{padding:20}}>No coach accounts yet</div>}
-        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const sc=(c2&&Array.isArray(c2.school_colors))?c2.school_colors:[];
+        {(coachAccts||[]).map(a=>{const c2=cust.find(x=>x.id===a.customer_id);const sc=(c2&&Array.isArray(c2.school_colors))?c2.school_colors:[];const ab=(c2&&Array.isArray(c2.allowed_brands))?c2.allowed_brands:[];
           return<div key={a.id} style={{borderBottom:'1px solid #f1f5f9',padding:'10px 0',display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap',opacity:a.status==='active'?1:.55}}>
             <div style={{flex:'1 1 200px',minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700}}>{a.name||a.email}</div>
@@ -7060,6 +7077,12 @@ export default function App(){
                 {CATALOG_COLOR_FAMILIES.map(fam=>{const on=sc.includes(fam);return<button key={fam} title={fam} onClick={()=>toggleSchoolColor(a.customer_id,fam)} style={{display:'inline-flex',alignItems:'center',gap:3,border:'1px solid '+(on?'#191919':'#e2e8f0'),background:on?'#191919':'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'2px 7px',fontSize:10,fontWeight:600,cursor:'pointer'}}>
                   <span style={{width:10,height:10,borderRadius:'50%',background:CATALOG_COLOR_HEX[fam],border:'1px solid rgba(0,0,0,.15)',display:'inline-block',flexShrink:0}}/>{fam}
                 </button>})}
+              </div>
+            </div>
+            <div style={{flex:'1 1 200px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.3,marginBottom:4}}>Brands {ab.length?'('+ab.length+' of '+CATALOG_BRANDS.length+')':'— all'}</div>
+              <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                {CATALOG_BRANDS.map(b=>{const on=ab.includes(b);return<button key={b} onClick={()=>toggleAllowedBrand(a.customer_id,b)} style={{border:'1px solid '+(on?'#191919':'#e2e8f0'),background:on?'#191919':'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'2px 9px',fontSize:10,fontWeight:600,cursor:'pointer'}}>{b}</button>})}
               </div>
             </div>
             <div style={{display:'flex',gap:6}}>
@@ -7464,6 +7487,16 @@ export default function App(){
         if(picks.length===0)return;                     // never set up for a stock pull
         if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
         const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        // Only sizes the warehouse actually pulled against can come up "short on pull". Every size that was
+        // on the IF leaves a key on the pulled pick line (even when 0 were found, e.g. {L:0}); a size the
+        // order now asks for that no pulled pick ever carried was ADDED after the pull finished. Increasing
+        // a line's quantities/sizes after its IF closed isn't a stock shortfall — it's new demand the normal
+        // ordering flow handles — so don't compare it against the old pull. Skip the line when that happens,
+        // otherwise a post-pull edit raises a phantom "Short on pull — Create PO" alert for units the
+        // warehouse was never asked to pull.
+        const pulledSizeKeys=new Set();
+        picks.forEach(pk=>Object.keys(pk).forEach(k=>{if(SZ_ORD.includes(k))pulledSizeKeys.add(k)}));
+        if(szKeys.some(sz=>(it.sizes[sz]||0)>0&&!pulledSizeKeys.has(sz)))return; // line edited after its pull → not a short
         const short={};let shortTot=0;
         szKeys.forEach(sz=>{
           const ordered=it.sizes[sz]||0;if(ordered<=0)return;
@@ -11691,7 +11724,7 @@ export default function App(){
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vk==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name})}>
-              🔍 Preview SanMar API Submit (dry-run)
+              🚀 Submit SanMar Order (API)
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
               Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
@@ -12875,7 +12908,13 @@ export default function App(){
       return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
-    // Filters
+    // Filters. The status and aging chips always apply. The rep filter is the one exception: when the
+    // user has typed a search term we skip it, so searching an invoice number or customer name finds
+    // the match no matter which rep owns it. Without this, the "My Invoices" default rep filter
+    // silently hid invoices owned by a teammate, so an exact INV-#### search returned "No invoices
+    // match filters" even though the invoice existed (e.g. INV-1086, owned by Jered — invisible to
+    // everyone else who searched for it).
+    const _invSearch=(invF.search||'').trim().toLowerCase();
     if(invF.status==='open')fi=fi.filter(i=>i.status==='open'||i.status==='partial');
     else if(invF.status==='paid')fi=fi.filter(i=>i.status==='paid');
     if(invF.aging==='30')fi=fi.filter(i=>i._age>=1&&i._age<=30&&i.status!=='paid');
@@ -12883,9 +12922,8 @@ export default function App(){
     else if(invF.aging==='90')fi=fi.filter(i=>i._age>=61&&i._age<=90&&i.status!=='paid');
     else if(invF.aging==='120')fi=fi.filter(i=>i._age>90&&i.status!=='paid');
     else if(invF.aging==='overdue')fi=fi.filter(i=>i._overdue);
-    const invRepId=invF.rep==='_me_'?cu?.id:invF.rep;
-    if(invRepId&&invRepId!=='all')fi=fi.filter(i=>i._rep===invRepId);
-    if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||i._cname.toLowerCase().includes(s))}
+    if(!_invSearch){const invRepId=invF.rep==='_me_'?cu?.id:invF.rep;if(invRepId&&invRepId!=='all')fi=fi.filter(i=>i._rep===invRepId);}
+    if(_invSearch)fi=fi.filter(i=>(i.id||'').toLowerCase().includes(_invSearch)||(i.memo||'').toLowerCase().includes(_invSearch)||i._cname.toLowerCase().includes(_invSearch));
 
     // Sort
     fi.sort((a,b)=>{let va,vb;

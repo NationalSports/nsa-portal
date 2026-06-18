@@ -66,7 +66,11 @@ exports.handler = async () => {
     for (let t = 0; t < tries; t++) {
       try {
         const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+          method: 'POST',
+          // Server-to-server: the proxy is now staff-only, so present the shared
+          // internal secret (the proxy accepts it in lieu of a user JWT).
+          headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_FUNCTION_SECRET || sbKey },
+          body: JSON.stringify(body || {}),
         });
         const j = await res.json().catch(() => ({}));
         if (!res.ok || j.error) throw new Error(service + '/' + action + ': ' + (j.error || res.status));

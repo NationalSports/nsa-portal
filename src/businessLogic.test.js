@@ -912,22 +912,36 @@ describe('Job Building', () => {
     expect(jobs[0].total_units).toBe(10);
   });
 
-  test('items with different decoration sets create separate jobs', () => {
+  test('items with different art create separate jobs', () => {
     const so = makeSO({
       items: [
         makeSOItem({ sku: 'ITEM-1', sizes: { S: 5 }, decorations: [
           { kind: 'art', art_file_id: 'af1', position: 'Front' },
-          { kind: 'art', art_file_id: 'af1', position: 'Back' },
         ] }),
         makeSOItem({ sku: 'ITEM-2', sizes: { M: 10 }, decorations: [
-          { kind: 'art', art_file_id: 'af1', position: 'Front' },
+          { kind: 'art', art_file_id: 'af2', position: 'Front' },
         ] }),
+      ],
+      art_files: [makeArtFile(), makeArtFile({ id: 'af2', name: 'Logo 2' })],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(2);
+  });
+
+  test('the same art on different items/positions consolidates into one job', () => {
+    const so = makeSO({
+      items: [
+        makeSOItem({ sku: 'I1', sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Left Chest' }] }),
+        makeSOItem({ sku: 'I2', sizes: { M: 7 }, decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }] }),
       ],
       art_files: [makeArtFile()],
       jobs: [],
     });
     const jobs = buildJobs(so);
-    expect(jobs).toHaveLength(2);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(12);
+    expect(jobs[0].items.map(i => i.item_idx).sort()).toEqual([0, 1]);
   });
 
   test('no_deco items are skipped', () => {
@@ -1017,8 +1031,9 @@ describe('Split Art', () => {
     expect(b.total_units).toBe(18); // 6 + 12
     expect(a.items[0].sizes).toEqual({ S: 4, M: 8 });
     expect(b.items[0].sizes).toEqual({ S: 6, M: 12 });
-    expect(a.split_group).toBe('sg1');
-    expect(b.split_group).toBe('sg1');
+    // The split group now lives PER ITEM (a consolidated art job can span several split lines), not on the job.
+    expect(a.items[0].split_group).toBe('sg1');
+    expect(b.items[0].split_group).toBe('sg1');
     expect(a.art_name).toBe('Friars');
     expect(b.art_name).toBe('Servite');
   });
@@ -1098,8 +1113,62 @@ describe('Split Art', () => {
     expect(c.items[0].sizes).toEqual({ S: 3, M: 4 });
     // Each design is its own single-art job, and the line is counted exactly once.
     expect(jobs.every(j => (j._art_ids || []).length === 1)).toBe(true);
-    expect([a, b, c].every(j => j.split_group === 'sg9')).toBe(true);
+    expect([a, b, c].every(j => j.items[0].split_group === 'sg9')).toBe(true);
     expect(jobs.reduce((sum, j) => sum + j.total_units, 0)).toBe(24);
+  });
+
+  test('the same split design across multiple lines consolidates into one job (plus a standalone copy)', () => {
+    const so = makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' })],
+      items: [
+        makeSOItem({ sku: 'L0', sizes: { M: 10 }, decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sgA', split_sizes: { M: 6 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sgA', split_sizes: { M: 4 } },
+        ] }),
+        makeSOItem({ sku: 'L1', sizes: { M: 11 }, decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sgB', split_sizes: { M: 5 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sgB', split_sizes: { M: 6 } },
+        ] }),
+        makeSOItem({ sku: 'L2', sizes: { M: 8 }, decorations: [{ kind: 'art', art_file_id: 'afA', position: 'Front Center' }] }),
+      ],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(2); // one Friars job, one Servite job — not five
+    const friars = jobs.find(j => j.art_file_id === 'afA');
+    const servite = jobs.find(j => j.art_file_id === 'afB');
+    expect(friars.items.map(i => i.item_idx).sort()).toEqual([0, 1, 2]);
+    expect(friars.total_units).toBe(6 + 5 + 8);
+    expect(servite.items.map(i => i.item_idx).sort()).toEqual([0, 1]);
+    expect(servite.total_units).toBe(4 + 6);
+    // Each split item keeps its OWN line's split group for receipt apportioning; the standalone has none.
+    expect(friars.items.find(i => i.item_idx === 0).split_group).toBe('sgA');
+    expect(friars.items.find(i => i.item_idx === 1).split_group).toBe('sgB');
+    expect('split_group' in friars.items.find(i => i.item_idx === 2)).toBe(false);
+  });
+
+  test('a consolidated art job apportions shared split lines without double-counting receipts', () => {
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', art_file_id: 'afA', split_group: null, items: [
+          { item_idx: 0, sizes: { M: 6 }, split_group: 'sgA', fulfilled: 0 },
+          { item_idx: 1, sizes: { M: 5 }, split_group: 'sgB', fulfilled: 0 },
+        ], total_units: 11, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', art_file_id: 'afB', split_group: null, items: [
+          { item_idx: 0, sizes: { M: 4 }, split_group: 'sgA', fulfilled: 0 },
+          { item_idx: 1, sizes: { M: 6 }, split_group: 'sgB', fulfilled: 0 },
+        ], total_units: 10, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [
+      makeSOItem({ sizes: { M: 10 }, po_lines: [{ po_id: 'PO-1', received: { M: 10 } }] }), // line 0 fully received
+      makeSOItem({ sizes: { M: 11 }, po_lines: [{ po_id: 'PO-2', received: { M: 5 } }] }),  // line 1 partial (5 of 11)
+    ];
+    const [a, b] = recalcJobFulfillment(so, items);
+    expect(a.fulfilled_units).toBe(6 + 5); // 11
+    expect(b.fulfilled_units).toBe(4 + 0); // 4
+    expect(a.items[0].fulfilled + b.items[0].fulfilled).toBe(10); // line 0 counted once
+    expect(a.items[1].fulfilled + b.items[1].fulfilled).toBe(5);  // line 1 counted once
   });
 
   test('three-way split partitions partial receipts across all siblings — no double-count', () => {

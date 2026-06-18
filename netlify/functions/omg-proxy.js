@@ -1,5 +1,11 @@
 // Netlify serverless function to proxy OMG API calls (avoids CORS)
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
+  // Staff-only: this proxy injects the company OMG API token.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+
   const OMG_API_KEY = process.env.OMG_API_KEY;
   if (!OMG_API_KEY) {
     return { statusCode: 500, body: JSON.stringify({ error: 'OMG_API_KEY not configured' }) };

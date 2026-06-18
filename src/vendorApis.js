@@ -5,13 +5,14 @@
 import { NSA } from './constants';
 import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { authFetch } from './utils';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -263,7 +264,7 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -803,7 +804,7 @@ const sanmarApiCall = async (service, action, params = {}) => {
   try {
     const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
     const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -845,6 +846,30 @@ const testSanMarConnection = async () => {
   catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
 };
 
+// Submit a built PromoStandards PO payload (from buildSanMarPOPayload in sanmarPO.js)
+// to SanMar. The proxy injects credentials server-side and POSTs the sendPO SOAP
+// envelope. `env` selects the SanMar endpoint:
+//   'test' — onboarding/validation TEST host (no goods ship)
+//   'prod' — LIVE production host (ships real goods)
+// Defaults to 'test' so an accidental call can never place a real order — a caller
+// that means to go live must pass 'prod' explicitly. Resolves to
+// { ok, env, transactionId, orderNumber }; throws Error(<SanMar message>) on failure.
+const sanmarSubmitPO = async (payload, env = 'test') => {
+  const qs = `service=po&action=sendPO&env=${encodeURIComponent(env)}`;
+  const response = await fetch(`/.netlify/functions/sanmar-proxy?${qs}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || !data.transactionId) {
+    console.error('[SanMar] sendPO failed:', data.error || response.status, data.raw || '');
+    throw new Error(data.error || `SanMar sendPO failed (HTTP ${response.status})`);
+  }
+  console.log(`[SanMar] sendPO ok (${env}):`, data.transactionId);
+  return data;
+};
+
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
@@ -852,7 +877,7 @@ const ssApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -893,7 +918,7 @@ const richardsonApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -1157,4 +1182,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
