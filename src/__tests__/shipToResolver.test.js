@@ -26,7 +26,7 @@ describe('resolveOrderShipTo', () => {
     const altEntry = getAddrs(customer).find(a => a.label.startsWith('Coach House'));
     expect(altEntry).toBeTruthy();
     const sel = resolveOrderShipTo({ ship_to_id: altEntry.id }, customer);
-    expect(sel).toEqual({ name: 'Coach House', street: '6 Passaflora Ln', city: 'Mission Viejo', state: 'CA', zip: '92694' });
+    expect(sel).toEqual({ name: 'Coach House', attention: '', street: '6 Passaflora Ln', city: 'Mission Viejo', state: 'CA', zip: '92694' });
   });
 
   test('ignores alt ids that belong to a different customer or are out of range', () => {
