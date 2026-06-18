@@ -196,7 +196,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO, cu, linkedSO, products }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode, onOpenSO, cu, linkedSO, products, msgTagIds = [], focusOrderId, onFocusHandled }) {
   // Ship-to-school stores are bulk-delivered to the club; no per-player labels.
   const shipToSchool = deliveryMode === 'deliver_school';
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
@@ -385,7 +385,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7),
       entity_type: 'webstore_order', entity_id: String(o.id), so_id: o.so_id || null,
       author_id: (cu && cu.id) || null, author: (cu && cu.name) || storeName || 'NSA Team',
-      text, ts: now.toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true, tagged_members: [],
+      text, ts: now.toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true, tagged_members: msgTagIds || [],
     };
     const { error } = await supabase.from('messages').insert(row);
     if (error) { setMsgBusy(null); flash('Could not send message: ' + error.message, 'err'); return; }
@@ -408,6 +408,17 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     setOrders((os) => os.map((x) => x.id === o.id ? { ...x, messages: (x.messages || []).map((m) => idList.includes(m.id) ? { ...m, read_by_staff: true } : m) } : x));
     try { await supabase.from('messages').update({ read_by_staff: true }).in('id', idList); } catch {}
   };
+  // Deep-link from the Messages inbox: expand the targeted order, clear its
+  // unread badge, and scroll it into view once orders have loaded.
+  useEffect(() => {
+    if (!focusOrderId) return;
+    const o = orders.find((x) => String(x.id) === String(focusOrderId));
+    if (!o) return; // orders may still be loading; this re-runs when they arrive
+    setExpanded(o.id);
+    markThreadRead(o);
+    setTimeout(() => { try { const el = document.getElementById('omg-order-' + o.id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {} }, 150);
+    onFocusHandled && onFocusHandled();
+  }, [focusOrderId, orders]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The 'Shipping' box shows how many of a line go out (defaults to full qty);
   // reducing it records the remainder as short (missing_qty = qty − shipping).
@@ -839,7 +850,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                     const di = draftIdxByNum ? draftIdxByNum[String(o.omg_order_number)] : null;
                     return (
                       <React.Fragment key={o.id}>
-                        <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#e7ecf3' : '#fff', cursor: 'pointer' }} onClick={() => { const opening = !isOpen; setExpanded(isOpen ? null : o.id); if (opening) markThreadRead(o); }}>
+                        <tr id={'omg-order-' + o.id} style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#e7ecf3' : '#fff', cursor: 'pointer' }} onClick={() => { const opening = !isOpen; setExpanded(isOpen ? null : o.id); if (opening) markThreadRead(o); }}>
                           <td style={td} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggleSelId(o.id)} /></td>
                           <td style={{ ...td, width: 24, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                           <td style={td}>{o.omg_order_number}</td>

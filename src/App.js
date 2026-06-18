@@ -5301,7 +5301,7 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgFocusOrder,setOmgFocusOrder]=useState(null);const[wsoCtx,setWsoCtx]=useState({});const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
   // Order counts keyed by OMG sale code — loaded from webstore_orders when the OMG page is visited.
   // This picks up orders that were imported via the player report upload in the Parent Order Portal.
   const[omgWsoCounts,setOmgWsoCounts]=useState({});
@@ -5318,6 +5318,22 @@ export default function App(){
       setOmgWsoCounts(byCode);
     })();
   },[pg,omgStores.length]);// eslint-disable-line
+  // Resolve context (buyer · order # · store) for customer-order messages so the
+  // Messages inbox can show who/what and deep-link to the order. entity_id is the
+  // webstore_order id; map it → store → its OMG store (by shared sale code).
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const ids=[...new Set((msgs||[]).filter(m=>m.entity_type==='webstore_order'&&m.entity_id).map(m=>String(m.entity_id)))].filter(id=>!wsoCtx[id]);
+    if(!ids.length)return;
+    (async()=>{
+      const{data:ords}=await supabase.from('webstore_orders').select('id,buyer_name,omg_order_number,store_id').in('id',ids);
+      if(!ords?.length)return;
+      const storeIds=[...new Set(ords.map(o=>o.store_id).filter(Boolean))];
+      const{data:wss}=storeIds.length?await supabase.from('webstores').select('id,omg_sale_code,name').in('id',storeIds):{data:[]};
+      const wsById={};(wss||[]).forEach(w=>{wsById[w.id]=w});
+      setWsoCtx(prev=>{const next={...prev};ords.forEach(o=>{const ws=wsById[o.store_id]||{};const omg=omgStores.find(s=>s._omg_sale_code&&s._omg_sale_code===ws.omg_sale_code);next[String(o.id)]={buyer:o.buyer_name||'',orderNo:o.omg_order_number||'',storeId:o.store_id,saleCode:ws.omg_sale_code||'',storeName:(omg&&omg.store_name)||ws.name||'',omgStoreId:omg&&omg.id};});return next;});
+    })();
+  },[msgs,omgStores]);// eslint-disable-line
   // Live completion status reported up from the Parent Order Portal for the
   // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
   // the Create Sales Order button at the bottom of the store detail.
@@ -7747,10 +7763,10 @@ export default function App(){
         </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')}</span>
+                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
@@ -16013,6 +16029,7 @@ export default function App(){
       const custArtById=_artLib.byId;
       const setStoreCustomer=(cid)=>{const cc=cid?cust.find(x=>x.id===cid):null;const upd={...s,customer_id:cid||null,...(cc?.primary_rep_id?{rep_id:cc.primary_rep_id}:{})};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const setStoreRep=(rid)=>{const upd={...s,rep_id:rid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const setStoreCsr=(cid)=>{const upd={...s,csr_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       // ── Pre-flight gates for creating the Sales Order ─────────────────
       // Everything below the page must be complete before the SO can be pulled.
@@ -16229,6 +16246,10 @@ export default function App(){
                 · <select value={s.rep_id||''} onChange={e=>setStoreRep(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:s.rep_id?'#0f172a':'#dc2626',background:'white',cursor:'pointer'}}>
                     <option value="">⚠ No rep assigned</option>
                     {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                · <span title="Customer-order messages route to the CSR (or the rep if no CSR)">CSR </span><select value={s.csr_id||''} onChange={e=>setStoreCsr(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:'#0f172a',background:'white',cursor:'pointer'}}>
+                    <option value="">— none —</option>
+                    {REPS.filter(r=>(r.role==='csr'||r.role==='rep'||r.role==='admin')&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}{r.role==='csr'?'':' ('+r.role+')'}</option>)}
                   </select> · {s.id}
               </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
@@ -16683,7 +16704,7 @@ export default function App(){
             so backordered sizes hold their parents back. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} cu={cu} linkedSO={sos.find(x=>x.omg_store_id===s.id)||null} products={prod} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} cu={cu} linkedSO={sos.find(x=>x.omg_store_id===s.id)||null} products={prod} msgTagIds={[s.csr_id||s.rep_id].filter(Boolean)} focusOrderId={omgFocusOrder} onFocusHandled={()=>setOmgFocusOrder(null)} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))} onOpenSO={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 
@@ -25712,8 +25733,9 @@ export default function App(){
       if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
       // Customer order replies live in the OMG portal (full order context: items,
-      // customer, SO, store) where staff reply & re-email the parent.
-      else if(eType==='webstore_order'){setPg('omg')}
+      // customer, SO, store) where staff reply & re-email the parent. Deep-link
+      // straight to that store + order so its expanded row (and thread) opens.
+      else if(eType==='webstore_order'){const ctx=wsoCtx[String(eId)];const store=ctx&&ctx.omgStoreId&&omgStores.find(s=>s.id===ctx.omgStoreId);if(store){setOmgSel(store);setOmgFocusOrder(String(eId))}setPg('omg')}
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
     const openThread=(m)=>{
@@ -25780,16 +25802,16 @@ export default function App(){
     {/* Message list */}
     <div className="card" style={{flex:mThread?'0 0 45%':'1',transition:'flex 0.2s'}}><div className="card-body" style={{padding:0}}>
       {topConvos.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
-      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
+      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
         return<div key={c.key} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:openKey===c.key?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
-          onClick={()=>openThread(m)}>
+          onClick={()=>{if(m.entity_type==='webstore_order'){openThread(m);navigateToEntity(m)}else openThread(m)}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
             <div style={{width:40,height:40,borderRadius:20,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,flexShrink:0}}>{isTagged?'@':(lastAuthor?.name||'?')[0]}</div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
                 <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
-                <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
-                {c2&&<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{c2.name}</span>}
+                <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{wctx?('#'+(wctx.orderNo||'order')):(m.entity_id||m.so_id)}</span>
+                {wctx?<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{[wctx.buyer,wctx.storeName].filter(Boolean).join(' · ')||'Customer order'}<span style={{color:'#2563eb',fontWeight:700}}> ↗</span></span>:(c2&&<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{c2.name}</span>)}
                 {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{c.last.ts}</span>

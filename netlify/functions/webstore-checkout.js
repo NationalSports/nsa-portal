@@ -417,21 +417,30 @@ async function postMessage(sb, body) {
   const tagged = [];
   let notifyEmail = null, notifyName = '';
   try {
-    const { data: store } = await sb.from('webstores').select('id,name,rep_id').eq('id', order.store_id).maybeSingle();
-    const repId = store && store.rep_id;
-    if (repId) {
-      tagged.push(String(repId));
+    const { data: store } = await sb.from('webstores').select('id,name,rep_id,csr_id,omg_sale_code').eq('id', order.store_id).maybeSingle();
+    let repId = store && store.rep_id;
+    let csrId = store && store.csr_id;
+    // OMG stores carry their CSR/rep on omg_stores; the webstore is just a
+    // mirror, so resolve through the shared sale code.
+    if (store && store.omg_sale_code) {
+      const { data: omg } = await sb.from('omg_stores').select('rep_id,csr_id').eq('_omg_sale_code', store.omg_sale_code).maybeSingle();
+      if (omg) { if (omg.rep_id) repId = omg.rep_id; if (omg.csr_id) csrId = omg.csr_id; }
+    }
+    // No direct CSR? Fall back to the rep's primary CSR assignment.
+    if (!csrId && repId) {
       const { data: asn } = await sb.from('rep_csr_assignments').select('csr_id,is_primary,is_active').eq('rep_id', repId);
       const active = (asn || []).filter((a) => a.is_active !== false);
-      const csrId = (active.find((a) => a.is_primary) || active[0] || {}).csr_id;
-      if (csrId) tagged.push(String(csrId));
-      // Prefer the CSR's email, else the rep's.
-      const ids = [csrId, repId].filter(Boolean).map(String);
-      if (ids.length) {
-        const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
-        const pick = (people || []).find((p) => String(p.id) === String(csrId)) || (people || []).find((p) => String(p.id) === String(repId));
-        if (pick && pick.email) { notifyEmail = pick.email; notifyName = pick.full_name || ''; }
-      }
+      csrId = (active.find((a) => a.is_primary) || active[0] || {}).csr_id || null;
+    }
+    // Route to the CSR if there is one, else the rep.
+    if (csrId) tagged.push(String(csrId));
+    else if (repId) tagged.push(String(repId));
+    // Notify email: prefer the CSR's, else the rep's.
+    const ids = [csrId, repId].filter(Boolean).map(String);
+    if (ids.length) {
+      const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
+      const pick = (people || []).find((p) => String(p.id) === String(csrId)) || (people || []).find((p) => String(p.id) === String(repId));
+      if (pick && pick.email) { notifyEmail = pick.email; notifyName = pick.full_name || ''; }
     }
     var storeName = (store && store.name) || 'your store';
   } catch (e) { var storeName = 'your store'; }
