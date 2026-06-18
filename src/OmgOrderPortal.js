@@ -912,7 +912,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                     const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const short = ship < qty;
                                     return (
                                       <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
-                                        <td style={td}>{i.name || i.sku || '—'}</td>
+                                        <td style={td}>{i.name || i.sku || '—'}{t.sku ? <span style={{ marginLeft: 8, fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px' }} title="SKU from the linked Sales Order">{t.sku}</span> : null}</td>
                                         <td style={td}>{i.color || '—'}</td>
                                         <td style={td}>{i.size || '—'}</td>
                                         <td style={ctd}>{num(qty, true)}</td>

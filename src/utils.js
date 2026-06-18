@@ -329,53 +329,68 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
   const invByPid = {};
   (products || []).forEach((p) => { if (p && p.id) invByPid[p.id] = p._inv || {}; });
 
-  // Supply buckets, unified across SKU / product_id / name aliases for a given
-  // size — so an order line that carries only a name (empty sku, as OMG imports
-  // do) still matches its SO line by name, while sku/product_id match when
-  // present. Aliases point at the SAME bucket, so nothing is double-counted.
-  const buckets = []; const aliasToId = {};
-  const aliasKeys = (sku, pid, name, size) => [sku, pid, name].filter(Boolean).map((v) => norm(v) + '|' + norm(size));
-  const ensureBucket = (sku, pid, name, size) => {
-    const keys = aliasKeys(sku, pid, name, size);
-    let id = -1; for (const k of keys) { if (aliasToId[k] != null) { id = aliasToId[k]; break; } }
-    if (id < 0) { id = buckets.push({ billed: 0, received: 0, onIf: 0 }) - 1; }
-    keys.forEach((k) => { aliasToId[k] = id; });
-    return id;
+  // Build one supply bucket per SO product, carrying its curated sku/name and
+  // per-size billed/received/on-IF. SO items merge into the same bucket when
+  // they share a sku, product_id, or name.
+  const prods = []; // { names:[norm], sku, pid, sizes:{normSize:{billed,received,onIf}} }
+  const findOrCreate = (sku, pid, name) => {
+    const sk = norm(sku), ns = norm(name);
+    let b = prods.find((p) => (sk && norm(p.sku) === sk) || (pid && p.pid === pid) || (ns && p.names.includes(ns)));
+    if (!b) { b = { names: [], sku: sku || '', pid: pid || null, sizes: {} }; prods.push(b); }
+    if (ns && !b.names.includes(ns)) b.names.push(ns);
+    if (!b.sku && sku) b.sku = sku;
+    if (!b.pid && pid) b.pid = pid;
+    return b;
   };
-  const findBucket = (sku, pid, name, size) => { for (const k of aliasKeys(sku, pid, name, size)) { if (aliasToId[k] != null) return aliasToId[k]; } return -1; };
-
   (so && so.items ? so.items : []).forEach((it) => {
-    const pid = it.product_id, sku = it.sku, name = it.name;
-    const addAt = (size, field, n) => { if (!n) return; buckets[ensureBucket(sku, pid, name, size)][field] += n; };
+    const b = findOrCreate(it.sku, it.product_id, it.name);
+    const addSize = (size, field, n) => { if (!n) return; const k = norm(size); (b.sizes[k] = b.sizes[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
     (it.po_lines || []).forEach((po) => {
-      const b = po.billed || {}, r = po.received || {};
-      new Set([...Object.keys(b), ...Object.keys(r)]).forEach((sz) => {
+      const bi = po.billed || {}, r = po.received || {};
+      new Set([...Object.keys(bi), ...Object.keys(r)]).forEach((sz) => {
         if (SIZE_SKIP.has(sz)) return;
-        addAt(sz, 'billed', Number(b[sz]) || 0);
-        addAt(sz, 'received', Number(r[sz]) || 0);
+        addSize(sz, 'billed', Number(bi[sz]) || 0);
+        addSize(sz, 'received', Number(r[sz]) || 0);
       });
     });
     // Pick lines come in two shapes: raw from Supabase (sizes nested under
     // `.sizes`) or hydrated by App load (sizes spread to top-level). Handle both.
     (it.pick_lines || []).forEach((pk) => {
       const szObj = pk && pk.sizes && typeof pk.sizes === 'object' ? pk.sizes : pk;
-      Object.keys(szObj || {}).forEach((kk) => { if (isSizeQty(kk, szObj[kk])) addAt(kk, 'onIf', Number(szObj[kk]) || 0); });
+      Object.keys(szObj || {}).forEach((kk) => { if (isSizeQty(kk, szObj[kk])) addSize(kk, 'onIf', Number(szObj[kk]) || 0); });
     });
   });
+
+  // Resolve an order line to its SO product: exact sku → product_id → name
+  // (the SO's clean name is a substring of the order's longer name, which has
+  // extra vendor codes; the longest such match wins).
+  const resolve = (sku, pid, name) => {
+    const sk = norm(sku), ns = norm(name);
+    if (sk) { const b = prods.find((p) => norm(p.sku) === sk); if (b) return b; }
+    if (pid) { const b = prods.find((p) => p.pid === pid); if (b) return b; }
+    if (ns) {
+      let best = null, bestLen = 0;
+      prods.forEach((p) => p.names.forEach((pn) => { if (pn.length >= 4 && ns.includes(pn) && pn.length > bestLen) { best = p; bestLen = pn.length; } }));
+      if (best) return best;
+    }
+    return null;
+  };
 
   // Demand lines, oldest order first (FIFO front-of-line gets stock first).
   // OMG orders sort by order number; webstore orders by creation time.
   const fifoKey = (o) => String(o.omg_order_number || o.created_at || o.id || '');
   const sorted = [...orders].sort((a, b) => fifoKey(a).localeCompare(fifoKey(b), undefined, { numeric: true }));
-  const pools = buckets.map((b) => ({ ...b }));
+  // Clone each bucket's per-size supply into a drawable pool.
+  const pools = prods.map((p) => { const s = {}; Object.keys(p.sizes).forEach((k) => { s[k] = { ...p.sizes[k] }; }); return s; });
+  const idxOf = new Map(prods.map((p, i) => [p, i]));
   const out = {};
   sorted.forEach((o) => {
     (o.items || []).forEach((i) => {
       if (i.is_bundle_parent) return;
       const qty = Number(i.qty) || 0;
-      const id = findBucket(i.sku, i.product_id, i.name, i.size);
-      const p = id >= 0 ? pools[id] : null;
-      const take = (field) => { if (!p) return 0; const n = Math.max(0, Math.min(p[field] || 0, qty)); p[field] -= n; return n; };
+      const b = resolve(i.sku, i.product_id, i.name);
+      const pool = b ? pools[idxOf.get(b)][norm(i.size)] : null;
+      const take = (field) => { if (!pool) return 0; const n = Math.max(0, Math.min(pool[field] || 0, qty)); pool[field] -= n; return n; };
       const onIf = take('onIf');
       const received = take('received');
       const billed = take('billed');
@@ -391,7 +406,9 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
         : billed > 0 ? 'incoming'
         : i.backordered ? 'backordered'
         : 'awaiting';
-      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status };
+      // sku/soName carry the matched SO line down so the order grid can show
+      // the same (possibly re-mapped) SKU that's on the SO.
+      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status, sku: (b && b.sku) || i.sku || '', soName: (b && b.names[0]) || '' };
     });
   });
   return out;

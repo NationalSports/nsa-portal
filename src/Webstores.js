@@ -1819,7 +1819,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
               return (
                 <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}>{idx === 0 ? <span style={{ fontWeight: 600 }}>{w.buyer_name || w.buyer_email || '—'}</span> : ''}</td>
-                  <td style={td}>{i.name || i.sku || '—'}</td>
+                  <td style={td}>{i.name || i.sku || '—'}{t.sku ? <span style={{ marginLeft: 8, fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px' }} title="SKU from the linked Sales Order">{t.sku}</span> : null}</td>
                   <td style={td}>{i.size || '—'}</td>
                   <td style={ctd}>{num(t.onHand)}</td>
                   <td style={ctd}>{num(t.ordered, true)}{t.onIf > 0 && <span style={{ color: '#0369a1', fontWeight: 700, fontSize: 11 }}> · {t.onIf} IF</span>}</td>
