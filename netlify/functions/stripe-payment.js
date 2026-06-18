@@ -92,7 +92,11 @@ exports.handler = async (event) => {
       const intent = await client.paymentIntents.create({
         amount: Math.round(amount_cents),
         currency: 'usd',
-        automatic_payment_methods: { enabled: true },
+        // Explicit methods (instead of automatic_payment_methods) so we can hard-disable Link: Link
+        // hides whether it's bank- or card-funded, which defeats our card-only surcharge. This locks
+        // checkout to Card (Apple/Google Pay still ride under 'card') and Bank/ACH — both report a
+        // real type to the Payment Element, so the no-fee-on-bank rule works reliably.
+        payment_method_types: ['card', 'us_bank_account'],
         metadata: {
           invoice_id: invoice_id || '',
           invoice_memo: invoice_memo || '',
