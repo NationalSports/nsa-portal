@@ -390,14 +390,14 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
-  const duplicateStore = useCallback(async (src) => {
+  const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
     // Unique slug: <slug>-copy, then -copy-2, -copy-3…
     const taken = new Set(stores.map((s) => s.slug));
     let slug = slugify(src.name) + '-copy';
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
     const { id, created_at, updated_at, ...rest } = src;
-    const payload = { ...rest, name: src.name + ' (Copy)', slug, status: 'draft', open_at: null, close_at: null };
+    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false };
     flash('Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
     if (error) { flash('Could not duplicate: ' + error.message); return; }
@@ -423,8 +423,18 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       if (te) flash('Transfer setup copy failed: ' + te.message);
     }
     setStores((prev) => [store, ...prev]);
-    flash('Store duplicated as a draft');
+    flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
   }, [stores, flash]);
+
+  // Mark / unmark a store as a reusable template — the starting point for
+  // "New from template", which clones it into a fresh draft via duplicateStore.
+  const toggleTemplate = useCallback(async (store) => {
+    const next = !store.is_template;
+    const { error } = await supabase.from('webstores').update({ is_template: next, updated_at: new Date().toISOString() }).eq('id', store.id);
+    if (error) { flash('Error: ' + error.message); return; }
+    setStores((prev) => prev.map((s) => s.id === store.id ? { ...s, is_template: next } : s));
+    flash(next ? 'Saved as a template' : 'Removed from templates');
+  }, [flash]);
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
   // flag the batch's orders as pulled (they move from On order → In process).
@@ -713,7 +723,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
+        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} />
       )}
     </>
   );
@@ -733,12 +743,21 @@ function MigrationNotice({ onRetry }) {
   );
 }
 
-function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate }) {
+function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate }) {
+  const templates = stores.filter((s) => s.is_template);
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>{stores.length} store{stores.length === 1 ? '' : 's'}</div>
-        <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
+        <div style={{ fontSize: 13, color: '#64748b' }}>{stores.length} store{stores.length === 1 ? '' : 's'}{templates.length > 0 ? ` · ${templates.length} template${templates.length === 1 ? '' : 's'}` : ''}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onNewFromTemplate && templates.length > 0 && (
+            <select className="form-input" style={{ maxWidth: 230, fontSize: 13 }} value="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t) onNewFromTemplate(t); e.target.value = ''; }}>
+              <option value="">+ New from template…</option>
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          )}
+          <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
+        </div>
       </div>
       {stores.length === 0 ? (
         <div className="card"><div className="card-body" style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
@@ -758,6 +777,7 @@ function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate }) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 17, fontWeight: 800, color: '#1e293b' }}>{s.name}</span>
                       <StatusBadge status={s.status} />
+                      {s.is_template && <Chip label="Template" tone="blue" />}
                     </div>
                     <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
                   </div>
@@ -767,6 +787,7 @@ function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate }) {
                   <Quick label="Numbers">{s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'}</Quick>
                   <Quick label="Sale window">{window_}</Quick>
                   <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {onToggleTemplate && <button className="btn btn-sm btn-secondary" title={s.is_template ? 'Remove from templates' : 'Save as a reusable template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }}>{s.is_template ? '★ Template' : '☆ Template'}</button>}
                     {onDuplicate && <button className="btn btn-sm btn-secondary" title="Duplicate this store" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                     <span style={{ color: '#cbd5e1', fontSize: 20 }}>›</span>
                   </div>
