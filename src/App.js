@@ -4152,6 +4152,10 @@ export default function App(){
     if(!_brevoKey)return;
     const checkOpens=async()=>{
       if(!_initialLoadDone.current)return;
+      // Email-open tracking is a staff-only dashboard feature. The public coach portal (?portal=…) is
+      // an early return that still runs App's hooks, so without this guard every portal visit fires
+      // company-wide Brevo stat checks from an unauthenticated page and trips Brevo's 429 rate limit.
+      if(typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('portal'))return;
       const{ests,sos,invs}=_brevoDocsRef.current;
       // Check estimates with pending email_status='sent' and a messageId
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(h=>h.messageId));

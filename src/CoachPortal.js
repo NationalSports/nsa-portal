@@ -258,6 +258,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePaymentSuccess=(result)=>{
+    // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
+    // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
+    // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
+    // buyer isn't falsely told the payment failed.
+    if(result.status==='processing'){
+      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],processing:true});
+      setShowPay(null);setInvView(null);setPayLoading(false);
+      return;
+    }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
     // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
@@ -274,7 +283,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
-    if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
+    if(onUpdateInvs)onUpdateInvs(updater);// optimistic UI; the DB write below is what actually persists
+    // The public portal is anonymous and RLS-blocks direct invoice writes (the parent save above fails
+    // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
+    // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
+    if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
     setShowPay(null);setInvView(null);setPayLoading(false);
   };
@@ -309,9 +322,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const collected=(paymentIntent.amount||0)/100;
           if(matched.length){
             const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
-            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched});
+            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
           }else{
-            // Invoices not loaded yet (or already settled by the webhook) — still confirm to the buyer.
+            // Invoices not loaded into this view — reconcile server-side directly, then confirm.
+            fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
             setPaySuccess({amount:collected,fee:0,invoices:[]});
           }
         }else if(paymentIntent.status==='processing'){
@@ -322,6 +336,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       finally{cleanUrl();}
     })();
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Single source of truth for the payment modal. Each portal view (estimate/job/invoice/main) is its
+  // own early return, so the modal must be rendered in every view that can launch it — not just the
+  // main one. Previously it lived only in the main return, so tapping "Pay" from an opened invoice set
+  // showPay but never mounted the modal: the button just span on "Opening secure checkout…" forever.
+  const payModalEl = showPay ? <StripePaymentModal
+    invoices={showPay==='all'?openInvs:[showPay]}
+    customerName={customer.name}
+    customerEmail={contactEmail}
+    alphaTag={customer.alpha_tag}
+    feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
+    paymentNote={portalSettings?.paymentNote||''}
+    onSuccess={handlePaymentSuccess}
+    onClose={()=>{setShowPay(null);setPayLoading(false)}}
+  /> : null;
 
   // Estimate detail view
   if(estView){
@@ -1056,6 +1085,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
         </div>
       </div>
+      {payModalEl}
     </div>
   }
 
@@ -1326,17 +1356,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       </div>
     </div>
 
-    {/* Stripe Payment Modal */}
-    {showPay&&<StripePaymentModal
-      invoices={showPay==='all'?openInvs:[showPay]}
-      customerName={customer.name}
-      customerEmail={contactEmail}
-      alphaTag={customer.alpha_tag}
-      feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
-      paymentNote={portalSettings?.paymentNote||''}
-      onSuccess={handlePaymentSuccess}
-      onClose={()=>{setShowPay(null);setPayLoading(false)}}
-    />}
+    {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
+    {payModalEl}
   </div>
 }
 
