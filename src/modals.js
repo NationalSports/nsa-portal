@@ -528,18 +528,29 @@ try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
+  const[payType,setPayType]=useState('card');// selected method — bank/ACH is surcharge-free, cards aren't
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  const fee=Math.round(amount*_feePct*100)/100;
+  const isBank=payType==='us_bank_account';
+  const fee=isBank?0:Math.round(amount*_feePct*100)/100;
   const total=amount+fee;
 
   const handleSubmit=async(e)=>{
     e.preventDefault();
     if(!stripe||!elements){return}
     setProcessing(true);setError(null);
+    // Sync the PaymentIntent amount to the selected method before charging: bank/ACH carries no card
+    // surcharge (so the fee is dropped), cards do. The amount charged always equals the total shown
+    // here. The server re-validates the new amount against the invoice's open balance.
+    if(intentId){
+      try{
+        const r=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_intent',intent_id:intentId,amount_cents:Math.round(total*100)})});
+        if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||'Could not update the payment amount.')}
+      }catch(err){setError(err.message||'Could not update the payment amount. Please try again.');setProcessing(false);return}
+    }
     const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
@@ -557,12 +568,14 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
 
   return<form onSubmit={handleSubmit}>
     <div style={{marginBottom:16}}>
-      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}} onChange={(e)=>{if(e&&e.value&&e.value.type)setPayType(e.value.type)}}/>
     </div>
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
       <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
-      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>
+      {isBank
+        ?<div style={{display:'flex',justifyContent:'space-between',color:'#16a34a'}}><span>Bank payment — no processing fee</span><span>$0.00</span></div>
+        :<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>}
       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
     </div>
     <div style={{display:'flex',gap:8}}>
@@ -577,6 +590,7 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
 
 function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
   const[clientSecret,setClientSecret]=useState(null);
+  const[intentId,setIntentId]=useState(null);
   const[stripeReady,setStripeReady]=useState(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState(null);
@@ -616,7 +630,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
         });
         const data=await res.json();
         if(!res.ok)throw new Error(data.error||'Failed to create payment');
-        if(!cancelled)setClientSecret(data.clientSecret);
+        if(!cancelled){setClientSecret(data.clientSecret);setIntentId(data.intentId);}
       }catch(e){if(!cancelled)setError(e.message)}
       finally{if(!cancelled)setLoading(false)}
     })();
@@ -645,7 +659,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
         {clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={totalDue} feePct={_feePct} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+          <StripeCheckoutForm amount={totalDue} feePct={_feePct} intentId={intentId} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>

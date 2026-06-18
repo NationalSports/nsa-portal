@@ -111,6 +111,47 @@ exports.handler = async (event) => {
       };
     }
 
+    if (action === 'update_intent') {
+      // Re-price an existing (not-yet-confirmed) PaymentIntent — used to drop the 2.9% card surcharge
+      // when the buyer selects bank/ACH, which NSA does not surcharge. PUBLIC (the portal is anonymous);
+      // safe because the new amount is re-validated against the invoice's open balance + ceiling using
+      // the invoice id stored in the intent's OWN metadata (never client-supplied), so it can't be
+      // abused to set an arbitrary amount.
+      const { intent_id, amount_cents } = body;
+      if (!intent_id || !amount_cents || amount_cents < 50) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'intent_id and amount_cents (>= $0.50) required' }) };
+      }
+      if (amount_cents > MAX_AMOUNT_CENTS) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the per-payment limit.' }) };
+      }
+      let intent0;
+      try {
+        intent0 = await client.paymentIntents.retrieve(intent_id);
+      } catch (e) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment intent not found' }) };
+      }
+      // Only adjust before the buyer has confirmed/paid.
+      if (!intent0 || (intent0.status !== 'requires_payment_method' && intent0.status !== 'requires_confirmation')) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment can no longer be modified.' }) };
+      }
+      try {
+        const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        if (ids.length) {
+          const admin = getSupabaseAdmin();
+          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
+          if (!invErr && invRows && invRows.length) {
+            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
+            const maxCents = Math.ceil(balanceCents * 1.05) + 100; // headroom for the CC surcharge + rounding
+            if (balanceCents <= 0 || amount_cents > maxCents) {
+              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
+            }
+          }
+        }
+      } catch (e) { /* fail-open on DB blips, same as create_intent */ }
+      const updated = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updated.amount }) };
+    }
+
     if (action === 'finalize_invoice') {
       // Mark the invoice(s) for a just-succeeded payment as paid. PUBLIC by necessity — the coach
       // portal pays without an account and (being anonymous) is RLS-blocked from writing `invoices`
