@@ -666,6 +666,23 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     loadDetail(sel);
   }, [detail, sel, loadDetail]);
 
+  // Move a catalog item to an arbitrary spot (drag-and-drop): drop it before
+  // `beforeId` (or at the end when null), then renormalize sort_order so the
+  // storefront and admin agree — same persistence path as the up/down arrows.
+  const moveItem = useCallback(async (item, beforeId) => {
+    const list = [...(detail?.catalog || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const fromIdx = list.findIndex((x) => x.id === item.id);
+    if (fromIdx < 0) return;
+    const [moved] = list.splice(fromIdx, 1);
+    let toIdx = beforeId == null ? list.length : list.findIndex((x) => x.id === beforeId);
+    if (toIdx < 0) toIdx = list.length;
+    list.splice(toIdx, 0, moved);
+    for (let i = 0; i < list.length; i++) {
+      if ((list[i].sort_order || 0) !== i) await supabase.from('webstore_products').update({ sort_order: i }).eq('id', list[i].id);
+    }
+    loadDetail(sel);
+  }, [detail, sel, loadDetail]);
+
   // ── render gates ─────────────────────────────────────────────────────
   if (needsMigration) return <MigrationNotice onRetry={loadStores} />;
   if (loading) return <div style={{ padding: 40, color: '#64748b', fontSize: 14 }}>Loading webstores…</div>;
@@ -690,7 +707,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -965,7 +982,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
@@ -1047,7 +1064,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -1123,7 +1140,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1133,6 +1150,34 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+  // Drag-to-reorder: the grab handle on a row starts the drag; every row is a
+  // drop target. Hovering the top/bottom half drops the item before/after that
+  // row. New order persists via onMove → sort_order (arrows still work too).
+  const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
+  const [overPos, setOverPos] = useState('before');
+  const onRowDragOver = (e, p) => {
+    if (!dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = e.currentTarget.getBoundingClientRect();
+    const pos = e.clientY < r.top + r.height / 2 ? 'before' : 'after';
+    if (overId !== p.id || overPos !== pos) { setOverId(p.id); setOverPos(pos); }
+  };
+  const onRowDrop = (e, p) => {
+    if (!dragId) return;
+    e.preventDefault();
+    if (dragId !== p.id) {
+      const tIdx = ordered.findIndex((x) => x.id === p.id);
+      const beforeId = overPos === 'before' ? p.id : (ordered[tIdx + 1] ? ordered[tIdx + 1].id : null);
+      if (beforeId !== dragId) {
+        const dragged = ordered.find((x) => x.id === dragId);
+        if (dragged) onMove(dragged, beforeId);
+      }
+    }
+    setDragId(null); setOverId(null);
+  };
   return (
     <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1161,8 +1206,22 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
                 const open = expandAll || openRows.has(p.id);
                 return (
                   <React.Fragment key={p.id}>
-                  <tr style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <tr
+                    onDragOver={(e) => onRowDragOver(e, p)}
+                    onDrop={(e) => onRowDrop(e, p)}
+                    onDragEnd={() => { setDragId(null); setOverId(null); }}
+                    style={{
+                      borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f1f5f9',
+                      borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
+                      opacity: dragId === p.id ? 0.4 : 1,
+                    }}>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      <span
+                        draggable
+                        onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; const row = e.currentTarget.closest('tr'); if (row) e.dataTransfer.setDragImage(row, 16, 16); }}
+                        title="Drag to reorder"
+                        style={{ cursor: 'grab', color: '#94a3b8', fontSize: 15, padding: '0 8px 0 2px', userSelect: 'none', display: 'inline-block' }}
+                      >⠿</span>
                       <button onClick={() => onReorder(p, 'up')} disabled={i === 0} title="Move up" style={arrowBtn(i === 0)}>▲</button>
                       <button onClick={() => onReorder(p, 'down')} disabled={i === ordered.length - 1} title="Move down" style={arrowBtn(i === ordered.length - 1)}>▼</button>
                     </td>
