@@ -98,6 +98,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // art; pickedColor is the one the user chose to change (null = recolor everything).
   const [pickedColor, setPickedColor] = useState(null);
   const [artColors, setArtColors] = useState([]);
+  const [sampling, setSampling] = useState(false); // cross-browser eyedropper: awaiting a canvas click
   // Identifies which drop zone (if any) a dragged file is currently hovering, so we can
   // highlight it: 'canvas', 'product', or 'layer-<idx>' for a specific art location.
   const [dragOver, setDragOver] = useState(null);
@@ -382,9 +383,47 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // Native eyedropper — sample any color straight off the artwork (or anywhere on
   // screen) and target it for recolor, instead of hunting through swatches.
   const eyedrop = async () => {
-    if (typeof window === 'undefined' || !window.EyeDropper) { nf && nf('This browser has no eyedropper — pick a swatch instead (try Chrome or Edge)', 'error'); return; }
-    try { const res = await new window.EyeDropper().open(); if (res && res.sRGBHex) setPickedColor(res.sRGBHex.toLowerCase()); }
-    catch (_) { /* user cancelled */ }
+    if (typeof window !== 'undefined' && window.EyeDropper) {
+      try { const res = await new window.EyeDropper().open(); if (res && res.sRGBHex) setPickedColor(res.sRGBHex.toLowerCase()); }
+      catch (_) { /* user cancelled */ }
+      return;
+    }
+    // No native eyedropper (Safari/Firefox) — sample the next canvas click instead.
+    setSampling(true); nf && nf('Click a color on the artwork to sample it', 'info');
+  };
+
+  // When sampling, the next click on the canvas reads the pixel under the cursor
+  // and targets that color for recolor — so the eyedropper works in every browser.
+  useEffect(() => {
+    if (!canvas || !sampling) return;
+    const onDown = (opt) => {
+      try {
+        const p = canvas.getPointer(opt.e);
+        const ctx = canvas.lowerCanvasEl.getContext('2d', {willReadFrequently: true});
+        const d = ctx.getImageData(Math.round(p.x), Math.round(p.y), 1, 1).data;
+        if (d[3] > 0) setPickedColor('#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join(''));
+      } catch (_) {}
+      setSampling(false);
+    };
+    canvas.on('mouse:down', onDown);
+    canvas.defaultCursor = 'crosshair';
+    return () => { canvas.off('mouse:down', onDown); canvas.defaultCursor = 'default'; };
+  }, [canvas, sampling]);
+
+  // Knock a logo's white box out to transparent so it sits cleanly on the garment.
+  const knockoutWhite = () => {
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) { nf && nf('Select an art element first', 'error'); return; }
+    if (typeof obj.getObjects === 'function') { nf && nf('White knockout works on image logos (PNG/JPG)', 'error'); return; }
+    try {
+      const el = obj.getElement(); const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      const off = document.createElement('canvas'); off.width = w; off.height = h;
+      const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, w, h);
+      const id = ctx.getImageData(0, 0, w, h); const d = id.data;
+      for (let i = 0; i < d.length; i += 4) { if (d[i] >= 240 && d[i + 1] >= 240 && d[i + 2] >= 240) d[i + 3] = 0; }
+      ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll(); markDirty(); setArtColors(computePalette(obj));
+    } catch (e) { nf && nf('Could not process this image', 'error'); }
   };
 
   // Detect the art's colors whenever an art layer is selected, so the user can pick
@@ -676,7 +715,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                     <span style={{fontSize: 12.5, color: '#475569', fontWeight: 700}}>1 · Pick a color</span>
                     <button onClick={() => setPickedColor(null)} title="Recolor the whole design at once" style={{fontSize: 11.5, padding: '5px 12px', borderRadius: 999, border: '1px solid ' + (!pickedColor ? '#7c3aed' : '#cbd5e1'), background: !pickedColor ? '#ede9fe' : '#fff', color: !pickedColor ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 700}}>Whole design</button>
                     {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 12; return <button key={c} onClick={() => setPickedColor(c)} title={c} style={{width: 32, height: 32, borderRadius: 9, background: c, cursor: 'pointer', padding: 0, border: sel ? '3px solid #7c3aed' : '1px solid #cbd5e1', boxShadow: sel ? '0 0 0 3px #ede9fe' : 'none'}} />; })}
-                    <button onClick={eyedrop} title="Eyedropper — click any color in the artwork" style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, padding: '6px 12px', borderRadius: 999, border: '1px solid #cbd5e1', background: '#fff', color: '#475569', cursor: 'pointer'}}><span aria-hidden="true" style={{fontSize: 14, lineHeight: 1}}>🎯</span> Eyedropper</button>
+                    <button onClick={eyedrop} title="Eyedropper — sample a color from the artwork" style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, padding: '6px 12px', borderRadius: 999, border: '1px solid ' + (sampling ? '#7c3aed' : '#cbd5e1'), background: sampling ? '#ede9fe' : '#fff', color: sampling ? '#6d28d9' : '#475569', cursor: 'pointer'}}><span aria-hidden="true" style={{fontSize: 14, lineHeight: 1}}>🎯</span> {sampling ? 'Click the art…' : 'Eyedropper'}</button>
+                    <button onClick={knockoutWhite} title="Make the logo's white background transparent" style={{fontSize: 11.5, fontWeight: 700, padding: '6px 12px', borderRadius: 999, border: '1px solid #cbd5e1', background: '#fff', color: '#475569', cursor: 'pointer'}}>Knock out white</button>
                   </div>
                   <div style={{display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap'}}>
                     <span style={{fontSize: 12.5, color: '#475569', fontWeight: 700}}>2 · Change {pickedColor ? 'it' : 'everything'} to</span>
