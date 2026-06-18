@@ -1208,7 +1208,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
       </div>
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
@@ -1477,11 +1477,46 @@ function SinglePriceEditor({ product, designOptions, numberSets, onAdd, onCancel
   const [nameUpcharge, setNameUpcharge] = useState(0);
   const [transferCodes, setTransferCodes] = useState([]);
   const [numTransferSets, setNumTransferSets] = useState([]);
+  // Other colorways of this style (same product name) — add several at once at
+  // one price. Grouping key is `name` (SKUs are unique per color in this catalog).
+  const [siblings, setSiblings] = useState([]);
+  const [extraColors, setExtraColors] = useState(() => new Set());
+  useEffect(() => {
+    if (!product?.name) { setSiblings([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('products')
+        .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
+        .eq('name', product.name).neq('id', product.id).order('color').limit(40);
+      if (!cancelled) setSiblings(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, [product.id, product.name]);
+  const toggleColor = (id) => setExtraColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selectedSiblings = siblings.filter((s) => extraColors.has(s.id));
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
+      {siblings.length > 0 && (
+        <div style={{ margin: '0 0 12px', padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 7 }}>
+            Also add other colors of this style <span style={{ fontWeight: 400, color: '#94a3b8' }}>· same price &amp; options apply to all</span>
+          </div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+            {siblings.map((s) => {
+              const on = extraColors.has(s.id);
+              return (
+                <button key={s.id} type="button" onClick={() => toggleColor(s.id)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 999, padding: '4px 11px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+                  {on ? '✓ ' : '+ '}{s.color || s.sku}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
       <div style={{ display: 'flex', gap: 12 }}>
         <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
@@ -1495,7 +1530,7 @@ function SinglePriceEditor({ product, designOptions, numberSets, onAdd, onCancel
       </div>
       <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />
       <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: transferCodes.filter(Boolean), num_transfer_sets: numTransferSets.filter((s) => s && s !== '|') })}>Add to store</button>
+        <button className="btn btn-primary" onClick={() => onAdd({ products: [product, ...selectedSiblings], price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: transferCodes.filter(Boolean), num_transfer_sets: numTransferSets.filter((s) => s && s !== '|') })}>{selectedSiblings.length > 0 ? `Add ${selectedSiblings.length + 1} items` : 'Add to store'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
