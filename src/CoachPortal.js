@@ -212,6 +212,59 @@ function CoachPickCard({ p, on, onToggle }) {
   );
 }
 
+// Map common apparel color words to a swatch hex. Returns null when we can't
+// confidently resolve one, so the caller can fall back to a labeled chip.
+const COACH_COLOR_HEX = { black: '#191919', white: '#ffffff', royal: '#1e40af', navy: '#1e293b', red: '#dc2626', scarlet: '#dc2626', cardinal: '#9b1c31', maroon: '#7f1d1d', burgundy: '#7f1d1d', gold: '#d4af37', vegas: '#d4af37', yellow: '#facc15', kelly: '#15803d', forest: '#14532d', green: '#16a34a', orange: '#ea580c', purple: '#7c3aed', pink: '#ec4899', charcoal: '#374151', graphite: '#374151', grey: '#9ca3af', gray: '#9ca3af', silver: '#cbd5e1', brown: '#92400e', teal: '#0d9488', carolina: '#7dd3fc', columbia: '#60a5fa', 'light blue': '#7dd3fc', 'team royal': '#1e40af', cream: '#f5f0e1', natural: '#f5f0e1' };
+const coachColorHex = (name) => { const s = (name || '').toLowerCase(); for (const k of Object.keys(COACH_COLOR_HEX)) { if (s.includes(k)) return COACH_COLOR_HEX[k]; } return null; };
+const coachIsLight = (hex) => { const h = (hex || '').replace('#', ''); if (h.length < 6) return true; const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16); return (0.299 * r + 0.587 * g + 0.114 * b) > 160; };
+
+// One STYLE in the coach builder, with its colorways as pickable swatches.
+// Each swatch toggles a specific colorway (product_id) into the selection, so a
+// coach can carry the same shirt in several colors — just like the live-look.
+function CoachStyleCard({ g, sel, onToggle }) {
+  const [imgErr, setImgErr] = useState(false);
+  const selected = g.colorways.filter((c) => sel.has(c.product_id));
+  const lead = selected[0] || g.colorways[0];
+  const priceMin = Math.min(...g.colorways.map((c) => (c.price || 0) + (c.fundraise || 0)));
+  const anyOn = selected.length > 0;
+  return (
+    <div className="ai-card" style={{ outline: anyOn ? '2px solid #191919' : '2px solid transparent', outlineOffset: -2, cursor: 'default' }}>
+      <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
+        {lead.image_url && !imgErr
+          ? <img src={lead.image_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain' }} />
+          : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
+        {anyOn && <span style={{ position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: 6, background: '#191919', color: '#fff', fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{selected.length}</span>}
+        <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>{_cpMoney(priceMin)}{g.colorways.length > 1 ? '+' : ''}</span>
+      </div>
+      <div style={{ padding: '10px 12px 12px', textAlign: 'left', width: '100%' }}>
+        {g.brand && <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{g.brand}</div>}
+        <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 14.5, lineHeight: 1.12, textTransform: 'uppercase' }}>{g.name}</div>
+        <div style={{ fontSize: 11.5, color: '#6A7180', marginTop: 2 }}>{g.category || ' '}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 9 }}>
+          {g.colorways.map((c) => {
+            const on = sel.has(c.product_id);
+            const hex = coachColorHex(c.color);
+            const title = `${c.color || 'Color'} · ${c._stock?.units || 0} in stock`;
+            if (!hex) return (
+              <button key={c.product_id} type="button" title={title} onClick={() => onToggle(c.product_id)}
+                style={{ fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999, cursor: 'pointer', border: on ? '2px solid #191919' : '1px solid #cbd5e1', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150' }}>
+                {on ? '✓ ' : ''}{c.color || 'Color'}
+              </button>
+            );
+            return (
+              <button key={c.product_id} type="button" title={title} onClick={() => onToggle(c.product_id)}
+                style={{ width: 26, height: 26, borderRadius: '50%', background: hex, cursor: 'pointer', border: on ? '2px solid #191919' : '1px solid #cbd5e1', position: 'relative', boxShadow: on ? '0 0 0 2px #fff inset' : 'none' }}>
+                {on && <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: coachIsLight(hex) ? '#191919' : '#fff', fontSize: 13, fontWeight: 900 }}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 10.5, color: '#6A7180', marginTop: 7, fontWeight: 600 }}>{anyOn ? `${selected.length} color${selected.length === 1 ? '' : 's'} added` : `${g.colorways.length} color${g.colorways.length === 1 ? '' : 's'} — tap to pick`}</div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────
 // Coach self-serve store builder — a constrained sibling of the staff builder.
 // Coaches pick from a PRE-APPROVED pool (a staff template's items if any exist,
@@ -313,23 +366,31 @@ function CoachStoreBuilder({ customer, onClose }) {
     setAiBusy(false);
   };
 
-  // Visible = approved pool narrowed by search + the AI brief (never widened).
+  // Filtered = approved pool narrowed by search + the AI brief (never widened).
   const q = search.trim().toLowerCase();
-  let visible = pool;
-  if (q) visible = visible.filter((r) => (r.name + ' ' + (r.sku || '') + ' ' + r.color + ' ' + r.brand).toLowerCase().includes(q));
+  let filtered = pool;
+  if (q) filtered = filtered.filter((r) => (r.name + ' ' + (r.sku || '') + ' ' + r.color + ' ' + r.brand).toLowerCase().includes(q));
   if (aiSpec) {
     const sb = (aiSpec.brands || []).map((b) => b.toLowerCase());
     const sc = (aiSpec.categories || []).map((c) => c.toLowerCase());
     const scol = (aiSpec.colors || []).map((c) => c.toLowerCase());
     const skw = (aiSpec.keywords || []).map((k) => k.toLowerCase());
-    visible = visible.filter((r) => {
+    filtered = filtered.filter((r) => {
       if (sb.length && !sb.includes((r.brand || '').toLowerCase())) return false;
       if (sc.length && !sc.includes((r.category || '').toLowerCase())) return false;
       if ((scol.length || skw.length) && !(scol.some((c) => (r.color || '').toLowerCase().includes(c)) || skw.some((k) => (r.name || '').toLowerCase().includes(k)))) return false;
       return true;
     });
   }
-  visible = visible.slice(0, 160);
+  // Group colorways into styles so coaches pick a product then its colors.
+  const groupMap = new Map();
+  for (const it of filtered) {
+    const key = (it.name || it.sku || '').toUpperCase();
+    let g = groupMap.get(key);
+    if (!g) { g = { key, name: it.name, brand: it.brand, category: it.category, colorways: [] }; groupMap.set(key, g); }
+    g.colorways.push(it);
+  }
+  const groups = [...groupMap.values()].slice(0, 90);
 
   const chosen = pool.filter((p) => sel.has(p.product_id));
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -409,16 +470,16 @@ function CoachStoreBuilder({ customer, onClose }) {
             </div>
             {poolErr && <div style={{ color: '#b91c1c', fontSize: 13, fontWeight: 600, marginTop: 12 }}>{poolErr}</div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 10px' }}>
-              <div style={{ fontSize: 13, fontWeight: 700 }}>{chosen.length} selected · {visible.length} shown</div>
-              {pool.length > 0 && <button type="button" className="ai-iconbtn" onClick={() => setSel(new Set())}>Clear all</button>}
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} selected · {groups.length} style{groups.length === 1 ? '' : 's'} shown</div>
+              {chosen.length > 0 && <button type="button" className="ai-iconbtn" onClick={() => setSel(new Set())}>Clear all</button>}
             </div>
-            {visible.length === 0 ? (
+            {groups.length === 0 ? (
               <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
                 {pool.length === 0 ? 'No in-stock items are available to build from right now — please check with your rep.' : 'Nothing matches that — clear the search or AI filter to see all available items.'}
               </div>
             ) : (
               <div className="ai-grid">
-                {visible.map((p) => <CoachPickCard key={p.product_id} p={p} on={sel.has(p.product_id)} onToggle={() => toggle(p.product_id)} />)}
+                {groups.map((g) => <CoachStyleCard key={g.key} g={g} sel={sel} onToggle={toggle} />)}
               </div>
             )}
           </div>
