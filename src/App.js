@@ -23257,6 +23257,19 @@ export default function App(){
         });
         const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
 
+        // Every real Sports Inc / Adidas / UA goods row carries a unit-of-measure cell (EA, DZ, PR…)
+        // between the qty and the prices. Barcode continuation lines, repeated page-2 header/address
+        // blocks ("DEPT CH 19361", "NATIONAL SPORTS APPAREL LLC", the wrapped column headers), and
+        // the SUPPLIER-INFORMATION row do NOT. We use this as a gate so those lines stop getting
+        // scraped into phantom items (e.g. "ULT365" qty 365, "19361" qty 406) that blew up the
+        // merchandise total. Adaptive: only enforced when the invoice actually uses a unit column,
+        // so non-unit formats keep their old behavior.
+        // Keep the unit set to tokens that can't collide with state codes / address words — "CA"
+        // (California), "PR", etc. would false-match "Santa Clarita CA 91355" and re-admit phantoms.
+        const _UNIT_RE=/\b(EA|DZ|DOZ|PK)\b/;
+        let itemRowsHaveUnit=false;
+        for(let i=startIdx;i<endIdx;i++){if(_UNIT_RE.test((lines[i]||'').toUpperCase())){itemRowsHaveUnit=true;break}}
+
         // Build a fast lookup regex from known product SKUs so we recognize whatever the
         // vendor actually uses (regardless of pattern). Falls back to SKU_RE/_NUMERIC for
         // SKUs not yet in our catalog (new items, decoration codes, etc).
@@ -23274,6 +23287,13 @@ export default function App(){
           if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
           // Skip lines that are purely a long barcode/UPC with no other content (avoids false matches)
           if(/^\s*\d{10,}\s*$/.test(line))continue;
+          // Skip UPC barcode continuation lines (e.g. "1 97626 19357 2 ULT365 SLD POLO …"). The real
+          // item row starts with the SKU; the barcode + wrapped description sit on the lines below and
+          // may carry a catalog SKU in their text that must NOT be mined as its own line item.
+          if(/^\s*\d{1,2}(?:\s+\d{4,6}){2,3}\s+\d{1,2}\b/.test(line))continue;
+          // Unit-column gate: on unit-bearing invoices, a genuine item row has its EA/DZ/PR… cell.
+          // Lines without one are repeated page headers, addresses, or stray numbers — skip them.
+          if(itemRowsHaveUnit&&!_UNIT_RE.test(line.toUpperCase()))continue;
           let sku='';
           // 1) Try known-SKU lookup against the product catalog (most reliable)
           if(knownSkuRe){const km=line.match(knownSkuRe);if(km)sku=km[1].toUpperCase()}
@@ -23296,8 +23316,16 @@ export default function App(){
           // in full on the description line below.
           const sizeSearchText=[line,lines[i+1]||'',lines[i+2]||''].join(' ');
           let size='';
+          // 0) Sports Inc / Adidas tabular row — "SKU \t SIZE \t QTY \t EA \t LIST \t NET \t EXT".
+          // The cell immediately after the SKU is the authoritative size. Trust it directly: the
+          // heuristics below mis-read sizes like "2XL7"/"3XLT" (trailing char breaks the word
+          // boundary) and then grab the qty digit (so 2XL7 became "1"). Only when the SKU is its own
+          // first cell and the row has a unit, to stay scoped to this format.
+          if(parts.length>=4&&(parts[0]||'').toUpperCase()===sku&&_UNIT_RE.test(line.toUpperCase())&&parts[1]){
+            size=parts[1].toUpperCase();
+          }
           // 1) Long-form size words (handles "MEDIU"/"MEDIUM"/"LARGE"/"SMALL"/"EXTRA LARGE")
-          const longMatch=sizeSearchText.match(SZ_LONG_RE);
+          const longMatch=!size&&sizeSearchText.match(SZ_LONG_RE);
           if(longMatch){
             const key=longMatch[1].toUpperCase().replace(/\s+/g,' ');
             size=SZ_LONG_MAP[key]||key;
