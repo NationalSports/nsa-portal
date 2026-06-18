@@ -1586,6 +1586,7 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(48);
+  const [inStockOnly, setInStockOnly] = useState(true); // default: hide what we can't fulfill
 
   useEffect(() => {
     if (q.trim().length < 2) { setResults([]); return; }
@@ -1597,7 +1598,12 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
         .select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
         .or(`name.ilike.%${q}%,sku.ilike.%${q}%`)
         .limit(limit);
-      if (!cancelled) { setResults(data || []); setSearching(false); }
+      const rows = data || [];
+      // Annotate each hit with live availability (same source as the catalog
+      // live-look) so the in-stock filter and the per-card badges agree.
+      const stock = await fetchStockMap(rows);
+      for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
+      if (!cancelled) { setResults(rows); setSearching(false); }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
   }, [q, limit]);
@@ -1605,7 +1611,9 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
   // Quick-filter pills derived from the current result set.
   const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
   const cats = [...new Set(results.map((r) => r.category).filter(Boolean))].sort();
-  const shown = results.filter((r) => (!brandSel || r.brand === brandSel) && (!catSel || r.category === catSel));
+  const matched = results.filter((r) => (!brandSel || r.brand === brandSel) && (!catSel || r.category === catSel));
+  const inStockN = matched.reduce((a, r) => a + ((r._stock?.units || 0) > 0 ? 1 : 0), 0);
+  const shown = inStockOnly ? matched.filter((r) => (r._stock?.units || 0) > 0) : matched;
   const enough = q.trim().length >= 2;
 
   return (
@@ -1619,6 +1627,12 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
 
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search your catalog — name, style name, or SKU…" aria-label="Search products" />
+
+        {enough && (
+          <div style={{ marginTop: 12 }}>
+            <InStockToggle on={inStockOnly} onToggle={() => setInStockOnly((v) => !v)} count={inStockN} total={matched.length} />
+          </div>
+        )}
 
         {enough && (brands.length > 1 || cats.length > 1) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
@@ -1642,7 +1656,11 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching…</div>
           )}
           {enough && !searching && shown.length === 0 && (
-            <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No matches. Try a different name or SKU.</div>
+            <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
+              {matched.length > 0 && inStockOnly
+                ? 'No in-stock matches — turn off “In stock only” to see out-of-stock items.'
+                : 'No matches. Try a different name or SKU.'}
+            </div>
           )}
           {shown.length > 0 && (
             <div className="ai-grid">
@@ -1661,16 +1679,20 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
 // One catalog item, in the live-look card style.
 function PickerCard({ p, onAdd }) {
   const [imgErr, setImgErr] = useState(false);
-  const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  const st = p._stock || { units: 0, sizes: [], incoming: false };
+  const out = (st.units || 0) <= 0;
+  // Prefer the live in-stock sizes; fall back to the catalog's listed sizes.
+  const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(p.available_sizes) ? p.available_sizes : []);
   return (
     <button className="ai-card" onClick={onAdd} aria-label={`Add ${p.name || p.sku} to store`}>
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
         {p.image_front_url && !imgErr
-          ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain' }} />
+          ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
         {p.retail_price != null && (
           <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</span>
         )}
+        {out && <span style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
@@ -1678,6 +1700,9 @@ function PickerCard({ p, onAdd }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
           <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
           {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
+        </div>
+        <div style={{ fontSize: 11.5, fontWeight: 800, color: st.units > 0 ? '#166534' : st.incoming ? '#92400e' : '#b91c1c' }}>
+          {st.units > 0 ? `${st.units} in stock` : st.incoming ? 'Incoming only' : 'Out of stock'}
         </div>
         {sizes.length > 0 && (
           <div className="ai-chipgrid">
@@ -1693,12 +1718,79 @@ function PickerCard({ p, onAdd }) {
   );
 }
 
+// ── Live inventory for the AI panel ──────────────────────────────────────────
+// Same source of truth as the catalog live-look (AdidasInventory): VENDOR stock
+// (inventory_unified = adidas CLICK + Agron, keyed by SKU) merged with NSA's own
+// IN-HOUSE warehouse stock (product_inventory, keyed by product_id). A size is
+// "available now" when vendor qty + in-house qty > 0. Returns a Map keyed by
+// product id → { units, sizes[], sizeStock{}, incoming }.
+const SIZE_RANK_ORDER = ['3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', '4XL', '5XL', '6XL', 'OSFA', 'OS', 'NS'];
+const sizeRank = (s) => {
+  const up = String(s || '').trim().toUpperCase();
+  const i = SIZE_RANK_ORDER.indexOf(up);
+  if (i !== -1) return i;
+  const n = parseFloat(up);
+  return Number.isFinite(n) ? 500 + n : 999; // footwear numbers after lettered sizes
+};
+
+async function fetchStockMap(rows) {
+  const ids = [...new Set(rows.map((r) => r.id).filter(Boolean))];
+  const skus = [...new Set(rows.map((r) => r.sku).filter(Boolean))];
+  const map = new Map();
+  if (!ids.length && !skus.length) return map;
+  const [vend, inhouse] = await Promise.all([
+    skus.length
+      ? supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty').in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0')
+      : Promise.resolve({ data: [] }),
+    ids.length
+      ? supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0)
+      : Promise.resolve({ data: [] }),
+  ]);
+  const bySku = {};
+  for (const r of vend.data || []) (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
+  const byPid = {};
+  for (const r of inhouse.data || []) { byPid[r.product_id] = byPid[r.product_id] || {}; byPid[r.product_id][r.size] = (byPid[r.product_id][r.size] || 0) + (r.quantity || 0); }
+  for (const row of rows) {
+    const sizes = (bySku[row.sku] || []).map((s) => ({ ...s }));
+    const ih = byPid[row.id];
+    if (ih) for (const [size, qty] of Object.entries(ih)) { const ex = sizes.find((s) => s.size === size); if (ex) ex.ih = qty; else sizes.push({ size, q: 0, fd: null, fq: null, ih: qty }); }
+    const availNow = (s) => (s.q || 0) + (s.ih || 0);
+    const sizeStock = {};
+    for (const s of sizes) { const n = availNow(s); if (n > 0) sizeStock[s.size] = n; }
+    map.set(row.id, {
+      units: sizes.reduce((a, s) => a + availNow(s), 0),
+      sizes: Object.keys(sizeStock).sort((a, b) => sizeRank(a) - sizeRank(b)),
+      sizeStock,
+      incoming: sizes.some((s) => !availNow(s) && s.fd && s.fq), // nothing now, but inbound dated
+    });
+  }
+  return map;
+}
+
+// Shared "In stock only" pill — used by every store builder (manual picker, AI
+// panel, and the coach portal) so the control looks and behaves identically.
+function InStockToggle({ on, onToggle, count, total }) {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+      <button type="button" onClick={onToggle} aria-pressed={on} title="Only show items with stock on hand (NSA warehouse + vendor)"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700,
+          border: '1px solid ' + (on ? '#166534' : '#d1d5db'), background: on ? '#dcfce7' : '#fff', color: on ? '#166534' : '#3A4150' }}>
+        <span style={{ width: 14, height: 14, borderRadius: 4, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, lineHeight: 1, color: '#fff', background: on ? '#166534' : '#cbd5e1' }}>{on ? '✓' : ''}</span>
+        In stock only
+      </button>
+      {total != null && <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{count} of {total} in stock now</span>}
+    </div>
+  );
+}
+
 // ── Build with AI ── A plain-English brief → the ai-store-builder edge function
 // → a structured filter spec → matched catalog items → review/select → add to the
 // store. The interpreted tags are shown and editable, so the AI is never a black box.
 function AiStoreBuilder({ onAddProducts, onClose }) {
   const [brief, setBrief] = useState('');
   const [spec, setSpec] = useState(null);
+  const [candidates, setCandidates] = useState([]); // color/keyword-filtered rows, each carrying live _stock
+  const [inStockOnly, setInStockOnly] = useState(false);
   const [matches, setMatches] = useState([]);
   const [sel, setSel] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
@@ -1707,7 +1799,10 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
 
   // Brand/category come back as exact catalog values (reliable .in filters);
   // colors/keywords are matched in-memory to dodge PostgREST wildcard quirks.
-  const runQuery = async (s) => {
+  // Each candidate is annotated with live availability (_stock) from the same
+  // source as the catalog live-look, so the in-stock toggle and the per-card
+  // stock badges agree on exactly what's orderable right now.
+  const loadCandidates = async (s) => {
     let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').limit(300);
     if (s.brands?.length) q = q.in('brand', s.brands);
     if (s.categories?.length) q = q.in('category', s.categories);
@@ -1720,19 +1815,33 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
         colors.some((c) => (p.color || '').toLowerCase().includes(c)) ||
         keywords.some((k) => (p.name || '').toLowerCase().includes(k)));
     }
-    return rows.slice(0, 120);
+    rows = rows.slice(0, 200); // bound the inventory lookup; the grid is capped at 120 below
+    const stock = await fetchStockMap(rows);
+    for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
+    return rows;
+  };
+
+  // One place decides what's visible: the candidate pool narrowed by the in-stock
+  // toggle, capped, with the selection (re)seeded to everything shown.
+  const applyFilter = (cands, inStock) => {
+    const visible = (inStock ? cands.filter((p) => (p._stock?.units || 0) > 0) : cands).slice(0, 120);
+    setMatches(visible);
+    setSel(new Set(visible.map((p) => p.id)));
   };
 
   const generate = async () => {
     if (!brief.trim()) return;
-    setBusy(true); setErr(''); setSpec(null); setMatches([]); setSel(new Set());
+    setBusy(true); setErr(''); setSpec(null); setCandidates([]); setMatches([]); setSel(new Set());
     try {
       const d = await invokeEdgeFn(supabase, 'ai-store-builder', { brief: brief.trim() });
       if (!d?.ok) throw new Error(d?.error || 'The AI could not read that brief.');
       setSpec(d.spec);
-      const m = await runQuery(d.spec);
-      setMatches(m);
-      setSel(new Set(m.map((p) => p.id)));
+      const cands = await loadCandidates(d.spec);
+      // Default to in-stock-only across every builder so we never seed a store with
+      // items we can't fulfill; one click flips it off to see (dimmed) out-of-stock.
+      const inStock = true;
+      setCandidates(cands); setInStockOnly(inStock);
+      applyFilter(cands, inStock);
     } catch (e) { setErr(e.message || String(e)); }
     setBusy(false);
   };
@@ -1740,11 +1849,14 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
   const dropTag = async (facet, val) => {
     const next = { ...spec, [facet]: (spec[facet] || []).filter((x) => x !== val) };
     setSpec(next);
-    const m = await runQuery(next);
-    setMatches(m); setSel(new Set(m.map((p) => p.id)));
+    const cands = await loadCandidates(next);
+    setCandidates(cands);
+    applyFilter(cands, inStockOnly);
   };
+  const toggleInStock = () => { const v = !inStockOnly; setInStockOnly(v); applyFilter(candidates, v); };
   const toggleSel = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const chosen = matches.filter((p) => sel.has(p.id));
+  const inStockCount = candidates.reduce((a, p) => a + ((p._stock?.units || 0) > 0 ? 1 : 0), 0);
 
   const facetRow = (label, facet) => (spec?.[facet]?.length ? (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -1782,7 +1894,10 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
               {facetRow('Categories', 'categories')}
               {facetRow('Colors', 'colors')}
               {facetRow('Keywords', 'keywords')}
-              {spec.in_stock_only && <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>In-stock focus</div>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 1 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', minWidth: 74 }}>Stock</span>
+                <InStockToggle on={inStockOnly} onToggle={toggleInStock} count={inStockCount} total={candidates.length} />
+              </div>
             </div>
           </div>
         )}
@@ -1790,7 +1905,11 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
         {spec && (
           <div style={{ marginTop: 14 }}>
             {matches.length === 0 ? (
-              <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No catalog items matched — remove a tag above to loosen the search.</div>
+              <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
+                {inStockOnly && candidates.length > 0
+                  ? 'Nothing in stock matched — turn off “In stock only” above to include out-of-stock items, or remove a tag to loosen the search.'
+                  : 'No catalog items matched — remove a tag above to loosen the search.'}
+              </div>
             ) : (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -1820,19 +1939,30 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
 
 function AiMatchCard({ p, on, onToggle }) {
   const [imgErr, setImgErr] = useState(false);
+  const st = p._stock || { units: 0, sizes: [], incoming: false };
+  const out = (st.units || 0) <= 0;
+  const stockText = st.units > 0 ? `${st.units} in stock` : st.incoming ? 'Incoming only' : 'Out of stock';
+  const stockColor = st.units > 0 ? '#166534' : st.incoming ? '#92400e' : '#b91c1c';
   return (
     <button className="ai-card" onClick={onToggle} aria-pressed={on} style={{ outline: on ? '2px solid #191919' : '2px solid transparent', outlineOffset: -2 }}>
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
         {p.image_front_url && !imgErr
-          ? <img src={p.image_front_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: on ? 1 : 0.78 }} />
+          ? <img src={p.image_front_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : on ? 1 : 0.82 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
         <span style={{ position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: 6, background: on ? '#191919' : 'rgba(255,255,255,.9)', border: '1px solid ' + (on ? '#191919' : '#cbd5e1'), color: '#fff', fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{on ? '✓' : ''}</span>
         {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>{money(p.retail_price)}</span>}
+        {out && <span style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 7px', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '10px 12px 12px', textAlign: 'left', width: '100%' }}>
         {p.brand && <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
         <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 14.5, lineHeight: 1.12, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
         <div style={{ fontSize: 11.5, color: '#6A7180', marginTop: 2 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: stockColor }}>{stockText}</span>
+          {st.sizes && st.sizes.length > 0 && (
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: '#6A7180', letterSpacing: '.02em' }}>{st.sizes.slice(0, 7).join(' · ')}{st.sizes.length > 7 ? ` +${st.sizes.length - 7}` : ''}</span>
+          )}
+        </div>
       </div>
     </button>
   );
