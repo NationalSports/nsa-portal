@@ -538,13 +538,22 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   // Save Quick Mock Builder output for a store: (1) merge the mocks/files/scenes
   // back onto the customer's shared art library (so order mockups can reuse them),
   // and (2) set each store item's image to its baked mock so the storefront shows it.
-  const saveStoreMocks = useCallback(async ({ mocksByGarment, filesByLocation, sceneByGarment }, artIds, customerId) => {
+  const saveStoreMocks = useCallback(async ({ mocksByGarment, filesByLocation, sceneByGarment }, artList) => {
     const _u = (f) => typeof f === 'string' ? f : (f?.url || '');
-    if (customerId && (artIds || []).length) {
-      const { data: cust } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+    // Only arts actually placed (a scene carries their _layerId) or that gained new
+    // source files get the mocks — and each is written back to ITS OWN customer
+    // (the store's customer for own art, the parent for inherited art).
+    const placed = new Set();
+    Object.values(sceneByGarment || {}).forEach((objs) => (objs || []).forEach((o) => { if (o && o._layerId) placed.add(o._layerId); }));
+    Object.keys(filesByLocation || {}).forEach((id) => placed.add(id));
+    const custOf = {}; (artList || []).forEach((a) => { custOf[a.id] = a._srcCustId; });
+    const byCust = {};
+    placed.forEach((id) => { const cid = custOf[id]; if (cid) (byCust[cid] = byCust[cid] || []).push(id); });
+    for (const [cid, ids] of Object.entries(byCust)) {
+      const { data: cust } = await supabase.from('customers').select('art_files').eq('id', cid).maybeSingle();
       const arts = Array.isArray(cust?.art_files) ? cust.art_files : [];
       const next = arts.map((a) => {
-        if (!artIds.includes(a.id)) return a;
+        if (!ids.includes(a.id)) return a;
         const upd = { ...a };
         const locFiles = (filesByLocation || {})[a.id] || [];
         if (locFiles.length) { const have = new Set((a.files || []).map(_u)); upd.files = [...(a.files || []), ...locFiles.filter((f) => !have.has(_u(f)))]; }
@@ -553,7 +562,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
         if (sceneByGarment && Object.keys(sceneByGarment).length) upd.qm_scenes = { ...(a.qm_scenes || {}), ...sceneByGarment };
         return upd;
       });
-      const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', customerId);
+      const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', cid);
       if (error) flash('Could not save to library: ' + error.message);
     }
     const cat = detail?.catalog || []; const sbw = detail?.stockByWp || {};
@@ -1171,19 +1180,20 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
   const availSizes = {};
   Object.values(stockByWp).forEach((s) => { if (s.product_id && Array.isArray(s.available_sizes)) availSizes[s.product_id] = s.available_sizes; });
 
-  // ── Quick Mock Builder inputs (store items as garments, OWN library art as layers) ──
-  const _qmOwnArt = (detail?.libraryArt || []).filter((a) => a._src === 'library');
+  // ── Quick Mock Builder inputs (store items as garments, the team's library art —
+  // own + parent — as layers; saves route back to each art's owning customer) ──
+  const _qmArt = (detail?.libraryArt || []);
   const _qmU = (f) => typeof f === 'string' ? f : (f && f.url) || '';
   const _qmIsImg = (u) => /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u || '');
   const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
-  const qmLocations = _qmOwnArt.map((a) => {
+  const qmLocations = _qmArt.map((a) => {
     const urls = [a.preview_url, ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
     const files = []; const seen = new Set();
     urls.forEach((u) => { if (!u || seen.has(u) || !_qmIsImg(u)) return; seen.add(u); files.push({ name: (u.split('/').pop() || 'art').split('?')[0], url: u, preview: { url: u } }); });
     return { artFileId: a.id, name: a.name || 'Logo', position: '', existingFiles: (a.files || []), files, preview: files[0] ? files[0].preview : null, garmentKeys: [] };
   });
   const qmInitialMocks = {}; const qmInitialScene = {};
-  _qmOwnArt.forEach((a) => { Object.entries(a.item_mockups || {}).forEach(([k, arr]) => { if (arr && arr.length) qmInitialMocks[k] = [...(qmInitialMocks[k] || []), ...arr]; }); Object.entries(a.qm_scenes || {}).forEach(([k, objs]) => { if (objs && objs.length && !qmInitialScene[k]) qmInitialScene[k] = objs; }); });
+  _qmArt.forEach((a) => { Object.entries(a.item_mockups || {}).forEach(([k, arr]) => { if (arr && arr.length) qmInitialMocks[k] = [...(qmInitialMocks[k] || []), ...arr]; }); Object.entries(a.qm_scenes || {}).forEach(([k, objs]) => { if (objs && objs.length && !qmInitialScene[k]) qmInitialScene[k] = objs; }); });
 
   return (
     <>
@@ -1230,7 +1240,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmOwnArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -1242,7 +1252,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       )}
       {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} nf={(m) => onFlash && onFlash(m)}
         onClose={() => setShowMock(false)}
-        onSave={async (payload) => { if (onSaveMocks) await onSaveMocks(payload, _qmOwnArt.map((a) => a.id), s.customer_id); setShowMock(false); }} />}
+        onSave={async (payload) => { if (onSaveMocks) await onSaveMocks(payload, _qmArt); setShowMock(false); }} />}
     </>
   );
 }
