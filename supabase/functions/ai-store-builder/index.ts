@@ -18,9 +18,10 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
-// Default to the most capable model. Override per-env to trade intelligence for
-// cost on this lightweight extraction, e.g. AI_STORE_BUILDER_MODEL=claude-haiku-4-5.
-const MODEL = Deno.env.get("AI_STORE_BUILDER_MODEL") || "claude-opus-4-8";
+// Sonnet 4.6 is plenty for this lightweight, schema-constrained extraction, and
+// it matches the proven ai-order-builder. Override per-env if you ever need to:
+// AI_STORE_BUILDER_MODEL=claude-haiku-4-5 (cheaper still) or claude-opus-4-8.
+const MODEL = Deno.env.get("AI_STORE_BUILDER_MODEL") || "claude-sonnet-4-6";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
