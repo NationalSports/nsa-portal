@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn } from './utils';
 import { shipStationCall } from './vendorApis';
-import { NSA } from './constants';
+import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import { ART_PLACEMENTS } from './lib/artPlacements';
@@ -168,9 +168,10 @@ function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
   const ref = useRef();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [over, setOver] = useState(false);
   const shown = value || fallback;
-  const pick = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
+  const upload = async (file) => {
+    if (!file) return;
     if (!file.type.startsWith('image/')) { setErr('Please choose an image file.'); return; }
     setBusy(true); setErr('');
     try { const url = await cloudUpload(file, 'nsa-webstores'); onChange(url); }
@@ -179,18 +180,23 @@ function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
   };
   return (
     <div style={{ marginBottom: 12 }}>
-      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: '#64748b' }}>{label}</label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ width: 64, height: 64, borderRadius: 8, background: '#f1f5f9', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>none</span>}
+      <label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>
+      <div
+        onClick={() => ref.current?.click()}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!over) setOver(true); }}
+        onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) upload(f); }}
+        style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 12, borderRadius: 12, cursor: 'pointer', border: '1.5px dashed ' + (over ? '#191919' : '#d7dbe2'), background: over ? '#f5f5ff' : '#fafbfc', transition: 'border-color .12s, background .12s' }}>
+        <div style={{ width: 60, height: 60, borderRadius: 10, background: '#fff', border: '1px solid #eef0f3', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 700, textTransform: 'uppercase' }}>none</span>}
         </div>
-        <div>
-          <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick} />
-          <button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => ref.current?.click()}>{busy ? 'Uploading…' : value ? 'Replace image' : 'Upload image'}</button>
-          {value && <button type="button" className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} onClick={() => onChange(null)}>Remove</button>}
-          {!value && fallback && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Using stock photo — upload to override.</div>}
-          {err && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>{err}</div>}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>{busy ? 'Uploading…' : over ? 'Drop the image' : value ? 'Replace image' : 'Drag an image here, or click to browse'}</div>
+          {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>Using stock photo — drop one to override.</div>}
+          {err && <div style={{ fontSize: 11.5, color: '#b91c1c', marginTop: 3 }}>{err}</div>}
         </div>
+        {value && <button type="button" onClick={(e) => { e.stopPropagation(); onChange(null); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '5px 10px', fontSize: 12, fontWeight: 700, color: '#b91c1c', cursor: 'pointer' }}>Remove</button>}
+        <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) upload(f); e.target.value = ''; }} />
       </div>
     </div>
   );
@@ -436,6 +442,17 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     setStores((prev) => [data, ...prev]);
     flash('Store created'); return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
+
+  // Launch / close a store from the detail view (the form no longer sets status —
+  // a store is built as a draft, then launched when it's ready).
+  const setStoreStatus = useCallback(async (store, status) => {
+    const { data, error } = await supabase.from('webstores').update({ status, updated_at: new Date().toISOString() }).eq('id', store.id).select().single();
+    if (error) { flash('Could not update status: ' + error.message); return; }
+    setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
+    if (sel?.id === store.id) setSel(data);
+    if (store.status !== 'open' && status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
+    flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
+  }, [sel, flash, notifyCoachPublished]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
@@ -850,7 +867,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab}
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
-          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
+          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
@@ -950,7 +967,7 @@ function Chip({ label, tone = 'slate' }) {
 
 // Type-ahead club picker — the customer list is ~2k rows, so a dropdown is
 // unusable. Filters the in-memory parents list as you type.
-function CustomerPicker({ customers, value, onChange }) {
+function CustomerPicker({ customers, value, onChange, placeholder }) {
   const selected = customers.find((c) => c.id === value);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -963,7 +980,7 @@ function CustomerPicker({ customers, value, onChange }) {
   }
   return (
     <div style={{ position: 'relative' }}>
-      <input className="form-input" autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder="Search clubs by name…" onFocus={() => setOpen(true)} />
+      <input className="form-input" autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder={placeholder || 'Search by name…'} onFocus={() => setOpen(true)} />
       {open && matches.length > 0 && (
         <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
           {matches.map((c) => <div key={c.id} onClick={() => { onChange(c.id); setOpen(false); setQ(''); }} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid #f1f5f9' }}>{c.name}</div>)}
@@ -976,11 +993,11 @@ function CustomerPicker({ customers, value, onChange }) {
 
 // ── Store create / edit form ─────────────────────────────────────────
 const BLANK = {
-  name: '', slug: '', customer_id: '', rep_id: '', status: 'draft',
+  name: '', slug: '', customer_id: '', rep_id: '', csr_id: '', status: 'draft',
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'ship_home',
-  shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'fedex', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
+  shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -994,10 +1011,29 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
   const [slugTouched, setSlugTouched] = useState(!!store);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Team vs club only relabels the form (most stores are team stores). The
+  // customer link is the same either way; defaults to team.
+  const [orgType, setOrgType] = useState(store?.org_type || 'team');
+  const noun = orgType === 'club' ? 'Club' : 'Team';
+  const lead = orgType === 'club' ? 'Director' : 'Coach';
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setName = (v) => setF((p) => ({ ...p, name: v, slug: slugTouched ? p.slug : slugify(v) }));
+  // Build a fresh hero blurb from the store's own details — coach-approved, the
+  // chosen delivery method, and the ~4-5 week post-close timeline. Varies each click.
+  const genBlurb = () => {
+    const team = (f.name || '').replace(/\s*(team |club )?store$/i, '').trim() || 'our team';
+    const deliver = f.delivery_mode === 'ship_home' ? 'shipped right to your door' : `delivered to the ${noun.toLowerCase()}`;
+    const closeOn = f.close_at ? ` on ${new Date(f.close_at + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}` : '';
+    const pick = (a) => a[Math.floor(Math.random() * a.length)];
+    const open = pick([`Welcome to the official ${team} store!`, `The ${team} store is open!`, `Gear up — the official ${team} store is here.`]);
+    const body = pick([`Everything here has been hand-picked and approved by your coaching staff, so you can order with confidence.`, `Every item is pre-approved by your coaches — no guesswork, just official gear.`, `It's all coach-approved, so the whole ${noun.toLowerCase()} looks the part.`]);
+    const close = pick([`Orders are ${deliver} about 4–5 weeks after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly 4–5 weeks — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about 4–5 weeks later.`]);
+    return `${open} ${body} ${close}`;
+  };
   // Sales reps only (not all employees).
   const salesReps = (REPS || []).filter((r) => r.role === 'rep' && r.is_active !== false);
+  // CSR can be any active staffer (they handle store/coach messages).
+  const staff = (REPS || []).filter((r) => r.is_active !== false).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
   const submit = async () => {
     setError('');
@@ -1011,6 +1047,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     payload.number_max = Number(payload.number_max) || 99;
     payload.customer_id = payload.customer_id || null;
     payload.rep_id = payload.rep_id || null;
+    payload.csr_id = payload.csr_id || null;
     payload.open_at = payload.open_at || null;
     payload.close_at = payload.close_at || null;
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
@@ -1022,7 +1059,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
 
   const parents = cust.filter((c) => !c.parent_id);
   return (
-    <div className="ws-form" style={{ maxWidth: 780, fontFamily: BODY, color: '#191919', paddingBottom: 8 }}>
+    <div className="ws-form" style={{ maxWidth: 1040, fontFamily: BODY, color: '#191919', paddingBottom: 8 }}>
       <CatalogKitStyles />
       <style>{`
         .ws-form .form-input,.ws-form .form-select,.ws-form textarea{width:100%;box-sizing:border-box;border:1px solid #e2e6ec;border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;color:#191919;background:#fff;outline:none;transition:border-color .12s,box-shadow .12s}
@@ -1030,29 +1067,41 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         .ws-form .form-input:focus,.ws-form .form-select:focus,.ws-form textarea:focus{border-color:#191919;box-shadow:0 0 0 3px rgba(25,25,25,.07)}
         .ws-form .form-select{cursor:pointer;appearance:auto}
       `}</style>
-      <button onClick={onCancel} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e2e6ec', borderRadius: 9, padding: '7px 13px', fontSize: 13, fontWeight: 700, color: '#3A4150', cursor: 'pointer', marginBottom: 16 }}>← Back</button>
-      <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
-      <div style={{ color: '#6A7180', fontSize: 13.5, marginTop: 5, marginBottom: 18 }}>{store ? 'Update this store’s setup.' : 'Set up the store — you’ll add products and artwork after it’s created.'}</div>
+      <button onClick={onCancel} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e2e6ec', borderRadius: 9, padding: '6px 12px', fontSize: 13, fontWeight: 700, color: '#3A4150', cursor: 'pointer', marginBottom: 12 }}>← Back</button>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
+          <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? 'Update this store’s setup.' : 'Set it up here — add products and artwork after it’s created.'}</div>
+        </div>
+        <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
+          {['team', 'club'].map((t) => (
+            <button key={t} type="button" onClick={() => setOrgType(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
+          ))}
+        </div>
+      </div>
       {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
+      <div style={{ columns: '2 440px', columnGap: 14 }}>
 
       <Section title="Basics">
         <Row label="Store name"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="Tartan FC Team Store" /></Row>
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="tartan-fc" /></div></Row>
-        <Row label="Club (customer)"><CustomerPicker customers={parents} value={f.customer_id} onChange={(id) => set('customer_id', id)} /></Row>
-        <Row label="Rep"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{salesReps.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
-        <Row label="Status"><select className="form-select" value={f.status} onChange={(e) => set('status', e.target.value)}>{['draft', 'open', 'closed', 'archived'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
+        <Row label={`${noun} (customer)`}><CustomerPicker customers={parents} value={f.customer_id} onChange={(id) => { const c = cust.find((x) => x.id === id); const pcs = (c && c.pantone_colors) || []; const ph = (i) => { const pc = pcs[i]; return pc ? (pantoneHex(pc.code) || pc.hex || '') : ''; }; setF((p) => ({ ...p, customer_id: id, rep_id: (c && c.primary_rep_id) || p.rep_id, primary_color: ph(0) || p.primary_color, accent_color: ph(1) || p.accent_color })); }} placeholder={`Search ${noun.toLowerCase()}s by name…`} /></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Open date"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
-          <Row label="Close date"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
+          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{salesReps.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{staff.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+        </div>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
+          <Row label="Close date (optional)"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
         </div>
       </Section>
 
-      <Section title="Club director (portal access)">
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>The director/coach uses this email to access their store-tracking portal.</div>
-        <Row label="Director name"><input className="form-input" value={f.director_name || ''} onChange={(e) => set('director_name', e.target.value)} /></Row>
+      <Section title={`${noun} ${lead.toLowerCase()} (portal access)`}>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>The {lead.toLowerCase()} uses this email to access their store-tracking portal.</div>
+        <Row label={`${lead} name`}><input className="form-input" value={f.director_name || ''} onChange={(e) => set('director_name', e.target.value)} /></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Director email"><input className="form-input" type="email" value={f.director_email || ''} onChange={(e) => set('director_email', e.target.value)} /></Row>
-          <Row label="Director phone"><input className="form-input" value={f.director_phone || ''} onChange={(e) => set('director_phone', e.target.value)} /></Row>
+          <Row label={`${lead} email`}><input className="form-input" type="email" value={f.director_email || ''} onChange={(e) => set('director_email', e.target.value)} /></Row>
+          <Row label={`${lead} phone`}><input className="form-input" value={f.director_phone || ''} onChange={(e) => set('director_phone', e.target.value)} /></Row>
         </div>
       </Section>
 
@@ -1061,14 +1110,14 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
           <option value="paid">Card only (parents pay)</option><option value="unpaid">Invoice only (team tab)</option><option value="either">Both — card or team tab</option>
         </select></Row>
         <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
-        <Toggle label="Require login (club members only)" checked={f.require_login} onChange={(v) => set('require_login', v)} />
+        <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
       </Section>
 
       <Section title="Delivery">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
         <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
-          <option value="deliver_club">Deliver to club — ships to the club's default address</option>
+          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}’s default address`}</option>
         </select></Row>
         {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
@@ -1077,7 +1126,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         </div>
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ship-to-home orders pushed to ShipStation route into that Store and get tagged (create a tag named after the team in ShipStation, paste its id). The team name is also set as the order's customer.</div>
         <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-          <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'fedex'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['fedex', 'ups', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
+          <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
           <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
           <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
         </div>
@@ -1108,10 +1157,17 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         </div>
         <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} label="Main logo (header)" />
         <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} label="Banner image (hero background)" />
-        <Row label="Hero blurb"><textarea className="form-input" rows={2} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official Tartan FC team store — gear up for the season!" /></Row>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>Hero blurb</label>
+            <button type="button" onClick={() => set('hero_blurb', genBlurb())} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 999, padding: '4px 12px', fontSize: 11.5, fontWeight: 800, cursor: 'pointer' }}>✨ Generate</button>
+          </div>
+          <textarea className="form-input" rows={3} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official team store — gear up for the season!" />
+        </div>
       </Section>
 
-      <div style={{ position: 'sticky', bottom: 0, background: 'rgba(247,248,250,.92)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '14px 0', display: 'flex', gap: 10, marginTop: 10 }}>
+      </div>
+      <div style={{ position: 'sticky', bottom: 0, background: 'rgba(247,248,250,.92)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '14px 0', display: 'flex', gap: 10, marginTop: 6 }}>
         <button disabled={busy} onClick={submit} style={{ background: busy ? '#6A7180' : '#191919', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : store ? 'Save changes' : 'Create store'}</button>
         <button disabled={busy} onClick={onCancel} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>Cancel</button>
       </div>
@@ -1133,13 +1189,13 @@ function ColorField({ label, value, onChange, fallback }) {
 }
 
 function Section({ title, children }) {
-  return <div style={{ background: '#fff', border: '1px solid #eef0f3', borderRadius: 14, marginBottom: 14, boxShadow: '0 1px 2px rgba(16,24,40,.04)' }}>
-    <div style={{ padding: '13px 18px', borderBottom: '1px solid #f3f4f7', fontFamily: DISPLAY, fontWeight: 800, fontSize: 14.5, textTransform: 'uppercase', letterSpacing: '.06em', color: '#191919' }}>{title}</div>
-    <div style={{ padding: 18 }}>{children}</div>
+  return <div style={{ background: '#fff', border: '1px solid #eef0f3', borderRadius: 12, marginBottom: 12, boxShadow: '0 1px 2px rgba(16,24,40,.04)', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', display: 'inline-block', width: '100%' }}>
+    <div style={{ padding: '10px 14px', borderBottom: '1px solid #f3f4f7', fontFamily: DISPLAY, fontWeight: 800, fontSize: 13.5, textTransform: 'uppercase', letterSpacing: '.06em', color: '#191919' }}>{title}</div>
+    <div style={{ padding: '12px 14px' }}>{children}</div>
   </div>;
 }
 function Row({ label, children }) {
-  return <div style={{ marginBottom: 14, flex: 1 }}><label style={{ display: 'block', marginBottom: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>{children}</div>;
+  return <div style={{ marginBottom: 10, flex: 1 }}><label style={{ display: 'block', marginBottom: 5, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>{label}</label>{children}</div>;
 }
 function Toggle({ label, checked, onChange }) {
   return <div role="switch" aria-checked={!!checked} onClick={() => onChange(!checked)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '7px 0', cursor: 'pointer', fontSize: 13.5, color: '#3A4150', userSelect: 'none' }}>
@@ -1151,7 +1207,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onFlash, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onFlash, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1214,6 +1270,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
           {portalUrl && <button className="btn btn-sm btn-secondary" title={portalUrl} onClick={copyPortal}>{portalCopied ? '✓ Copied' : 'Copy coach portal link'}</button>}
           {portalUrl && <button className="btn btn-sm btn-secondary" title={s.director_email ? `Email ${s.director_email}` : 'Add a director email in Settings'} disabled={!s.director_email} onClick={onEmailDirector} style={!s.director_email ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>Email director</button>}
+          {onSetStatus && (s.status !== 'open'
+            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => onSetStatus(s, 'open')} title="Make this store live for shoppers">🚀 Launch store</button>
+            : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>Edit settings</button>
         </div>
       </div>
