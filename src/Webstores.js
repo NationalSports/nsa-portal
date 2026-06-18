@@ -771,14 +771,16 @@ function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate, onTog
             const window_ = fmt(s.open_at) || fmt(s.close_at) ? `${fmt(s.open_at) || 'now'} → ${fmt(s.close_at) || 'open'}` : 'No close date';
             const pay = s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only';
             const deliver = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
+            const coachReview = s.created_via === 'coach' && s.status === 'draft';
             return (
-              <div key={s.id} className="card" style={{ cursor: 'pointer', width: '100%' }} onClick={() => onOpen(s)}>
+              <div key={s.id} className="card" style={{ cursor: 'pointer', width: '100%', borderLeft: coachReview ? '3px solid #f59e0b' : undefined }} onClick={() => onOpen(s)}>
                 <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
                   <div style={{ minWidth: 220, flex: '1 1 240px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 17, fontWeight: 800, color: '#1e293b' }}>{s.name}</span>
                       <StatusBadge status={s.status} />
                       {s.is_template && <Chip label="Template" tone="blue" />}
+                      {s.created_via === 'coach' && <Chip label={coachReview ? '★ Coach submission — review' : 'Coach-built'} tone="amber" />}
                     </div>
                     <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
                   </div>
@@ -807,7 +809,7 @@ function Quick({ label, children }) {
 }
 
 function Chip({ label, tone = 'slate' }) {
-  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' } };
+  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' } };
   const t = tones[tone] || tones.slate;
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: t.bg, color: t.fg, fontFamily: tone === 'gray' ? 'monospace' : 'inherit' }}>{label}</span>;
 }
