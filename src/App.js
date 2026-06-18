@@ -6357,7 +6357,18 @@ export default function App(){
     const defExp=fourWeeks.toISOString().split('T')[0];
     const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
     setESO(so);setESOC(c||null);setPg('orders');return so};
-  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
+  const convertSO=est=>{
+    // Guard: never convert a partially-loaded estimate. The loader flags
+    // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
+    // estimate_items timed out on the last load — in that state est.items can be
+    // present while their per-line `decorations` arrays are empty. Cloning that
+    // hollow state below silently produces a sales order with no
+    // so_item_decorations rows (art survives because it's an order-level field),
+    // and the new-SO save path's deco-loss guards don't catch it because a brand
+    // new SO has no prior rows to compare against. Fail closed: make the rep
+    // reload rather than lose the decorations.
+    if(est._itemsHydrated===false||est._decosHydrated===false){nf("This estimate hasn't finished loading — its items/decorations didn't fully sync on the last refresh. Reload the page and try again before converting, so the line decorations carry onto the order.",'error');return}
+    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
     // Calculate promo amount if promo is applied
