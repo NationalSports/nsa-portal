@@ -62,6 +62,23 @@ const PLACE_PRESETS = {
   right_sleeve: {label: 'R. sleeve',  cx: 68,  cy: 300, w: 62},
   center:       {label: 'Center',     cx: 230, cy: 286, w: 178},
 };
+// Auto-contrast for "apply to all colors": white logo on dark garments.
+const _lumOf = hex => { const {r, g, b} = hexToRgb(hex); return 0.299 * r + 0.587 * g + 0.114 * b; };
+const garmentIsDark = color => { const hxs = hexesForColor(color); const avg = hxs.reduce((a, h) => a + _lumOf(h), 0) / (hxs.length || 1); return avg < 110; };
+const tintWhite = obj => {
+  if (typeof obj.getObjects === 'function') {
+    const walk = o => { if (typeof o.getObjects === 'function') { o.getObjects().forEach(walk); return; } if (o.fill && o.fill !== 'transparent') o.set('fill', '#ffffff'); if (o.stroke && o.stroke !== 'transparent') o.set('stroke', '#ffffff'); };
+    walk(obj); obj.dirty = true; return;
+  }
+  try {
+    const el = obj.getElement(); const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+    const off = document.createElement('canvas'); off.width = w; off.height = h;
+    const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, w, h);
+    const id = ctx.getImageData(0, 0, w, h); const d = id.data;
+    for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) { d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; } }
+    ctx.putImageData(id, 0, 0); obj.setElement(off);
+  } catch (e) {}
+};
 
 export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
   const [gi, setGi] = useState(0);
@@ -575,7 +592,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   });
 
   // Render a stored scene (placed art for one garment+side) to a PNG and upload it as a mock.
-  const _renderSceneMock = async (g, sd, sceneObjs) => {
+  const _renderSceneMock = async (g, sd, sceneObjs, makeWhite) => {
     const el = document.createElement('canvas');
     const c = new fabric.Canvas(el, {width: 460, height: 560, backgroundColor: '#ffffff'});
     try {
@@ -589,6 +606,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       }
       const objs = await fabric.util.enlivenObjects(sceneObjs);
       objs.forEach(o => c.add(o));
+      if (makeWhite) objs.forEach(tintWhite);
       c.renderAll();
       const dataUrl = c.toDataURL({format: 'png', multiplier: 2});
       const blob = await (await fetch(dataUrl)).blob();
@@ -642,6 +660,28 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       Object.entries(sceneRef.current).forEach(([k, objs]) => { if (!objs || !objs.length) return; const sep = k.lastIndexOf('|'); const g = garments[+k.slice(0, sep)]; if (g) sceneByGarment[g.key + '|' + k.slice(sep + 1)] = objs; });
       onSave({mocksByGarment: finalMocks, filesByLocation, sceneByGarment});
     } finally { setBusy(false); }
+  };
+
+  // Apply the current placement to EVERY garment color in one pass — auto-whitening
+  // the logo on dark garments. Renders + uploads a mock for each, all editable after.
+  const applyToAllColors = async () => {
+    if (!canvas) return;
+    const artObjs = canvas.getObjects().filter(o => o._isArt);
+    if (!artObjs.length) { nf && nf('Place the logo first, then apply it to all colors', 'error'); return; }
+    const sceneObjs = artObjs.map(o => { const j = o.toObject(['_isArt', '_layerId']); if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous'; return j; });
+    setBusy(true);
+    try {
+      let next = {...mocks}; let n = 0;
+      for (let i = 0; i < garments.length; i++) {
+        const g = garments[i];
+        sceneRef.current[i + '|front'] = sceneObjs; // keep editable per garment
+        const res = await _renderSceneMock(g, 'front', sceneObjs, garmentIsDark(g.color));
+        if (res) { next = {...next, [res.key]: [...(next[res.key] || []).filter(m => m.name !== res.entry.name), res.entry]}; n++; }
+      }
+      setMocks(next); clearDirty();
+      nf && nf('Logo applied to ' + n + ' color' + (n === 1 ? '' : 's') + ' — review any, then Done');
+    } catch (e) { nf && nf('Could not apply to all colors: ' + (e.message || e), 'error'); }
+    finally { setBusy(false); }
   };
 
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
@@ -722,7 +762,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
                   <Icon name="trash" size={11} /> Delete
                 </button>
-                <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
+                <button className="btn btn-sm" style={{fontSize: 10, marginLeft: 'auto', background: '#7c3aed', color: '#fff', fontWeight: 700}} disabled={busy} title="Place this logo on every garment color at once (auto-white on dark garments)" onClick={applyToAllColors}>⚡ All colors</button>
+                <button className="btn btn-sm btn-primary" style={{fontSize: 10}} disabled={busy} onClick={saveColorMock}>
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
                 </button>
               </div>
