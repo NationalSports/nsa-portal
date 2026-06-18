@@ -89,17 +89,16 @@ exports.handler = async (event) => {
       // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
       // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi_v2', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v2', body.method || '', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({
         amount: Math.round(amount_cents),
         currency: 'usd',
-        // Explicit methods (instead of automatic_payment_methods) so we can hard-disable Link: Link
-        // hides whether it's bank- or card-funded, which defeats our card-only surcharge. This locks
-        // checkout to Card (Apple/Google Pay still ride under 'card') and Bank/ACH — both report a
-        // real type to the Payment Element, so the no-fee-on-bank rule works reliably.
-        payment_method_types: ['card', 'us_bank_account'],
+        // The buyer picked card or bank up front (body.method), so restrict the intent to that one
+        // method. This hard-disables Link and guarantees the method charged matches the chosen price
+        // (card carries the surcharge, bank/ACH does not). Falls back to both if method is unspecified.
+        payment_method_types: body.method === 'bank' ? ['us_bank_account'] : body.method === 'card' ? ['card'] : ['card', 'us_bank_account'],
         metadata: {
           invoice_id: invoice_id || '',
           invoice_memo: invoice_memo || '',

@@ -528,44 +528,27 @@ try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
-  // Default to NO surcharge: the PaymentIntent is created at the base amount, and the 2.9% is added
-  // only when the buyer EXPLICITLY taps the Card tab (payType==='card'), at which point we bump the
-  // intent amount before charging. Link's express surface doesn't fire a usable change event and
-  // hides whether it's bank- or card-funded, so this guarantees a bank/Link payer is never wrongly
-  // surcharged (the complaint). Trade-off: a card paid through Link express skips the fee — fine.
-  const[payType,setPayType]=useState('');// '' until a method is picked; only 'card' is surcharged
-  const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  const isCard=payType==='card';
-  const fee=isCard?Math.round(amount*_feePct*100)/100:0;
-  const total=amount+fee;
+  // The fee is fixed by the Card-vs-Bank choice made before this form loaded (see StripePaymentModal):
+  // bank/ACH gets fee=0, card gets the 2.9%. Nothing is detected here, so Link can't muddy it.
+  const _fee=fee||0;
+  const total=amount+_fee;
 
   const handleSubmit=async(e)=>{
     e.preventDefault();
     if(!stripe||!elements){return}
     setProcessing(true);setError(null);
-    // Sync the PaymentIntent amount to the selected method before charging: bank/ACH carries no card
-    // surcharge (so the fee is dropped), cards do. The amount charged always equals the total shown
-    // here. The server re-validates the new amount against the invoice's open balance.
-    if(intentId){
-      try{
-        const r=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_intent',intent_id:intentId,amount_cents:Math.round(total*100)})});
-        if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||'Could not update the payment amount.')}
-      }catch(err){setError(err.message||'Could not update the payment amount. Please try again.');setProcessing(false);return}
-    }
     const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
     }else if(result.paymentIntent&&(result.paymentIntent.status==='succeeded'||result.paymentIntent.status==='processing')){
-      // ACH/bank debits (and some cards) settle asynchronously — confirmPayment returns status
-      // 'processing', NOT 'succeeded'. Treat that as a (pending) success: the funds are submitted.
-      // Previously this fell through to the error branch and told the customer the payment "was not
-      // completed," which scared people into thinking it failed (and re-paying). The invoice is only
-      // marked paid once Stripe confirms settlement via the webhook — never here for ACH.
-      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null,status:result.paymentIntent.status});
+      // ACH/bank debits settle asynchronously — confirmPayment returns status 'processing', not
+      // 'succeeded'. Treat that as a (pending) success; the invoice is marked paid on settlement via
+      // the webhook. (Without this, ACH wrongly showed "payment not completed.")
+      onSuccess({intentId:result.paymentIntent.id,amount,fee:_fee,last4:null,brand:null,status:result.paymentIntent.status});
     }else{
       setError('Payment was not completed. Please try again.');setProcessing(false);
     }
@@ -573,19 +556,19 @@ function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
 
   return<form onSubmit={handleSubmit}>
     <div style={{marginBottom:16}}>
-      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}} onChange={(e)=>{if(e&&e.value&&e.value.type)setPayType(e.value.type)}}/>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
     </div>
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
       <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
-      {isCard
-        ?<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>
+      {_fee>0
+        ?<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Card processing fee:</span><span>+${_fee.toFixed(2)}</span></div>
         :<div style={{display:'flex',justifyContent:'space-between',color:'#16a34a'}}><span>No processing fee</span><span>$0.00</span></div>}
       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
     </div>
     <div style={{display:'flex',gap:8}}>
       <button type="submit" disabled={!stripe||processing} style={{flex:1,padding:'14px 20px',background:processing?'#94a3b8':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:processing?'default':'pointer'}}>
-        {processing?'Processing...':'💳 Pay $'+total.toFixed(2)}
+        {processing?'Processing...':'Pay $'+total.toFixed(2)}
       </button>
       <button type="button" onClick={onCancel} style={{padding:'14px 16px',background:'#f1f5f9',color:'#64748b',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14,cursor:'pointer'}}>Cancel</button>
     </div>
@@ -594,53 +577,51 @@ function StripeCheckoutForm({amount,feePct,intentId,onSuccess,onCancel}){
 
 
 function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
+  const[payChoice,setPayChoice]=useState(null);// 'card' | 'bank' — picked before Stripe loads; locks the fee + method
   const[clientSecret,setClientSecret]=useState(null);
-  const[intentId,setIntentId]=useState(null);
   const[stripeReady,setStripeReady]=useState(null);
-  const[loading,setLoading]=useState(true);
+  const[loading,setLoading]=useState(false);// true only while creating the intent after a choice
   const[error,setError]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-  // Create the intent at the BASE amount (no surcharge); the checkout form bumps it 2.9% only if the
-  // buyer picks the Card tab — so bank/Link never starts with a fee baked in.
+  const cardFee=Math.round(totalDue*_feePct*100)/100;
+  const chosenFee=payChoice==='card'?cardFee:0;
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
+  // Load Stripe up front, but DON'T create the PaymentIntent until the buyer picks card vs bank. The
+  // choice fixes the amount (with/without the surcharge) AND restricts the method server-side, so the
+  // fee never depends on detecting what was used later — which Link makes impossible (it hides whether
+  // it's bank- or card-funded and doesn't fire a usable change event).
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
       try{
-        // Prefer the build-time key, but fall back to fetching it at runtime so a
-        // stale build (REACT_APP_STRIPE_PK empty at build) can't silently break payments.
         let promise=stripePromise;
         if(!promise){
           const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));
           if(cfg&&cfg.publishableKey)promise=loadStripe(cfg.publishableKey);
         }
-        if(!promise){
-          if(!cancelled){setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');setLoading(false)}
-          return;
-        }
+        if(!promise){if(!cancelled)setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');return;}
         if(!cancelled)setStripeReady(promise);
-        const res=await fetch('/.netlify/functions/stripe-payment',{
-          method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            action:'create_intent',
-            amount_cents:Math.round(totalDue*100),
-            customer_name:customerName,
-            customer_email:customerEmail,
-            invoice_id:invoiceIds,
-            invoice_memo:invoices[0]?.memo||'',
-            alpha_tag:alphaTag,
-          })
-        });
-        const data=await res.json();
-        if(!res.ok)throw new Error(data.error||'Failed to create payment');
-        if(!cancelled){setClientSecret(data.clientSecret);setIntentId(data.intentId);}
       }catch(e){if(!cancelled)setError(e.message)}
-      finally{if(!cancelled)setLoading(false)}
     })();
     return ()=>{cancelled=true};
   },[]);
+
+  const choosePay=async(choice)=>{
+    setPayChoice(choice);setLoading(true);setError(null);
+    const fee=choice==='card'?cardFee:0;
+    try{
+      const res=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag})});
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Failed to create payment');
+      setClientSecret(data.clientSecret);
+    }catch(e){setError(e.message);setPayChoice(null)}
+    finally{setLoading(false)}
+  };
+
+  const choiceBtn={width:'100%',textAlign:'left',padding:'14px 16px',borderRadius:10,border:'2px solid #e2e8f0',background:'white',cursor:'pointer',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:14};
 
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
     <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
@@ -651,20 +632,33 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
       </div>
       <div style={{padding:'20px 24px'}}>
         {paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:12,lineHeight:1.4}}>{paymentNote}</div>}
-        {loading&&<div style={{textAlign:'center',padding:40}}>
-          <div style={{display:'inline-block',width:28,height:28,border:'3px solid #e2e8f0',borderTop:'3px solid #22c55e',borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:10}}/>
-          <div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>This usually takes a few seconds.</div>
-          <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
-        </div>}
         {error&&<div style={{padding:20,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
           <div style={{fontSize:14,color:'#dc2626',fontWeight:600,marginBottom:4}}>{error}</div>
           <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Please try again or contact NSA for assistance.</div>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
-        {clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={totalDue} feePct={_feePct} intentId={intentId} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+        {!error&&!payChoice&&<div>
+          <div style={{fontSize:12,color:'#64748b'}}>Amount due</div>
+          <div style={{fontSize:30,fontWeight:800,color:'#0f172a',marginBottom:16}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}</div>
+          <div style={{fontSize:13,fontWeight:700,color:'#334155',marginBottom:10}}>How would you like to pay?</div>
+          <button style={choiceBtn} disabled={!stripeReady} onClick={()=>choosePay('bank')}>
+            <span><span style={{fontWeight:700}}>🏦 Bank account (ACH)</span><br/><span style={{fontSize:11,color:'#16a34a'}}>No processing fee</span></span>
+            <span style={{fontWeight:800}}>${totalDue.toFixed(2)}</span>
+          </button>
+          <button style={choiceBtn} disabled={!stripeReady} onClick={()=>choosePay('card')}>
+            <span><span style={{fontWeight:700}}>💳 Credit / debit card</span><br/><span style={{fontSize:11,color:'#d97706'}}>+{(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}% processing fee</span></span>
+            <span style={{fontWeight:800}}>${(totalDue+cardFee).toFixed(2)}</span>
+          </button>
+          <div style={{textAlign:'center',marginTop:6}}>{!stripeReady?<span style={{fontSize:11,color:'#94a3b8'}}>Loading secure checkout…</span>:<button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={onClose}>Cancel</button>}</div>
+        </div>}
+        {!error&&payChoice&&(loading||!clientSecret||!stripeReady)&&<div style={{textAlign:'center',padding:40}}>
+          <div style={{display:'inline-block',width:28,height:28,border:'3px solid #e2e8f0',borderTop:'3px solid #22c55e',borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:10}}/>
+          <div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div>
+          <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
+        </div>}
+        {!error&&payChoice&&clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
+          <StripeCheckoutForm amount={totalDue} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>
