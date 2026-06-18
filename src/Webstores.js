@@ -4,6 +4,7 @@ import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
+import { CatalogKitStyles, KitScope, DISPLAY, FilterBtn, ShowMore } from './ui/catalogKit';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -1140,7 +1141,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
-      {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
@@ -1421,6 +1422,126 @@ function ProductSearch({ label, onPick, onClose, compact }) {
         ))}
       </div>
     </div></div>
+  );
+}
+
+// ── Catalog product picker — live-look card grid for adding items to a store ──
+// Same visual language as the public catalog (/adidas live-look): a search box,
+// brand/category quick-filter pills, and a responsive card grid. Picking a card
+// hands off to SinglePriceEditor (price / fundraising / personalization),
+// unchanged. State is a simple "filter spec" ({ q, brand, category }) so the
+// future AI-brief and customer self-serve flows can drive the same engine.
+function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
+  const [q, setQ] = useState(initialFilter.q || '');
+  const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
+  const [catSel, setCatSel] = useState(initialFilter.category || null);
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [limit, setLimit] = useState(48);
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setResults([]); return; }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const { data } = await supabase
+        .from('products')
+        .select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
+        .or(`name.ilike.%${q}%,sku.ilike.%${q}%`)
+        .limit(limit);
+      if (!cancelled) { setResults(data || []); setSearching(false); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, limit]);
+
+  // Quick-filter pills derived from the current result set.
+  const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
+  const cats = [...new Set(results.map((r) => r.category).filter(Boolean))].sort();
+  const shown = results.filter((r) => (!brandSel || r.brand === brandSel) && (!catSel || r.category === catSel));
+  const enough = q.trim().length >= 2;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <CatalogKitStyles />
+      <KitScope style={{ padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', letterSpacing: '.01em' }}>{label || 'Add products'}</div>
+          {onClose && <button className="ai-iconbtn" onClick={onClose} aria-label="Close picker">✕ Close</button>}
+        </div>
+
+        <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search your catalog — name, style name, or SKU…" aria-label="Search products" />
+
+        {enough && (brands.length > 1 || cats.length > 1) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+            {brands.length > 1 && brands.map((b) => (
+              <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>
+            ))}
+            {brands.length > 1 && cats.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 3px' }} />}
+            {cats.length > 1 && cats.map((c) => (
+              <FilterBtn key={'c-' + c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16 }}>
+          {!enough && (
+            <div style={{ textAlign: 'center', color: '#9AA1AC', fontSize: 14, padding: '34px 10px', fontWeight: 600 }}>
+              Search your catalog to add items — try a brand, a style name, or a SKU.
+            </div>
+          )}
+          {enough && searching && results.length === 0 && (
+            <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching…</div>
+          )}
+          {enough && !searching && shown.length === 0 && (
+            <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No matches. Try a different name or SKU.</div>
+          )}
+          {shown.length > 0 && (
+            <div className="ai-grid">
+              {shown.map((p) => <PickerCard key={p.id} p={p} onAdd={() => onPick(p)} />)}
+            </div>
+          )}
+          {enough && !searching && results.length >= limit && (
+            <ShowMore onClick={() => setLimit((n) => n + 48)}>Show more results</ShowMore>
+          )}
+        </div>
+      </KitScope>
+    </div>
+  );
+}
+
+// One catalog item, in the live-look card style.
+function PickerCard({ p, onAdd }) {
+  const [imgErr, setImgErr] = useState(false);
+  const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  return (
+    <button className="ai-card" onClick={onAdd} aria-label={`Add ${p.name || p.sku} to store`}>
+      <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
+        {p.image_front_url && !imgErr
+          ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain' }} />
+          : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
+        {p.retail_price != null && (
+          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</span>
+        )}
+      </div>
+      <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
+        <div>
+          {p.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
+          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
+          {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
+        </div>
+        {sizes.length > 0 && (
+          <div className="ai-chipgrid">
+            {sizes.slice(0, 10).map((s) => <span key={s} className="ai-chip">{s}</span>)}
+            {sizes.length > 10 && <span className="ai-chip" style={{ color: '#6A7180' }}>+{sizes.length - 10}</span>}
+          </div>
+        )}
+        <div style={{ marginTop: 'auto', fontSize: 12.5, fontWeight: 800, color: '#191919', borderTop: '1px dashed #E6E8EC', paddingTop: 8, textTransform: 'uppercase', letterSpacing: '.03em' }}>
+          Add to store →
+        </div>
+      </div>
+    </button>
   );
 }
 
