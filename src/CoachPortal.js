@@ -47,10 +47,26 @@ function CoachStore({ customer }) {
     return () => { cancel = true; };
   }, [customer.id, customer.parent_id]);
 
-  if (!loaded || !stores.length) return null;
+  if (!loaded) return null;
+  // The coach sees their own submissions as "pending review"; staff work-in-
+  // progress drafts stay hidden until published. Everything live renders as the
+  // usual order-tracking card.
+  const pending = stores.filter((s) => s.status === 'draft' && s.created_via === 'coach');
+  const live = stores.filter((s) => s.status !== 'draft');
+  if (!pending.length && !live.length) return null;
   return (
     <div style={{ marginBottom: 18 }}>
-      {stores.map((s) => <CoachStoreCard key={s.id} store={s} d={data[s.id] || { orders: [], items: [], roster: [] }} />)}
+      {pending.map((s) => (
+        <div key={s.id} style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 14, padding: '16px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ fontSize: 26 }}>⏳</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#92400e' }}>{s.name}</div>
+            <div style={{ fontSize: 12.5, color: '#92400e', marginTop: 2 }}>Submitted — pending our review. We'll set up shipping &amp; checkout and email you when it's live.</div>
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 999, padding: '4px 12px', whiteSpace: 'nowrap' }}>Pending review</span>
+        </div>
+      ))}
+      {live.map((s) => <CoachStoreCard key={s.id} store={s} d={data[s.id] || { orders: [], items: [], roster: [] }} />)}
     </div>
   );
 }
@@ -273,7 +289,7 @@ function CoachStyleCard({ g, sel, onToggle }) {
 // Everything is re-enforced server-side by coach-store-submit; this is the
 // friendly guided front end.
 // ─────────────────────────────────────────────────────────
-function CoachStoreBuilder({ customer, onClose }) {
+function CoachStoreBuilder({ customer, rep, onClose }) {
   const [step, setStep] = useState('start');   // start | items | brand | review | done
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState([]);
@@ -291,6 +307,8 @@ function CoachStoreBuilder({ customer, onClose }) {
   const [logoUrl, setLogoUrl] = useState('');
   const [logoBusy, setLogoBusy] = useState(false);
   const [blurb, setBlurb] = useState('');
+  const [maxFund, setMaxFund] = useState(25);   // fundraise cap from config
+  const [fundraise, setFundraise] = useState(0); // coach's per-item fundraise add-on
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [submitErr, setSubmitErr] = useState('');
@@ -298,10 +316,15 @@ function CoachStoreBuilder({ customer, onClose }) {
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const { data } = await supabase.from('webstores').select('id,name').eq('is_template', true).order('name');
+      const [tplRes, cfgRes] = await Promise.all([
+        supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+        supabase.from('coach_store_config').select('max_fundraise').eq('id', 1).maybeSingle(),
+      ]);
       if (cancel) return;
-      const t = data || [];
+      const t = tplRes.data || [];
       setTemplates(t);
+      const mf = Number(cfgRes.data?.max_fundraise);
+      setMaxFund(Number.isFinite(mf) ? mf : 25);
       setLoading(false);
       if (!t.length) { setTemplateId(null); setStep('items'); loadPool(null); } // no templates → straight to catalog
     })();
@@ -408,6 +431,7 @@ function CoachStoreBuilder({ customer, onClose }) {
       const d = await invokeEdgeFn(supabase, 'coach-store-submit', {
         alpha_tag: customer.alpha_tag, customer_id: customer.id, name: name.trim(),
         template_id: templateId, item_product_ids: chosen.map((c) => c.product_id),
+        fundraise, notify_to: rep?.email ? [rep.email] : [],
         branding: { primary_color: primary, accent_color: accent, logo_url: logoUrl, hero_blurb: blurb.trim(), coach_contact_email: (customer.contacts || [])[0]?.email || '' },
       });
       if (!d?.ok) throw new Error(d?.error || 'Submission failed.');
@@ -517,6 +541,28 @@ function CoachStoreBuilder({ customer, onClose }) {
                 </label>
               </div>
             </div>
+            {maxFund > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', marginBottom: 6 }}>Fundraising (optional)</label>
+                <div style={{ fontSize: 12.5, color: '#5A616E', marginBottom: 9 }}>Add an amount per item that goes back to your team — it's added on top of each price at checkout.</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontWeight: 800, color: '#3A4150', fontSize: 15 }}>$</span>
+                    <input type="number" min={0} max={maxFund} step={1} value={fundraise}
+                      onChange={(e) => setFundraise(Math.min(maxFund, Math.max(0, Math.round(Number(e.target.value) || 0))))}
+                      className="ai-search" style={{ width: 84 }} aria-label="Fundraising amount per item" />
+                    <span style={{ fontSize: 12.5, color: '#6A7180' }}>/ item</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {[0, 3, 5, 10].filter((v) => v <= maxFund).map((v) => (
+                      <button key={v} type="button" onClick={() => setFundraise(v)}
+                        style={{ borderRadius: 999, padding: '6px 13px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: fundraise === v ? '1px solid #166534' : '1px solid #d1d5db', background: fundraise === v ? '#dcfce7' : '#fff', color: fundraise === v ? '#166534' : '#3A4150' }}>{v === 0 ? 'None' : `$${v}`}</button>
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Max ${maxFund}/item</span>
+                </div>
+              </div>
+            )}
             <div style={{ marginTop: 18 }}>
               <label style={{ display: 'block', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', marginBottom: 6 }}>Notes for our team (optional)</label>
               <textarea className="ai-search" rows={3} value={blurb} onChange={(e) => setBlurb(e.target.value)} placeholder="Open/close dates, special requests, anything we should know…" style={{ resize: 'vertical' }} aria-label="Notes" />
@@ -533,6 +579,7 @@ function CoachStoreBuilder({ customer, onClose }) {
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', lineHeight: 1.1 }}>{name || 'Untitled store'}</div>
                 <div style={{ fontSize: 13, color: '#6A7180', marginTop: 3 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} · prices set for you</div>
+                {fundraise > 0 && <div style={{ fontSize: 12.5, color: '#166534', fontWeight: 700, marginTop: 3 }}>+ ${fundraise}/item fundraising for your team</div>}
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <span style={{ width: 18, height: 18, borderRadius: 4, background: primary, border: '1px solid #e2e8f0' }} />
                   <span style={{ width: 18, height: 18, borderRadius: 4, background: accent, border: '1px solid #e2e8f0' }} />
@@ -1491,7 +1538,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   }
 
   // Coach store builder — full-screen guided flow
-  if(storeBuilder) return <CoachStoreBuilder customer={customer} onClose={()=>setStoreBuilder(false)} />;
+  if(storeBuilder) return <CoachStoreBuilder customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
   // Main portal view
   return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>

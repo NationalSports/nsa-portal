@@ -353,12 +353,23 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
     const catalog = catRes.data || [];
+    // Cost per product (for staff margin at review). Clearance items cost less.
+    const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
+    const costByPid = {};
+    if (pidList.length) {
+      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost').in('id', pidList);
+      for (const cp of costRows || []) {
+        const cc = (cp.is_clearance && cp.clearance_cost != null) ? Number(cp.clearance_cost) : Number(cp.nsa_cost);
+        costByPid[cp.id] = Number.isFinite(cc) ? cc : null;
+      }
+    }
     const catIds = new Set(catalog.map((c) => c.id));
     const orders = ordRes.data || [];
     const orderIds = new Set(orders.map((o) => o.id));
     const stockByWp = {}; (stockRes.data || []).forEach((s) => { stockByWp[s.webstore_product_id] = s; });
     setDetail({
       catalog,
+      costByPid,
       bundleItems: (bundleRes.data || []).filter((b) => catIds.has(b.bundle_id)),
       stockByWp,
       orders,
@@ -377,19 +388,37 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   }, [loadDetail]);
 
   // ── writes ──────────────────────────────────────────────────────────
+  // When a coach-built store is published (draft→open), email the coach the link.
+  const notifyCoachPublished = useCallback(async (store) => {
+    const to = (store.coach_contact_email || '').trim();
+    if (!to) { flash('Published (no coach email on file to notify).'); return; }
+    const safe = (s) => String(s || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+    const url = `${window.location.origin}/shop/${store.slug}`;
+    try {
+      await sendBrevoEmail({
+        to: [{ email: to }],
+        subject: `Your team store is live: ${store.name}`,
+        htmlContent: `<p>Good news — your team store <b>${safe(store.name)}</b> is now live!</p>\n<p><a href="${url}">${url}</a></p>\n<p>Share that link with your team. Thanks for building with National Sports Apparel!</p>`,
+      });
+      flash('Published — coach notified by email.');
+    } catch (e) { flash('Published (coach email failed: ' + (e.message || e) + ').'); }
+  }, [flash]);
+
   const saveStore = useCallback(async (form, existingId) => {
     if (existingId) {
+      const prevStore = stores.find((s) => s.id === existingId);
       const { data, error } = await supabase.from('webstores').update({ ...form, updated_at: new Date().toISOString() }).eq('id', existingId).select().single();
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
+      if (prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
       flash('Store saved'); return { data };
     }
     const { data, error } = await supabase.from('webstores').insert(form).select().single();
     if (error) return { error };
     setStores((prev) => [data, ...prev]);
     flash('Store created'); return { data };
-  }, [sel, flash]);
+  }, [sel, flash, stores, notifyCoachPublished]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
@@ -1088,7 +1117,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -1164,7 +1193,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1260,7 +1289,15 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
                       </div>}
                     </td>
                     <td style={td}>{p.kind === 'bundle' ? <Chip label="Bundle" tone="blue" /> : <Chip label="Single" />}</td>
-                    <td style={td}>{money(p.retail_price)}</td>
+                    <td style={td}>
+                      {money(p.retail_price)}
+                      {p.kind !== 'bundle' && costByPid[p.product_id] != null && (() => {
+                        const m = (Number(p.retail_price) || 0) - costByPid[p.product_id];
+                        const pct = p.retail_price > 0 ? Math.round((m / Number(p.retail_price)) * 100) : null;
+                        const col = m < 0 ? '#b91c1c' : (p.retail_price > 0 && m / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534';
+                        return <div style={{ fontSize: 10.5, fontWeight: 700, color: col, marginTop: 2 }} title={`Cost ${money(costByPid[p.product_id])}`}>{m >= 0 ? '+' : ''}{money(m)}{pct != null ? ` (${pct}%)` : ''} margin</div>;
+                      })()}
+                    </td>
                     <td style={td}>{fund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(fund)}</span> : '—'}</td>
                     <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + fund)}</td>
                     <td style={td}>
