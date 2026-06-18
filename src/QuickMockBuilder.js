@@ -52,6 +52,16 @@ const hexToRgb = h => {
   const m = (h || '').replace('#', '').match(/.{2}/g);
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
+// One-click placements, tuned to the 460x560 mock canvas: cx/cy = the art's
+// center, w = its width in px. Staff can still drag/resize after snapping.
+const PLACE_PRESETS = {
+  left_chest:   {label: 'Left chest', cx: 300, cy: 198, w: 92},
+  full_front:   {label: 'Full front', cx: 230, cy: 288, w: 238},
+  full_back:    {label: 'Full back',  cx: 230, cy: 258, w: 250},
+  left_sleeve:  {label: 'L. sleeve',  cx: 392, cy: 300, w: 62},
+  right_sleeve: {label: 'R. sleeve',  cx: 68,  cy: 300, w: 62},
+  center:       {label: 'Center',     cx: 230, cy: 286, w: 178},
+};
 
 export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
   const [gi, setGi] = useState(0);
@@ -426,6 +436,17 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     } catch (e) { nf && nf('Could not process this image', 'error'); }
   };
 
+  // Snap the selected art to a standard placement (center origin + target width).
+  const applyPlacement = (id) => {
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) { nf && nf('Select an art element first', 'error'); return; }
+    const pr = PLACE_PRESETS[id]; if (!pr) return;
+    obj.set({originX: 'center', originY: 'center', left: pr.cx, top: pr.cy});
+    if (typeof obj.scaleToWidth === 'function') obj.scaleToWidth(pr.w);
+    obj.setCoords(); canvas.requestRenderAll(); markDirty();
+  };
+
   // Detect the art's colors whenever an art layer is selected, so the user can pick
   // which one to change. Clearing the selection resets the palette.
   useEffect(() => {
@@ -710,6 +731,10 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                   eyedrop it straight off the art), then change it. */}
               {artColors.length > 0 ? (
                 <div style={{background: '#faf9ff', border: '1px solid #ede9fe', borderRadius: 10, padding: '11px 13px', marginBottom: 10}}>
+                  <div style={{display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 9, paddingBottom: 9, borderBottom: '1px solid #ede9fe'}}>
+                    <span style={{fontSize: 11, fontWeight: 800, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 0.5}}>Place</span>
+                    {Object.entries(PLACE_PRESETS).map(([id, pr]) => <button key={id} onClick={() => applyPlacement(id)} title={'Snap to ' + pr.label} style={{fontSize: 11.5, fontWeight: 700, padding: '5px 12px', borderRadius: 999, border: '1px solid #cbd5e1', background: '#fff', color: '#475569', cursor: 'pointer'}}>{pr.label}</button>)}
+                  </div>
                   <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
                     <span style={{fontSize: 11, fontWeight: 800, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 0.5}}>Recolor</span>
                     <span style={{fontSize: 12.5, color: '#475569', fontWeight: 700}}>1 · Pick a color</span>
