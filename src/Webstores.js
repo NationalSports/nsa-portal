@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, FilterBtn, ShowMore } from './ui/catalogKit';
@@ -1204,10 +1204,12 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
+        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'ai' ? null : 'ai'); setPending(null); }}>✨ Build with AI</button>
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
+      {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
@@ -1686,6 +1688,151 @@ function PickerCard({ p, onAdd }) {
         <div style={{ marginTop: 'auto', fontSize: 12.5, fontWeight: 800, color: '#191919', borderTop: '1px dashed #E6E8EC', paddingTop: 8, textTransform: 'uppercase', letterSpacing: '.03em' }}>
           Add to store →
         </div>
+      </div>
+    </button>
+  );
+}
+
+// ── Build with AI ── A plain-English brief → the ai-store-builder edge function
+// → a structured filter spec → matched catalog items → review/select → add to the
+// store. The interpreted tags are shown and editable, so the AI is never a black box.
+function AiStoreBuilder({ onAddProducts, onClose }) {
+  const [brief, setBrief] = useState('');
+  const [spec, setSpec] = useState(null);
+  const [matches, setMatches] = useState([]);
+  const [sel, setSel] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState('');
+
+  // Brand/category come back as exact catalog values (reliable .in filters);
+  // colors/keywords are matched in-memory to dodge PostgREST wildcard quirks.
+  const runQuery = async (s) => {
+    let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').limit(300);
+    if (s.brands?.length) q = q.in('brand', s.brands);
+    if (s.categories?.length) q = q.in('category', s.categories);
+    const { data } = await q;
+    let rows = data || [];
+    const colors = (s.colors || []).map((c) => c.toLowerCase());
+    const keywords = (s.keywords || []).map((k) => k.toLowerCase());
+    if (colors.length || keywords.length) {
+      rows = rows.filter((p) =>
+        colors.some((c) => (p.color || '').toLowerCase().includes(c)) ||
+        keywords.some((k) => (p.name || '').toLowerCase().includes(k)));
+    }
+    return rows.slice(0, 120);
+  };
+
+  const generate = async () => {
+    if (!brief.trim()) return;
+    setBusy(true); setErr(''); setSpec(null); setMatches([]); setSel(new Set());
+    try {
+      const d = await invokeEdgeFn(supabase, 'ai-store-builder', { brief: brief.trim() });
+      if (!d?.ok) throw new Error(d?.error || 'The AI could not read that brief.');
+      setSpec(d.spec);
+      const m = await runQuery(d.spec);
+      setMatches(m);
+      setSel(new Set(m.map((p) => p.id)));
+    } catch (e) { setErr(e.message || String(e)); }
+    setBusy(false);
+  };
+
+  const dropTag = async (facet, val) => {
+    const next = { ...spec, [facet]: (spec[facet] || []).filter((x) => x !== val) };
+    setSpec(next);
+    const m = await runQuery(next);
+    setMatches(m); setSel(new Set(m.map((p) => p.id)));
+  };
+  const toggleSel = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const chosen = matches.filter((p) => sel.has(p.id));
+
+  const facetRow = (label, facet) => (spec?.[facet]?.length ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', minWidth: 74 }}>{label}</span>
+      {spec[facet].map((v) => (
+        <span key={v} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#fff', border: '1px solid #d1d5db', borderRadius: 999, padding: '3px 6px 3px 11px', fontSize: 12.5, fontWeight: 600 }}>
+          {v}<button onClick={() => dropTag(facet, v)} title="Remove" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+        </span>
+      ))}
+    </div>
+  ) : null);
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <CatalogKitStyles />
+      <KitScope style={{ padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', letterSpacing: '.01em' }}>✨ Build with AI</div>
+          {onClose && <button className="ai-iconbtn" onClick={onClose} aria-label="Close">✕ Close</button>}
+        </div>
+        <textarea className="ai-search" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) generate(); }}
+          placeholder={'Describe the store — e.g. "Adidas-centric, in-stock black/white/royal, D4T black shorts and baseball cleats"'}
+          style={{ resize: 'vertical', minHeight: 56, lineHeight: 1.4 }} aria-label="Store brief" />
+        <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="ai-more" style={{ margin: 0 }} onClick={generate} disabled={busy || !brief.trim()}>{busy ? 'Reading the brief…' : 'Find items'}</button>
+          {err && <span style={{ color: '#b91c1c', fontSize: 12.5, fontWeight: 600 }}>{err}</span>}
+        </div>
+
+        {spec && (
+          <div style={{ marginTop: 14, padding: 12, background: '#f8fafc', borderRadius: 10, border: '1px solid #eef2f7' }}>
+            <div style={{ fontSize: 13, color: '#3A4150', marginBottom: 9 }}>{spec.interpretation}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {facetRow('Brands', 'brands')}
+              {facetRow('Categories', 'categories')}
+              {facetRow('Colors', 'colors')}
+              {facetRow('Keywords', 'keywords')}
+              {spec.in_stock_only && <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>In-stock focus</div>}
+            </div>
+          </div>
+        )}
+
+        {spec && (
+          <div style={{ marginTop: 14 }}>
+            {matches.length === 0 ? (
+              <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No catalog items matched — remove a tag above to loosen the search.</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{chosen.length} of {matches.length} selected</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="ai-iconbtn" onClick={() => setSel(new Set(matches.map((p) => p.id)))}>Select all</button>
+                    <button className="ai-iconbtn" onClick={() => setSel(new Set())}>Clear</button>
+                  </div>
+                </div>
+                <div className="ai-grid">
+                  {matches.map((p) => <AiMatchCard key={p.id} p={p} on={sel.has(p.id)} onToggle={() => toggleSel(p.id)} />)}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </KitScope>
+      {chosen.length > 0 && (
+        <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #eef0f3', padding: '12px 16px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, borderRadius: '0 0 8px 8px' }}>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Added at catalog price — adjust pricing &amp; fundraising in the list after.</span>
+          <button className="btn btn-primary" disabled={adding} onClick={async () => { setAdding(true); await onAddProducts(chosen); setAdding(false); }}>{adding ? 'Adding…' : `Add ${chosen.length} item${chosen.length === 1 ? '' : 's'} to store`}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AiMatchCard({ p, on, onToggle }) {
+  const [imgErr, setImgErr] = useState(false);
+  return (
+    <button className="ai-card" onClick={onToggle} aria-pressed={on} style={{ outline: on ? '2px solid #191919' : '2px solid transparent', outlineOffset: -2 }}>
+      <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
+        {p.image_front_url && !imgErr
+          ? <img src={p.image_front_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: on ? 1 : 0.78 }} />
+          : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
+        <span style={{ position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: 6, background: on ? '#191919' : 'rgba(255,255,255,.9)', border: '1px solid ' + (on ? '#191919' : '#cbd5e1'), color: '#fff', fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{on ? '✓' : ''}</span>
+        {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>{money(p.retail_price)}</span>}
+      </div>
+      <div style={{ padding: '10px 12px 12px', textAlign: 'left', width: '100%' }}>
+        {p.brand && <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
+        <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 14.5, lineHeight: 1.12, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
+        <div style={{ fontSize: 11.5, color: '#6A7180', marginTop: 2 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
       </div>
     </button>
   );
