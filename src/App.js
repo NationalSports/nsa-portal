@@ -22230,6 +22230,7 @@ export default function App(){
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
+  const[billHistFilter,setBillHistFilter]=useState('all');// Bill History view: all | review | notpushed | pushed
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -23100,6 +23101,24 @@ export default function App(){
       // Helper: extract last monetary value after a label on a line
       const extractTotal=(line,re,nextLine)=>{const m=line.match(re);if(!m)return null;const rest=line.slice(m.index+m[0].length);const nums=(rest.match(/[\d,]+\.\d{1,2}/g)||[]);if(nums.length>0)return parseFloat(nums[nums.length-1].replace(/,/g,''))||0;if(nextLine){const nm=nextLine.match(/^\s*([\d,]+\.\d{1,2})\s*$/);if(nm)return parseFloat(nm[1].replace(/,/g,''))||0}return null};
 
+      // Heuristic: does a cell look like a real vendor/company name (vs. a doc-info table header,
+      // an address, a phone line, the carrier, or the Sports-Inc "SOLD TO" distributor)? Used to
+      // pull the supplier off Sports Inc invoices, where the vendor sits under a "SUPPLIER" header
+      // and the carrier / "DOCUMENT NUMBER … TERMS OF PAYMENT" table header sit right beneath it.
+      const _looksLikeVendorName=(s)=>{
+        const t=(s||'').trim();
+        if(t.length<3||t.length>50)return false;
+        if(!/[A-Za-z]/.test(t))return false;            // must contain letters
+        if(/^\d/.test(t))return false;                  // address / number / masked-acct rows
+        if(/^(P\.?\s*O\.?\s*BOX|PO\s*BOX|DEPT|PH\b|FX\b|FAX|ATTN|SUITE|STE\b)/i.test(t))return false;
+        if(/\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/.test(t))return false;   // "City ST 12345"
+        if(/\bSPORTS,?\s*INC\b/i.test(t))return false;   // SOLD TO is always the distributor
+        if(/^(SHIP|SOLD)\b/i.test(t))return false;       // SHIP TO / SOLD TO blocks
+        // Doc-info table headers / labels that must never be captured as the vendor name.
+        if(/\b(DOCUMENT|CARRIER|SHIPMENT|METHOD|WEIGHT|TRACKING|RQST|TERMS|PAYMENT|DELIVERY|ALLOWANCE|NUMBER|INVOICE|PAGE|SI\s*STORE|NATIONAL\s*SPORTS|RECEIVING)\b/i.test(t))return false;
+        return true;
+      };
+
       // ── DECORATION VENDOR DISPATCH ──
       const _headText=(fullText||lines.join('\n')).slice(0,2000);
       if(/olympic\s*embroidery|olympicembroidery\.com/i.test(_headText)){
@@ -23111,6 +23130,13 @@ export default function App(){
       }
 
       if(bill.kind!=='decoration'){
+      // Some Sports Inc summary pages carry only totals and print "SEE VENDOR INVOICE FOR DETAIL"
+      // where the line items would be — the actual itemized bill is the vendor's own invoice on the
+      // following page/PDF (A4, etc.). In that case the item-table window is empty, so the old
+      // parser scraped the address/phone block into phantom line items (e.g. SKU "849886" qty 406).
+      // Detect the marker and skip item extraction entirely, keeping the summary totals.
+      const _detailElsewhere=/SEE\s+VENDOR\s+INVOICE\s+FOR\s+DETAIL/i.test(fullText||lines.join('\n'));
+      if(_detailElsewhere)bill._detailOnVendorInvoice=true;
       // ── PASS 1: Extract header fields & find item table boundaries ──
       let itemSectionStart=-1,itemSectionEnd=-1;
       for(let li=0;li<lines.length;li++){
@@ -23143,10 +23169,29 @@ export default function App(){
           else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
           else if(/\bAUGUSTA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Momentec';
         }
-        if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
-          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
-            const nl=lines[j].trim();
-            if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
+        // Sports Inc invoices print the real vendor under a "SUPPLIER" column header (e.g.
+        // "AGRON INC.", "A4 / MOSHAY, INC.", "ADIDAS US TEAM SERVICES"). Match only a standalone
+        // "SUPPLIER" cell — NEVER "SUPPLIER INFORMATION" (the doc-number/carrier table header),
+        // which previously got mis-read so the vendor came out as the carrier ("BESTWAY …") or the
+        // header text ("DOCUMENT NUMBER DOCUMENT DATE CARRIER …"). Then read down the same column
+        // for the first company-looking line, skipping headers, the carrier row, and addresses.
+        if(!bill.supplier){
+          const cells=line.split('\t').map(c=>c.trim());
+          let supCol=-1;
+          for(let ci=0;ci<cells.length;ci++){
+            const c=cells[ci];
+            if(/^SUPPLIER\s+INFORMATION/i.test(c))continue;
+            if(/^SUPPLIER$/i.test(c)){supCol=ci;break}
+            const inline=c.match(/^SUPPLIER\s+(.+)/i);// "SUPPLIER A4 / MOSHAY, INC." on one cell
+            if(inline&&_looksLikeVendorName(inline[1])){bill.supplier=inline[1].trim();break}
+          }
+          if(!bill.supplier&&supCol>=0){
+            for(let j=li+1;j<Math.min(li+7,lines.length);j++){
+              if(/SUPPLIER\s+INFORMATION/i.test(lines[j]||''))break;// reached the doc-info table — stop
+              const jcells=(lines[j]||'').split('\t').map(c=>c.trim());
+              const cand=_looksLikeVendorName(jcells[supCol])?jcells[supCol]:jcells.find(_looksLikeVendorName);
+              if(cand){bill.supplier=cand.trim();break}
+            }
           }
         }
         // Supplier alias normalization (PDF supplier text → system vendor name)
@@ -23193,7 +23238,10 @@ export default function App(){
       const itemLines=[];
       const startIdx=itemSectionStart>=0?itemSectionStart:0;
       const endIdx=itemSectionEnd>0?itemSectionEnd:lines.length;
-      if(itemSectionStart<0){
+      if(_detailElsewhere){
+        // Line items live on the attached vendor invoice — don't scrape phantom rows here.
+        bill.warnings.push('Line items are on the attached vendor invoice ("see vendor invoice for detail") — summary totals captured, items not itemized here');
+      }else if(itemSectionStart<0){
         bill.warnings.push('Could not find item table header (UPC NUMBER / SUPPLIER ITEM) — items not extracted');
       }else{
         const headerLine=lines[itemSectionStart-1]||'';
@@ -23351,7 +23399,7 @@ export default function App(){
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
-      if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
+      if(bill.items.length===0&&itemSectionStart>=0&&!_detailElsewhere)bill.warnings.push('No line items detected in item table — check raw text');
       }// end goods-invoice parsing block
 
       // Match vendor from system vendors
@@ -23568,7 +23616,7 @@ export default function App(){
     // A bill is ready to push to the portal when it has either an auto-matched PO or a
     // complete manual decoration target (SO + existing po_line, or SO + item for create).
     const _billIsReadyToPush=b=>{
-      if(!b||!b.selected||b.portalStatus)return false;
+      if(!b||!b.selected||b.portalStatus||b.reviewLater)return false;// "look at later" bills sit in limbo
       const p=b.parsed;if(!p)return false;
       if(p.matchedPOSource)return true;
       const t=p._manualTarget;
@@ -23576,6 +23624,14 @@ export default function App(){
       if(t.mode==='existing')return !!t.decoPoId;
       if(t.mode==='create')return true;// applies to SO — no per-item pick required
       return false;
+    };
+
+    // Toggle a bill's "look at later" flag. These bills are parked in limbo — neither pushed to the
+    // Portal nor to QuickBooks — so the team can come back to ones with no-match / parse problems.
+    // Flagging clears its push selection; the flag persists in the saved Bill History.
+    const _setBillReviewLater=(billId,val)=>{
+      setBillImport(x=>({...x,parsed:x.parsed.map(p=>p.id===billId?{...p,reviewLater:val,selected:val?false:p.selected}:p)}));
+      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
     };
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
@@ -23717,10 +23773,15 @@ export default function App(){
       const size=(bl.size||'').toUpperCase();
       const billColor=norm(bl.color);
       const indexed=items.map((it,ti)=>({...it,_idx:ti}));
-      let sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
-      // If bill line has no size (inv PO single-line items), match on SKU alone
-      if(sameSkuSize.length===0&&!size)sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
-      if(sameSkuSize.length===0)return null;
+      // The SKU must exist on the target at all — otherwise it's a genuine no-match.
+      const sameSku=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
+      if(sameSku.length===0)return null;
+      // Prefer an exact SKU+size hit. Fall back to SKU-only when the bill line has no size OR the
+      // parsed size doesn't line up with any target row. One-size goods (OSFA hats, bags) often get
+      // a stray digit read as their "size" (e.g. IU2788 parsed as size "5" vs the OSFA on the PO),
+      // which used to surface as a false "no match" even though the SKU clearly ties to the PO.
+      let sameSkuSize=size?sameSku.filter(it=>(it.size||'').toUpperCase()===size):sameSku;
+      if(sameSkuSize.length===0)sameSkuSize=sameSku;
       let candidates=sameSkuSize;
       if(billColor&&sameSkuSize.some(c=>c.color)){
         const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
@@ -24155,7 +24216,7 @@ export default function App(){
 
     // Push bills to QuickBooks
     const pushBillsToQB=async()=>{
-      const selected=billImport.parsed.filter(b=>b.selected);
+      const selected=billImport.parsed.filter(b=>b.selected&&!b.reviewLater);
       if(!selected.length){nf('No bills selected','error');return}
       setBillImport(x=>({...x,uploading:true}));
       // Look up QB expense accounts so AccountRef includes the required value (ID)
@@ -25205,18 +25266,18 @@ export default function App(){
               onClick={()=>pushBillsToPortal()}>
               Push {billImport.parsed.filter(_billIsReadyToPush).length} to Portal
             </button>
-            <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
+            <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus&&!b.reviewLater)}
               onClick={pushBillsToQB}>
-              {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus).length+' to QuickBooks'}
+              {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater).length+' to QuickBooks'}
             </button>
           </div>
 
           {billImport.parsed.map((b,bi)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
-            return<div key={bi} className="card" style={{marginBottom:12,border:b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0'}}>
-              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
-                {!b.qbStatus&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
+            return<div key={bi} className="card" style={{marginBottom:12,border:b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.reviewLater?'#fffbeb':b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
+                {!b.qbStatus&&!b.reviewLater&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
                 {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
                 <h2 style={{margin:0,flex:1}}>{b.file}</h2>
@@ -25226,6 +25287,12 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
+                {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Look at later</span>}
+                {!b.qbStatus&&!b.portalStatus&&<button onClick={()=>_setBillReviewLater(b.id,!b.reviewLater)}
+                  title={b.reviewLater?'Take out of limbo and make it pushable again':'Park this bill in limbo — skip it for now, find it later under "Look at later"'}
+                  style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,
+                    background:b.reviewLater?'#fff':'#fffbeb',border:'1px solid '+(b.reviewLater?'#cbd5e1':'#fbbf24'),color:b.reviewLater?'#475569':'#b45309'}}>
+                  {b.reviewLater?'↩ Un-flag':'🕒 Look at later'}</button>}
               </div>
               <div className="card-body" style={{padding:0}}>
                 {/* PO Match banner */}
@@ -25498,8 +25565,16 @@ export default function App(){
 
         {/* Saved Bills History */}
         {savedBills.length>0&&<div className="card" style={{marginTop:16}}>
-          <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
-            <h2 style={{margin:0,flex:1}}>Bill History ({savedBills.length})</h2>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <h2 style={{margin:0}}>Bill History</h2>
+            {(()=>{const rl=savedBills.filter(b=>b.reviewLater).length;const pushed=savedBills.filter(b=>b.qbStatus==='success'||b.portalStatus==='success').length;const np=savedBills.filter(b=>!b.reviewLater&&b.qbStatus!=='success'&&b.portalStatus!=='success').length;
+              const chip=(key,label,n,activeColor)=><button key={key} onClick={()=>setBillHistFilter(key)} style={{fontSize:10,padding:'3px 10px',borderRadius:12,cursor:'pointer',fontWeight:700,border:'1px solid '+(billHistFilter===key?activeColor:'#e2e8f0'),background:billHistFilter===key?activeColor:'#fff',color:billHistFilter===key?'#fff':'#475569'}}>{label} ({n})</button>;
+              return<div style={{display:'flex',gap:6,flex:1,flexWrap:'wrap'}}>
+                {chip('all','All',savedBills.length,'#475569')}
+                {chip('review','🕒 Look at later',rl,'#f59e0b')}
+                {chip('notpushed','Not pushed',np,'#64748b')}
+                {chip('pushed','Pushed',pushed,'#16a34a')}
+              </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -25512,9 +25587,15 @@ export default function App(){
                 <th style={{textAlign:'right',padding:'8px 12px'}}>Freight</th>
                 <th style={{textAlign:'center',padding:'8px 12px'}}>Items</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>QB Status</th>
+                <th style={{textAlign:'center',padding:'8px 12px'}}>Look at later</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>Uploaded</th>
               </tr></thead>
-              <tbody>{savedBills.map((sb,si)=><tr key={si} style={{borderBottom:'1px solid #f1f5f9',background:sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
+              <tbody>{savedBills.filter(sb=>{
+                if(billHistFilter==='review')return sb.reviewLater;
+                if(billHistFilter==='pushed')return sb.qbStatus==='success'||sb.portalStatus==='success';
+                if(billHistFilter==='notpushed')return !sb.reviewLater&&sb.qbStatus!=='success'&&sb.portalStatus!=='success';
+                return true;
+              }).map((sb,si)=><tr key={sb.id||si} style={{borderBottom:'1px solid #f1f5f9',background:sb.reviewLater?'#fffbeb':sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
                 <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
                 <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
                 <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
@@ -25524,6 +25605,10 @@ export default function App(){
                 <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
                   {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
                     onClick={()=>{setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
+                <td style={{padding:'6px 12px',textAlign:'center'}}>
+                  <button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
+                    style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,border:'1px solid '+(sb.reviewLater?'#fbbf24':'#e2e8f0'),background:sb.reviewLater?'#fef3c7':'#fff',color:sb.reviewLater?'#b45309':'#94a3b8'}}>
+                    {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button></td>
                 <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
               </tr>)}</tbody>
             </table>
