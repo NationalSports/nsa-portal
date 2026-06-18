@@ -33,12 +33,21 @@ const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In
 const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
+// Page-level routing for the mobile portal. The bottom-nav tab lives in ?mtab=<id> and the
+// "More" sub-page in ?msub=<id>, so a refresh stays put and browser back/forward walk through
+// visited sections. 'home' is the default (clean URL). Distinct params from the desktop ?pg=
+// so the two portals never clash. Page-level only — opening a record/detail is not a history entry.
+const _MTABS=new Set(['home','orders','messages','customers','more']);
+const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports']);
+const _mtabFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('mtab');return v&&_MTABS.has(v)?v:null}catch{return null}};
+const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('msub');return v&&_MSUBS.has(v)?v:null}catch{return null}};
+
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
 export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
-  const[tab,setTab]=useState('home');
+  const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -54,7 +63,37 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[invsFilter,setInvsFilter]=useState('open');
   const[invsSort,setInvsSort]=useState('newest');
   const[custQ,setCustQ]=useState('');
-  const[moreSubPage,setMoreSubPage]=useState(null);
+  const[moreSubPage,setMoreSubPage]=useState(()=>_msubFromUrl()||null);
+  // Keep ?mtab=/?msub= in sync with the current tab + More sub-page so refresh stays put and
+  // browser back/forward walk through visited sections. popstate-driven changes must not push a
+  // new entry (_mPop suppresses that); the first sync uses replaceState. 'home' clears the param.
+  const _mPop=React.useRef(false);
+  const _mFirst=React.useRef(true);
+  useEffect(()=>{
+    if(_mPop.current){_mPop.current=false;_mFirst.current=false;return;}
+    try{
+      const u=new URL(window.location);
+      const curTab=u.searchParams.get('mtab')||'home';
+      const curSub=u.searchParams.get('msub')||'';
+      const wantSub=(tab==='more'&&moreSubPage)?moreSubPage:'';
+      if(curTab!==tab||curSub!==wantSub){
+        if(tab==='home')u.searchParams.delete('mtab');else u.searchParams.set('mtab',tab);
+        if(wantSub)u.searchParams.set('msub',wantSub);else u.searchParams.delete('msub');
+        const url=u.pathname+u.search+u.hash;
+        if(_mFirst.current)window.history.replaceState({mtab:tab,msub:wantSub},'',url);else window.history.pushState({mtab:tab,msub:wantSub},'',url);
+      }
+    }catch{}
+    _mFirst.current=false;
+  },[tab,moreSubPage]);
+  useEffect(()=>{
+    const onPop=()=>{
+      const t=_mtabFromUrl()||'home';
+      const s=t==='more'?_msubFromUrl():null;
+      if(t!==tab||(s||null)!==(moreSubPage||null)){_mPop.current=true;setTab(t);setMoreSubPage(s)}
+    };
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[tab,moreSubPage]);
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
   // Jobs filters

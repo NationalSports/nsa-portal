@@ -3469,6 +3469,13 @@ function AuthSetupPage({mode}){
 // Build a deep-link URL for opening a record in a new tab.
 // Used by RowLink and by row-level middle-click handlers.
 const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(params).toString();
+// Page-level routing: the current portal section lives in the ?pg=<id> query param so a
+// refresh stays put and the browser back/forward buttons walk through visited sections.
+// 'dashboard' is the default and is represented by a clean URL (no ?pg=). Query-param based
+// (not a path) so it never touches Netlify's routing/redirects. Page-level only — opening a
+// specific record is not a separate history entry.
+const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
+const _pgFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('pg');return v&&_PG_IDS.has(v)?v:null}catch{return null}};
 // RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
 // right-click "Open in New Tab" all work natively in the browser. Plain
 // left-click runs onOpen() (in-place SPA nav) instead of following the href.
@@ -3488,7 +3495,7 @@ export default function App(){
   if(_path==='/auth/setup')return<AuthSetupPage mode="setup"/>;
   if(_path==='/auth/reset')return<AuthSetupPage mode="reset"/>;
 
-  const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
+  const[pg,setPg]=useState(()=>_pgFromUrl()||'dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
   const[dashSalesPeriod,setDashSalesPeriod]=useState('this_month');// dashboard sales box window: this_month|last_month|last_3|ytd|last_12
@@ -5152,19 +5159,19 @@ export default function App(){
       if(changed)window.history.replaceState({},'',u);
     }catch{}
   },[sos,ests,cust,invs,vend,prod,dbLoading]); // eslint-disable-line
-  // Handle ?pg=<id>[#anchor] deep link — used by the so-health-alert email to
-  // land users on the System Health card (?pg=backup#system-health). Skipped
-  // if ?so= is also set, since that handler takes precedence.
+  // Handle the #anchor part of a ?pg=<id>#anchor deep link — used by the so-health-alert
+  // email to land users on the System Health card (?pg=backup#system-health). The page id
+  // itself is already applied via the pg useState initializer; here we only scroll to the
+  // anchor once the page has rendered. Skipped if ?so= is also set (that handler takes
+  // precedence). The ?pg= param is intentionally kept in the URL so refresh stays put.
   React.useEffect(()=>{
     if(dbLoading)return;
     try{
       const p=new URLSearchParams(window.location.search);
       const pgId=p.get('pg');
       if(!pgId||p.get('so'))return;
-      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
-      if(allowed.has(pgId))setPg(pgId);
+      if(_PG_IDS.has(pgId)&&pgId!==pg)setPg(pgId);
       const anchor=window.location.hash;
-      const u=new URL(window.location);u.searchParams.delete('pg');window.history.replaceState({},'',u.pathname+u.search+anchor);
       if(anchor){
         // Wait for the page to render before scrolling.
         const id=anchor.replace(/^#/,'');
@@ -5172,6 +5179,31 @@ export default function App(){
       }
     }catch{}
   },[dbLoading]); // eslint-disable-line
+  // Keep ?pg=<id> in sync with the current page. Writing the URL on every page change lets
+  // a refresh stay put and gives the browser back/forward buttons a history entry per section.
+  // Changes that originate from back/forward (popstate) must NOT push a new entry — the
+  // _pgPop flag suppresses that. The first sync uses replaceState so we don't bury the
+  // initial entry. 'dashboard' clears the param to keep the default URL clean.
+  const _pgPop=React.useRef(false);
+  const _pgFirst=React.useRef(true);
+  React.useEffect(()=>{
+    if(_pgPop.current){_pgPop.current=false;_pgFirst.current=false;return;}
+    try{
+      const u=new URL(window.location);
+      const cur=u.searchParams.get('pg')||'dashboard';
+      if(cur!==pg){
+        if(pg==='dashboard')u.searchParams.delete('pg');else u.searchParams.set('pg',pg);
+        const url=u.pathname+u.search+u.hash;
+        if(_pgFirst.current)window.history.replaceState({pg},'',url);else window.history.pushState({pg},'',url);
+      }
+    }catch{}
+    _pgFirst.current=false;
+  },[pg]);
+  React.useEffect(()=>{
+    const onPop=()=>{const v=_pgFromUrl()||'dashboard';if(v!==pg){_pgPop.current=true;setPg(v)}};
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[pg]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
