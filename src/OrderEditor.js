@@ -1641,7 +1641,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
-  const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
+  // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
+  // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
+  // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
+  // wrong rows. `remap` maps each item's OLD index to its NEW index (omit unchanged indices).
+  const applyItemOrder=(nextItems,remap)=>{const ri=ii=>remap[ii]!=null?remap[ii]:ii;
+    setO(e=>({...e,items:nextItems,
+      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).map(gi=>({...gi,item_idx:ri(gi.item_idx)}))})),
+      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).map(ri)})),
+      updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];applyItemOrder(next,{[i]:j,[j]:i})};
   // Stable, human-readable key describing an item's decoration setup. Items sharing the same
   // decorations sort together; un-decorated items sort last (the ~ prefix sorts after letters).
   const decoSortKey=(item)=>{const ds=safeDecos(item);if(!ds.length)return '~~no deco';
@@ -1653,19 +1662,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return String(d.kind||'');
     }).sort().join(' | ');};
   // Reorder the line items so items with the same decoration are grouped together.
-  // Jobs and deco POs reference items by array index, so remap those references to the
-  // items' new positions in the same update — otherwise they'd point at the wrong rows.
   const sortByDeco=()=>{const items=safeItems(o);
     const entries=items.map((it,i)=>({it,i})).sort((a,b)=>{const ka=decoSortKey(a.it),kb=decoSortKey(b.it);return ka<kb?-1:ka>kb?1:a.i-b.i});
     if(entries.every((e,i)=>e.i===i)){nf('Already sorted by decoration');return}
     const remap={};entries.forEach((e,newI)=>{remap[e.i]=newI});
-    const ri=ii=>remap[ii]!=null?remap[ii]:ii;
-    const next=entries.map(e=>e.it);
-    setO(e=>({...e,items:next,
-      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).map(gi=>({...gi,item_idx:ri(gi.item_idx)}))})),
-      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).map(ri)})),
-      updated_at:new Date().toLocaleString()}));
-    setDirty(true);setCollapsedItems({});nf('Sorted line items by decoration')};
+    applyItemOrder(entries.map(e=>e.it),remap);
+    setCollapsedItems({});nf('Sorted line items by decoration')};
   // Collapse / expand controls for the compact line-item view.
   const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
