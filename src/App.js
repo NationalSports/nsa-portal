@@ -1747,7 +1747,23 @@ const _dbSaveSOInner = async (so) => {
     return true;
   }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
-const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
+// Shadow-capture hook (OFF unless REACT_APP_SO_CAPTURE==='1'): after a SUCCESSFUL
+// SO save, fire-and-forget a copy of the saved order + its persisted state to the
+// capture-so-save endpoint (-> so_save_audit), so the future transactional
+// save_sales_order RPC can be A/B-validated by replaying real saves. Fully
+// isolated — it can never block or fail a save; _dbSaveSO's return value is
+// untouched, and every call is wrapped so it can't throw into the save path.
+const _SO_CAPTURE_ENABLED = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_SO_CAPTURE === '1');
+const _captureSoSave = (so, savePromise) => {
+  if (!_SO_CAPTURE_ENABLED) return;
+  Promise.resolve(savePromise).then((ok) => {
+    if (ok !== true) return; // only capture saves that actually succeeded
+    try {
+      authFetch('/.netlify/functions/capture-so-save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ so_id: so.id, payload: so }) }).catch(() => {});
+    } catch (_) { /* never let capture affect the save */ }
+  }).catch(() => {});
+};
+const _dbSaveSO = (so) => { const _p = _queuedEntitySave(so.id, so, _dbSaveSOInner); _captureSoSave(so, _p); return _p; };
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
