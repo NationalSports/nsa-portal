@@ -366,6 +366,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
+  const[collapsedItems,setCollapsedItems]=useState({});// Track collapsed line items by idx — shows compact sku/qty/total summary
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
@@ -1641,6 +1642,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
+  // Stable, human-readable key describing an item's decoration setup. Items sharing the same
+  // decorations sort together; un-decorated items sort last (the ~ prefix sorts after letters).
+  const decoSortKey=(item)=>{const ds=safeDecos(item);if(!ds.length)return '~~no deco';
+    return ds.map(d=>{
+      if(d.kind==='art'){const f=(o.art_files||[]).find(x=>x.id===d.art_file_id);return 'art:'+((f&&f.deco_type)?f.deco_type:'unassigned')+':'+(d.position||'')}
+      if(d.kind==='numbers')return 'numbers:'+(d.position||'');
+      if(d.kind==='names')return 'names:'+(d.position||'');
+      if(d.kind==='outside_deco')return 'outside:'+(d.deco_type||'')+':'+(d.position||'');
+      return String(d.kind||'');
+    }).sort().join(' | ');};
+  // Reorder the line items so items with the same decoration are grouped together.
+  const sortByDeco=()=>{const items=safeItems(o);const next=[...items].map((it,i)=>({it,i})).sort((a,b)=>{const ka=decoSortKey(a.it),kb=decoSortKey(b.it);return ka<kb?-1:ka>kb?1:a.i-b.i}).map(x=>x.it);sv('items',next);setCollapsedItems({});nf('Sorted line items by decoration')};
+  // Collapse / expand controls for the compact line-item view.
+  const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
+  const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
+  const expandAllItems=()=>setCollapsedItems({});
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   // Reassign which vendor a line item is ordered from (e.g. OMG parsed an S&S item as
   // Adidas). vendor_id is the key the PO builder groups on (see resolveVendor), so this
@@ -3222,7 +3239,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {tab==='items'&&(()=>{
       const _invsForSO=isSO?(allInvoices||[]).filter(inv=>inv.so_id===o.id):[];
       const _itemInvoicedMap=isSO?buildInvoicedQtyMap(o,_invsForSO):new Map();
-      return<>{safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+      const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
+      return<>
+      {safeItems(o).length>0&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
+        <div style={{flex:1}}/>
+        <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
+        {_anyCollapsed
+          ?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
+          :<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
+      </div>}
+      {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
       const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
       let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=eq*dp.cost;dR+=dr;dC+=dc;
@@ -3245,9 +3272,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
+      // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
+      if(collapsedItems[idx]){
+        const decoLabels=decoBreak.map(d=>d.label).filter(Boolean);
+        const decoSub=decoLabels.length?decoLabels.join(' · '):(item.no_deco?'No decoration':'No deco assigned');
+        return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
+          <div style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
+            <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
+                <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
+                {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
+              </div>
+              <div style={{fontSize:11,color:decoLabels.length?'#7c3aed':'#94a3b8',fontWeight:600,marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={decoSub}>🎨 {decoSub}</div>
+            </div>
+            <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
+              <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>@ ${safeNum(item.unit_sell).toFixed(2)}/ea</div>
+            </div>
+            <div style={{textAlign:'right',whiteSpace:'nowrap',minWidth:88}}>
+              <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Line Total</div>
+              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${iR.toFixed(2)}</div>
+            </div>
+          </div>
+        </div>);
+      }
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
+            <button title="Collapse item" onClick={()=>toggleItemCollapse(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1,alignSelf:'flex-start',marginTop:2}}>▾</button>
             <div style={{display:'flex',flexDirection:'column',gap:0,marginRight:-4}}>
               <button title="Move up" disabled={idx===0} onClick={()=>mvI(idx,-1)} style={{background:'none',border:'none',cursor:idx===0?'not-allowed':'pointer',color:idx===0?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortUp" size={14}/></button>
               <button title="Move down" disabled={idx===safeItems(o).length-1} onClick={()=>mvI(idx,1)} style={{background:'none',border:'none',cursor:idx===safeItems(o).length-1?'not-allowed':'pointer',color:idx===safeItems(o).length-1?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortDown" size={14}/></button>
