@@ -5301,7 +5301,7 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgFocusOrder,setOmgFocusOrder]=useState(null);const[wsoCtx,setWsoCtx]=useState({});const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgFocusOrder,setOmgFocusOrder]=useState(null);const[wsoCtx,setWsoCtx]=useState({});const[omgItemBuyers,setOmgItemBuyers]=useState({});const[omgExpandedProd,setOmgExpandedProd]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
   // Order counts keyed by OMG sale code — loaded from webstore_orders when the OMG page is visited.
   // This picks up orders that were imported via the player report upload in the Parent Order Portal.
   const[omgWsoCounts,setOmgWsoCounts]=useState({});
@@ -5334,6 +5334,26 @@ export default function App(){
       setWsoCtx(prev=>{const next={...prev};ords.forEach(o=>{const ws=wsById[o.store_id]||{};const omg=omgStores.find(s=>s._omg_sale_code&&s._omg_sale_code===ws.omg_sale_code);next[String(o.id)]={buyer:o.buyer_name||'',orderNo:o.omg_order_number||'',storeId:o.store_id,saleCode:ws.omg_sale_code||'',storeName:(omg&&omg.store_name)||ws.name||'',omgStoreId:omg&&omg.id};});return next;});
     })();
   },[msgs,omgStores]);// eslint-disable-line
+  // Per-product buyer breakdown for the OMG catalog: who ordered each item,
+  // their order # and size. Order lines carry the same name+color the catalog
+  // product does (both from the report rows), so they group by `name|color`.
+  React.useEffect(()=>{
+    setOmgExpandedProd(null);setOmgItemBuyers({});
+    if(pg!=='omg'||!omgSel||!supabase)return;
+    const code=omgSel._omg_sale_code;if(!code)return;
+    (async()=>{
+      const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',code).eq('source','omg').maybeSingle();
+      if(!ws)return;
+      const{data:ords}=await supabase.from('webstore_orders').select('id,omg_order_number,buyer_name').eq('store_id',ws.id);
+      if(!ords?.length)return;
+      const byId={};ords.forEach(o=>{byId[o.id]=o});
+      const{data:items}=await supabase.from('webstore_order_items').select('order_id,name,color,size,player_name').in('order_id',ords.map(o=>o.id));
+      const map={};
+      (items||[]).forEach(it=>{const key=(it.name||'')+'|'+(it.color||'');const o=byId[it.order_id]||{};(map[key]=map[key]||[]).push({player:it.player_name||o.buyer_name||'—',orderNo:o.omg_order_number||'—',size:it.size||'—'})});
+      Object.values(map).forEach(arr=>arr.sort((a,b)=>String(a.orderNo).localeCompare(String(b.orderNo),undefined,{numeric:true})));
+      setOmgItemBuyers(map);
+    })();
+  },[pg,omgSel?.id]);// eslint-disable-line
   // Live completion status reported up from the Parent Order Portal for the
   // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
   // the Create Sales Order button at the bottom of the store detail.
@@ -16565,7 +16585,8 @@ export default function App(){
               // sets the flag on all of its products at once.
               const groupReady=(g)=>{const ps=(s.products||[]).filter(pr=>(pr.decorations||[]).some(d=>d.art_group===g));return ps.length>0&&ps.every(pr=>pr.art_ready);};
               const setGroupReady=(g,val)=>{const newProds=(s.products||[]).map(pr=>(pr.decorations||[]).some(d=>d.art_group===g)?{...pr,art_ready:val}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);};
-              return<tr key={i} style={omgBulkSel.has(i)?{background:'#eff6ff'}:undefined}>
+              const _buyKey=(p.name||'')+'|'+(p.color||'');const _buyList=omgItemBuyers[_buyKey]||[];
+              return<React.Fragment key={i}><tr style={omgBulkSel.has(i)?{background:'#eff6ff'}:undefined}>
                 <td style={{textAlign:'center'}}><input type="checkbox" checked={omgBulkSel.has(i)} onChange={()=>_toggleRow(i)} style={{cursor:'pointer'}}/></td>
                 <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" title="Hover to preview · click for full size" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}}
                   onMouseEnter={e=>{
@@ -16597,7 +16618,8 @@ export default function App(){
                       <option value="">vendor?</option>
                       {vend.filter(v=>v.is_active||v.id===p.vendor_id).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
                     </select>
-                  </div></td>
+                  </div>
+                  {_buyList.length>0&&<button onClick={e=>{e.stopPropagation();setOmgExpandedProd(omgExpandedProd===i?null:i)}} title="Show who ordered this item, their order # and size" style={{marginTop:3,fontSize:9.5,fontWeight:700,color:'#2563eb',background:'#eff6ff',border:'1px solid #dbeafe',borderRadius:4,padding:'1px 7px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:3}}>👥 {_buyList.length} order{_buyList.length===1?'':'s'} {omgExpandedProd===i?'▾':'▸'}</button>}</td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td>{p.no_deco?(
                   <div style={{display:'flex',alignItems:'center',gap:4}}>
@@ -16691,7 +16713,15 @@ export default function App(){
                 })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
-              </tr>})}</tbody></table></div>
+              </tr>
+              {omgExpandedProd===i&&<tr style={{background:'#f8fafc'}}><td colSpan={13} style={{padding:'4px 16px 12px'}}>
+                <div style={{fontSize:10.5,fontWeight:700,color:'#64748b',margin:'4px 0 6px',textTransform:'uppercase',letterSpacing:0.4}}>Who ordered {p.name}{p.color?' · '+p.color:''} ({_buyList.length})</div>
+                <table style={{borderCollapse:'collapse',fontSize:12}}>
+                  <thead><tr style={{textAlign:'left',color:'#94a3b8'}}>{['Player','Order #','Size'].map(h=><th key={h} style={{padding:'2px 18px 4px 0',fontSize:10,fontWeight:700}}>{h}</th>)}</tr></thead>
+                  <tbody>{_buyList.map((b,bi)=><tr key={bi} style={{borderTop:'1px solid #eef1f5'}}><td style={{padding:'3px 18px 3px 0',fontWeight:600}}>{b.player}</td><td style={{padding:'3px 18px 3px 0',fontFamily:'monospace',color:'#1e40af'}}>{b.orderNo}</td><td style={{padding:'3px 18px 3px 0'}}>{b.size}</td></tr>)}</tbody>
+                </table>
+              </td></tr>}
+              </React.Fragment>})}</tbody></table></div>
             </>)}
           </div>
         </div>
