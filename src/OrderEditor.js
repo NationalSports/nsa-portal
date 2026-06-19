@@ -2404,18 +2404,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     newJobs.forEach(nj=>{
       const existing=existingJobMap[nj.key]||(nj.art_file_id?existingByArtId[nj.art_file_id]:null);
       if(!existing||!Array.isArray(existing.items))return;
+      // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
+      // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
+      // at FULL quantity and land on BOTH the parent and its slice (the GM2365-on-both double-count).
+      const sliceOwned=new Set();
+      if(existing.id)safeJobs(o).forEach(sj=>{if(sj.split_from===existing.id&&!sj._merged&&!_isRel(sj))(sj.items||[]).forEach(gi=>sliceOwned.add(gi.item_idx+'-'+gi.sku))});
       let hasOverride=false;
-      nj.items=nj.items.map(gi=>{
-        if(gi._artSplit)return gi;// split-art allocations are re-derived each sync — never restore the prior slice
+      const rebuilt=[];
+      nj.items.forEach(gi=>{
+        if(gi._artSplit){rebuilt.push(gi);return}// split-art allocations are re-derived each sync — never restore the prior slice
         const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
-        if(!ex||!ex.sizes)return gi;
+        if(!ex||!ex.sizes){
+          // Not on the saved parent: a slice owns it → it was split off, so drop it here (don't
+          // re-add at full size). Otherwise it's a genuinely new garment — keep the rebuilt line.
+          if(sliceOwned.has(gi.item_idx+'-'+gi.sku)){hasOverride=true;return}
+          rebuilt.push(gi);return;
+        }
         hasOverride=true;
         const sizes={...ex.sizes};
         const fulSizes=ex.fulSizes?{...ex.fulSizes}:{};
         const u=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0);
         const f=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
-        return{...gi,sizes,fulSizes,units:u,fulfilled:f};
+        rebuilt.push({...gi,sizes,fulSizes,units:u,fulfilled:f});
       });
+      nj.items=rebuilt;
       if(hasOverride){
         const total=nj.items.reduce((a,gi)=>a+safeNum(gi.units),0);
         const ful=nj.items.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
@@ -7353,55 +7365,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // the full item quantities (see recalcJobFulfillment).
       const splitByReceived=(jIdx)=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
-        const rcvdItems=[];const keepItems=[];let rcvdTotal=0;let keepTotal=0;
+        // Split off the BACKORDER: the received/pulled units stay on the original job (it keeps its
+        // number and stays producible); the not-yet-received units move to a new -S backorder job.
+        const keepItems=[];const openItems=[];let keepTotal=0;let openTotal=0;
         j.items.forEach(gi=>{
           const curSizes=_giSizes(gi);
           const curFul=_giFulSizes(gi,curSizes);
-          const splitSizes={};const remainSizes={};
-          let sUnits=0,rUnits=0;
+          const rcvdSizes={};const openSizes={};
+          let rUnits=0,oUnits=0;
           Object.entries(curSizes).forEach(([sz,v])=>{
             const f=Math.max(0,Math.min(safeNum(curFul[sz]),safeNum(v)));
-            if(f>0){splitSizes[sz]=f;sUnits+=f}
+            if(f>0){rcvdSizes[sz]=f;rUnits+=f}
             const rem=safeNum(v)-f;
-            if(rem>0){remainSizes[sz]=rem;rUnits+=rem}
+            if(rem>0){openSizes[sz]=rem;oUnits+=rem}
           });
-          // Partition the roster like splitCustom: first N per size go with the received slice.
+          // Partition the roster like splitCustom: the first N per size (the received units) stay on
+          // the original job; the remainder (the backorder) goes to the -S job.
           const _srcIt=safeItems(o)[gi.item_idx];
           const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
           const baseRoster=gi.roster||_srcDeco?.roster||null;
-          let splitRoster=null,remainRoster=null;
+          let rcvdRoster=null,openRoster=null;
           if(baseRoster){
-            splitRoster={};remainRoster={};
+            rcvdRoster={};openRoster={};
             Object.keys(curSizes).forEach(sz=>{
               const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
-              const sCap=safeNum(splitSizes[sz]);
-              const rCap=safeNum(remainSizes[sz]);
-              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
-              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+              const rCap=safeNum(rcvdSizes[sz]);
+              const oCap=safeNum(openSizes[sz]);
+              if(rCap>0){const head=arr.slice(0,rCap);rcvdRoster[sz]=head.concat(Array(Math.max(0,rCap-head.length)).fill(''))}
+              if(oCap>0){const tail=arr.slice(rCap);openRoster[sz]=tail.concat(Array(Math.max(0,oCap-tail.length)).fill(''))}
             });
           }
-          if(sUnits>0){
-            const item={...gi,sizes:splitSizes,fulSizes:{...splitSizes},units:sUnits,fulfilled:sUnits};
-            if(splitRoster)item.roster=splitRoster;
-            rcvdItems.push(item);rcvdTotal+=sUnits;
-          }
           if(rUnits>0){
-            const item={...gi,sizes:remainSizes,fulSizes:{},units:rUnits,fulfilled:0};
-            if(remainRoster)item.roster=remainRoster;
+            const item={...gi,sizes:rcvdSizes,fulSizes:{...rcvdSizes},units:rUnits,fulfilled:rUnits};
+            if(rcvdRoster)item.roster=rcvdRoster;
             keepItems.push(item);keepTotal+=rUnits;
           }
+          if(oUnits>0){
+            const item={...gi,sizes:openSizes,fulSizes:{},units:oUnits,fulfilled:0};
+            if(openRoster)item.roster=openRoster;
+            openItems.push(item);openTotal+=oUnits;
+          }
         });
-        if(rcvdTotal===0){nf('Nothing received to split','error');return}
-        if(keepItems.length===0||keepTotal===0){nf('Everything is already received — nothing left to split off','error');return}
+        if(keepTotal===0){nf('Nothing received yet — nothing producible to keep on this job','error');return}
+        if(openItems.length===0||openTotal===0){nf('Everything is already received — no backorder to split off','error');return}
         const existingS=jobs.filter(jj=>jj.split_from===j.id&&jj.id.startsWith(j.id+'-S')).length;
         const suffix='S'+(existingS>0?existingS+1:'');
         const splitId=j.id+'-'+suffix;
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,item_status:'items_received',items:rcvdItems,
-          fulfilled_units:rcvdTotal,total_units:rcvdTotal,
+        // New -S job = the backorder. split_open marks it so allocateJobFulfillment lets it claim the
+        // item's receipts LAST — the received units stay counted on the original (parent) job.
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,split_open:true,item_status:'need_to_order',items:openItems,
+          fulfilled_units:0,total_units:openTotal,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:0,item_status:'need_to_order'};
-        const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
+        // Original job keeps the received units and stays producible.
+        const keepJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepTotal,item_status:'items_received'};
+        const newJobs2=[...jobs];newJobs2.splice(jIdx,1,keepJob,splitJob2);
+        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id);
       };
 
       // Split job by SKU — separate into one job per garment
@@ -9301,7 +9319,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {!splitModal.mode&&<div style={{display:'flex',gap:12,flexDirection:'column'}}>
               <button className="btn" style={{padding:16,background:'#f0fdf4',border:'2px solid #86efac',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'received'}))}>
                 <div style={{fontWeight:800,fontSize:14,color:'#166534',marginBottom:4}}>📦 Split by Received Inventory</div>
-                <div style={{fontSize:12,color:'#475569'}}>Creates a new job with the <strong>{totalReceived} units</strong> that have been received/pulled. Remaining {j.total_units-totalReceived} units stay on the original job.</div>
+                <div style={{fontSize:12,color:'#475569'}}>Keeps the <strong>{totalReceived} received/pulled units</strong> on {j.id} (ready for production) and moves the {j.total_units-totalReceived} not-yet-received units to a new <strong>backorder</strong> job.</div>
                 {totalReceived===0&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ No units received yet — nothing to split</div>}
               </button>
               <button className="btn" style={{padding:16,background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'sku',selectedSkus:[]}))}>
@@ -9322,10 +9340,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color})</span></div>
                 <div style={{textAlign:'right'}}><span style={{fontWeight:700,color:gi.received>0?'#166534':'#94a3b8'}}>{gi.received}</span><span style={{color:'#94a3b8'}}>/{gi.units}</span> <span style={{fontSize:10,color:'#64748b'}}>received</span></div>
               </div>)}
-              <div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
-                <strong>New job ({j.id}-S):</strong> {totalReceived} units (received) → Ready for Prod<br/>
-                <strong>Remaining ({j.id}):</strong> {j.total_units-totalReceived} units → Waiting for items
-              </div>
+              {totalReceived<j.total_units?<div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
+                <strong>Stays on {j.id}:</strong> {totalReceived} received units → Ready for Prod<br/>
+                <strong>New backorder job ({j.id}-S):</strong> {j.total_units-totalReceived} not-yet-received units → Waiting for items
+              </div>:<div style={{padding:10,background:'#dcfce7',borderRadius:6,marginTop:8,fontSize:12,color:'#166534'}}>
+                Everything on this job is already received — there's no backorder to split off.
+              </div>}
             </div>}
 
             {/* Split by SKU selection */}
@@ -9412,7 +9432,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="modal-footer">
             {splitModal.mode&&<button className="btn btn-secondary" onClick={()=>setSplitModal(m=>({...m,mode:null}))}>← Back</button>}
             <button className="btn btn-secondary" onClick={()=>setSplitModal(null)}>Cancel</button>
-            {splitModal.mode==='received'&&totalReceived>0&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split by Received ({totalReceived} units)</button>}
+            {splitModal.mode==='received'&&totalReceived>0&&totalReceived<j.total_units&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split Off Backorder ({j.total_units-totalReceived} units)</button>}
             {splitModal.mode==='sku'&&(splitModal.selectedIdxs||[]).length>0&&(splitModal.selectedIdxs||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(splitModal.jIdx,splitModal.selectedIdxs)}>✂️ Split Selected SKUs</button>}
             {splitModal.mode==='custom'&&(()=>{
               const cs=splitModal.customSizes||{};const ci=splitModal.customInclude||{};
