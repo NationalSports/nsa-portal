@@ -2113,6 +2113,50 @@ function ItemSection({ title, hint, right, children, pad = 14 }) {
   );
 }
 
+// Shopper-facing add-on options for an item — either a yes/no add-on with one
+// upcharge (e.g. "Embroidered name +$5") or a "pick one" choice list (e.g. collar
+// color, each choice with its own upcharge). Stored on webstore_products.options.
+function OptionsEditor({ value, onChange }) {
+  const opts = Array.isArray(value) ? value : [];
+  const set = (i, patch) => onChange(opts.map((o, j) => j === i ? { ...o, ...patch } : o));
+  const add = () => onChange([...opts, { id: Math.random().toString(36).slice(2, 8), label: '', kind: 'addon', upcharge: 0, required: false, choices: [] }]);
+  const remove = (i) => onChange(opts.filter((_, j) => j !== i));
+  const setChoice = (i, ci, patch) => set(i, { choices: (opts[i].choices || []).map((c, j) => j === ci ? { ...c, ...patch } : c) });
+  const addChoice = (i) => set(i, { choices: [...(opts[i].choices || []), { label: '', upcharge: 0 }] });
+  const rmChoice = (i, ci) => set(i, { choices: (opts[i].choices || []).filter((_, j) => j !== ci) });
+  return (
+    <div>
+      {opts.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>No add-ons yet — add things a shopper can pick, like an embroidered name (+$) or a collar color.</div>}
+      {opts.map((o, i) => (
+        <div key={o.id || i} style={{ border: '1px solid #e8ebf0', borderRadius: 10, padding: 10, marginBottom: 8, background: '#fff' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input className="form-input" style={{ flex: 1, minWidth: 150 }} placeholder="Option label (e.g. Embroidered name)" value={o.label} onChange={(e) => set(i, { label: e.target.value })} />
+            <select className="form-input" style={{ width: 150 }} value={o.kind} onChange={(e) => set(i, { kind: e.target.value })}>
+              <option value="addon">Yes / No add-on</option>
+              <option value="choice">Pick one</option>
+            </select>
+            <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={!!o.required} onChange={(e) => set(i, { required: e.target.checked })} />required</label>
+            <button type="button" onClick={() => remove(i)} title="Remove option" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 18, lineHeight: 1, cursor: 'pointer' }}>×</button>
+          </div>
+          {o.kind === 'addon'
+            ? <div style={{ marginTop: 8, fontSize: 13 }}>Upcharge +$<input className="form-input" style={{ width: 90, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={o.upcharge || 0} onChange={(e) => set(i, { upcharge: Number(e.target.value) || 0 })} /></div>
+            : <div style={{ marginTop: 8 }}>
+                {(o.choices || []).map((c, ci) => (
+                  <div key={ci} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 5 }}>
+                    <input className="form-input" style={{ flex: 1, minWidth: 120 }} placeholder="Choice (e.g. Royal)" value={c.label} onChange={(e) => setChoice(i, ci, { label: e.target.value })} />
+                    <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>+$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 3 }} type="number" step="0.01" min={0} value={c.upcharge || 0} onChange={(e) => setChoice(i, ci, { upcharge: Number(e.target.value) || 0 })} /></span>
+                    <button type="button" onClick={() => rmChoice(i, ci)} title="Remove choice" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 16, lineHeight: 1, cursor: 'pointer' }}>×</button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => addChoice(i)} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>+ add choice</button>
+              </div>}
+        </div>
+      ))}
+      <button type="button" onClick={add} className="btn btn-sm btn-secondary">+ Add an option</button>
+    </div>
+  );
+}
+
 function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
@@ -2141,6 +2185,8 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   // Storefront placement + requirement (new per-item fields).
   const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
   const [required, setRequired] = useState(!!item.required);
+  const [kitName, setKitName] = useState(item.kit_name || '');
+  const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
@@ -2196,6 +2242,12 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
     (catalog || []).forEach((c) => { if (c.category) set.add(c.category); if (stockByWp[c.id]?.category) set.add(stockByWp[c.id].category); });
     return [...set].filter(Boolean).sort();
   }, [catalog, stockByWp]);
+  // Kit/package names already on this store, plus existing package names, as type-ahead.
+  const kitSuggestions = useMemo(() => {
+    const set = new Set();
+    (catalog || []).forEach((c) => { if (c.kit_name) set.add(c.kit_name); if (c.kind === 'bundle' && c.display_name) set.add(c.display_name); });
+    return [...set].filter(Boolean).sort();
+  }, [catalog]);
   const toggleColor = (id) => setPickedColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const addColors = async () => {
     if (!onAddSingle || !pickedColors.size) return;
@@ -2217,7 +2269,11 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   };
 
   const save = () => {
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required };
+    // Drop blank options / empty choices so we never store half-filled add-ons.
+    const cleanOptions = options
+      .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
+      .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -2231,6 +2287,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   };
 
   const catListId = 'cat-suggest-' + item.id;
+  const kitListId = 'kit-suggest-' + item.id;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
       {!isBundle && (
@@ -2289,16 +2346,26 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
           </ItemSection>
         )}
 
-        <ItemSection title="Store placement" hint="· which section it shows in, and whether it’s required">
+        <ItemSection title="Store placement" hint="· section, kit & whether it’s required">
           <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
               <datalist id={catListId}>{categorySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
+            <Row label="Part of a kit / package">
+              <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
+              <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
+            </Row>
             <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={setRequired} /></div>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>“Part of a batch/kit” and custom option selections are coming next — tell me how you’d like those to behave.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit’s items Mandatory to require them at checkout.</div>
         </ItemSection>
+
+        {!isBundle && (
+          <ItemSection title="Add-on options" hint="· shopper-selected extras, e.g. embroidered name or collar color">
+            <OptionsEditor value={options} onChange={setOptions} />
+          </ItemSection>
+        )}
 
         {isBundle && <div style={{ fontSize: 12, color: '#94a3b8' }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
       </React.Fragment>}
