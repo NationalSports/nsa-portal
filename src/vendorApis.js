@@ -981,8 +981,19 @@ const ssResolveSkus = async (descriptors) => {
   const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
   for (const style of styles) {
     let items = [];
-    try { const data = await ssGetProducts({ style }); items = Array.isArray(data) ? data : (data ? [data] : []); }
-    catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
+    try {
+      // S&S /Products?style= expects a numeric styleID, not the style name — so resolve
+      // the styleID first via /Styles?search= (the same path our other S&S lookups use),
+      // then fetch that style's products.
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(style));
+      const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
+      const match = sa.find(s => _smNorm(s.partNumber) === _smNorm(style) || _smNorm(s.styleName) === _smNorm(style)) || sa[0];
+      const styleID = match && (match.styleID || match.StyleID);
+      if (styleID) {
+        const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
+        items = Array.isArray(data) ? data : (data ? [data] : []);
+      }
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
     const cand = [];
     const map = {}; // normalized "color|size" -> sku
     for (const r of items) {
