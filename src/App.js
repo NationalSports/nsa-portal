@@ -757,11 +757,21 @@ const _dbLoad = async (opts={}) => {
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
       _cold(()=>_safeQuery('team_members',{order:'name'})),
-      _grp('customers',()=>_safeQuery('customers',{order:'name'})),
-      _grp('customers',()=>_safeQuery('customer_contacts')),
+      // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
+      // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
+      // Parent and ALL children share the cold flag so a coreOnly load skips them together (group
+      // parity); setCust below is .length-guarded and the snapshot is preserved on coreOnly so an
+      // empty skip can never wipe customer state or the _diffSave baseline.
+      _grp('customers',()=>_safeQuery('customers',{order:'name'}),true),
+      _grp('customers',()=>_safeQuery('customer_contacts'),true),
       _cold(()=>_safeQuery('vendors',{order:'name'})),
-      _grp('products',()=>_safeQuery('products',{order:'name'})),
-      _grp('products',()=>_safeQuery('product_inventory')),
+      // products + product_inventory are COLD: a 17k-row catalog that changes only via the daily
+      // vendor syncs. Realtime (products channel) + the ~10-min full poll keep them fresh; re-pulling
+      // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
+      // (poll 4180, realtime 4031) and the poll snapshot is preserved on coreOnly (see prod: below),
+      // so a skipped coreOnly load can never empty state or the _diffSave baseline.
+      _grp('products',()=>_safeQuery('products',{order:'name'}),true),
+      _grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
       _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
@@ -785,11 +795,11 @@ const _dbLoad = async (opts={}) => {
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
       ()=>only&&!only.has('products')&&!only.has('app_state')?_skip():_safeQuery('app_state'),
-      _grp('customers',()=>_safeQuery('customer_promo_programs')),
-      _grp('customers',()=>_safeQuery('customer_promo_periods')),
-      _grp('customers',()=>_safeQuery('customer_promo_usage')),
-      _grp('customers',()=>_safeQuery('customer_credits')),
-      _grp('customers',()=>_safeQuery('customer_credit_usage')),
+      _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
+      _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
+      _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
+      _grp('customers',()=>_safeQuery('customer_credits'),true),
+      _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
       _cold(()=>_safeQuery('rep_csr_assignments')),
       _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
       _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
@@ -4141,7 +4151,7 @@ export default function App(){
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
         const _prevSnap=_dbSnap.current;
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
@@ -4173,7 +4183,7 @@ export default function App(){
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
-        setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
+        if(d.customers.length)setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
