@@ -66,17 +66,48 @@ exports.handler = async (event) => {
         if (existing && existing.length) continue;
       }
 
-      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null }));
+      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null, lineItemKey: i.lineItemKey || null }));
+      const shipmentCost = (Number(sh.shipmentCost) || 0) + (Number(sh.insuranceCost) || 0); // ShipStation's actual billed cost
       await sb.from('webstore_shipments').insert({
         order_id: order.id, store_id: order.store_id, tracking_number: tracking,
         carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
-        items: shipItems, emailed: false,
+        items: shipItems, cost: shipmentCost || null, emailed: false,
       });
 
-      // Mark shipped line items (match by sku); flag the order shipped.
-      const skus = shipItems.map((i) => i.sku).filter(Boolean);
-      if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
-      await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, shipped_at: new Date().toISOString() }).eq('id', order.id);
+      // Recompute shipped quantity per line from ALL recorded shipments for this
+      // order (authoritative + idempotent even if the webhook double-fires).
+      // Match by lineItemKey — the order-item id we set when creating the order —
+      // so partial shipments, incl. the same SKU in different sizes, are exact.
+      const { data: allShips } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
+      const shippedByLine = {};
+      (allShips || []).forEach((s) => (s.items || []).forEach((it) => { if (it.lineItemKey) shippedByLine[it.lineItemKey] = (shippedByLine[it.lineItemKey] || 0) + (Number(it.qty) || 0); }));
+      const { data: orderItems } = await sb.from('webstore_order_items').select('id,sku,qty,is_bundle_parent,line_status').eq('order_id', order.id);
+      const lines = (orderItems || []).filter((i) => !i.is_bundle_parent);
+      if (Object.keys(shippedByLine).length) {
+        for (const i of lines) {
+          const sq = shippedByLine[i.id] || 0;
+          if (sq <= 0) continue;
+          const done = sq >= (Number(i.qty) || 0);
+          await sb.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id);
+          if (done) i.line_status = 'shipped';
+        }
+      } else {
+        // Legacy order created without line keys — fall back to a (qty-blind) SKU match.
+        const skus = shipItems.map((i) => i.sku).filter(Boolean);
+        if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
+        lines.forEach((i) => { if (skus.includes(i.sku)) i.line_status = 'shipped'; });
+      }
+      // Stamp the order fully shipped only once every (non-bundle) line is shipped.
+      const fullyShipped = lines.length > 0 && lines.every((i) => i.line_status === 'shipped');
+      await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', order.id);
+
+      // Reconcile ACTUAL shipping cost: set the order's label_cost to the sum of
+      // its recorded shipments (real billed amounts), then roll the whole Sales
+      // Order's shipping cost up from its orders.
+      const { data: ordShips } = await sb.from('webstore_shipments').select('cost').eq('order_id', order.id);
+      const orderActual = (ordShips || []).reduce((a, s) => a + (Number(s.cost) || 0), 0);
+      await sb.from('webstore_orders').update({ label_cost: orderActual || null }).eq('id', order.id);
+      await reconcileSoShipping(sb, order);
 
       // Email the buyer.
       if (order.buyer_email) await sendShipEmail(sb, order, sh, shipItems, tracking);
@@ -86,6 +117,35 @@ exports.handler = async (event) => {
   }
   return { statusCode: 200, body: JSON.stringify({ received: true }) };
 };
+
+// Set the linked Sales Order's outbound shipping cost to the sum of ACTUAL
+// label costs across all of its orders. Webstore orders link via so_id; OMG
+// shadow orders link via the store's omg_sale_code -> sales_orders.omg_store_id.
+async function reconcileSoShipping(sb, order) {
+  try {
+    let soId = order.so_id || null;
+    let orderIds = [];
+    if (soId) {
+      const { data } = await sb.from('webstore_orders').select('id').eq('so_id', soId);
+      orderIds = (data || []).map((o) => o.id);
+    } else {
+      const { data: stores } = await sb.from('webstores').select('source,omg_sale_code').eq('id', order.store_id).limit(1);
+      const store = stores && stores[0];
+      if (!store || store.source !== 'omg' || !store.omg_sale_code) return;
+      const { data: sos } = await sb.from('sales_orders').select('id').eq('omg_store_id', 'OMG-sale_' + store.omg_sale_code).order('created_at', { ascending: false }).limit(1);
+      if (!sos || !sos[0]) return;
+      soId = sos[0].id;
+      const { data } = await sb.from('webstore_orders').select('id').eq('store_id', order.store_id);
+      orderIds = (data || []).map((o) => o.id);
+    }
+    if (!soId || !orderIds.length) return;
+    const { data: ships } = await sb.from('webstore_shipments').select('cost').in('order_id', orderIds);
+    const total = (ships || []).reduce((a, s) => a + (Number(s.cost) || 0), 0);
+    await sb.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
+  } catch (e) {
+    console.error('[shipstation-webhook] reconcile error:', e.message);
+  }
+}
 
 async function sendShipEmail(sb, order, sh, shipItems, tracking) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
