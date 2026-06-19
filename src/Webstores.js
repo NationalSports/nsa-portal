@@ -520,8 +520,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     flash('Transfers pulled — moved to In process'); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
-  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets }) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], decorations: decorations || [], active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
@@ -1603,7 +1603,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} onPick={(p) => setPending(p)} onPickMany={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
@@ -1966,10 +1966,11 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
 }
 
 // After a product is picked, set its base price (X), fundraising add-on (Y), image, personalization + transfers.
-function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, onAdd, onCancel }) {
+function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, library = [], onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
   const [fundraise, setFundraise] = useState(0);
   const [image, setImage] = useState(null);
+  const [decorations, setDecorations] = useState([]);
   const [takesNumber, setTakesNumber] = useState(false);
   const [takesName, setTakesName] = useState(false);
   const [nameUpcharge, setNameUpcharge] = useState(0);
@@ -2034,6 +2035,7 @@ function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false,
         </div>
       )}
       <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
+      <LogoPlacer imageUrl={image || product.image_front_url} decorations={decorations} onChange={setDecorations} library={library} />
       <div style={{ display: 'flex', gap: 12 }}>
         <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
@@ -2048,7 +2050,7 @@ function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false,
         ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Logo &amp; number transfers are a club-store option — team-store decoration is handled in production, so there’s nothing to stock here.</div>
         : <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ products: [product, ...selectedSiblings], price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: isTeam ? [] : transferCodes.filter(Boolean), num_transfer_sets: isTeam ? [] : numTransferSets.filter((s) => s && s !== '|') })}>{selectedSiblings.length > 0 ? `Add ${selectedSiblings.length + 1} items` : 'Add to store'}</button>
+        <button className="btn btn-primary" onClick={() => onAdd({ products: [product, ...selectedSiblings], price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: isTeam ? [] : transferCodes.filter(Boolean), num_transfer_sets: isTeam ? [] : numTransferSets.filter((s) => s && s !== '|'), decorations })}>{selectedSiblings.length > 0 ? `Add ${selectedSiblings.length + 1} items` : 'Add to store'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
