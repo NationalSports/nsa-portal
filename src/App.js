@@ -11711,7 +11711,7 @@ export default function App(){
         const expanded=!!expandedVendors[vk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        return<div key={vk} className="card" style={{marginBottom:0,gridColumn:expanded?'1 / -1':'auto',borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+        return<div key={vk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header" onClick={()=>setExpandedVendors(p=>({...p,[vk]:!p[vk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
               <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
@@ -11730,7 +11730,21 @@ export default function App(){
               <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#94a3b8',marginTop:4}}><span>$0</span><span style={{fontWeight:700,color:hitThreshold?'#166534':'#b45309'}}>{hitThreshold?'Free shipping ✓':pct+'% · $'+(vg.threshold-total).toFixed(2)+' to go'}</span><span>Free ship ${vg.threshold}</span></div>
             </div>})()}
           </div>
-          {expanded&&<>
+        </div>})}
+      </div>
+      {/* Expanded vendor detail — opens below the tile grid so the tiles stay on top */}
+      {vendorGroups.filter(([k2])=>!!expandedVendors[k2]).map(([vk,vg])=>{
+        const total=vg.pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
+        const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
+        const hitThreshold=total>=vg.threshold;
+        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
+        const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
+        const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
+        return<div key={vk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fbff'}}>
+            <strong style={{fontSize:14,color:'#0f172a'}}>{vg.name} — order detail</strong>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[vk]:false}))}>Collapse ▲</button>
+          </div>
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
@@ -11847,9 +11861,7 @@ export default function App(){
               Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
-          </>}
         </div>})}
-      </div>
 
       {/* Ordered batches history — collapsed below the queue so the active batches stay on top */}
       {!batchScan.trim()&&submittedBatches.length>0&&<details className="card" style={{marginBottom:16}}>
