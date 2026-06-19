@@ -1872,16 +1872,36 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
   const fileRef = useRef();
   const [sel, setSel] = useState(0);
   const [upBusy, setUpBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [recoloring, setRecoloring] = useState('');
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
   const coord = (d, k) => { const p = placementById(d.placement); return d[k] != null ? d[k] : p[k]; };
   const update = (i, patch) => onChange(decos.map((d, j) => (j === i ? { ...d, ...patch } : d)));
   const remove = (i) => { onChange(decos.filter((_, j) => j !== i)); setSel((s) => Math.max(0, s - (i <= s ? 1 : 0))); };
   const addLogo = (art) => {
-    const url = artImgUrl(art); if (!url) return;
+    const url = artPlaceUrl(art); if (!url) { setNote('That art has no web-ready logo yet — drop a PNG/SVG below to place it.'); return; }
+    setNote('');
     const p = placementById('left_chest');
-    onChange([...decos, { art_id: art.id, art_url: url, source_url: artSourceUrl(art), placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+    onChange([...decos, { art_id: art.id, art_url: url, orig_url: url, source_url: artSourceUrl(art), placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
     setSel(decos.length);
+  };
+  // Recolor the selected logo from its ORIGINAL cutout (so white→black→white round-trips
+  // cleanly) and re-upload the variant. original just restores the source cutout.
+  const recolor = async (i, choice) => {
+    const d = decos[i]; if (!d) return;
+    const orig = d.orig_url || d.art_url; if (!orig) return;
+    if (choice === 'original') { update(i, { art_url: orig, color_label: 'original' }); return; }
+    setRecoloring(choice); setNote('');
+    try {
+      const hex = choice === 'white' ? '#ffffff' : '#000000';
+      const blob = await recolorToBlob(orig, hex);
+      const ext = isSvg(orig) ? 'svg' : 'png';
+      const file = new File([blob], `logo-${choice}.${ext}`, { type: blob.type });
+      const url = await cloudUpload(file, 'nsa-store-art');
+      update(i, { art_url: url, color_label: choice });
+    } catch (e) { setNote('Could not recolor: ' + (e.message || e)); }
+    setRecoloring('');
   };
   // Upload a logo file (PNG/SVG/JPG) straight from here and drop it on the garment —
   // no need to pre-load the Art & Logos library.
@@ -1895,8 +1915,8 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
       let artId = null;
       if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); artId = (rec && rec.id) || null; }
       const p = placementById('left_chest');
-      onChange([...decos, { art_id: artId, art_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
-      setSel(decos.length);
+      onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+      setSel(decos.length); setNote('');
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
@@ -1929,7 +1949,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
             onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
             onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadLogo(f); }}
             style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center', padding: 8, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
-            {library.map((a) => { const u = artImgUrl(a); if (!u) return null; return (
+            {library.map((a) => { const u = artPlaceUrl(a); if (!u) return null; return (
               <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ width: 48, height: 48, padding: 3, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>
                 <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               </button>
@@ -1938,6 +1958,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
             <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadLogo(f); e.target.value = ''; }} />
             <span style={{ fontSize: 11, color: '#9AA1AC' }}>drop a file or click +</span>
           </div>
+          {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginBottom: 8 }}>{note}</div>}
           {decos.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo placed yet — tap one above to drop it on the garment.</div> : (
             <div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -1957,6 +1978,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4 }}>Size — {Math.round(coord(current, 'w'))}% of garment</div>
                 <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', margin: '10px 0 4px' }}>Color <span style={{ fontWeight: 400, color: '#94a3b8' }}>· recolor the logo for this garment</span></div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {[['original', 'Original'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = (current.color_label || 'original') === c; return (
+                    <button key={c} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c)} style={{ flex: 1, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === c ? '…' : lbl}</button>
+                  ); })}
+                </div>
               </div>}
             </div>
           )}
