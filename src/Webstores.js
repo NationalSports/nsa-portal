@@ -1094,8 +1094,21 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     const close = pick([`Orders are ${deliver} about 4–5 weeks after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly 4–5 weeks — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about 4–5 weeks later.`]);
     return `${open} ${body} ${close}`;
   };
-  // Sales reps only (not all employees).
-  const salesReps = (REPS || []).filter((r) => r.role === 'rep' && r.is_active !== false);
+  // Sales reps: anyone who carries accounts. The owners (admins) are the primary rep
+  // on hundreds of customers, so include them too — filtering to role==='rep' alone
+  // hid the auto-set rep for ~25% of customers (it was set in state but had no option
+  // to render, so the dropdown showed "—").
+  const salesReps = (REPS || []).filter((r) => (r.role === 'rep' || r.role === 'admin') && r.is_active !== false);
+  // Whatever rep is actually assigned must always be selectable, even if their role
+  // (accounting/csr) or active flag would otherwise drop them from the list.
+  const repOptions = (() => {
+    const list = salesReps.slice();
+    if (f.rep_id && !list.some((r) => r.id === f.rep_id)) {
+      const cur = (REPS || []).find((r) => r.id === f.rep_id);
+      if (cur) list.push(cur);
+    }
+    return list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  })();
   // CSR can be any active staffer (they handle store/coach messages).
   const staff = (REPS || []).filter((r) => r.is_active !== false).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
@@ -1166,7 +1179,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         <Row label="Store name (auto-named from customer)"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="OLu Football Team Store" /></Row>
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{salesReps.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
           <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{staff.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
