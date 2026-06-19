@@ -20,7 +20,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -12292,7 +12292,7 @@ export default function App(){
                 const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
                 const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
                 if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
-                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -12919,6 +12919,10 @@ export default function App(){
               </div>
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
+              <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:12,padding:10,background:si.review?'#eff6ff':'#f8fafc',border:'1px solid '+(si.review?'#93c5fd':'#e2e8f0'),borderRadius:8}}>
+                <input type="checkbox" checked={!!si.review} onChange={e=>setInvSendModalDirect(s=>({...s,review:e.target.checked}))} style={{width:16,height:16,accentColor:'#2563eb'}}/>
+                <span style={{fontSize:13,fontWeight:600,color:si.review?'#1e40af':'#475569'}}>★ Include “Leave us a Google review” button</span>
+              </label>
               {/* SMS Toggle — hidden via _smsUiEnabled flag while SMS sending is unreliable */}
               {_smsUiEnabled&&<div style={{marginBottom:12,padding:12,background:si.smsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(si.smsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
                 <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:si.smsEnabled?10:0}}>
@@ -13007,11 +13011,13 @@ export default function App(){
                 // Build email with portal link
                 const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';
                 const emailHtml=buildBrandedEmailHtml(si.msg.replace(/\n/g,'<br>')
-                  +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':''),companyInfo);
+                  +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+                  +(si.review?buildReviewButtonHtml():''),companyInfo);
+                const _invText=si.review?(si.msg+'\n\n'+reviewTextBlock()):undefined;
                 const _invFrom=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
                 const _invSubj='National Sports Invoice - '+siInv.id+(siInv.memo?' - "'+siInv.memo+'"':'');
                 const res=await sendBrevoEmail({to:toEmails.map(em=>({email:em,name:em})),subject:_invSubj,
-                  htmlContent:emailHtml,senderName:cu.name||'National Sports Apparel',senderEmail:_invFrom,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+                  htmlContent:emailHtml,textContent:_invText,senderName:cu.name||'National Sports Apparel',senderEmail:_invFrom,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
                   attachment:brevoAttachments.length>0?brevoAttachments:undefined});
                 if(res.ok){nf('Invoice '+siInv.id+' sent to '+(toEmails.length>1?toEmails.length+' recipients':toEmail))}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 // Send SMS if enabled
