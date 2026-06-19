@@ -1213,7 +1213,24 @@ const _dbSaveEstimateInner = async (est) => {
     // safety guards above still decide WHETHER to save (they only read); this performs the write.
     {
       const _rpcItems=(items||[]).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
-      const{error:_rpcErr}=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_pick(estRow,_estCols),p_items:_rpcItems}));
+      const _estPayload=_pick(estRow,_estCols);
+      // Optimistic concurrency (server-side): pass the _version this edit is based on so the DB rejects a
+      // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
+      // dropped customers. Falls back to the un-versioned call when the versioned RPC (migration 00128)
+      // isn't deployed yet, so client/DB deploy order can't break saving.
+      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
+      if(_rpcRes.error&&(_rpcRes.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(_rpcRes.error.message||''))){
+        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      }
+      const _rpcErr=_rpcRes.error;
+      // A write rejected by the version guard means another save (usually another open tab) advanced this
+      // estimate past the copy we hold. Do NOT clobber it — skip the write; realtime delivers the newer rows
+      // and the rep re-applies their edit on the refreshed copy. Not a failure, so no failed-id banner.
+      if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
+        console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
+        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        return false;
+      }
       if(_rpcErr){
         const _m=_rpcErr.message||String(_rpcErr);
         if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id);
@@ -1227,6 +1244,8 @@ const _dbSaveEstimateInner = async (est) => {
         if(_dbNotify)_dbNotify(_friendly,'error');
         return false;
       }
+      // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
+      if(_rpcRes.data&&typeof _rpcRes.data.version==='number')est._version=_rpcRes.data.version;
     }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
