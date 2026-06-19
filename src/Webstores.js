@@ -478,8 +478,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
         par = p;
       }
       const { sos: allSos, ests: allEsts } = _live.current;
-      const seen = new Set(); const acc = [];
-      const addArt = (a, label) => { if (!a || !a.id || a.archived || seen.has(a.id)) return; seen.add(a.id); acc.push({ ...a, _srcLabel: label }); };
+      const byName = new Map(); const acc = [];
+      // De-dupe by name (the same logo recurs across orders with different ids); keep the
+      // copy that actually has a PNG/SVG preview.
+      const addArt = (a, label) => {
+        if (!a || !a.id || a.archived) return;
+        const key = (a.name || a.id).trim().toLowerCase();
+        const idx = byName.get(key);
+        if (idx == null) { byName.set(key, acc.length); acc.push({ ...a, _srcLabel: label }); return; }
+        if (artImgUrl(a) && !artImgUrl(acc[idx])) acc[idx] = { ...a, _srcLabel: label };
+      };
       (cust?.art_files || []).forEach((a) => addArt(a, 'Team library'));
       (par?.art_files || []).forEach((a) => addArt(a, (par.alpha_tag || par.name || 'Parent') + ' library'));
       (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => addArt(a, so.id)));
@@ -2828,10 +2836,11 @@ function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorati
 
       {/* Colorway boards */}
       <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, margin: '4px 2px 10px' }}>3 · Place on every colorway — recolor the logo per garment, then apply</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))', gap: 12, alignItems: 'start' }}>
       {groups.map((g) => (
-        <div key={g.key} className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>{g.name} <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>· {g.items.length} color{g.items.length === 1 ? '' : 's'}</span></div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12 }}>
+        <div key={g.key} className="card" style={{ marginBottom: 0 }}><div style={{ padding: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 9 }}>{g.name} <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>· {g.items.length} color{g.items.length === 1 ? '' : 's'}</span></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(120px,1fr))', gap: 10 }}>
             {g.items.map((item) => { const ch = choiceOf(item); const inc = !excluded.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
               <div key={item.id} style={{ border: inc ? '1px solid #e2e8f0' : '1px dashed #cbd5e1', borderRadius: 10, padding: 8, opacity: inc ? 1 : 0.5, background: '#fff' }}>
                 <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
@@ -2851,6 +2860,7 @@ function ArtTab({ catalog, stockByWp, libraryArt, onApplyLogo, onSetItemDecorati
           </div>
         </div></div>
       ))}
+      </div>
 
       {/* Sticky apply bar */}
       <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12 }}>
