@@ -1,5 +1,5 @@
 /* eslint-disable */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn } from './utils';
 import { shipStationCall } from './vendorApis';
@@ -971,9 +971,30 @@ function CustomerPicker({ customers, value, onChange, placeholder }) {
   const selected = customers.find((c) => c.id === value);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
-  // Search name + alpha_tag (same as the global search bar). Includes child
-  // customers (teams) — a team store links to the team, not just the parent org.
-  const matches = q.trim().length < 1 ? [] : customers.filter((c) => c.is_active !== false && ((c.name || '') + ' ' + (c.alpha_tag || '')).toLowerCase().includes(q.toLowerCase())).slice(0, 30);
+  // Searchable haystack per customer: its OWN name + alpha PLUS its parent's name
+  // + alpha. That lets a team (child) be found by the parent org's tag too — e.g.
+  // "OLU football" -> Orange Lutheran Football, "DHHS football" -> Dana Hills Football.
+  const index = useMemo(() => {
+    const byId = new Map(customers.map((c) => [c.id, c]));
+    return customers.map((c) => {
+      const p = c.parent_id ? byId.get(c.parent_id) : null;
+      const hay = [c.name, c.alpha_tag, p && p.name, p && p.alpha_tag].filter(Boolean).join(' ').toLowerCase();
+      return { c, hay };
+    });
+  }, [customers]);
+  // Token search like the global bar: EVERY word in the query must appear somewhere
+  // in the haystack (any order, any field) — not as one contiguous substring. This is
+  // what makes "olu football" (alpha + sport, from different fields) match.
+  const matches = useMemo(() => {
+    const toks = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!toks.length) return [];
+    const out = [];
+    for (const { c, hay } of index) {
+      if (c.is_active === false) continue;
+      if (toks.every((t) => hay.includes(t))) { out.push(c); if (out.length >= 30) break; }
+    }
+    return out;
+  }, [q, index]);
   if (selected && !open) {
     return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div className="form-input" style={{ flex: 1, display: 'flex', alignItems: 'center', background: '#f8fafc' }}>{selected.name}{selected.alpha_tag ? ` (${selected.alpha_tag})` : ''}</div>
@@ -1027,23 +1048,13 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
   const [fundMode, setFundMode] = useState(Number(store?.fundraise_flat) > 0 ? 'flat' : 'pct');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setName = (v) => { setNameTouched(true); setF((p) => ({ ...p, name: v, slug: slugTouched ? p.slug : slugify(v) })); };
-  // Auto-name the store from the linked customer's alpha_tag. A team (child)
-  // becomes "<parent alpha> <sport> <noun> Store" — e.g. Orange Lutheran Football
-  // under OLu → "OLu Football Team Store". A parent org → "<alpha> <noun> Store".
+  // Auto-name the store from the customer's readable NAME (not its tag). The team
+  // (child) record already carries the sport, so "Dana Hills Football" → "Dana Hills
+  // Football Team Store"; a parent org → "<name> <noun> Store".
   const storeNameFor = (customerId, nounArg) => {
     const c = cust.find((x) => x.id === customerId);
     if (!c) return '';
-    const parent = c.parent_id ? cust.find((x) => x.id === c.parent_id) : null;
-    let base;
-    if (parent && parent.alpha_tag) {
-      const pW = (parent.name || '').split(/\s+/);
-      const cW = (c.name || '').split(/\s+/);
-      let i = 0; while (i < cW.length && i < pW.length && cW[i].toLowerCase() === pW[i].toLowerCase()) i++;
-      const sport = cW.slice(i).join(' ').trim();
-      base = `${parent.alpha_tag} ${sport || c.alpha_tag || ''}`.trim();
-    } else {
-      base = (c.alpha_tag || c.name || '').trim();
-    }
+    const base = (c.name || c.alpha_tag || '').trim();
     return base ? `${base} ${nounArg} Store` : '';
   };
   // Linking a customer also pulls its (or its parent's) rep + pantone colors and,
