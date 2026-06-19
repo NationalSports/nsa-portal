@@ -23,9 +23,14 @@ const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-appl
 const PAGE_SIZE = 72; // cards rendered per "Show more" chunk
 
 // Brands shown in the live-look catalog. All read live per-size stock from the
-// synced inventory_unified view (adidas Cowork CLICK + Agron + UA Armour House /
-// S&S + Nike SanMar). Add a brand here once its *_inventory feed exists.
-const CATALOG_BRANDS = ['Adidas', 'Under Armour', 'Nike'];
+// synced inventory_unified view. Add a brand here once its *_inventory feed
+// exists and the sync has populated it.
+const CATALOG_BRANDS = [
+  'Adidas', 'Under Armour', 'Nike',
+  'Richardson', 'Momentec',
+  'Port Authority', 'Sport-Tek', 'District', 'Bella+Canvas',
+  'Boxercraft', 'Gildan',
+];
 
 // ── Sizes ────────────────────────────────────────────────────────────
 const SIZE_ORDER = [
@@ -1393,8 +1398,7 @@ export default function AdidasInventory() {
             </span>
           </div>
           <p style={{ margin: '8px 0 0', fontSize: 14, color: '#C3C8D0', maxWidth: 780, lineHeight: 1.5 }}>
-            Every style we carry, with a live look at what's in stock right now across adidas, Under Armour & Nike — by color and size —
-            and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
+            Every style we carry, with a live look at what's in stock right now across Adidas, Under Armour, Nike, Richardson, Momentec, Port Authority, Sport-Tek, District, Bella+Canvas, Boxercraft & Gildan — by color and size — and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
             Open a style, type the quantities you need per size, and send the list to your rep — they'll follow up with a formal estimate.
           </p>
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1602,8 +1606,8 @@ export default function AdidasInventory() {
       {!embedded && (
       <footer style={{ background: '#191919', color: '#9AA1AC', fontSize: 12.5, lineHeight: 1.6 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
-          Availability reflects the adidas B2B warehouse and is updated automatically — quantities are not guaranteed until ordered.
-          “Inbound” dates are adidas's projected delivery dates for restocks.
+          Availability is pulled from each brand's warehouse feed and updated automatically — quantities are not guaranteed until ordered.
+          “Inbound” dates are projected restock delivery dates.
           “In house” stock is on the shelf at National Sports Apparel and ships immediately.
           <span style={{ display: 'block', marginTop: 6, color: '#C3C8D0', fontWeight: 600 }}>
             National Sports Apparel · nationalsportsapparel.com
