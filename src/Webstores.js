@@ -2777,6 +2777,24 @@ const artThumbUrl = (art) => {
   return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
 };
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
+// Clean cutout for PLACING art on a garment — a real logo, never a full-garment mockup
+// (recoloring an opaque mockup to white is exactly what produced the "white box"). Prefers
+// an explicit web logo (per record, or per color way); for logos uploaded straight in (no
+// production mockups) the preview/file IS the cutout. Production art that only has a mockup
+// returns null, so the UI asks for a web logo instead of stamping the shirt image.
+const artPlaceUrl = (art) => {
+  if (!art) return null;
+  if (art.web_logo_url) return art.web_logo_url;
+  const cwLogo = (art.color_ways || []).map((c) => c.web_logo_url).find(Boolean);
+  if (cwLogo) return cwLogo;
+  const hasMock = (art.mockup_files || []).length || Object.keys(art.item_mockups || {}).length;
+  if (!hasMock) {
+    const u = (f) => (typeof f === 'string' ? f : f?.url);
+    const clean = [art.preview_url, ...((art.files || []).map(u))].filter(Boolean).find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x));
+    if (clean) return clean;
+  }
+  return null;
+};
 const hexRgb = (hex) => { const h = (hex || '#000').replace('#', ''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; };
 const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly'];
 const guessDark = (name) => { const s = (name || '').toLowerCase(); return DARK_WORDS.some((w) => s.includes(w)); };
@@ -2854,7 +2872,7 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
   const activeArt = (storeArt || []).find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
-  const activeUrl = artImgUrl(activeArt);
+  const activeUrl = artPlaceUrl(activeArt);
   const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
 
   // Group store items into styles, each with its colorways.
