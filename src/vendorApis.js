@@ -1011,6 +1011,30 @@ const ssResolveSkus = async (descriptors) => {
       const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
       if (map[mk]) resolved[d.key] = map[mk];
     }
+    // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
+    // For any line still unmatched, retry against the base style — still an exact color+size match.
+    const _dash = style.lastIndexOf('-');
+    const _base = _dash > 0 ? style.slice(0, _dash) : '';
+    if (_base && descriptors.some(d => String(d.style || '').toUpperCase().trim() === style && !resolved[d.key])) {
+      let items2 = [];
+      try {
+        const sl2 = await ssApiCall('/Styles?search=' + encodeURIComponent(_base));
+        const sa2 = Array.isArray(sl2) ? sl2 : (sl2 ? [sl2] : []);
+        const m2 = sa2.find(s => _smNorm(s.partNumber) === _smNorm(_base) || _smNorm(s.styleName) === _smNorm(_base)) || sa2[0];
+        const sid2 = m2 && (m2.styleID || m2.StyleID);
+        if (sid2) { const d2 = await ssApiCall('/Products/?style=' + encodeURIComponent(sid2)); items2 = Array.isArray(d2) ? d2 : (d2 ? [d2] : []); }
+      } catch (e) { /* leave unresolved */ }
+      for (const r of items2) {
+        const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
+        const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
+        candidates[style].push({ color, size, sku });
+        const mk2 = _smNorm(color) + '|' + _smNorm(size);
+        for (const d of descriptors) {
+          if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
+          if (_smNorm(d.color) + '|' + _smNorm(d.size) === mk2) resolved[d.key] = sku;
+        }
+      }
+    }
   }
   return { resolved, candidates };
 };
