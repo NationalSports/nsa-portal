@@ -2,27 +2,72 @@
 // then place the order. env='prod' submits a LIVE production order (ships real goods);
 // env='test' targets the onboarding TEST host. Credentials (SanMar.com username +
 // password) are injected server-side by the proxy and never appear here.
-import React, { useMemo, useState } from 'react';
+//
+// On open it resolves each line's SanMar Unique_Key (partId) from the product API
+// (orders don't carry it). The lookup is correct-biased — it only fills a key on an
+// exact color+size match and never guesses, so an unmatched line stays blocked and
+// the rep falls back to manual ordering rather than risk shipping the wrong item.
+import React, { useEffect, useMemo, useState } from 'react';
 import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
-import { sanmarSubmitPO } from './vendorApis';
+import { sanmarSubmitPO, sanmarResolvePartIds } from './vendorApis';
 
 export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
-  const [result, setResult] = useState(null); // { transactionId, orderNumber } on success
+  const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  // partId (Unique_Key) resolution
+  const [resolving, setResolving] = useState(true);
+  const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
+  const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
+  const [resolveErr, setResolveErr] = useState('');
 
   const isLive = env === 'prod';
 
-  const { payload, soap, lines, totals, warnings } = useMemo(() => {
+  // Base payload (no network) — exact lines/totals from the batch.
+  const base = useMemo(() => {
     const p = buildSanMarPOPayload({ poNumber, batchPOs });
-    // Credentials (id = SanMar.com username + password) are injected server-side
-    // by the proxy and never appear here.
-    const xml = buildSanMarPOSoap(p, { id: '<from env>' });
-    return { payload: p, soap: xml, lines: p.PO.lineItems, totals: p._summary, warnings: p._warnings || [] };
+    return { payload: p, baseLines: p.PO.lineItems, totals: p._summary };
   }, [batchPOs, poNumber]);
+
+  // Lines still missing a partId after the base build — these need a live lookup.
+  const missing = useMemo(
+    () => base.baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
+    [base.baseLines]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!missing.length) { setResolving(false); return; }
+    setResolving(true); setResolveErr('');
+    sanmarResolvePartIds(missing)
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedParts(resolved || {}); setCandidates(candidates || {}); })
+      .catch(e => { if (!cancelled) setResolveErr(e.message || 'Part ID lookup failed'); })
+      .finally(() => { if (!cancelled) setResolving(false); });
+    return () => { cancelled = true; };
+  }, [missing]);
+
+  // Overlay resolved partIds onto the lines, then recompute warnings + the payload
+  // that will actually be submitted.
+  const lines = useMemo(
+    () => base.baseLines.map(l => (l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' })),
+    [base.baseLines, resolvedParts]
+  );
+  const warnings = useMemo(
+    () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
+    [lines]
+  );
+  const payload = useMemo(() => ({ ...base.payload, PO: { ...base.payload.PO, lineItems: lines } }), [base.payload, lines]);
+  const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
+  const totals = base.totals;
+
+  // Styles still unresolved → surface what SanMar actually returned for them.
+  const unresolvedStyles = useMemo(() => {
+    const s = new Set(lines.filter(l => !l.partId).map(l => String(l.style || '').toUpperCase().trim()));
+    return [...s];
+  }, [lines]);
 
   const copyXml = () => {
     navigator.clipboard?.writeText(soap);
@@ -30,7 +75,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const blocked = lines.length === 0 || warnings.length > 0;   // missing partId / empty → cannot submit
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -50,7 +95,6 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     }
   };
 
-  // Don't let a stray outside-click dismiss the modal mid-submit (or lose the receipt).
   const safeClose = submitting ? undefined : onClose;
 
   return (
@@ -86,10 +130,33 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             </div>
           )}
 
-          {!done && warnings.length > 0 && (
+          {!done && resolving && (
+            <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
+              <strong>🔄 Looking up SanMar Part IDs…</strong> Matching each line to its SanMar Unique_Key. Submit unlocks once every line has one.
+            </div>
+          )}
+
+          {!done && !resolving && resolveErr && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>⚠ Cannot submit — {warnings.length} line(s) missing a SanMar <code>partId</code> (Unique_Key):</strong>
+              <strong>⚠ Couldn't reach SanMar to look up Part IDs:</strong> {resolveErr}. Try reopening, or place this order manually.
+            </div>
+          )}
+
+          {!done && !resolving && warnings.length > 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
+              <strong>⚠ Cannot submit — {warnings.length} line(s) without a matched SanMar <code>partId</code> (Unique_Key):</strong>
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              {unresolvedStyles.some(st => (candidates[st] || []).length) && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #fecaca' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>What SanMar lists for these styles (for matching):</div>
+                  {unresolvedStyles.map(st => (candidates[st] || []).length ? (
+                    <div key={st} style={{ marginBottom: 4 }}>
+                      <code>{st}</code>: {[...new Set((candidates[st] || []).map(c => c.color).filter(Boolean))].slice(0, 16).join(' · ') || '(no colors returned)'}
+                    </div>
+                  ) : null)}
+                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Otherwise, order these lines manually.</div>
+                </div>
+              )}
             </div>
           )}
 
@@ -125,7 +192,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   {lines.map(l => (
                     <tr key={l.lineNumber} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{l.lineNumber}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>{l.partId || '⚠ missing'}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>{l.partId || (resolving ? '…' : '⚠ missing')}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
                       <td style={td}>{l.color || '—'}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
@@ -170,10 +237,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={blocked ? 'Resolve missing partIds before submitting' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up Part IDs…' : blocked ? 'Every line needs a matched SanMar Part ID first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: isLive ? '#b91c1c' : '#1e40af', borderColor: isLive ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
-                {submitting ? 'Submitting…' : isLive ? '🚀 Submit Order to SanMar' : '🧪 Submit Test Order'}
+                {submitting ? 'Submitting…' : resolving ? 'Looking up Part IDs…' : isLive ? '🚀 Submit Order to SanMar' : '🧪 Submit Test Order'}
               </button>
             </>
           )}
