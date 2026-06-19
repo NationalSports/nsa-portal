@@ -731,11 +731,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
   // Save an uploaded logo into the store's customer art LIBRARY (customers.art_files)
   // so it's reusable on every item — and future stores — not just stamped on one
   // product. Returns the new art record (its id links the decoration to the library).
-  const addStoreLogo = useCallback(async (url, name) => {
+  const addStoreLogo = useCallback(async (url, name, opts = {}) => {
     if (!sel?.customer_id || !url) return null;
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
-    const rec = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', preview_url: url, files: [{ url, name: name || 'logo' }], kind: 'logo', status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url, name: name || 'logo' }], status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    // Production source art (.ai/.eps/.pdf) has no web-ready preview — keep it as a source
+    // file only (no preview_url) so the Art tab asks for a placeable PNG/SVG instead of
+    // trying to stamp the raw .ai url onto a garment.
+    const rec = opts.source ? { ...base, kind: 'art' } : { ...base, preview_url: url, kind: 'logo' };
     const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
     if (error) { flash('Could not save logo: ' + error.message); return null; }
     // Also drop it into THIS store's curated art set so it's pickable on items now.
@@ -1916,6 +1920,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const [upBusy, setUpBusy] = useState(false);
   const [note, setNote] = useState('');
   const [recoloring, setRecoloring] = useState('');
+  const [dragOver, setDragOver] = useState(false);
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
   const sideOf = (d) => d.side || 'front';
@@ -1976,20 +1981,33 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   // Upload a logo file (PNG/SVG/JPG) straight from here and drop it on the garment —
   // no need to pre-load the Art & Logos library.
   const uploadLogo = async (file) => {
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file) return;
+    const name = file.name || 'Logo';
+    const isImg = (file.type || '').startsWith('image/') || /\.(png|svg|jpe?g|webp|gif)$/i.test(name);
+    const isArt = /\.(ai|eps|pdf)$/i.test(name);
+    if (!isImg && !isArt) { setNote('Drop an image (PNG, JPG, SVG) or vector art (AI, EPS, PDF).'); return; }
     setUpBusy(true);
     try {
       const url = await cloudUpload(file, 'nsa-store-art');
-      // Persist into the customer's art library (reusable on every piece, and it
-      // carries to the sales order + mockup later); fall back to a one-off placement.
+      const label = name.replace(/\.[^.]+$/, '');
+      // Persist into the customer's art library (reusable on every piece, and it carries to
+      // the sales order + mockup later). Images go in as placeable logos; .ai/.eps/.pdf go in
+      // as production source art with no web preview.
       let artId = null;
-      if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); artId = (rec && rec.id) || null; }
-      const p = placementById(defaultPlacement);
-      onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]);
-      setSel(decos.length); setNote('');
+      if (onSaveLogo) { const rec = await onSaveLogo(url, label, { source: !isImg }); artId = (rec && rec.id) || null; }
+      if (isImg) {
+        // Web-ready — stamp it on the garment straight away.
+        const p = placementById(defaultPlacement);
+        onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]);
+        setSel(decos.length); setNote('');
+      } else {
+        // Production art can't be previewed/placed until a clean PNG/SVG is attached for it.
+        setNote('Added “' + label + '” as production art. Drop a PNG or SVG to place & recolor it on the garment.');
+      }
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
+  const uploadLogos = async (files) => { for (const f of [...(files || [])]) await uploadLogo(f); };
   const onPtrMove = (e) => {
     if (drag.current == null || !boxRef.current) return;
     const r = boxRef.current.getBoundingClientRect();
@@ -2044,19 +2062,21 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
       {/* CONTROLS */}
       <div style={{ flex: 1, minWidth: 300 }}>
         <div style={card}>
-          <div style={cardTitle}>Logo library <span style={cardHint}>· tap to place · drop a PNG / SVG / AI to add</span></div>
+          <div style={cardTitle}>Logo library <span style={cardHint}>· tap to place · drag &amp; drop a PNG / SVG / AI to add</span></div>
           <div
-            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadLogo(f); }}
-            style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(66px, 1fr))', gap: 8, padding: 10, border: '1.5px dashed #d7dbe2', borderRadius: 12, background: '#fafbfc' }}>
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
+            onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); uploadLogos(e.dataTransfer.files); }}
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(66px, 1fr))', gap: 8, padding: 10, border: `1.5px dashed ${dragOver ? '#2563eb' : '#d7dbe2'}`, borderRadius: 12, background: dragOver ? '#eff4ff' : '#fafbfc', transition: 'background .12s, border-color .12s' }}>
             {library.map((a) => { const u = artPlaceUrl(a); if (!u) return null; return (
               <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ aspectRatio: '1', padding: 5, borderRadius: 10, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <img src={u} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
               </button>
             ); })}
             <button type="button" onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} style={{ aspectRatio: '1', borderRadius: 10, border: '1.5px dashed #cbd5e1', background: '#fff', cursor: 'pointer', color: '#6A7180', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>{upBusy ? '…' : '+ Logo'}</button>
-            <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadLogo(f); e.target.value = ''; }} />
+            <input ref={fileRef} type="file" accept="image/*,.svg,.png,.ai,.eps,.pdf" multiple style={{ display: 'none' }} onChange={(e) => { uploadLogos(e.target.files); e.target.value = ''; }} />
           </div>
+          {dragOver && <div style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, marginTop: 6 }}>Drop to add to the library</div>}
           {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginTop: 8 }}>{note}</div>}
         </div>
 
