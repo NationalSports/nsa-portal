@@ -1848,7 +1848,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -1867,24 +1867,42 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 // { art_id, art_url, source_url, placement, color_label, x, y, w } where x/y are the
 // logo CENTER and w the width, as % of the garment image — the exact coordinates the
 // storefront DecoOverlay renders, so this preview matches what shoppers see.
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange }) {
   const boxRef = useRef();
   const fileRef = useRef();
+  const backRef = useRef();
   const [sel, setSel] = useState(0);
+  const [side, setSide] = useState('front');
   const [upBusy, setUpBusy] = useState(false);
   const [note, setNote] = useState('');
   const [recoloring, setRecoloring] = useState('');
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
+  const sideOf = (d) => d.side || 'front';
+  const frontUrl = imageUrl;
+  const backUrl = backImageUrl || stockBackImg || '';
+  const stageUrl = side === 'back' ? backUrl : frontUrl;
+  const canBack = !!(onBackImageChange || backUrl); // show front/back toggle when a back exists or can be added
+  const defaultPlacement = side === 'back' ? 'full_back' : 'left_chest';
+  const switchSide = (s) => { setSide(s); const first = decos.findIndex((d) => sideOf(d) === s); setSel(first >= 0 ? first : 0); };
   const coord = (d, k) => { const p = placementById(d.placement); return d[k] != null ? d[k] : p[k]; };
   const update = (i, patch) => onChange(decos.map((d, j) => (j === i ? { ...d, ...patch } : d)));
   const remove = (i) => { onChange(decos.filter((_, j) => j !== i)); setSel((s) => Math.max(0, s - (i <= s ? 1 : 0))); };
   const addLogo = (art) => {
     const url = artPlaceUrl(art); if (!url) { setNote('That art has no web-ready logo yet — drop a PNG/SVG below to place it.'); return; }
     setNote('');
-    const p = placementById('left_chest');
-    onChange([...decos, { art_id: art.id, art_url: url, orig_url: url, source_url: artSourceUrl(art), placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+    const p = placementById(defaultPlacement);
+    onChange([...decos, { art_id: art.id, art_url: url, orig_url: url, source_url: artSourceUrl(art), placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]);
     setSel(decos.length);
+  };
+  // Upload a per-item BACK image (the "quick add a back" affordance). Held in editor state
+  // and saved onto the item (webstore_products.image_back_url) when the editor saves.
+  const uploadBack = async (file) => {
+    if (!file || !file.type.startsWith('image/') || !onBackImageChange) return;
+    setUpBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-webstores'); onBackImageChange(url); setSide('back'); }
+    catch (x) { /* cloudUpload surfaces error via toast */ }
+    setUpBusy(false);
   };
   // Recolor the selected logo from its ORIGINAL cutout (so white→black→white round-trips
   // cleanly) and re-upload the variant. original just restores the source cutout.
@@ -1914,8 +1932,8 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
       // carries to the sales order + mockup later); fall back to a one-off placement.
       let artId = null;
       if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); artId = (rec && rec.id) || null; }
-      const p = placementById('left_chest');
-      onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+      const p = placementById(defaultPlacement);
+      onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]);
       setSel(decos.length); setNote('');
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
@@ -1930,18 +1948,29 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
   };
   const endDrag = () => { drag.current = null; };
   const current = decos[sel];
+  const currentOnSide = current && sideOf(current) === side;
+  const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side);
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>Logo &amp; placement <span style={{ fontWeight: 400, color: '#94a3b8' }}>· drag the logo on the garment, pick a spot, or resize</span></div>
+      {canBack && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+        {['front', 'back'].map((s) => { const on = side === s; return (
+          <button key={s} type="button" onClick={() => switchSide(s)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '4px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{s === 'front' ? 'Front' : 'Back'}</button>
+        ); })}
+        {side === 'back' && onBackImageChange && <button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : backUrl ? 'Replace back image' : '+ Add back image'}</button>}
+        <input ref={backRef} type="file" accept="image/*,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadBack(f); e.target.value = ''; }} />
+      </div>}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
           style={{ position: 'relative', width: 220, aspectRatio: '4/5', background: '#f4f6f9', borderRadius: 10, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0, touchAction: 'none' }}>
-          {imageUrl ? <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} /> : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
-          {decos.map((d, i) => (
+          {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
+            : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 12, fontWeight: 700 }}>+ Add a back image</button>
+            : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
+          {decos.map((d, i) => (sideOf(d) === side ? (
             <img key={i} src={d.art_url} alt="" draggable={false}
               onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = i; }}
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
-          ))}
+          ) : null))}
         </div>
         <div style={{ flex: 1, minWidth: 230 }}>
           <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{library.length ? 'Tap a library logo to place it, or upload a new one:' : 'Upload a logo (PNG/SVG) to place it on the garment:'}</div>
@@ -1959,17 +1988,17 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
             <span style={{ fontSize: 11, color: '#9AA1AC' }}>drop a file or click +</span>
           </div>
           {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginBottom: 8 }}>{note}</div>}
-          {decos.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo placed yet — tap one above to drop it on the garment.</div> : (
+          {shown.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo on the {side} yet — tap one above to drop it on the garment.</div> : (
             <div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                {decos.map((d, i) => (
+                {shown.map(({ d, i }, n) => (
                   <button key={i} type="button" onClick={() => setSel(i)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid ' + (i === sel ? '#191919' : '#d1d5db'), background: i === sel ? '#191919' : '#fff', color: i === sel ? '#fff' : '#3A4150', borderRadius: 8, padding: '3px 8px', fontSize: 12, cursor: 'pointer' }}>
-                    <img src={d.art_url} alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} /> Logo {i + 1}
+                    <img src={d.art_url} alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} /> Logo {n + 1}
                     <span onClick={(e) => { e.stopPropagation(); remove(i); }} style={{ color: i === sel ? '#fca5a5' : '#b91c1c', fontWeight: 800 }}>×</span>
                   </button>
                 ))}
               </div>
-              {current && <div style={{ background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, padding: 10 }}>
+              {currentOnSide && <div style={{ background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, padding: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Placement</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
                   {ART_PLACEMENTS.map((p) => (
@@ -1994,9 +2023,10 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo 
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [image, setImage] = useState(item.image_url || null);
+  const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
   const [name, setName] = useState(item.display_name || '');
   const [price, setPrice] = useState(item.retail_price || 0);
@@ -2035,7 +2065,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], d
   };
 
   const save = () => {
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, extra_image_urls: extraImages };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -2104,7 +2134,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], d
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
         </div>
       </div>
-      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />}
+      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>

@@ -308,9 +308,9 @@ function bundleBadge(count) {
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
 // Applied logo art (from webstore_products.decorations) composited on the
 // garment image at its placement — the on-screen mock shoppers see.
-function DecoOverlay({ decorations }) {
+function DecoOverlay({ decorations, side = 'front' }) {
   if (!Array.isArray(decorations)) return null;
-  return <>{decorations.filter((d) => d && d.art_url).map((d, i) => {
+  return <>{decorations.filter((d) => d && d.art_url && (d.side || 'front') === side).map((d, i) => {
     const pl = placementById(d.placement);
     // A decoration may carry its own x/y/w (editable placement) overriding the preset.
     const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
@@ -424,7 +424,11 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const sizes = sizesArr;
   const onHand = effOnHand(p);
   const incoming = isIncoming(p);
-  const imgUrl = img === 'back' && p.image_back_url ? p.image_back_url : p.image_front_url;
+  // Only surface the back when it actually carries artwork (per the store builder's
+  // "show back only if it's got artwork" rule). The back image falls back to the front
+  // so the back logos always have a garment to sit on.
+  const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
+  const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
     <div style={{ paddingTop: 26 }}>
@@ -433,9 +437,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
         <div>
           <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
-            {img !== 'back' && <DecoOverlay decorations={p.decorations} />}
+            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} />
           </div>
-          {p.image_back_url && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          {hasBackDeco && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
           </div>}
         </div>
