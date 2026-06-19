@@ -391,6 +391,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (error) { setMsgBusy(null); flash('Could not send message: ' + error.message, 'err'); return; }
     setMsgDraft((d) => ({ ...d, [o.id]: '' }));
     setOrders((os) => os.map((x) => x.id === o.id ? { ...x, messages: [...(x.messages || []), row] } : x));
+    // Also record the author's read in the shared message_reads table so this
+    // sent message doesn't show as "unread" to them in the Messages inbox.
+    if (cu && cu.id) { try { await supabase.from('message_reads').upsert([{ message_id: row.id, user_id: cu.id }], { onConflict: 'message_id,user_id' }); } catch {} }
     try {
       const r = await authFetch('/.netlify/functions/webstore-message-notify', { method: 'POST', body: JSON.stringify({ orderId: o.id, text }) });
       const j = await r.json().catch(() => ({}));
@@ -407,6 +410,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     const idList = unread.map((m) => m.id);
     setOrders((os) => os.map((x) => x.id === o.id ? { ...x, messages: (x.messages || []).map((m) => idList.includes(m.id) ? { ...m, read_by_staff: true } : m) } : x));
     try { await supabase.from('messages').update({ read_by_staff: true }).in('id', idList); } catch {}
+    // Mirror the read into message_reads so the Messages inbox / dashboard
+    // unread badge clears too (the two surfaces track reads separately).
+    if (cu && cu.id) { try { await supabase.from('message_reads').upsert(idList.map((id) => ({ message_id: id, user_id: cu.id })), { onConflict: 'message_id,user_id' }); } catch {} }
   };
   // Deep-link from the Messages inbox: expand the targeted order, clear its
   // unread badge, and scroll it into view once orders have loaded.

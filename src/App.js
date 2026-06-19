@@ -25735,7 +25735,7 @@ export default function App(){
       // Customer order replies live in the OMG portal (full order context: items,
       // customer, SO, store) where staff reply & re-email the parent. Deep-link
       // straight to that store + order so its expanded row (and thread) opens.
-      else if(eType==='webstore_order'){const ctx=wsoCtx[String(eId)];const store=ctx&&ctx.omgStoreId&&omgStores.find(s=>s.id===ctx.omgStoreId);if(store){setOmgSel(store);setOmgFocusOrder(String(eId))}setPg('omg')}
+      else if(eType==='webstore_order'){const ctx=wsoCtx[String(eId)];const store=ctx&&ctx.omgStoreId&&omgStores.find(s=>s.id===ctx.omgStoreId);if(store){setOmgSel(store);setOmgFocusOrder(String(eId));setPg('omg')}else{setPg(ctx&&ctx.storeId?'webstores':'omg')}}
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
     const openThread=(m)=>{
@@ -25816,7 +25816,7 @@ export default function App(){
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{c.last.ts}</span>
               </div>
-              <div style={{fontSize:13,color:'#374151'}}><span style={{fontWeight:600,color:'#475569'}}>{lastAuthor?.name?.split(' ')[0]}: </span>{renderMsgPageText(c.last.text)}</div>
+              <div style={{fontSize:13,color:'#374151'}}><span style={{fontWeight:600,color:'#475569'}}>{lastAuthor?.name?.split(' ')[0]||c.last.author||(c.last.from_customer?'Customer':'')}: </span>{renderMsgPageText(c.last.text)}</div>
               <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
                 {(c.last.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(c.last.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
                 {count>1&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#128172;</span> {count} messages</span>}

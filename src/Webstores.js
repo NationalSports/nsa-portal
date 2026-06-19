@@ -2116,6 +2116,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
     if (error) { setMsgBusy(null); window.alert('Could not send: ' + error.message); return; }
     setMsgsByOrder((p) => ({ ...p, [o.id]: [...(p[o.id] || []), row] }));
     setMsgDraft((d) => ({ ...d, [o.id]: '' }));
+    if (cu && cu.id) { try { await supabase.from('message_reads').upsert([{ message_id: row.id, user_id: cu.id }], { onConflict: 'message_id,user_id' }); } catch {} }
     try { await authFetch('/.netlify/functions/webstore-message-notify', { method: 'POST', body: JSON.stringify({ orderId: o.id, text }) }); } catch {}
     setMsgBusy(null);
   };
