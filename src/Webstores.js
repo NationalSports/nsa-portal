@@ -2096,8 +2096,8 @@ const _COLOR_FAMILIES = [
   { fam: 'white', rgb: [245, 245, 245], words: ['white'] },
   { fam: 'black', rgb: [25, 25, 25], words: ['black'] },
   { fam: 'grey', rgb: [128, 128, 128], words: ['grey', 'gray', 'onix', 'onyx', 'charcoal', 'silver', 'graphite', 'pewter', 'heather'] },
-  { fam: 'red', rgb: [200, 16, 46], words: ['red', 'scarlet', 'crimson', 'cardinal'] },
-  { fam: 'maroon', rgb: [111, 38, 61], words: ['maroon', 'burgundy', 'wine', 'cardinal'] },
+  { fam: 'red', rgb: [166, 25, 46], words: ['red', 'scarlet', 'crimson', 'cardinal'] },
+  { fam: 'maroon', rgb: [78, 21, 37], words: ['maroon', 'burgundy', 'wine'] },
   { fam: 'orange', rgb: [255, 106, 19], words: ['orange'] },
   { fam: 'gold', rgb: [255, 184, 28], words: ['gold', 'vegas', 'maize'] },
   { fam: 'yellow', rgb: [250, 224, 60], words: ['yellow'] },
@@ -2172,9 +2172,22 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], i
   }, [q, brandSel, catSel, limit, active]);
 
   const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
-  const matched = results.filter((r) => !colorOnly || productMatchesColors(r.color, colorWords));
-  const inStockN = matched.reduce((a, r) => a + ((r._stock?.units || 0) > 0 ? 1 : 0), 0);
-  const shown = inStockOnly ? matched.filter((r) => (r._stock?.units || 0) > 0) : matched;
+  // "In stock" means a real size run, not 1–2 stragglers: for S/M/L/XL apparel, require
+  // all of S–XL on hand; items on another scale (hats, bags, OSFA) just need any stock.
+  const APPAREL = ['S', 'M', 'L', 'XL'];
+  const wellStocked = (r) => {
+    const st = r._stock || {};
+    const avail = (Array.isArray(r.available_sizes) ? r.available_sizes : []).map(String);
+    if (!APPAREL.some((s) => avail.includes(s))) return (st.units || 0) > 0;
+    const inSt = new Set((st.sizes || []).map(String));
+    return APPAREL.every((s) => inSt.has(s));
+  };
+  const matched = results.filter((r) =>
+    (!colorOnly || productMatchesColors(r.color, colorWords)) &&
+    // The catalog tags some jerseys as Tees — keep the Tees view to actual tees.
+    !(catSel === 'Tees' && /jersey/i.test(r.name || '')));
+  const inStockN = matched.reduce((a, r) => a + (wellStocked(r) ? 1 : 0), 0);
+  const shown = inStockOnly ? matched.filter(wellStocked) : matched;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const selProducts = shown.filter((p) => selected.has(p.id));
 
