@@ -626,6 +626,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // Save an uploaded logo into the store's customer art LIBRARY (customers.art_files)
+  // so it's reusable on every item — and future stores — not just stamped on one
+  // product. Returns the new art record (its id links the decoration to the library).
+  const addStoreLogo = useCallback(async (url, name) => {
+    if (!sel?.customer_id || !url) return null;
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
+    const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const rec = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', preview_url: url, files: [{ url, name: name || 'logo' }], kind: 'logo', status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
+    if (error) { flash('Could not save logo: ' + error.message); return null; }
+    flash('Logo added to the store library'); loadDetail(sel);
+    return rec;
+  }, [sel, flash, loadDetail]);
+
   const updateTransfer = useCallback(async (id, fields) => {
     const { error } = await supabase.from('webstore_transfers').update(fields).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
@@ -879,7 +893,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} />
@@ -1372,7 +1386,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onFlash, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onFlash, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1474,7 +1488,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={detail?.libraryArt || []} storeColors={detail?.storeColors || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={detail?.libraryArt || []} storeColors={detail?.storeColors || []} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1554,7 +1568,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onSaveLogo, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1601,9 +1615,9 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} library={library} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} library={library} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
@@ -1684,7 +1698,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -1703,7 +1717,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 // { art_id, art_url, source_url, placement, color_label, x, y, w } where x/y are the
 // logo CENTER and w the width, as % of the garment image — the exact coordinates the
 // storefront DecoOverlay renders, so this preview matches what shoppers see.
-function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const [sel, setSel] = useState(0);
@@ -1726,8 +1740,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
     setUpBusy(true);
     try {
       const url = await cloudUpload(file, 'nsa-store-art');
+      // Persist into the customer's art library (reusable on every piece, and it
+      // carries to the sales order + mockup later); fall back to a one-off placement.
+      let artId = null;
+      if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); artId = (rec && rec.id) || null; }
       const p = placementById('left_chest');
-      onChange([...decos, { art_id: null, art_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+      onChange([...decos, { art_id: artId, art_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
       setSel(decos.length);
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
@@ -1799,7 +1817,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [image, setImage] = useState(item.image_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
@@ -1909,7 +1927,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], d
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
         </div>
       </div>
-      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} decorations={decorations} onChange={setDecorations} library={library} />}
+      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
@@ -1987,7 +2005,7 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
 }
 
 // After a product is picked, set its base price (X), fundraising add-on (Y), image, personalization + transfers.
-function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, library = [], onAdd, onCancel }) {
+function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, library = [], onSaveLogo, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
   const [fundraise, setFundraise] = useState(0);
   const [image, setImage] = useState(null);
@@ -2056,7 +2074,7 @@ function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false,
         </div>
       )}
       <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
-      <LogoPlacer imageUrl={image || product.image_front_url} decorations={decorations} onChange={setDecorations} library={library} />
+      <LogoPlacer imageUrl={image || product.image_front_url} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />
       <div style={{ display: 'flex', gap: 12 }}>
         <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
@@ -2159,7 +2177,7 @@ const productMatchesColors = (productColor, words) => {
 // hands off to SinglePriceEditor (price / fundraising / personalization),
 // unchanged. State is a simple "filter spec" ({ q, brand, category }) so the
 // future AI-brief and customer self-serve flows can drive the same engine.
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], library = [], initialFilter = {} }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], library = [], onSaveLogo, initialFilter = {} }) {
   const [q, setQ] = useState(initialFilter.q || '');
   const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
   const [catSel, setCatSel] = useState(initialFilter.category || null);
@@ -2293,7 +2311,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
             </div>
             <div style={{ padding: 16 }}>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 6 }}>Optionally place a logo — it'll be applied to <b>all {selProducts.length}</b> at the same spot. You can fine-tune any item afterward.</div>
-              <LogoPlacer imageUrl={selProducts[0] && selProducts[0].image_front_url} decorations={bulkDecos} onChange={setBulkDecos} library={library} />
+              <LogoPlacer imageUrl={selProducts[0] && selProducts[0].image_front_url} decorations={bulkDecos} onChange={setBulkDecos} library={library} onSaveLogo={onSaveLogo} />
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
                 <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to store →`}</button>
                 <button className="btn btn-secondary" onClick={() => setBulkOpen(false)}>Cancel</button>
