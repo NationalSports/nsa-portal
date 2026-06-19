@@ -215,16 +215,16 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 480 }}>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 380 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
-        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 24, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
+        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 18, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 40, height: 80, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
+            <div key={i} style={{ width: 32, height: 60, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
           ))}
         </div>
-        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(60px,8vw,110px) 20px clamp(96px,10vw,140px)' }}>
+        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,72px) 20px clamp(72px,7vw,100px)' }}>
           <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 2, textTransform: 'uppercase', padding: '8px 20px', marginBottom: 22, transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>Official Team Store</span>
           </div>

@@ -164,7 +164,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
 }
 
 // Reusable image uploader → Cloudinary, returns a secure URL via onChange.
-function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
+function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image' }) {
   const ref = useRef();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -173,10 +173,10 @@ function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
   const upload = async (file) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) { setErr('Please choose an image file.'); return; }
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); if (onBusy) onBusy(true);
     try { const url = await cloudUpload(file, 'nsa-webstores'); onChange(url); }
     catch (x) { setErr(x.message || 'Upload failed.'); }
-    setBusy(false);
+    setBusy(false); if (onBusy) onBusy(false);
   };
   return (
     <div style={{ marginBottom: 12 }}>
@@ -289,7 +289,7 @@ function isMissingTable(err) {
   return err.code === '42P01' || m.includes('does not exist') || m.includes('could not find the table') || m.includes('schema cache');
 }
 
-function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
+function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -860,7 +860,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
 
       {editing ? (
-        <StoreForm cust={cust} REPS={REPS} store={editing === 'new' ? null : editing}
+        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
           onCancel={() => setEditing(null)}
           onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
       ) : sel ? (
@@ -1029,7 +1029,7 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, onCancel, onSave }) {
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer.
@@ -1038,6 +1038,11 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
   const [page, setPage] = useState('setup');
+  // Count of in-flight image uploads — block save until they finish so a slow
+  // banner/logo upload can't be left out of the saved store (the create races the
+  // upload otherwise: the small logo lands, the larger banner doesn't).
+  const [uploading, setUploading] = useState(0);
+  const onUpBusy = (b) => setUploading((n) => Math.max(0, n + (b ? 1 : -1)));
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || 'team');
@@ -1065,9 +1070,12 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     const pcs = (c && c.pantone_colors && c.pantone_colors.length ? c.pantone_colors : (parent && parent.pantone_colors)) || [];
     const ph = (i) => { const pc = pcs[i]; return pc ? (pantoneHex(pc.code) || pc.hex || '') : ''; };
     const autoName = storeNameFor(id, noun);
+    const resolvedRep = (c && c.primary_rep_id) || (parent && parent.primary_rep_id) || f.rep_id;
+    const primCsr = primaryCsrForRep(resolvedRep);
     setF((p) => ({
       ...p, customer_id: id,
-      rep_id: (c && c.primary_rep_id) || (parent && parent.primary_rep_id) || p.rep_id,
+      rep_id: resolvedRep || p.rep_id,
+      csr_id: primCsr || p.csr_id,
       primary_color: ph(0) || p.primary_color, accent_color: ph(1) || p.accent_color,
       name: nameTouched ? p.name : (autoName || p.name),
       slug: nameTouched || slugTouched ? p.slug : (autoName ? slugify(autoName) : p.slug),
@@ -1109,11 +1117,30 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     }
     return list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   })();
-  // CSR can be any active staffer (they handle store/coach messages).
-  const staff = (REPS || []).filter((r) => r.is_active !== false).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  // CSRs assigned to the selected rep (rep_csr_assignments), primary first. If the
+  // rep has none assigned, fall back to all CSRs so the field is never empty — but
+  // never the whole staff list.
+  const allCsrs = (REPS || []).filter((r) => r.role === 'csr' && r.is_active !== false);
+  const csrIdsForRep = (repId) => (repCsr || []).filter((a) => a.rep_id === repId && a.is_active !== false)
+    .sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0)).map((a) => a.csr_id);
+  const primaryCsrForRep = (repId) => {
+    const a = (repCsr || []).find((x) => x.rep_id === repId && x.is_active !== false && x.is_primary);
+    return a ? a.csr_id : (csrIdsForRep(repId)[0] || '');
+  };
+  const csrOptions = (() => {
+    const ids = f.rep_id ? csrIdsForRep(f.rep_id) : [];
+    let list = ids.length ? ids.map((id) => (REPS || []).find((r) => r.id === id)).filter(Boolean) : allCsrs.slice();
+    list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    if (f.csr_id && !list.some((r) => r.id === f.csr_id)) {
+      const cur = (REPS || []).find((r) => r.id === f.csr_id);
+      if (cur) list = [cur, ...list];
+    }
+    return list;
+  })();
 
   const submit = async () => {
     setError('');
+    if (uploading > 0) return setError('Hold on — an image is still uploading. It’ll just be a moment.');
     if (!f.name.trim()) return setError('Store name is required.');
     if (!f.slug.trim()) return setError('A URL slug is required.');
     setBusy(true);
@@ -1172,15 +1199,17 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
           <button key={k} type="button" onClick={() => setPage(k)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '8px 2px', marginRight: 18, fontSize: 13, fontWeight: 800, fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em', color: page === k ? '#191919' : '#9aa1ad', borderBottom: page === k ? '2px solid #191919' : '2px solid transparent', marginBottom: -1 }}>{lbl}</button>
         ))}
       </div>
-      <div style={{ columns: '2 440px', columnGap: 14 }}>
+      {page === 'setup' && (
+      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
 
-      <Section title="Basics" show={page === 'setup'}>
+      <Section title="Basics">
         <Row label={`${noun} (customer) — link this first`}><CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer} placeholder="Search by name or alpha — e.g. OLu" /></Row>
         <Row label="Store name (auto-named from customer)"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="OLu Football Team Store" /></Row>
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
-          <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{staff.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; setF((p) => ({ ...p, rep_id: rid, csr_id: primaryCsrForRep(rid) || '' })); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+          <Row label="CSR (handles messages)"><select className="form-select" value={f.csr_id || ''} onChange={(e) => set('csr_id', e.target.value)}><option value="">—</option>{csrOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
@@ -1188,7 +1217,18 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         </div>
       </Section>
 
-      <Section title={`${noun} ${lead.toLowerCase()} (portal access)`} show={page === 'setup'}>
+      <Section title="Ordering & payment">
+        <Row label="Payment mode"><select className="form-select" value={f.payment_mode} onChange={(e) => set('payment_mode', e.target.value)}>
+          <option value="paid">Card only (parents pay)</option><option value="unpaid">Invoice only (team tab)</option><option value="either">Both — card or team tab</option>
+        </select></Row>
+        <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
+        <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
+      </Section>
+
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+
+      <Section title={`${noun} ${lead.toLowerCase()} (portal access)`}>
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>The {lead.toLowerCase()} uses this email to access their store-tracking portal.</div>
         <Row label={`${lead} name`}><input className="form-input" value={f.director_name || ''} onChange={(e) => set('director_name', e.target.value)} /></Row>
         <div style={{ display: 'flex', gap: 12 }}>
@@ -1197,35 +1237,8 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         </div>
       </Section>
 
-      <Section title="Ordering & payment" show={page === 'setup'}>
-        <Row label="Payment mode"><select className="form-select" value={f.payment_mode} onChange={(e) => set('payment_mode', e.target.value)}>
-          <option value="paid">Card only (parents pay)</option><option value="unpaid">Invoice only (team tab)</option><option value="either">Both — card or team tab</option>
-        </select></Row>
-        <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
-        <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
-      </Section>
-
-      <Section title="Delivery" show={page === 'delivery'}>
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
-        <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
-          <option value="ship_home">Ship to home — collect each buyer's home address</option>
-          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}’s default address`}</option>
-        </select></Row>
-        {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
-          <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
-        </div>
-        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ship-to-home orders pushed to ShipStation route into that Store and get tagged (create a tag named after the team in ShipStation, paste its id). The team name is also set as the order's customer.</div>
-        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-          <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
-          <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
-          <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
-        </div>
-      </Section>
-
-      {orgType === 'club' ? (
-        <Section title="Jersey numbers" show={page === 'setup'}>
+      {orgType === 'club' && (
+        <Section title="Jersey numbers">
           <Toggle label="Let players choose a number" checked={f.number_enabled} onChange={(v) => set('number_enabled', v)} />
           {f.number_enabled && <>
             <Toggle label="Unique numbers required — a player can only pick a number nobody else has taken" checked={f.number_unique} onChange={(v) => set('number_unique', v)} />
@@ -1235,18 +1248,9 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
             </div>
           </>}
         </Section>
-      ) : (
-        <Section title="Jersey numbers" show={page === 'setup'}>
-          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>On a team store you turn numbers on <b>per item</b> in the Catalog (each jersey can ask for a player number) — there's no store-wide switch. These rules apply whenever a number is collected:</div>
-          <Toggle label="Require unique numbers — no two players can share the same number" checked={f.number_unique} onChange={(v) => set('number_unique', v)} />
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Row label="Lowest # allowed"><input className="form-input" type="number" value={f.number_min} onChange={(e) => set('number_min', e.target.value)} /></Row>
-            <Row label="Highest # allowed"><input className="form-input" type="number" value={f.number_max} onChange={(e) => set('number_max', e.target.value)} /></Row>
-          </div>
-        </Section>
       )}
 
-      <Section title="Fundraising" show={page === 'setup'}>
+      <Section title="Fundraising">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Add fundraising on top of every item's price for the whole store. You can still set a specific amount on any single item in the Catalog — an item's own amount always wins.</div>
         <Toggle label="Add fundraising to this store" checked={f.fundraise_enabled} onChange={(v) => set('fundraise_enabled', v)} />
         {f.fundraise_enabled && <div style={{ marginTop: 2, marginBottom: 4 }}>
@@ -1266,15 +1270,45 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         <Toggle label={'Show families the "$X supports the team" line on the storefront'} checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
       </Section>
 
-      <Section title="Branding" show={page === 'delivery'}>
+      </div>
+      </div>
+      )}
+
+      {page === 'delivery' && (
+      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+
+      <Section title="Delivery">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
+        <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
+          <option value="ship_home">Ship to home — collect each buyer's home address</option>
+          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}’s default address`}</option>
+        </select></Row>
+        {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
+          <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
+        </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ship-to-home orders pushed to ShipStation route into that Store and get tagged (create a tag named after the team in ShipStation, paste its id). The team name is also set as the order's customer.</div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+          <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
+          <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
+          <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
+        </div>
+      </Section>
+
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+
+      <Section title="Branding">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />
           <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback="#e11d2a" />
         </div>
-        <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} label="Main logo (header)" />
-        <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} label="Banner image (hero background)" />
+        <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Main logo (header)" />
+        <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} onBusy={onUpBusy} label="Banner image (hero background)" />
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
             <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>Hero blurb</label>
@@ -1285,11 +1319,13 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
       </Section>
 
       </div>
+      </div>
+      )}
       <div style={{ position: 'sticky', bottom: 0, background: 'rgba(247,248,250,.92)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '14px 0', display: 'flex', gap: 10, marginTop: 6 }}>
         {page === 'setup'
           ? <button type="button" onClick={() => setPage('delivery')} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>Next: Delivery &amp; branding →</button>
           : <button type="button" onClick={() => setPage('setup')} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>← Back to setup</button>}
-        <button disabled={busy} onClick={submit} style={{ background: busy ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy) ? '#fff' : '#191919', border: (page === 'delivery' || busy) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : store ? 'Save changes' : 'Create store'}</button>
+        <button disabled={busy || uploading > 0} onClick={submit} style={{ background: (busy || uploading > 0) ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy || uploading > 0) ? '#fff' : '#191919', border: (page === 'delivery' || busy || uploading > 0) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: (busy || uploading > 0) ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : uploading > 0 ? 'Uploading…' : store ? 'Save changes' : 'Create store'}</button>
         <button disabled={busy} onClick={onCancel} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>Cancel</button>
       </div>
     </div>
@@ -1311,7 +1347,7 @@ function ColorField({ label, value, onChange, fallback }) {
 
 function Section({ title, children, show = true }) {
   if (!show) return null;
-  return <div style={{ background: '#fff', border: '1px solid #eef0f3', borderRadius: 12, marginBottom: 12, boxShadow: '0 1px 2px rgba(16,24,40,.04)', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', display: 'inline-block', width: '100%' }}>
+  return <div style={{ background: '#fff', border: '1px solid #eef0f3', borderRadius: 12, marginBottom: 14, boxShadow: '0 1px 2px rgba(16,24,40,.04)' }}>
     <div style={{ padding: '10px 14px', borderBottom: '1px solid #f3f4f7', fontFamily: DISPLAY, fontWeight: 800, fontSize: 13.5, textTransform: 'uppercase', letterSpacing: '.06em', color: '#191919' }}>{title}</div>
     <div style={{ padding: '12px 14px' }}>{children}</div>
   </div>;
