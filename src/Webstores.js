@@ -2085,6 +2085,19 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
 }
 
 // Inline editor for an existing catalog item (single or bundle).
+// Titled panel — the editor is organized into clear sectioned cards.
+function ItemSection({ title, hint, right, children, pad = 14 }) {
+  return (
+    <div style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: pad, marginBottom: 14, background: '#fff' }}>
+      {(title || right) && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: '#334155', textTransform: 'uppercase', letterSpacing: 0.4 }}>{title}{hint && <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8', marginLeft: 8 }}>{hint}</span>}</div>
+        {right}
+      </div>}
+      {children}
+    </div>
+  );
+}
+
 function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
@@ -2108,6 +2121,11 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   );
   const [extraImages, setExtraImages] = useState(item.extra_image_urls || []);
   const [imgBusy, setImgBusy] = useState(false);
+  // Two-page editor: 'details' (setup/info) and 'art' (image-driven art & colors).
+  const [page, setPage] = useState('details');
+  // Storefront placement + requirement (new per-item fields).
+  const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
+  const [required, setRequired] = useState(!!item.required);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
@@ -2157,6 +2175,12 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
     return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colorSibs, catalog, stockByWp, defaultName]);
+  // Section names already used on this store, offered as type-ahead for placement.
+  const categorySuggestions = useMemo(() => {
+    const set = new Set();
+    (catalog || []).forEach((c) => { if (c.category) set.add(c.category); if (stockByWp[c.id]?.category) set.add(stockByWp[c.id].category); });
+    return [...set].filter(Boolean).sort();
+  }, [catalog, stockByWp]);
   const toggleColor = (id) => setPickedColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const addColors = async () => {
     if (!onAddSingle || !pickedColors.size) return;
@@ -2178,7 +2202,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   };
 
   const save = () => {
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -2191,94 +2215,118 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
     onSave(fields);
   };
 
+  const catListId = 'cat-suggest-' + item.id;
   return (
-    <div style={{ padding: 16 }}>
-      {!isBundle && <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
-        <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-        <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
-        <Row label="Shopper pays"><div className="form-input" style={{ background: '#fff', fontWeight: 700 }}>{money(total)}</div></Row>
-        <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
-      </div>
-      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here). Shipping labels use the total order weight.</div>
-      {!isBundle && (garmentCost != null
-        ? <div style={{ marginTop: 8, padding: '8px 12px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5 }}>
-            <span style={{ color: '#64748b' }}>Garment <b style={{ color: '#191919' }}>{money(garmentCost)}</b></span>
-            <span style={{ color: '#64748b' }}>Decoration <b style={{ color: '#191919' }}>{decoIncluded ? '~' + money(decoCost) : '—'}</b></span>
-            <span style={{ color: '#64748b' }}>True cost <b style={{ color: '#191919' }}>{money(trueCost)}</b></span>
-            <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>Margin {marginPct != null ? marginPct + '%' : '—'}<span style={{ fontWeight: 500, color: '#94a3b8' }}> after deco</span></span>
-            {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Price {money(target45)} for 45%</button>}
-          </div>
-        : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see true margin (garment + ~$5 decoration) here.</div>)}
-      {!isBundle && allSizes.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
-            Sizes offered <span style={{ fontWeight: 400, color: '#94a3b8' }}>· tap to toggle (all on by default)</span>
-          </div>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-            {allSizes.map((sz) => {
-              const on = offeredSizes.includes(sz);
-              return (
-                <button key={sz} type="button" onClick={() => toggleSize(sz)}
-                  style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>
-                  {sz}
-                </button>
-              );
-            })}
-          </div>
-          {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>
-          )}
+    <div style={{ padding: 16, background: '#f6f7f9' }}>
+      {!isBundle && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
+          {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
+            <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
+          ); })}
         </div>
       )}
-      {!isBundle && onAddSingle && colorOptions.length > 0 && (
-        <div style={{ marginTop: 12, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 7, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>Other colors of this garment <span style={{ fontWeight: 400, color: '#94a3b8' }}>· add them to the store at this price</span></div>
-            <button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>
+
+      {(page === 'details' || isBundle) && <React.Fragment>
+        <ItemSection title="Basics" hint="· photo & name shown in the catalog">
+          {!isBundle && <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />}
+          <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
+        </ItemSection>
+
+        <ItemSection title="Pricing & margin">
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
+            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
+            <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
+            <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
-              <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku} style={{ position: 'relative', width: 66, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 4, cursor: 'pointer' }}>
-                <div style={{ width: '100%', height: 56, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {s.image_front_url ? <img src={s.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(s.color || s.sku || '').slice(0, 10)}</span>}
-                </div>
-                <div style={{ fontSize: 10, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.color || s.sku}</div>
-                {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
-              </button>
-            ); })}
-          </div>
-        </div>
-      )}
-      {!isBundle && <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-        <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
-        <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
-        {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUp} onChange={(e) => setNameUp(e.target.value)} /></label>}
-      </div>}
-      {!isBundle && isTeam && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Logo &amp; number transfers are a club-store option — team-store decoration is handled in production, so there’s nothing to stock here.</div>}
-      {!isBundle && !isTeam && <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
-      {isBundle && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
-      <div style={{ marginTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>Additional images <span style={{ fontWeight: 400, color: '#94a3b8' }}>· extra angles / back views shown on the product page</span></div>
-        <div
-          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
-          style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
-          {extraImages.map((url, i) => (
-            <div key={i} style={{ position: 'relative' }}>
-              <img src={url} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
-              <button type="button" onClick={() => setExtraImages((p) => p.filter((_, j) => j !== i))} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here).</div>
+          {!isBundle && (garmentCost != null
+            ? <div style={{ marginTop: 10, padding: '8px 12px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5 }}>
+                <span style={{ color: '#64748b' }}>Garment <b style={{ color: '#191919' }}>{money(garmentCost)}</b></span>
+                <span style={{ color: '#64748b' }}>Decoration <b style={{ color: '#191919' }}>{decoIncluded ? '~' + money(decoCost) : '—'}</b></span>
+                <span style={{ color: '#64748b' }}>True cost <b style={{ color: '#191919' }}>{money(trueCost)}</b></span>
+                <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>Margin {marginPct != null ? marginPct + '%' : '—'}<span style={{ fontWeight: 500, color: '#94a3b8' }}> after deco</span></span>
+                {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Price {money(target45)} for 45%</button>}
+              </div>
+            : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see true margin (garment + ~$5 decoration) here.</div>)}
+        </ItemSection>
+
+        {!isBundle && allSizes.length > 0 && (
+          <ItemSection title="Sizes offered" hint="· tap to toggle (all on by default)">
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              {allSizes.map((sz) => { const on = offeredSizes.includes(sz); return (
+                <button key={sz} type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
+              ); })}
             </div>
-          ))}
-          <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
-          <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
-        </div>
-      </div>
-      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />}
-      <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+            {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
+          </ItemSection>
+        )}
+
+        {!isBundle && (
+          <ItemSection title="Personalization" hint="· numbers & names">
+            <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
+              <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
+              {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUp} onChange={(e) => setNameUp(e.target.value)} /></label>}
+            </div>
+            {isTeam && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Logo &amp; number transfers are a club-store option — team-store decoration is handled in production.</div>}
+            {!isTeam && <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
+          </ItemSection>
+        )}
+
+        <ItemSection title="Store placement" hint="· which section it shows in, and whether it’s required">
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <Row label="Category / section on the store">
+              <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
+              <datalist id={catListId}>{categorySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
+            </Row>
+            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={setRequired} /></div>
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>“Part of a batch/kit” and custom option selections are coming next — tell me how you’d like those to behave.</div>
+        </ItemSection>
+
+        {isBundle && <div style={{ fontSize: 12, color: '#94a3b8' }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
+      </React.Fragment>}
+
+      {page === 'art' && !isBundle && <React.Fragment>
+        <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
+          <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />
+        </ItemSection>
+
+        {onAddSingle && colorOptions.length > 0 && (
+          <ItemSection title="Other colors of this garment" hint="· add them to the store at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
+                <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku} style={{ position: 'relative', width: 92, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 5, cursor: 'pointer' }}>
+                  <div style={{ width: '100%', height: 86, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {s.image_front_url ? <img src={s.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(s.color || s.sku || '').slice(0, 12)}</span>}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.color || s.sku}</div>
+                  {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                </button>
+              ); })}
+            </div>
+          </ItemSection>
+        )}
+
+        <ItemSection title="Additional images" hint="· extra angles / back views shown on the product page">
+          <div onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); [...(e.dataTransfer.files || [])].forEach(addExtraFile); }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
+            {extraImages.map((url, i) => (
+              <div key={i} style={{ position: 'relative' }}>
+                <img src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
+                <button type="button" onClick={() => setExtraImages((p) => p.filter((_, j) => j !== i))} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
+              </div>
+            ))}
+            <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
+            <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
+          </div>
+        </ItemSection>
+      </React.Fragment>}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, position: 'sticky', bottom: 0, background: '#f6f7f9', paddingTop: 12, borderTop: '1px solid #e5e8ec' }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+        {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
       </div>
     </div>
   );
