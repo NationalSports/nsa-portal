@@ -33,12 +33,21 @@ const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In
 const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
+// Page-level routing for the mobile portal. The bottom-nav tab lives in ?mtab=<id> and the
+// "More" sub-page in ?msub=<id>, so a refresh stays put and browser back/forward walk through
+// visited sections. 'home' is the default (clean URL). Distinct params from the desktop ?pg=
+// so the two portals never clash. Page-level only — opening a record/detail is not a history entry.
+const _MTABS=new Set(['home','orders','messages','customers','more']);
+const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports']);
+const _mtabFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('mtab');return v&&_MTABS.has(v)?v:null}catch{return null}};
+const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('msub');return v&&_MSUBS.has(v)?v:null}catch{return null}};
+
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
 export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
-  const[tab,setTab]=useState('home');
+  const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -54,7 +63,37 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[invsFilter,setInvsFilter]=useState('open');
   const[invsSort,setInvsSort]=useState('newest');
   const[custQ,setCustQ]=useState('');
-  const[moreSubPage,setMoreSubPage]=useState(null);
+  const[moreSubPage,setMoreSubPage]=useState(()=>_msubFromUrl()||null);
+  // Keep ?mtab=/?msub= in sync with the current tab + More sub-page so refresh stays put and
+  // browser back/forward walk through visited sections. popstate-driven changes must not push a
+  // new entry (_mPop suppresses that); the first sync uses replaceState. 'home' clears the param.
+  const _mPop=React.useRef(false);
+  const _mFirst=React.useRef(true);
+  useEffect(()=>{
+    if(_mPop.current){_mPop.current=false;_mFirst.current=false;return;}
+    try{
+      const u=new URL(window.location);
+      const curTab=u.searchParams.get('mtab')||'home';
+      const curSub=u.searchParams.get('msub')||'';
+      const wantSub=(tab==='more'&&moreSubPage)?moreSubPage:'';
+      if(curTab!==tab||curSub!==wantSub){
+        if(tab==='home')u.searchParams.delete('mtab');else u.searchParams.set('mtab',tab);
+        if(wantSub)u.searchParams.set('msub',wantSub);else u.searchParams.delete('msub');
+        const url=u.pathname+u.search+u.hash;
+        if(_mFirst.current)window.history.replaceState({mtab:tab,msub:wantSub},'',url);else window.history.pushState({mtab:tab,msub:wantSub},'',url);
+      }
+    }catch{}
+    _mFirst.current=false;
+  },[tab,moreSubPage]);
+  useEffect(()=>{
+    const onPop=()=>{
+      const t=_mtabFromUrl()||'home';
+      const s=t==='more'?_msubFromUrl():null;
+      if(t!==tab||(s||null)!==(moreSubPage||null)){_mPop.current=true;setTab(t);setMoreSubPage(s)}
+    };
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[tab,moreSubPage]);
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
   // Jobs filters
@@ -271,6 +310,66 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               })}
             </div>}
           </div>})}
+        {/* ─── Purchase Orders + Check-In status — so warehouse can see what's on order and what's arrived ─── */}
+        {(()=>{
+          const _ca=canAccess||(()=>true);
+          const szKeys=(obj)=>Object.keys(obj||{}).filter(k=>SZ_ORD.includes(k)&&typeof obj[k]==='number').sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+          const map={};
+          items.forEach((it)=>{(it.po_lines||[]).forEach((po)=>{
+            const pid=po.po_id||'PO';const key=pid+'|'+(po.vendor||'');
+            const e=map[key]||(map[key]={key,poId:pid,batchPoNumber:po.batch_po_number||'',vendor:po.vendor||'',dropShip:!!po.drop_ship,lines:[],created_at:po.created_at});
+            if(po.drop_ship)e.dropShip=true;
+            const sizes={};let ordered=0,received=0,open=0;
+            szKeys(po).forEach(sz=>{const ord=po[sz]||0;const rcv=(po.received||{})[sz]||0;const can=(po.cancelled||{})[sz]||0;const o=Math.max(0,ord-rcv-can);sizes[sz]={ord,rcv,open:o};ordered+=ord;received+=rcv;open+=o});
+            e.lines.push({item:it,sizes,ordered,received,open});
+          })});
+          const poList=Object.values(map).map(e=>{
+            const totOrd=e.lines.reduce((a,l)=>a+l.ordered,0),totRcv=e.lines.reduce((a,l)=>a+l.received,0),totOpen=e.lines.reduce((a,l)=>a+l.open,0);
+            const status=e.dropShip?'dropship':(totOpen<=0&&totRcv>0?'received':totRcv>0?'partial':'waiting');
+            return{...e,totOrd,totRcv,totOpen,status};
+          }).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+          if(poList.length===0)return null;
+          const ST={waiting:{bg:'#fef3c7',c:'#92400e',l:'Waiting'},partial:{bg:'#dbeafe',c:'#1e40af',l:'Partial'},received:{bg:'#dcfce7',c:'#166534',l:'Received'},dropship:{bg:'#f5f3ff',c:'#6d28d9',l:'Drop Ship'}};
+          const grandOrd=poList.reduce((a,p)=>a+p.totOrd,0),grandRcv=poList.reduce((a,p)=>a+p.totRcv,0);
+          return<>
+            <div className="mp-section-title">Purchase Orders ({poList.length}) — {grandRcv}/{grandOrd} checked in</div>
+            {poList.map(po=>{const b=ST[po.status]||ST.waiting;const openToReceive=po.totOpen>0&&!po.dropShip;
+              return<div key={po.key} className="mp-item-card">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                      <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>
+                      {po.batchPoNumber&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontFamily:'monospace'}}>{po.batchPoNumber}</span>}
+                      <span style={{fontSize:10,background:b.bg,color:b.c,padding:'2px 8px',borderRadius:10,fontWeight:700}}>{b.l}</span>
+                    </div>
+                    <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{po.vendor||'—'}</div>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontSize:15,fontWeight:800,color:openToReceive?'#d97706':'#16a34a'}}>{po.totRcv}/{po.totOrd}</div>
+                    <div style={{fontSize:10,color:'#94a3b8'}}>checked in</div>
+                  </div>
+                </div>
+                {po.dropShip&&<div style={{fontSize:11,color:'#6d28d9',marginTop:6,fontWeight:600}}>📦 Ships direct to customer — not received at the warehouse</div>}
+                <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:8}}>
+                  {po.lines.map((l,li)=>{const szs=Object.entries(l.sizes).filter(([,s])=>s.ord>0);if(!szs.length)return null;
+                    return<div key={li}>
+                      <div style={{fontSize:12,fontWeight:600,color:'#334155',marginBottom:4}}>{l.item.name||l.item.sku}{l.item.color?' · '+l.item.color:''}</div>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {szs.map(([sz,s])=>{const full=s.open<=0;
+                          return<div key={sz} style={{textAlign:'center',minWidth:54,padding:'4px 6px',borderRadius:8,border:'1px solid '+(full?'#bbf7d0':'#e2e8f0'),background:full?'#f0fdf4':'#f8fafc'}}>
+                            <div style={{fontSize:11,fontWeight:800,color:'#475569'}}>{sz}</div>
+                            <div style={{fontSize:13,fontWeight:800,color:full?'#16a34a':'#0f172a'}}>{s.rcv}<span style={{color:'#94a3b8',fontWeight:600,fontSize:11}}>/{s.ord}</span></div>
+                            {s.open>0&&!po.dropShip&&<div style={{fontSize:9,color:'#d97706',fontWeight:700}}>{s.open} open</div>}
+                          </div>})}
+                      </div>
+                    </div>})}
+                </div>
+                {openToReceive&&_ca('warehouse')&&<button onClick={()=>{setWhRcvQty({});setWhTab('pos');setWhDetail({kind:'po',key:'so|'+so.id+'|'+po.poId+'|'+(po.vendor||'')});setMoreSubPage('warehouse');setTab('more');setDetail(null);}} style={{marginTop:10,width:'100%',padding:'10px',borderRadius:10,border:'none',background:'#1e40af',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:42,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                  <MIcon name="box" size={15}/> Check In {po.totOpen} unit{po.totOpen!==1?'s':''} →
+                </button>}
+              </div>;})}
+          </>;
+        })()}
         {jobs.length>0&&<>
           <div className="mp-section-title">Jobs ({jobs.length})</div>
           {jobs.map((j,ji)=><div key={ji} className="mp-item-card">
@@ -1177,7 +1276,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const map={};
     sos.forEach(so=>{const cc=custObj(so.customer_id);safeItems(so).forEach((it,ii)=>{(it.po_lines||[]).forEach((po,pli)=>{
       const pid=po.po_id||'PO';const key='so|'+so.id+'|'+pid+'|'+(po.vendor||'');
-      const e=map[key]||(map[key]={key,kind:'so',poId:pid,batchPoNumber:po.batch_po_number||'',soId:so.id,cust:cc,vendor:po.vendor||'',lines:[],created_at:po.created_at||so.created_at});
+      const e=map[key]||(map[key]={key,kind:'so',poId:pid,batchPoNumber:po.batch_po_number||'',soId:so.id,cust:cc,vendor:po.vendor||'',lines:[],created_at:po.created_at||so.created_at,repId:(cc&&cc.primary_rep_id)||so.created_by||null});
       if(po.drop_ship)e.dropShip=true;// vendor ships direct to the customer — warehouse never receives this PO
       const sizes={};let ordered=0,received=0,open=0;
       whSizes(po).forEach(sz=>{const ord=po[sz]||0;const rcv=(po.received||{})[sz]||0;const can=(po.cancelled||{})[sz]||0;const o=Math.max(0,ord-rcv-can);sizes[sz]={ord,rcv,open:o};ordered+=ord;received+=rcv;open+=o});
@@ -1379,11 +1478,18 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {sel.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No open items in the selected POs.</div>}
           {sel.map(po=>{const poRcv=Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0);
             return<div key={po.key} style={{marginBottom:18}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'2px solid #e2e8f0',flexWrap:'wrap'}}>
-                <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>{po.batchPoNumber&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontFamily:'monospace',marginLeft:6}}>{po.batchPoNumber}</span>}
-                {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>INV</span>}
-                <span style={{fontSize:11,color:'#64748b'}}>{po.vendor||(po.kind==='so'?po.soId:'Inventory PO')}</span>
-                <span style={{marginLeft:'auto',fontSize:11,color:poRcv>=po.totOpen?'#16a34a':'#d97706',fontWeight:700}}>{poRcv}/{po.totOpen} open</span>
+              <div style={{marginBottom:8,paddingBottom:6,borderBottom:'2px solid #e2e8f0'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>
+                  {po.batchPoNumber&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontFamily:'monospace'}}>{po.batchPoNumber}</span>}
+                  {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>INV</span>}
+                  <span style={{marginLeft:'auto',fontSize:11,color:poRcv>=po.totOpen?'#16a34a':'#d97706',fontWeight:700}}>{poRcv}/{po.totOpen} open</span>
+                </div>
+                <div style={{fontSize:12,marginTop:3,color:'#334155',fontWeight:700}}>
+                  {po.kind==='so'?(po.cust?.name||po.soId):'Inventory PO'}
+                  {po.kind==='so'&&po.repId&&<span style={{fontWeight:600,color:'#64748b'}}> · {repName(po.repId)}</span>}
+                </div>
+                {po.vendor&&<div style={{fontSize:11,marginTop:1,color:'#94a3b8'}}>{po.vendor}{po.kind==='so'&&po.soId?' · '+po.soId:''}</div>}
               </div>
               {po.lines.map((l,i)=>{const szEntries=Object.entries(l.sizes).filter(([,s])=>s.open>0);if(szEntries.length===0)return null;const item=l.item;
                 return<div key={i} className="mp-item-card">

@@ -5,13 +5,14 @@
 import { NSA } from './constants';
 import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { authFetch } from './utils';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -77,8 +78,10 @@ const ssShipToAddress = (so, customer) => {
   };
 };
 
-const convertSOToShipStation = (so, customer) => {
-  const shipToAddress = ssShipToAddress(so, customer);
+const convertSOToShipStation = (so, customer, shipToOverride) => {
+  // shipToOverride lets callers (e.g. Manual Ship) print to a different recipient —
+  // our own warehouse or a decorator — instead of the customer's default address.
+  const shipToAddress = shipToOverride || ssShipToAddress(so, customer);
   const items = so.items.map(item => {
     const totalQty = Object.values(item.sizes).reduce((sum, qty) => sum + qty, 0);
     return {
@@ -121,13 +124,13 @@ const convertSOToShipStation = (so, customer) => {
   };
 };
 
-const pushSOToShipStation = async (so, customer) => {
+const pushSOToShipStation = async (so, customer, shipToOverride) => {
   const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received', 'waiting_receive', 'needs_pull', 'need_order', 'partial_received'];
   const soStatus = calcSOStatus(so);
   if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus) && so.status !== 'complete') {
     throw new Error('Only active Sales Orders can be shipped');
   }
-  const ssOrder = convertSOToShipStation(so, customer);
+  const ssOrder = convertSOToShipStation(so, customer, shipToOverride);
   return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
 };
 
@@ -144,15 +147,16 @@ const fetchRecentShipments = async () => {
 
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
-  // Resolve and validate the ship-to (SO-selected address or customer default) before calling API
-  const shipTo = ssShipToAddress(so, customer);
+const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions, shipToOverride) => {
+  // Resolve and validate the ship-to. shipToOverride (Manual Ship → warehouse/decorator)
+  // takes precedence over the SO-selected address or customer default.
+  const shipTo = shipToOverride || ssShipToAddress(so, customer);
   if (!shipTo.street1 || !shipTo.city || !shipTo.state || !shipTo.postalCode) throw new Error('Ship-to address is incomplete (needs street, city, state, zip). Check the address selected on the SO or the customer record.');
   // Upsert the order in ShipStation (createorder updates by orderKey) — the label prints
   // the ORDER's ship-to, so an already-pushed order must be refreshed with the resolved address.
   let ssOrderId = so._shipstation_order_id;
   try {
-    const ssOrder = await pushSOToShipStation(so, customer);
+    const ssOrder = await pushSOToShipStation(so, customer, shipToOverride);
     ssOrderId = ssOrder.orderId || ssOrderId;
   } catch (e) {
     if (!ssOrderId) throw e;
@@ -260,7 +264,7 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -800,7 +804,7 @@ const sanmarApiCall = async (service, action, params = {}) => {
   try {
     const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
     const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -937,7 +941,7 @@ const ssApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -978,7 +982,7 @@ const richardsonApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})

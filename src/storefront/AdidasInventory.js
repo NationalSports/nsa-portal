@@ -23,9 +23,14 @@ const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-appl
 const PAGE_SIZE = 72; // cards rendered per "Show more" chunk
 
 // Brands shown in the live-look catalog. All read live per-size stock from the
-// synced inventory_unified view (adidas Cowork CLICK + Agron + UA Armour House /
-// S&S + Nike SanMar). Add a brand here once its *_inventory feed exists.
-const CATALOG_BRANDS = ['Adidas', 'Under Armour', 'Nike'];
+// synced inventory_unified view. Add a brand here once its *_inventory feed
+// exists and the sync has populated it.
+const CATALOG_BRANDS = [
+  'Adidas', 'Under Armour', 'Nike',
+  'Richardson', 'Momentec',
+  'Port Authority', 'Sport-Tek', 'District', 'Bella+Canvas',
+  'Boxercraft', 'Gildan',
+];
 
 // ── Sizes ────────────────────────────────────────────────────────────
 const SIZE_ORDER = [
@@ -1020,13 +1025,14 @@ export default function AdidasInventory() {
         const { data: accts } = await supabase.from('coach_accounts').select('email,name,customer_id,status').limit(1);
         const acct = (accts || [])[0];
         if (!acct || acct.status !== 'active') { if (alive) setCoach(null); return; }
-        const { data: custs } = await supabase.from('customers').select('id,name,adidas_ua_tier,school_colors').eq('id', acct.customer_id).limit(1);
+        const { data: custs } = await supabase.from('customers').select('id,name,adidas_ua_tier,school_colors,allowed_brands').eq('id', acct.customer_id).limit(1);
         const c = (custs || [])[0];
         if (!alive) return;
         setCoach({
           email, name: acct.name || '', customerId: acct.customer_id,
           customerName: (c && c.name) || '', tier: (c && c.adidas_ua_tier) || 'B',
           schoolColors: Array.isArray(c && c.school_colors) ? c.school_colors : [],
+          allowedBrands: Array.isArray(c && c.allowed_brands) ? c.allowed_brands : [],
         });
       } catch { if (alive) setCoach(null); }
     };
@@ -1062,6 +1068,20 @@ export default function AdidasInventory() {
     },
     [coach],
   );
+
+  // Brands this account may see. A coach whose customer has allowed_brands set
+  // is locked to those (e.g. an adidas-only account never sees UA/Nike); empty
+  // / anonymous = all brands. Returns the exact CATALOG_BRANDS reference when
+  // unrestricted so the product fetch below doesn't re-run for normal coaches.
+  const effectiveBrands = useMemo(() => {
+    const allow = Array.isArray(coach?.allowedBrands) ? coach.allowedBrands.filter((b) => CATALOG_BRANDS.includes(b)) : [];
+    return allow.length ? allow : CATALOG_BRANDS;
+  }, [coach]);
+  // Don't strand a coach on a brand their account can no longer see (e.g. the
+  // restriction tightened mid-session) — the brand picker hides at one brand.
+  useEffect(() => {
+    if (brand !== 'All' && !effectiveBrands.includes(brand)) setBrand('All');
+  }, [effectiveBrands, brand]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1109,7 +1129,7 @@ export default function AdidasInventory() {
           fetchAllPages(() => supabase
             .from('products')
             .select('id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source')
-            .in('brand', CATALOG_BRANDS)
+            .in('brand', effectiveBrands)
             .eq('is_active', true)
             .or('is_archived.is.null,is_archived.eq.false')
             .order('sku')),
@@ -1234,7 +1254,7 @@ export default function AdidasInventory() {
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [effectiveBrands]);
 
   // Colorway-level filters: a style shows if ANY colorway passes all of them.
   // Team colors: a colorway matches when it features ANY selected color —
@@ -1378,8 +1398,7 @@ export default function AdidasInventory() {
             </span>
           </div>
           <p style={{ margin: '8px 0 0', fontSize: 14, color: '#C3C8D0', maxWidth: 780, lineHeight: 1.5 }}>
-            Every style we carry, with a live look at what's in stock right now across adidas, Under Armour & Nike — by color and size —
-            and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
+            Every style we carry, with a live look at what's in stock right now across Adidas, Under Armour, Nike, Richardson, Momentec, Port Authority, Sport-Tek, District, Bella+Canvas, Boxercraft & Gildan — by color and size — and when restocks land. Quantities change daily{lastSynced ? ` — last updated ${new Date(lastSynced).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}` : ''}.
             Open a style, type the quantities you need per size, and send the list to your rep — they'll follow up with a formal estimate.
           </p>
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1587,8 +1606,8 @@ export default function AdidasInventory() {
       {!embedded && (
       <footer style={{ background: '#191919', color: '#9AA1AC', fontSize: 12.5, lineHeight: 1.6 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
-          Availability reflects the adidas B2B warehouse and is updated automatically — quantities are not guaranteed until ordered.
-          “Inbound” dates are adidas's projected delivery dates for restocks.
+          Availability is pulled from each brand's warehouse feed and updated automatically — quantities are not guaranteed until ordered.
+          “Inbound” dates are projected restock delivery dates.
           “In house” stock is on the shelf at National Sports Apparel and ships immediately.
           <span style={{ display: 'block', marginTop: 6, color: '#C3C8D0', fontWeight: 600 }}>
             National Sports Apparel · nationalsportsapparel.com

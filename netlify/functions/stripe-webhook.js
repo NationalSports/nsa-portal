@@ -12,6 +12,7 @@
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
+const { reconcileInvoiceFromIntent } = require('./_shared');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
@@ -53,6 +54,12 @@ exports.handler = async (event) => {
           if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
+
+        // Coach-portal invoice payments: mark the referenced invoice(s) paid. The portal also calls
+        // this server-side right after paying (stripe-payment → finalize_invoice); this webhook is the
+        // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
+        // idempotent — the portal call, this one, and Stripe retries can't double-apply the surcharge.
+        await reconcileInvoiceFromIntent(sb, pi);
       }
     }
   } catch (e) {

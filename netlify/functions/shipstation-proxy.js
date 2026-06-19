@@ -1,5 +1,12 @@
 // Netlify serverless function to proxy ShipStation API calls (avoids CORS)
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
+  // Staff-only: this proxy injects the company ShipStation credentials. Without
+  // this gate it was a public, authenticated proxy to our ShipStation account.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, body: JSON.stringify({ error: v.error }) };
+
   const SS_API_KEY = process.env.SHIPSTATION_API_KEY;
   const SS_API_SECRET = process.env.SHIPSTATION_API_SECRET;
   if (!SS_API_KEY || !SS_API_SECRET) {

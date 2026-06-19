@@ -60,3 +60,26 @@
 # Nike SanMar products + the SANMAR_NIKE_STYLES env list.
 [functions."sanmar-nike-sync-cron"]
   schedule = "30 13 * * *"
+
+# Richardson Sports catalog sync — daily at 14:30 UTC. Pulls the full
+# Richardson stock feed → products + richardson_inventory for the Team Catalog.
+[functions."richardson-sync-cron"]
+  schedule = "30 14 * * *"
+
+# Momentec Brands catalog sync — daily at 15:00 UTC. Pulls the full Momentec
+# HCL Commerce catalog → products + momentec_inventory for the Team Catalog.
+[functions."momentec-sync-cron"]
+  schedule = "0 15 * * *"
+
+# S&S Activewear brands catalog sync — daily at 15:30 UTC. Pulls Port Authority,
+# Sport-Tek, District, Bella+Canvas, Boxercraft, Gildan from S&S → products +
+# ss_inventory for the Team Catalog.
+[functions."ss-brands-sync-cron"]
+  schedule = "30 15 * * *"
+
+# SanMar brands catalog sync — daily at 16:00 UTC. Pulls Port Authority,
+# Sport-Tek, District, Bella+Canvas from SanMar → products + sanmar_inventory.
+# Seed SANMAR_BRAND_STYLES env var with style numbers (e.g. "K500,PC61,DT6000")
+# to populate on the first run.
+[functions."sanmar-brands-sync-cron"]
+  schedule = "0 16 * * *"

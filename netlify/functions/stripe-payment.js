@@ -2,7 +2,7 @@
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
 const crypto = require('crypto');
-const { verifyUser, getSupabaseAdmin } = require('./_shared');
+const { verifyUser, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
@@ -84,15 +84,21 @@ exports.handler = async (event) => {
       }
 
       // Same payer + same invoice(s) + same amount on the same day → same intent
-      // (Stripe replays the original response for ~24h on a matching key).
+      // (Stripe replays the original response for ~24h on a matching key). The leading version token
+      // scopes the key to the current create-params; bump it whenever those params change (e.g.
+      // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
+      // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v2', body.method || '', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({
         amount: Math.round(amount_cents),
         currency: 'usd',
-        automatic_payment_methods: { enabled: true },
+        // The buyer picked card or bank up front (body.method), so restrict the intent to that one
+        // method. This hard-disables Link and guarantees the method charged matches the chosen price
+        // (card carries the surcharge, bank/ACH does not). Falls back to both if method is unspecified.
+        payment_method_types: body.method === 'bank' ? ['us_bank_account'] : body.method === 'card' ? ['card'] : ['card', 'us_bank_account'],
         metadata: {
           invoice_id: invoice_id || '',
           invoice_memo: invoice_memo || '',
@@ -109,6 +115,76 @@ exports.handler = async (event) => {
         headers: corsHeaders(),
         body: JSON.stringify({ clientSecret: intent.client_secret, intentId: intent.id }),
       };
+    }
+
+    if (action === 'update_intent') {
+      // Re-price an existing (not-yet-confirmed) PaymentIntent — used to drop the 2.9% card surcharge
+      // when the buyer selects bank/ACH, which NSA does not surcharge. PUBLIC (the portal is anonymous);
+      // safe because the new amount is re-validated against the invoice's open balance + ceiling using
+      // the invoice id stored in the intent's OWN metadata (never client-supplied), so it can't be
+      // abused to set an arbitrary amount.
+      const { intent_id, amount_cents } = body;
+      if (!intent_id || !amount_cents || amount_cents < 50) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'intent_id and amount_cents (>= $0.50) required' }) };
+      }
+      if (amount_cents > MAX_AMOUNT_CENTS) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the per-payment limit.' }) };
+      }
+      let intent0;
+      try {
+        intent0 = await client.paymentIntents.retrieve(intent_id);
+      } catch (e) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment intent not found' }) };
+      }
+      // Only adjust before the buyer has confirmed/paid.
+      if (!intent0 || (intent0.status !== 'requires_payment_method' && intent0.status !== 'requires_confirmation')) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment can no longer be modified.' }) };
+      }
+      try {
+        const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        if (ids.length) {
+          const admin = getSupabaseAdmin();
+          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
+          if (!invErr && invRows && invRows.length) {
+            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
+            const maxCents = Math.ceil(balanceCents * 1.05) + 100; // headroom for the CC surcharge + rounding
+            if (balanceCents <= 0 || amount_cents > maxCents) {
+              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
+            }
+          }
+        }
+      } catch (e) { /* fail-open on DB blips, same as create_intent */ }
+      const updated = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updated.amount }) };
+    }
+
+    if (action === 'finalize_invoice') {
+      // Mark the invoice(s) for a just-succeeded payment as paid. PUBLIC by necessity — the coach
+      // portal pays without an account and (being anonymous) is RLS-blocked from writing `invoices`
+      // itself, so this server-side step is the reliable reconciliation path. It's safe because it
+      // trusts only Stripe + our own metadata: it re-fetches the intent, requires status 'succeeded',
+      // and only ever settles invoices named in that intent's metadata. Idempotent (see _shared).
+      const { payment_intent_id } = body;
+      if (!payment_intent_id) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
+      }
+      let intent;
+      try {
+        intent = await client.paymentIntents.retrieve(payment_intent_id);
+      } catch (e) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Payment intent not found' }) };
+      }
+      if (!intent || intent.status !== 'succeeded') {
+        return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: false, status: intent ? intent.status : 'not_found' }) };
+      }
+      let result = { reconciled: [] };
+      try {
+        result = await reconcileInvoiceFromIntent(getSupabaseAdmin(), intent);
+      } catch (e) {
+        console.error('[stripe-payment] finalize_invoice reconcile error:', e.message);
+        return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Reconcile failed' }) };
+      }
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
     }
 
     if (action === 'refund') {

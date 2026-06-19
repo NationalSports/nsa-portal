@@ -1,30 +1,33 @@
-// Background function (15-min limit): syncs the Nike catalog SanMar carries into
-// the portal so the public Team Catalog (/adidas, /livelook) shows SanMar-sourced
-// Nike gear with images, sizes, and live inventory — the Nike analog of
-// ss-adidas-sync-background. Writes:
-//   products       — one row per style+color, id 'smnike-<style>-<colorCode>',
-//                    brand 'Nike', inventory_source 'nike', vendor = the SanMar
-//                    vendor (api_provider='sanmar'); image from SanMar, MAP/MSRP as
-//                    retail, piece/customer price as nsa_cost, sell = cost×1.65
-//   nike_inventory — per sku+size stock, source 'sanmar'
+// Background function (15-min limit): syncs selected non-Nike brands from
+// SanMar into the portal so the public Team Catalog (/adidas, /livelook)
+// shows SanMar-sourced styles for Port Authority, Sport-Tek, District, and
+// Bella+Canvas with images, sizes, and live inventory.
 //
-// It reuses the PROVEN sanmar-proxy (SanMar SOAP, same envelopes the order screen
-// uses) over HTTP instead of re-implementing SOAP here.
+// SanMar's API is style-number-gated (no "list by brand" endpoint), so the
+// style set is seeded from:
+//   1. Products already in the DB with these brands on the SanMar vendor
+//      (refresh runs on every sync)
+//   2. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
+//      numbers to add (e.g. "K500,PC61,DT6000,3001C")
+// On the FIRST live run, add your style list via SANMAR_BRAND_STYLES; the
+// sync will persist them and future runs refresh automatically from the DB.
 //
-// ── Style enumeration ──
-// SanMar has no "list styles by brand" API, so the Nike style set is SEEDED from:
-//   1. products already on the SanMar vendor with brand ~ 'nike' (refresh), AND
-//   2. the SANMAR_NIKE_STYLES env var (comma-separated style numbers) for new
-//      styles — drop SanMar's Nike style list here to grow the catalog.
-// On the FIRST live run, spot-check one style's parsed colors/sizes/stock against
-// SanMar's site and adjust the parsers if a field name differs (the adidas/agron
-// syncs were validated the same way).
+// Writes:
+//   products        — one row per style+color, id 'smb-{style}-{colorCode}',
+//                     brand = SanMar brandName, vendor_id = SanMar vendor,
+//                     MAP/MSRP as retail, piece price as nsa_cost,
+//                     catalog_sell_price = cost × 1.65
+//   sanmar_inventory — per sku+size stock from PromoStandards getInventoryLevels
 //
-// Triggered by sanmar-nike-sync-cron (daily) or manually:
-//   curl -X POST https://<site>/.netlify/functions/sanmar-nike-sync-background
+// Triggered by sanmar-brands-sync-cron (daily) or manually:
+//   curl -X POST https://<site>/.netlify/functions/sanmar-brands-sync-background
 //
-// Env: SANMAR_USERNAME, SANMAR_PASSWORD (used by sanmar-proxy), URL,
+// Env: SANMAR_BRAND_STYLES (optional seed), URL,
 //      REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+//      (SANMAR_USERNAME + SANMAR_PASSWORD are used inside sanmar-proxy)
+
+const TARGET_BRANDS = ['Port Authority', 'Sport-Tek', 'District', 'Bella+Canvas'];
+const TARGET_BRAND_RE = /port\s*authority|sport-?tek|^district$|bella\+?canvas/i;
 
 const CATEGORY_RULES = [
   ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],
@@ -38,37 +41,44 @@ const CATEGORY_RULES = [
   ['Tees', /T-SHIRT|\bTEE\b|ACTIVEWEAR/i],
   ['Bags', /\bBAG\b|BACKPACK|DUFFEL|SACKPACK/i],
   ['Socks', /\bSOCK\b/i],
-  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL|SLEEVE/i],
+  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL/i],
 ];
 function mapCategory(title) {
   for (const [cat, re] of CATEGORY_RULES) if (re.test(String(title || ''))) return cat;
   return 'Other';
 }
+function canonicalBrand(name) {
+  const n = String(name || '');
+  if (/port\s*authority/i.test(n)) return 'Port Authority';
+  if (/sport-?tek/i.test(n)) return 'Sport-Tek';
+  if (/^district$/i.test(n)) return 'District';
+  if (/bella\+?canvas/i.test(n)) return 'Bella+Canvas';
+  return n || 'Other';
+}
+
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
 
 exports.handler = async () => {
-  const site = (process.env.URL || '').replace(/\/+$/, '');
+  const site  = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!site || !sbUrl || !sbKey) { console.error('[sanmar-nike-sync] missing config'); return { statusCode: 500, body: 'Not configured' }; }
+  if (!site || !sbUrl || !sbKey) {
+    console.error('[sanmar-brands-sync] missing config');
+    return { statusCode: 500, body: 'Not configured' };
+  }
 
   const sb = (path, init) => fetch(sbUrl + '/rest/v1/' + path, {
     ...init,
     headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: 'Bearer ' + sbKey, ...(init && init.headers) },
   });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // Proven SanMar SOAP path — call the deployed proxy (creds live there).
-  // Retry transient failures (SanMar rate-limits / proxy hiccups) with backoff so
-  // one flaky call doesn't drop a whole style from the run.
   const sm = async (service, action, body, tries = 3) => {
     let lastErr;
     for (let t = 0; t < tries; t++) {
       try {
         const res = await fetch(site + '/.netlify/functions/sanmar-proxy?service=' + service + '&action=' + action, {
           method: 'POST',
-          // Server-to-server: the proxy is now staff-only, so present the shared
-          // internal secret (the proxy accepts it in lieu of a user JWT).
           headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_FUNCTION_SECRET || sbKey },
           body: JSON.stringify(body || {}),
         });
@@ -87,88 +97,90 @@ exports.handler = async () => {
     const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
     if (!vendorId) return { statusCode: 200, body: 'No SanMar vendor configured' };
 
-    // Nike style list: existing Nike SanMar products + env seed list.
-    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&brand=ilike.nike&select=sku')).json();
-    const styleOf = (sku) => String(sku || '').split('-')[0].trim(); // 'NKDC1990-Black' → 'NKDC1990'
-    const seed = (process.env.SANMAR_NIKE_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
+    // Style list: existing target-brand SanMar products + env seed
+    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&select=sku&brand=in.(' + TARGET_BRANDS.map((b) => '"' + b + '"').join(',') + ')')).json();
+    const styleOf = (sku) => String(sku || '').split('-')[0].trim();
+    const seed = (process.env.SANMAR_BRAND_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
     const styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...seed].filter(Boolean))];
-    console.log('[sanmar-nike-sync] Nike styles to sync:', styles.length);
+    console.log('[sanmar-brands-sync] styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
     if (!styles.length) {
-      return { statusCode: 200, body: JSON.stringify({ message: 'No Nike styles. Seed SANMAR_NIKE_STYLES or add Nike products to the SanMar vendor.', styles: 0 }) };
+      return { statusCode: 200, body: JSON.stringify({ message: 'No brand styles to sync. Add SanMar style numbers to SANMAR_BRAND_STYLES env var (e.g. "K500,PC61,DT6000,3001C") to seed the catalog.', styles: 0 }) };
     }
 
     let productsUpserted = 0, invRows = 0;
     const errors = [];
+
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
       try {
-        if (i > 0) await sleep(900); // pace SanMar to avoid rate-limit errors
-        // 1) Product info (basic + image + price), one record per style/color/size.
+        if (i > 0) await sleep(900);
         const prod = await sm('product', 'getProductInfoByStyleColorSize', { style, color: '', size: '' });
         const items = arr(prod.items).map((raw) => ({ ...(raw.productBasicInfo || {}), ...(raw.productImageInfo || {}), ...(raw.productPriceInfo || {}), ...raw }));
         if (!items.length) continue;
-        // Skip non-Nike (defensive — the style list should already be Nike-only).
-        const brandText = String(items[0].brandName || items[0].brand || 'Nike');
-        if (!/nike/i.test(brandText) && !/^NK/i.test(style)) { /* still proceed, style was explicitly seeded */ }
 
-        // 2) Live inventory for the whole style (PromoStandards getInventoryLevels),
-        //    keyed by color+size. productID = style with the default productIDtype
-        //    ('Supplier'); SanMar rejects productIDtype 'Style' ("125: Not Supported").
-        const stockByCS = {}; // `${colorLower}|${sizeLabel}` -> qty
+        // Only process if it's actually a target brand
+        const brandText = String(items[0].brandName || items[0].brand || '');
+        if (!TARGET_BRAND_RE.test(brandText)) {
+          console.warn('[sanmar-brands-sync] style', style, 'is brand "' + brandText + '" — skip');
+          continue;
+        }
+        const brand = canonicalBrand(brandText);
+
+        // Inventory
+        const stockByCS = {};
         try {
           const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
-          const variations = arr(inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
-            || inv?.ProductVariationInventoryArray?.ProductVariationInventory
-            || inv?.inventory || inv?.items);
+          const variations = arr(
+            inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory ||
+            inv?.ProductVariationInventoryArray?.ProductVariationInventory ||
+            inv?.inventory || inv?.items
+          );
           variations.forEach((v) => {
             const color = String(v?.attributeColor || v?.color || '').toLowerCase();
-            const size = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
+            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
             let qty = 0;
             const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
             parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
             if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
             if (qty > 0) stockByCS[color + '|' + size] = (stockByCS[color + '|' + size] || 0) + qty;
           });
-        } catch (e) { console.warn('[sanmar-nike-sync] inventory', style, e.message); }
+        } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
 
-        // Group product records by color
         const byColor = {};
         for (const it of items) {
           const colorName = it.colorName || it.color || it.catalogColor || 'NA';
           const code = String(it.colorCode || colorName).replace(/\s+/g, '');
           (byColor[code] = byColor[code] || { colorName, recs: [] }).recs.push(it);
         }
-        const prodRows = []; const invUpserts = [];
+        const prodRows = [], invUpserts = [];
         for (const [colorCode, grp] of Object.entries(byColor)) {
-          const recs = grp.recs; const r0 = recs[0];
+          const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          const cost = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
+          const cost   = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
-          const img = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
-          const title = r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName);
+          const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          const title  = r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName);
           prodRows.push({
-            id: 'smnike-' + sku,
+            id: 'smb-' + sku,
             vendor_id: vendorId,
             sku,
-            name: /nike/i.test(title) ? title : 'Nike ' + title,
-            brand: 'Nike',
+            name: brand + ' ' + title,
+            brand,
             color: grp.colorName,
             category: mapCategory(title),
             retail_price: retail,
             nsa_cost: cost,
-            // Nike shows RETAIL (MSRP) to coaches — no markup, no tier discount.
-            catalog_sell_price: retail > 0 ? retail : null,
+            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
             is_active: true,
             available_sizes: sizes,
             image_front_url: img || null,
-            inventory_source: 'nike',
+            inventory_source: 'sanmar',
           });
           for (const size of sizes) {
             const key = String(grp.colorName).toLowerCase() + '|' + size;
-            const qty = stockByCS[key] || 0;
             invUpserts.push({
-              id: sku + '-' + size, sku, size, stock_qty: qty,
+              id: sku + '-' + size, sku, size, stock_qty: stockByCS[key] || 0,
               last_synced: new Date().toISOString(), source: 'sanmar',
               style_number: style, color_code: colorCode,
             });
@@ -183,25 +195,23 @@ exports.handler = async () => {
         productsUpserted += prodRows.length;
 
         for (let j = 0; j < invUpserts.length; j += 500) {
-          const ir = await sb('nike_inventory?on_conflict=sku,size', {
+          const ir = await sb('sanmar_inventory?on_conflict=sku,size', {
             method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
             body: JSON.stringify(invUpserts.slice(j, j + 500)),
           });
-          if (!ir.ok) throw new Error('inventory upsert ' + ir.status + ': ' + (await ir.text()).slice(0, 200));
+          if (!ir.ok) throw new Error('sanmar_inventory upsert ' + ir.status + ': ' + (await ir.text()).slice(0, 200));
         }
         invRows += invUpserts.length;
       } catch (e) {
         errors.push(style + ': ' + e.message);
-        // Don't abort the whole 108-style run on a few transient errors; only bail
-        // if almost everything is failing (auth/outage). sm() already retries each call.
         if (errors.length > 90) break;
       }
     }
 
-    console.log('[sanmar-nike-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', errors.length, 'errors', errors.slice(0, 5));
+    console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', errors.length, 'errors');
     return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, errors: errors.slice(0, 10) }) };
   } catch (e) {
-    console.error('[sanmar-nike-sync]', e);
+    console.error('[sanmar-brands-sync]', e);
     return { statusCode: 500, body: e.message };
   }
 };

@@ -7,7 +7,7 @@ const {
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
   calcQualifyingSpend,
-  itemEditReconciles,
+  itemEditReconciles, itemsWithWipedQty,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -801,6 +801,37 @@ describe('Invoice Creation', () => {
     expect(result.selTotals.subtotal).toBe(24 * 20 + 24 * 8);
   });
 
+  test('free promo garment is $0 but decoration, shipping and tax are still billed — invoice total matches SO (INV total $0 regression)', () => {
+    // Real-world INV-1078 bug: a "FREE PROMO" hoodie ($0 garment, is_free_promo) carried a
+    // screen-print up-charge. The garment must not be billed, but the decoration — plus the
+    // order's shipping and tax — still are, so the invoice total has to equal the SO total.
+    // The bug zeroed the whole line, collapsing subtotal / shipping / tax / total to $0.
+    const artFile = makeArtFile();
+    const so = makeSO({
+      items: [makeSOItem({
+        sku: 'A2009', name: 'Adidas Hoodie',
+        sizes: { M: 21 }, unit_sell: 0, nsa_cost: 0, is_free_promo: true,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front' }],
+      })],
+      art_files: [artFile],
+      shipping_type: 'flat', shipping_value: 15,
+    });
+    const cust = makeCustomer({ tax_rate: 0.0775 });
+    const decoP = dP({ kind: 'art', art_file_id: 'af1', position: 'Front' }, 21, [artFile], 21);
+    const expectedDeco = 21 * decoP.sell;
+
+    const result = createInvoice(so, [0], cust, {});
+    const soTotals = calcTotals(so, cust);
+
+    expect(expectedDeco).toBeGreaterThan(0);                     // there IS a deco charge to bill
+    expect(result.selTotals.subtotal).toBe(expectedDeco);        // garment $0, deco billed — not $0
+    expect(result.ship).toBe(15);                                // shipping still charged
+    expect(result.tax).toBeCloseTo(expectedDeco * 0.0775, 2);    // tax applies to the decoration
+    expect(result.total).toBeGreaterThan(0);                     // not the $0 collapse
+    expect(result.total).toBeCloseTo(soTotals.grand, 2);         // invoice total == sales order total
+    expect(result.total).toBeCloseTo(expectedDeco + 15 + expectedDeco * 0.0775, 2);
+  });
+
   test('line items have correct structure', () => {
     const so = makeSO({
       items: [makeSOItem({
@@ -881,22 +912,36 @@ describe('Job Building', () => {
     expect(jobs[0].total_units).toBe(10);
   });
 
-  test('items with different decoration sets create separate jobs', () => {
+  test('items with different art create separate jobs', () => {
     const so = makeSO({
       items: [
         makeSOItem({ sku: 'ITEM-1', sizes: { S: 5 }, decorations: [
           { kind: 'art', art_file_id: 'af1', position: 'Front' },
-          { kind: 'art', art_file_id: 'af1', position: 'Back' },
         ] }),
         makeSOItem({ sku: 'ITEM-2', sizes: { M: 10 }, decorations: [
-          { kind: 'art', art_file_id: 'af1', position: 'Front' },
+          { kind: 'art', art_file_id: 'af2', position: 'Front' },
         ] }),
+      ],
+      art_files: [makeArtFile(), makeArtFile({ id: 'af2', name: 'Logo 2' })],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(2);
+  });
+
+  test('the same art on different items/positions consolidates into one job', () => {
+    const so = makeSO({
+      items: [
+        makeSOItem({ sku: 'I1', sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Left Chest' }] }),
+        makeSOItem({ sku: 'I2', sizes: { M: 7 }, decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }] }),
       ],
       art_files: [makeArtFile()],
       jobs: [],
     });
     const jobs = buildJobs(so);
-    expect(jobs).toHaveLength(2);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(12);
+    expect(jobs[0].items.map(i => i.item_idx).sort()).toEqual([0, 1]);
   });
 
   test('no_deco items are skipped', () => {
@@ -941,6 +986,23 @@ describe('Job Building', () => {
     const jobs = buildJobs(so);
     expect(jobs[0].art_status).toBe('waiting_approval');
   });
+
+  test('qty_only item (Custom — no size breakdown) totals its est_qty, not 0', () => {
+    // Regression: a custom / no-size-breakdown line keeps its quantity in est_qty with an empty
+    // sizes map. Summing sizes yields 0, so the job showed "0 items" even with real OSFA quantity.
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: {}, qty_only: true, est_qty: 10,
+        decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front Center' }],
+      })],
+      art_files: [makeArtFile()],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+    expect(jobs[0].items[0].units).toBe(10);
+  });
 });
 
 // ═══════════════════════════════════════════════
@@ -969,8 +1031,9 @@ describe('Split Art', () => {
     expect(b.total_units).toBe(18); // 6 + 12
     expect(a.items[0].sizes).toEqual({ S: 4, M: 8 });
     expect(b.items[0].sizes).toEqual({ S: 6, M: 12 });
-    expect(a.split_group).toBe('sg1');
-    expect(b.split_group).toBe('sg1');
+    // The split group now lives PER ITEM (a consolidated art job can span several split lines), not on the job.
+    expect(a.items[0].split_group).toBe('sg1');
+    expect(b.items[0].split_group).toBe('sg1');
     expect(a.art_name).toBe('Friars');
     expect(b.art_name).toBe('Servite');
   });
@@ -1023,6 +1086,107 @@ describe('Split Art', () => {
     expect(b.fulfilled_units).toBe(6);
     expect(a.item_status).toBe('items_received');
     expect(b.item_status).toBe('items_received');
+  });
+
+  // Three-way split: a line carrying three logos, each with its own per-size allocation.
+  test('a three-way split produces one job per design, each sized to its own allocation', () => {
+    const jobs = buildJobs(makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' }), makeArtFile({ id: 'afC', name: 'Lancers' })],
+      items: [makeSOItem({
+        sizes: { S: 12, M: 12 },
+        decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 5, M: 4 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 4, M: 4 } },
+          { kind: 'art', art_file_id: 'afC', position: 'Front Center', split_group: 'sg9', split_sizes: { S: 3, M: 4 } },
+        ],
+      })],
+      jobs: [],
+    }));
+    expect(jobs).toHaveLength(3);
+    const a = jobs.find(j => j.art_file_id === 'afA');
+    const b = jobs.find(j => j.art_file_id === 'afB');
+    const c = jobs.find(j => j.art_file_id === 'afC');
+    expect(a.total_units).toBe(9);  // 5 + 4
+    expect(b.total_units).toBe(8);  // 4 + 4
+    expect(c.total_units).toBe(7);  // 3 + 4
+    expect(a.items[0].sizes).toEqual({ S: 5, M: 4 });
+    expect(c.items[0].sizes).toEqual({ S: 3, M: 4 });
+    // Each design is its own single-art job, and the line is counted exactly once.
+    expect(jobs.every(j => (j._art_ids || []).length === 1)).toBe(true);
+    expect([a, b, c].every(j => j.items[0].split_group === 'sg9')).toBe(true);
+    expect(jobs.reduce((sum, j) => sum + j.total_units, 0)).toBe(24);
+  });
+
+  test('the same split design across multiple lines consolidates into one job (plus a standalone copy)', () => {
+    const so = makeSO({
+      art_files: [makeArtFile({ id: 'afA', name: 'Friars' }), makeArtFile({ id: 'afB', name: 'Servite' })],
+      items: [
+        makeSOItem({ sku: 'L0', sizes: { M: 10 }, decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sgA', split_sizes: { M: 6 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sgA', split_sizes: { M: 4 } },
+        ] }),
+        makeSOItem({ sku: 'L1', sizes: { M: 11 }, decorations: [
+          { kind: 'art', art_file_id: 'afA', position: 'Front Center', split_group: 'sgB', split_sizes: { M: 5 } },
+          { kind: 'art', art_file_id: 'afB', position: 'Front Center', split_group: 'sgB', split_sizes: { M: 6 } },
+        ] }),
+        makeSOItem({ sku: 'L2', sizes: { M: 8 }, decorations: [{ kind: 'art', art_file_id: 'afA', position: 'Front Center' }] }),
+      ],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(2); // one Friars job, one Servite job — not five
+    const friars = jobs.find(j => j.art_file_id === 'afA');
+    const servite = jobs.find(j => j.art_file_id === 'afB');
+    expect(friars.items.map(i => i.item_idx).sort()).toEqual([0, 1, 2]);
+    expect(friars.total_units).toBe(6 + 5 + 8);
+    expect(servite.items.map(i => i.item_idx).sort()).toEqual([0, 1]);
+    expect(servite.total_units).toBe(4 + 6);
+    // Each split item keeps its OWN line's split group for receipt apportioning; the standalone has none.
+    expect(friars.items.find(i => i.item_idx === 0).split_group).toBe('sgA');
+    expect(friars.items.find(i => i.item_idx === 1).split_group).toBe('sgB');
+    expect('split_group' in friars.items.find(i => i.item_idx === 2)).toBe(false);
+  });
+
+  test('a consolidated art job apportions shared split lines without double-counting receipts', () => {
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', art_file_id: 'afA', split_group: null, items: [
+          { item_idx: 0, sizes: { M: 6 }, split_group: 'sgA', fulfilled: 0 },
+          { item_idx: 1, sizes: { M: 5 }, split_group: 'sgB', fulfilled: 0 },
+        ], total_units: 11, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', art_file_id: 'afB', split_group: null, items: [
+          { item_idx: 0, sizes: { M: 4 }, split_group: 'sgA', fulfilled: 0 },
+          { item_idx: 1, sizes: { M: 6 }, split_group: 'sgB', fulfilled: 0 },
+        ], total_units: 10, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [
+      makeSOItem({ sizes: { M: 10 }, po_lines: [{ po_id: 'PO-1', received: { M: 10 } }] }), // line 0 fully received
+      makeSOItem({ sizes: { M: 11 }, po_lines: [{ po_id: 'PO-2', received: { M: 5 } }] }),  // line 1 partial (5 of 11)
+    ];
+    const [a, b] = recalcJobFulfillment(so, items);
+    expect(a.fulfilled_units).toBe(6 + 5); // 11
+    expect(b.fulfilled_units).toBe(4 + 0); // 4
+    expect(a.items[0].fulfilled + b.items[0].fulfilled).toBe(10); // line 0 counted once
+    expect(a.items[1].fulfilled + b.items[1].fulfilled).toBe(5);  // line 1 counted once
+  });
+
+  test('three-way split partitions partial receipts across all siblings — no double-count', () => {
+    // Line S:12 split 5/4/3; only 7 of the S blanks have arrived.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', split_group: 'sg9', art_file_id: 'afA', items: [{ item_idx: 0, sizes: { S: 5 } }], total_units: 5, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-2', split_group: 'sg9', art_file_id: 'afB', items: [{ item_idx: 0, sizes: { S: 4 } }], total_units: 4, fulfilled_units: 0, item_status: 'need_to_order' },
+        { id: 'JOB-3', split_group: 'sg9', art_file_id: 'afC', items: [{ item_idx: 0, sizes: { S: 3 } }], total_units: 3, fulfilled_units: 0, item_status: 'need_to_order' },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 12 }, po_lines: [{ po_id: 'PO-1', S: 12, received: { S: 7 } }] })];
+    const [a, b, c] = recalcJobFulfillment(so, items);
+    // 7 received fills design A's 5 first, then 2 toward B, none to C — never counted as 7+7+7.
+    expect(a.fulfilled_units).toBe(5);
+    expect(b.fulfilled_units).toBe(2);
+    expect(c.fulfilled_units).toBe(0);
+    expect(a.fulfilled_units + b.fulfilled_units + c.fulfilled_units).toBe(7);
   });
 });
 
@@ -1166,6 +1330,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
     expect(j.fulfilled_units).toBe(50);
     expect(j.total_units).toBe(50);
+  });
+
+  test('released job with multiple qty_only items sums est_qty across items', () => {
+    // Regression: a released job (key prefixed "released_") froze its unit snapshot at 0 when its
+    // items were qty_only (count in est_qty, empty size grid). The recompute must re-derive the
+    // total by summing every item's est_qty — mirrors the SO-1121 two-cap release (50 + 50 = 100).
+    // OrderEditor.syncJobs heals these zero-total released jobs the same way (recalcedReleased).
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1121-02', key: 'released_embroidery_JOB-1121-02',
+        item_status: 'need_to_order', fulfilled_units: 0, total_units: 0,
+        items: [{ item_idx: 0 }, { item_idx: 1 }] }],
+    });
+    const items = [
+      makeSOItem({ sku: 'HTA', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-1', QTY: 50, received: { QTY: 50 } }] }),
+      makeSOItem({ sku: 'P814', sizes: {}, qty_only: true, est_qty: 50,
+        po_lines: [{ po_id: 'PO-2', QTY: 50, received: { QTY: 50 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.total_units).toBe(100);
+    expect(j.fulfilled_units).toBe(100);
+    expect(j.item_status).toBe('items_received');
   });
 
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
@@ -2270,5 +2456,69 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
     expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
     expect(itemEditReconciles(null, db)).toBe(false);
     expect(itemEditReconciles(undefined, db)).toBe(false);
+  });
+});
+
+describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {
+  // DB row as read by the save path: carries item_index + the persisted sizes.
+  const dbRow = (overrides = {}) => ({ item_index: 0, sku: 'NSF', name: 'Custom Jersey', product_id: null, sizes: { S: 5, M: 20, L: 20, XL: 5, '2XL': 3 }, qty_only: false, est_qty: null, ...overrides });
+
+  // ── MUST flag (silent data loss) ──
+  test('EST-1316 signature: same line, 53 units → sizes:{} is flagged', () => {
+    const db = [dbRow()];
+    const client = [{ sku: 'NSF', name: 'Customer ', sizes: {} }]; // name/price drifted, sku stayed → same line
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0]).toMatchObject({ item_index: 0, sku: 'NSF', prevQty: 53 });
+  });
+
+  test('all sizes typed to 0 (object kept, values zeroed) is still a wipe', () => {
+    const wiped = itemsWithWipedQty([{ sku: 'NSF', sizes: { S: 0, M: 0, L: 0, XL: 0, '2XL': 0 } }], [dbRow()]);
+    expect(wiped).toHaveLength(1);
+  });
+
+  test('matches by product_id when the SKU is blank (custom lines)', () => {
+    const db = [dbRow({ sku: '', product_id: 'p-123' })];
+    const client = [{ sku: '', product_id: 'p-123', sizes: {} }];
+    expect(itemsWithWipedQty(client, db)).toHaveLength(1);
+  });
+
+  // ── MUST NOT flag (deliberate, non-lossy edits) ──
+  test('partial reduction (53 → 20) is a normal edit, not a wipe', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], [dbRow()])).toEqual([]);
+  });
+
+  test('replaced slot (different sku now occupies the index) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'OTHER', sizes: {} }], [dbRow()])).toEqual([]);
+  });
+
+  test('quantity moved into est_qty (qty-only conversion) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, est_qty: 53 }], [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, qty_only: true }], [dbRow()])).toEqual([]);
+  });
+
+  test('DB line that never had quantities is never flagged', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], [dbRow({ sizes: {} })])).toEqual([]);
+  });
+
+  test('removed / reindexed slot (no client item at that index) is left to the count guards', () => {
+    expect(itemsWithWipedQty([], [dbRow()])).toEqual([]);
+    // two DB rows, client kept only index 0 with qty — index 1 has no client occupant
+    const db = [dbRow({ item_index: 0 }), dbRow({ item_index: 1, sku: 'B' })];
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], db)).toEqual([]);
+  });
+
+  test('flags only the wiped line in a mixed multi-item save', () => {
+    const db = [dbRow({ item_index: 0, sku: 'A' }), dbRow({ item_index: 1, sku: 'B' })];
+    const client = [{ sku: 'A', sizes: { M: 20 } }, { sku: 'B', sizes: {} }]; // A reduced, B wiped
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0].sku).toBe('B');
+  });
+
+  test('malformed inputs never throw and flag nothing', () => {
+    expect(itemsWithWipedQty(null, [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], null)).toEqual([]);
+    expect(itemsWithWipedQty(undefined, undefined)).toEqual([]);
   });
 });

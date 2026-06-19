@@ -6,6 +6,7 @@ import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts } from './utils';
 import { StripePaymentModal } from './modals';
+import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
 
 // Read-only team-store view for the coach: headline order/fundraising/batch
@@ -195,7 +196,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[updateRequestSent,setUpdateRequestSent]=useState(false);
   const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
   const[payLoading,setPayLoading]=useState(false);// loading state for pay button feedback
-  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
+  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices,intentId}
+  const[receiptEmail,setReceiptEmail]=useState('');// email-receipt recipient (prefilled w/ contact)
+  const[receiptStatus,setReceiptStatus]=useState(null);// null|'sending'|'sent'|'error'
   const[invs,setInvs]=useState(initInvs);
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   useEffect(()=>setInvs(initInvs),[initInvs]);
@@ -257,22 +260,117 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePaymentSuccess=(result)=>{
+    // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
+    // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
+    // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
+    // buyer isn't falsely told the payment failed.
+    if(result.status==='processing'){
+      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,processing:true});
+      setShowPay(null);setInvView(null);setPayLoading(false);
+      return;
+    }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
+    // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
+    // default 2.9%). The old code referenced an undefined CC_FEE_PORTAL here, which threw the moment
+    // a payment succeeded — so the invoice never got marked paid and the portal hit its error boundary.
+    const ccPct=(typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:0.029);
     const updater=prev=>prev.map(inv=>{
       if(!paidInvIds.includes(inv.id))return inv;
       const bal=(inv.total||0)-(inv.paid||0);
-      const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
+      const fee=Math.round(bal*ccPct*100)/100;
       const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
       const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
       const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
-    if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
-    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
+    if(onUpdateInvs)onUpdateInvs(updater);// optimistic UI; the DB write below is what actually persists
+    // The public portal is anonymous and RLS-blocks direct invoice writes (the parent save above fails
+    // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
+    // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
+    if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+    setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
   };
+
+  // Email a full itemized receipt for the just-completed payment. Content is built server-side from
+  // our own DB + Stripe (see netlify/functions/receipt.js), so the client only passes the intent id
+  // and a recipient address — it can't dictate what the receipt says.
+  const sendReceipt=async()=>{
+    const email=(receiptEmail||'').trim();
+    if(!paySuccess?.intentId)return;
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){setReceiptStatus('error');return;}
+    setReceiptStatus('sending');
+    try{
+      const resp=await fetch('/.netlify/functions/receipt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_intent_id:paySuccess.intentId,email})});
+      setReceiptStatus(resp.ok?'sent':'error');
+    }catch(e){setReceiptStatus('error');}
+  };
+
+  // Finalize a payment that came back via a Stripe redirect (3-D Secure, wallets, etc.).
+  // StripeCheckoutForm confirms with redirect:'if_required' and return_url = this page, so when a
+  // redirect IS required the buyer lands back here with ?payment_intent..&redirect_status=.. in the
+  // URL and the in-page onSuccess never fired. Retrieve the intent with the publishable key (read-only,
+  // safe in the public portal) and run the same finalize, so the invoice updates and the buyer sees a
+  // result instead of a stale "due". The webhook reconciles server-side too; both paths are idempotent.
+  const _payReturnHandled=useRef(false);
+  useEffect(()=>{
+    if(_payReturnHandled.current)return;
+    const params=new URLSearchParams(window.location.search);
+    const clientSecret=params.get('payment_intent_client_secret');
+    const redirectStatus=params.get('redirect_status');
+    if(!clientSecret||!redirectStatus)return;
+    _payReturnHandled.current=true;
+    const cleanUrl=()=>{try{const u=new URL(window.location.href);['payment_intent','payment_intent_client_secret','redirect_status','source_type'].forEach(k=>u.searchParams.delete(k));window.history.replaceState({},document.title,u.pathname+u.search+u.hash);}catch(e){/* noop */}};
+    (async()=>{
+      try{
+        let pk=(typeof process!=='undefined'&&process.env&&process.env.REACT_APP_STRIPE_PK)||'';
+        if(!pk){const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));pk=cfg&&cfg.publishableKey;}
+        if(!pk)return;
+        const stripe=await loadStripe(pk);
+        if(!stripe)return;
+        const{paymentIntent}=await stripe.retrievePaymentIntent(clientSecret);
+        if(!paymentIntent)return;
+        if(paymentIntent.status==='succeeded'){
+          const ids=String(paymentIntent.metadata?.invoice_id||'').split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+          const matched=custInvs.filter(inv=>ids.includes(inv.id));
+          const collected=(paymentIntent.amount||0)/100;
+          if(matched.length){
+            const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
+            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
+          }else{
+            // Invoices not loaded into this view — reconcile server-side directly, then confirm.
+            fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
+            setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+            setPaySuccess({amount:collected,fee:0,invoices:[],intentId:paymentIntent.id});
+          }
+        }else if(paymentIntent.status==='processing'){
+          setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+          setPaySuccess({amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],intentId:paymentIntent.id,processing:true});
+        }
+        // failed / requires_payment_method: the modal already showed an error before the redirect.
+      }catch(e){/* best-effort; the webhook is the source of truth */}
+      finally{cleanUrl();}
+    })();
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Single source of truth for the payment modal. Each portal view (estimate/job/invoice/main) is its
+  // own early return, so the modal must be rendered in every view that can launch it — not just the
+  // main one. Previously it lived only in the main return, so tapping "Pay" from an opened invoice set
+  // showPay but never mounted the modal: the button just span on "Opening secure checkout…" forever.
+  const payModalEl = showPay ? <StripePaymentModal
+    invoices={showPay==='all'?openInvs:[showPay]}
+    customerName={customer.name}
+    customerEmail={contactEmail}
+    alphaTag={customer.alpha_tag}
+    feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
+    paymentNote={portalSettings?.paymentNote||''}
+    onSuccess={handlePaymentSuccess}
+    onClose={()=>{setShowPay(null);setPayLoading(false)}}
+  /> : null;
 
   // Estimate detail view
   if(estView){
@@ -1007,6 +1105,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
         </div>
       </div>
+      {payModalEl}
     </div>
   }
 
@@ -1031,11 +1130,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <CoachStore customer={customer} />
 
         {/* Payment success banner */}
-        {paySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
-          <div style={{fontSize:32,marginBottom:8}}>✅</div>
-          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
-          <div style={{fontSize:14,color:'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to your email. Your account has been updated.</div>
+        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
+          <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
+          <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
+          {paySuccess.intentId&&<div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+(paySuccess.processing?'#fde68a':'#bbf7d0')}}>
+            <a href={'/.netlify/functions/receipt?payment_intent_id='+encodeURIComponent(paySuccess.intentId)} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700}}>📄 Download receipt</a>
+            <div style={{marginTop:12,fontSize:12,color:'#475569',fontWeight:600}}>Or email a copy:</div>
+            <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:6,flexWrap:'wrap'}}>
+              <input type="email" value={receiptEmail} onChange={e=>{setReceiptEmail(e.target.value);if(receiptStatus)setReceiptStatus(null);}} placeholder="you@example.com" style={{flex:'1 1 200px',maxWidth:280,padding:'9px 12px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14}}/>
+              <button onClick={sendReceipt} disabled={receiptStatus==='sending'} style={{background:receiptStatus==='sending'?'#94a3b8':'#2563eb',color:'white',border:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700,cursor:receiptStatus==='sending'?'default':'pointer'}}>{receiptStatus==='sending'?'Sending…':'✉️ Email receipt'}</button>
+            </div>
+            {receiptStatus==='sent'&&<div style={{fontSize:12,color:'#166534',marginTop:8,fontWeight:600}}>✓ Receipt sent to {receiptEmail}</div>}
+            {receiptStatus==='error'&&<div style={{fontSize:12,color:'#b91c1c',marginTop:8,fontWeight:600}}>Couldn't send — check the email address and try again.</div>}
+          </div>}
         </div>}
 
         {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}
@@ -1277,17 +1386,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       </div>
     </div>
 
-    {/* Stripe Payment Modal */}
-    {showPay&&<StripePaymentModal
-      invoices={showPay==='all'?openInvs:[showPay]}
-      customerName={customer.name}
-      customerEmail={contactEmail}
-      alphaTag={customer.alpha_tag}
-      feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
-      paymentNote={portalSettings?.paymentNote||''}
-      onSuccess={handlePaymentSuccess}
-      onClose={()=>{setShowPay(null);setPayLoading(false)}}
-    />}
+    {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
+    {payModalEl}
   </div>
 }
 

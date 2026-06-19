@@ -21,7 +21,13 @@
 //
 // Rate limit: 60 requests per minute (check X-Rate-Limit-Remaining header)
 
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
+  // Staff-only: this proxy injects the company S&S Activewear credentials.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+
   const accountNumber = process.env.SS_ACCOUNT_NUMBER;
   const apiKey = process.env.SS_API_KEY;
   if (!accountNumber || !apiKey) {

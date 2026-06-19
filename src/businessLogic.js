@@ -145,8 +145,11 @@ const buildJobs = (o) => {
         const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
         const part = 'art_' + d.art_file_id;
-        // A split-art design buckets on its own so it becomes a separate job (one logo per job).
-        const bk = d.split_group ? dt + '::__split__::' + d.split_group + '::' + di : dt;
+        // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
+        // split across several lines — and a standalone copy of it — all consolidate into ONE job.
+        // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
+        // bundle into a single combined job (the established Split-Art behavior).
+        const bk = d.split_group ? 'art::' + d.art_file_id : dt;
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
@@ -163,8 +166,10 @@ const buildJobs = (o) => {
     });
     Object.entries(decosByType).forEach(([bk, decos]) => {
       const dt = decos[0]._dt || bk;
-      const parts = decos.map(x => x.part).sort();
-      const sig = bk.indexOf('::__split__::') >= 0 ? dt + '::' + bk + '::' + parts.join('|') : dt + '::' + parts.join('|');
+      // De-dupe parts so the same logo applied at two positions on one garment keys the same as a
+      // single application (one art = one signature = one job).
+      const parts = Array.from(new Set(decos.map(x => x.part))).sort();
+      const sig = dt + '::' + parts.join('|');
       if (sig) itemSigs.push({ idx, it, sig, decos });
     });
   });
@@ -210,16 +215,23 @@ const buildJobs = (o) => {
       // Split-art job: this group is one design carrying its own per-size allocation.
       const splitDeco = decos.length === 1 && decos[0].d.split_group && decos[0].d.split_sizes ? decos[0].d : null;
       const szMap = splitDeco ? splitDeco.split_sizes : safeSizes(it);
-      const units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      // qty_only items (Custom — no size breakdown) keep their quantity in est_qty with an empty
+      // sizes map, so summing szMap yields 0. Fall back to est_qty — mirrors allocateJobFulfillment —
+      // so the freshly built job totals its real units instead of showing 0.
+      let units = Object.values(szMap).reduce((a, v) => a + safeNum(v), 0);
+      if (!splitDeco && units === 0 && safeNum(it.est_qty) > 0) units = safeNum(it.est_qty);
       const out = { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units, fulfilled: 0 };
-      if (splitDeco) out.sizes = Object.assign({}, splitDeco.split_sizes);
+      // Per-ITEM split group: a consolidated art job spans several split lines, so each item carries
+      // its own line's split group. allocateJobFulfillment keys received-unit apportioning on this so
+      // sibling designs on a shared line never both count the same garments.
+      if (splitDeco) { out.sizes = Object.assign({}, splitDeco.split_sizes); out.split_group = splitDeco.split_group; }
       return out;
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
       _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
-      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: (firstEntry.decos.length === 1 && firstEntry.decos[0].d.split_group) || null, items, _auto: true };
+      total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: null, items, _auto: true };
   });
 };
 
@@ -293,7 +305,11 @@ const allocateJobFulfillment = (jobs, items) => {
         res.total += v;
         const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
         const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
-        const ck = e.m.root + '::' + gi.item_idx + '::' + sz;
+        // Per-ITEM split group: consolidated art jobs span multiple split lines, so a shared line's
+        // receipts must pool by that line's split group (not the job) — otherwise two art jobs that
+        // both include the line would each claim its full receipts. Non-split items fall back to the
+        // job's family root, so unrelated jobs sharing a garment still each count it in full.
+        const ck = (gi.split_group ? 'sg:' + gi.split_group : e.m.root) + '::' + gi.item_idx + '::' + sz;
         const take = Math.min(safeNum(v), Math.max(0, pulledQty + rcvdQty - (claimed[ck] || 0)));
         claimed[ck] = (claimed[ck] || 0) + take;
         if (take > 0) fs[sz] = take;
@@ -725,6 +741,48 @@ function itemEditReconciles(clientItems, dbItems) {
   return subset(c, d) || subset(d, c);
 }
 
+// ─── Per-item quantity-wipe detection (data-loss guard helper) ───
+// The item-count / decoration / art-file guards all reason about how many CHILD ROWS exist; none of them
+// looks INSIDE a surviving line at its quantities. The estimate save RPC (save_estimate) upserts each
+// item's `sizes` verbatim, so a line that is still present but whose `sizes` silently emptied — from a
+// stale in-memory snapshot, a size-mode switch, or an edit side effect — overwrites real units with `{}`
+// with nothing to stop it. And because that row is UPSERTed (never DELETEd), no estimate_items_audit
+// snapshot is written either, so the loss is invisible after the fact. (This is the EST-1316 failure: a
+// 53-unit jersey saved down to `sizes:{}`, reading $0 everywhere.)
+//
+// Returns the DB items whose quantities this save would wipe: a line still occupying its slot (matched by
+// item_index, then confirmed to be the SAME line by sku or product_id) whose size total drops from > 0 to
+// 0. Deliberate, non-lossy edits are intentionally NOT flagged: a partial reduction (53 → 20), a replaced
+// slot (different sku/product), an item whose count moved to est_qty, and qty-only / service lines. To
+// remove a line a rep deletes it (caught by the count guards) rather than zeroing every size, so a full
+// in-place wipe is treated as unintended. `clientItems` is indexed by item_index (its array position, the
+// value the save writes); each `dbItems` row carries its own `item_index`.
+function itemsWithWipedQty(clientItems, dbItems) {
+  const out = [];
+  if (!Array.isArray(clientItems) || !Array.isArray(dbItems)) return out;
+  const total = (sizes) => {
+    if (!sizes || typeof sizes !== 'object') return 0;
+    let t = 0;
+    for (const k in sizes) { const n = safeNum(sizes[k]); if (n > 0) t += n; }
+    return t;
+  };
+  dbItems.forEach((db) => {
+    const idx = db && db.item_index;
+    if (typeof idx !== 'number') return;
+    const oldQty = total(db.sizes);
+    if (oldQty <= 0) return;                          // DB line had no quantities — nothing to lose
+    const ci = clientItems[idx];
+    if (!ci) return;                                  // slot removed / reindexed — the count guards cover it
+    const ciSku = String(ci.sku || '').trim();
+    const dbSku = String(db.sku || '').trim();
+    const sameLine = (ciSku && ciSku === dbSku) || (ci.product_id && ci.product_id === db.product_id);
+    if (!sameLine) return;                            // a different line now occupies the slot — deliberate replacement
+    if (ci.qty_only || safeNum(ci.est_qty) > 0) return; // quantity lives in est_qty, not in sizes
+    if (total(ci.sizes) === 0) out.push({ item_index: idx, sku: db.sku, name: db.name, prevQty: oldQty });
+  });
+  return out;
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -741,5 +799,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles,
+  itemEditReconciles, itemsWithWipedQty,
 };
