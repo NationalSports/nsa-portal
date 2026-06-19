@@ -714,7 +714,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
       const item = cat.find((c) => c.id === id);
       if (!item) continue;
       const existing = Array.isArray(item.decorations) ? item.decorations : [];
-      const next = existing.filter((d) => d.placement !== decoration.placement).concat([decoration]);
+      // Replace any decoration at the SAME placement AND side (so a back logo never
+      // clobbers a front one), otherwise append.
+      const next = existing.filter((d) => !(d.placement === decoration.placement && (d.side || 'front') === (decoration.side || 'front'))).concat([decoration]);
       await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
@@ -1638,7 +1640,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1718,7 +1720,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onSaveLogo, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onApplyLogo, onSaveLogo, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1843,12 +1845,12 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
                     <div onClick={() => setEditId(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-                      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
+                      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 1 }}>
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -1867,7 +1869,45 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 // { art_id, art_url, source_url, placement, color_label, x, y, w } where x/y are the
 // logo CENTER and w the width, as % of the garment image — the exact coordinates the
 // storefront DecoOverlay renders, so this preview matches what shoppers see.
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [] }) {
+// "Apply this logo to other items, same location." Stamps the selected decoration
+// (logo + placement + size + color + side) onto the chosen sibling items via the parent's
+// apply handler, which replaces any decoration at the same placement+side on each.
+function ApplyToOthers({ deco, siblings, onApply }) {
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  if (!deco || !siblings.length || !onApply) return null;
+  const toggle = (id) => setPicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const apply = async () => {
+    if (!picked.size) return;
+    setBusy(true);
+    try { await onApply([...picked], { ...deco }); setPicked(new Set()); setOpen(false); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button type="button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '5px 10px', cursor: 'pointer' }}>{open ? 'Done' : 'Apply this logo to other items →'}</button>
+      {open && <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, background: '#fff' }}>
+        <div style={{ fontSize: 10.5, color: '#64748b', marginBottom: 6 }}>Same logo, size &amp; color at <b>{placementById(deco.placement).label}</b>{(deco.side || 'front') === 'back' ? ' (back)' : ''} — pick items:</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(76px,1fr))', gap: 6, maxHeight: 210, overflowY: 'auto' }}>
+          {siblings.map((s) => { const on = picked.has(s.id); return (
+            <button key={s.id} type="button" onClick={() => toggle(s.id)} title={s.name} style={{ position: 'relative', border: on ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 8, padding: 4, background: '#fff', cursor: 'pointer' }}>
+              <div style={{ height: 54, background: '#f8fafc', borderRadius: 5, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{s.img ? <img src={s.img} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>no image</span>}</div>
+              <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
+              {on && <span style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 10, fontWeight: 800, lineHeight: '16px', textAlign: 'center' }}>✓</span>}
+            </button>
+          ); })}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <button type="button" onClick={() => setPicked(new Set(siblings.map((s) => s.id)))} style={{ fontSize: 11, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+          <button type="button" disabled={!picked.size || busy} onClick={apply} className="btn btn-sm btn-primary">{busy ? 'Applying…' : `Apply to ${picked.size || ''} item${picked.size === 1 ? '' : 's'}`}</button>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const backRef = useRef();
@@ -1974,7 +2014,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
       </div>}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
-          style={{ position: 'relative', width: 220, aspectRatio: '4/5', background: '#f4f6f9', borderRadius: 10, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0, touchAction: 'none' }}>
+          style={{ position: 'relative', width: 'min(380px, 60vw)', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: 10, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0, touchAction: 'none' }}>
           {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 12, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
@@ -2034,6 +2074,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
                   </label>
                   {palette.length === 0 && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Add team PMS colors to the customer to get color swatches here.</span>}
                 </div>
+                <ApplyToOthers deco={current} siblings={siblings} onApply={onApplyToItems} />
               </div>}
             </div>
           )}
@@ -2044,8 +2085,10 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
+  // Other single items on this store, for "apply this logo to other items".
+  const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
@@ -2076,6 +2119,55 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   );
   const toggleSize = (sz) => setOfferedSizes((cur) => cur.includes(sz) ? cur.filter((s) => s !== sz) : [...cur, sz]);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
+
+  // True-margin readout: garment cost + a rough $5 decoration cost (quantity unknown at
+  // store-build time) when the item is decorated, so staff can price to ~45% margin.
+  const garmentCost = (costByPid && costByPid[item.product_id] != null) ? Number(costByPid[item.product_id]) : null;
+  const decoIncluded = !isBundle && (decorations.length > 0 || isTeam);
+  const decoCost = decoIncluded ? 5 : 0;
+  const trueCost = (garmentCost != null ? garmentCost : 0) + decoCost;
+  const priceNum = Number(price) || 0;
+  const marginPct = (garmentCost != null && priceNum > 0) ? Math.round((1 - trueCost / priceNum) * 100) : null;
+  const target45 = garmentCost != null ? Math.ceil(trueCost / 0.55) : null; // price for ~45% margin after deco
+
+  // Other colorways of this garment (same product name) the store doesn't already carry,
+  // so staff can add them in one step at the same price/options.
+  const [colorSibs, setColorSibs] = useState([]);
+  const [pickedColors, setPickedColors] = useState(() => new Set());
+  const [addingColors, setAddingColors] = useState(false);
+  useEffect(() => {
+    if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('products')
+        .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
+        .eq('name', defaultName).neq('id', item.product_id).order('color').limit(60);
+      if (!cancelled) setColorSibs(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, [defaultName, item.product_id, isBundle, onAddSingle]);
+  const existingForStyle = new Set((catalog || []).filter((c) => c.kind === 'single' && (stockByWp[c.id]?.name || '') === defaultName).map((c) => (stockByWp[c.id]?.color || '').trim().toLowerCase()));
+  const colorOptions = useMemo(() => {
+    const map = new Map();
+    for (const s of colorSibs) {
+      const key = (s.color || '').trim().toLowerCase();
+      if (!key || existingForStyle.has(key) || map.has(key)) continue;
+      if (!map.get(key) || (!map.get(key).image_front_url && s.image_front_url)) map.set(key, s);
+    }
+    return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colorSibs, catalog, stockByWp, defaultName]);
+  const toggleColor = (id) => setPickedColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const addColors = async () => {
+    if (!onAddSingle || !pickedColors.size) return;
+    setAddingColors(true);
+    try {
+      for (const s of colorOptions.filter((c) => pickedColors.has(c.id))) {
+        await onAddSingle({ product: s, price: Number(price) || 0, fundraise: Number(fundraise) || 0, image_url: null, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), num_transfer_sets: [] });
+      }
+      setPickedColors(new Set());
+    } finally { setAddingColors(false); }
+  };
 
   const addExtraFile = async (file) => {
     if (!file || !file.type.startsWith('image/')) return;
@@ -2110,6 +2202,15 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
         <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
       </div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here). Shipping labels use the total order weight.</div>
+      {!isBundle && (garmentCost != null
+        ? <div style={{ marginTop: 8, padding: '8px 12px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5 }}>
+            <span style={{ color: '#64748b' }}>Garment <b style={{ color: '#191919' }}>{money(garmentCost)}</b></span>
+            <span style={{ color: '#64748b' }}>Decoration <b style={{ color: '#191919' }}>{decoIncluded ? '~' + money(decoCost) : '—'}</b></span>
+            <span style={{ color: '#64748b' }}>True cost <b style={{ color: '#191919' }}>{money(trueCost)}</b></span>
+            <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>Margin {marginPct != null ? marginPct + '%' : '—'}<span style={{ fontWeight: 500, color: '#94a3b8' }}> after deco</span></span>
+            {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Price {money(target45)} for 45%</button>}
+          </div>
+        : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see true margin (garment + ~$5 decoration) here.</div>)}
       {!isBundle && allSizes.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
@@ -2129,6 +2230,25 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
           {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && (
             <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>
           )}
+        </div>
+      )}
+      {!isBundle && onAddSingle && colorOptions.length > 0 && (
+        <div style={{ marginTop: 12, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 7, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>Other colors of this garment <span style={{ fontWeight: 400, color: '#94a3b8' }}>· add them to the store at this price</span></div>
+            <button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
+              <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku} style={{ position: 'relative', width: 66, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 4, cursor: 'pointer' }}>
+                <div style={{ width: '100%', height: 56, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {s.image_front_url ? <img src={s.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(s.color || s.sku || '').slice(0, 10)}</span>}
+                </div>
+                <div style={{ fontSize: 10, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.color || s.sku}</div>
+                {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+              </button>
+            ); })}
+          </div>
         </div>
       )}
       {!isBundle && <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
@@ -2155,7 +2275,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
         </div>
       </div>
-      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} onSaveLogo={onSaveLogo} />}
+      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
