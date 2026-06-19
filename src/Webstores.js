@@ -2766,6 +2766,16 @@ const artImgUrl = (art) => {
   return cands.find((u) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(u)) || null;
 };
 const artSourceUrl = (art) => (art?.files || []).map((f) => f?.url).find(Boolean) || artImgUrl(art) || null;
+// Best DISPLAY thumbnail for an art record — mirrors the customer Art folder: web logo,
+// then preview, then any garment mockup (incl. rep-built item_mockups), then a file. This
+// is for showing the tile only; PLACEMENT uses artImgUrl (a clean cutout), never a mockup.
+const artThumbUrl = (art) => {
+  if (!art) return null;
+  const u = (f) => (typeof f === 'string' ? f : f?.url);
+  const itemMocks = Object.values(art.item_mockups || {}).flat();
+  const cands = [art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
+  return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
+};
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
 const hexRgb = (hex) => { const h = (hex || '#000').replace('#', ''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; };
 const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly'];
@@ -2916,7 +2926,7 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
         </div>
         {storeArt.length === 0 && !addOpen && <div style={{ fontSize: 13, color: '#64748b', padding: '4px 2px 8px' }}>No art chosen for this store yet — click <b>+ Add from library</b> to pick which logos belong on it.</div>}
         {storeArt.length > 0 && <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-          {storeArt.map((a) => { const u = artImgUrl(a); const on = a.id === activeId; return (
+          {storeArt.map((a) => { const u = artThumbUrl(a); const on = a.id === activeId; return (
             <div key={a.id} style={{ position: 'relative', flex: '0 0 auto', width: 96 }}>
               <button onClick={() => setActiveId(a.id)} title={a.name} style={{ width: 96, border: on ? '2px solid #191919' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
                 <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
@@ -2932,7 +2942,7 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
         {addOpen && <div style={{ marginTop: 10, border: '1px solid #eef2f7', borderRadius: 10, background: '#f8fafc', padding: 10 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 8 }}>Customer's full art library — tap to add/remove from this store ({(storeArt || []).length} selected):</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(94px,1fr))', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
-            {libraryArt.map((a) => { const u = artImgUrl(a); const sel2 = inStore(a.id); return (
+            {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); return (
               <div key={a.id} style={{ position: 'relative' }}>
                 <button onClick={() => toggleStoreArt(a)} title={a.name} style={{ position: 'relative', width: '100%', border: sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
                   <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
