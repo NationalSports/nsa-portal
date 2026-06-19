@@ -51,6 +51,41 @@ export const buildBrandedEmailHtml=(innerHtml,companyInfo)=>{
     +'</div>';
 };
 
+// ── Google review CTA (email-safe "bulletproof" button) ──
+// Live Google Business Profile review deep-link. Keep this EXACTLY as-is — do not
+// wrap, shorten, or re-encode it, or click tracking/rewriting can break the deep link.
+export const GOOGLE_REVIEW_URL='https://g.page/r/CfcLJB_RwxCREBM/review';
+
+// Builds the optional "Leave us a Google review" button as an HTML string.
+// Bulletproof + Outlook-friendly: the VML <v:roundrect> inside the <!--[if mso]-->
+// block renders a solid button in Outlook (Windows), while the <!--[if !mso]--> <a>
+// renders everywhere else (Gmail, Apple Mail, etc.). Inline styles + table layout
+// only — email clients strip <style> blocks. `color` defaults to the portal blue
+// the other CTA buttons in these emails use. Pass leadIn:false to drop the lead-in.
+export const buildReviewButtonHtml=({color='#2563eb',leadIn=true}={})=>{
+  const lead=leadIn?'<p style="margin:0 0 8px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#475569;text-align:center;">Happy with how we did? A quick Google review means a lot to our team.</p>':'';
+  return lead
+    +'<!-- Google review button — email-safe (bulletproof, Outlook-friendly). -->'
+    +'<table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:16px auto;">'
+    +'<tr>'
+    +'<td align="center" style="border-radius:6px;background:'+color+';">'
+    +'<!--[if mso]>'
+    +'<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="'+GOOGLE_REVIEW_URL+'" style="height:48px;v-text-anchor:middle;width:280px;" arcsize="13%" strokecolor="'+color+'" fillcolor="'+color+'">'
+    +'<w:anchorlock/>'
+    +'<center style="color:#ffffff;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">&#9733; Leave us a Google review</center>'
+    +'</v:roundrect>'
+    +'<![endif]-->'
+    +'<!--[if !mso]><!-- -->'
+    +'<a href="'+GOOGLE_REVIEW_URL+'" target="_blank" style="display:inline-block;padding:14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:6px;background:'+color+';">&#9733; Leave us a Google review</a>'
+    +'<!--<![endif]-->'
+    +'</td>'
+    +'</tr>'
+    +'</table>';
+};
+
+// Plain-text version of the review CTA, for the text/plain alternative.
+export const reviewTextBlock=()=>'Happy with how we did? A quick Google review means a lot to our team:\n'+GOOGLE_REVIEW_URL;
+
 // Toggles the "Also Text Coach" SMS UI in send modals. Disabled while SMS sending
 // is unreliable; flip to true (or wire to env) to re-enable. Send code paths
 // remain intact so re-enabling is a one-line change.
