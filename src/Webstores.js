@@ -289,6 +289,89 @@ function isMissingTable(err) {
   return err.code === '42P01' || m.includes('does not exist') || m.includes('could not find the table') || m.includes('schema cache');
 }
 
+// ── Coach launch email + printable flyer ─────────────────────────────
+const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const _storefrontUrl = (store) => `${(typeof window !== 'undefined' ? window.location.origin : '')}/shop/${store.slug}`;
+const _qrImg = (data, size = 300) => `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&data=${encodeURIComponent(data)}`;
+const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
+const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
+const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
+
+// Polished launch email: shop link + scannable QR + key info + the coach's portal.
+function launchEmailHtml(store, portalUrl) {
+  const url = _storefrontUrl(store);
+  const primary = _hex(store.primary_color, '#0b1f3a');
+  const accent = _hex(store.accent_color, '#e11d2a');
+  const lead = store.org_type === 'club' ? 'Director' : 'Coach';
+  const rows = [];
+  if (_fmtDate(store.close_at)) rows.push(['Order by', _fmtDate(store.close_at)]); else rows.push(['Ordering', 'Open now']);
+  if (_fmtDate(store.open_at)) rows.push(['Opened', _fmtDate(store.open_at)]);
+  rows.push(['Delivery', _deliveryLabel(store)]);
+  rows.push(['Production', 'About 4–5 weeks after the store closes']);
+  const infoRows = rows.map(([k, v]) => `<tr><td style="padding:6px 0;color:#64748b;font-size:13px;width:120px">${_esc(k)}</td><td style="padding:6px 0;color:#0f172a;font-size:13px;font-weight:600">${_esc(v)}</td></tr>`).join('');
+  return `
+  <div style="max-width:600px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;color:#0f172a;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden">
+    <div style="background:${primary};padding:26px 24px;color:#fff">
+      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:44px;margin-bottom:10px;border-radius:8px;background:#fff;padding:4px"/><br/>` : ''}
+      <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;opacity:.85;font-weight:700">Official Team Store</div>
+      <div style="font-size:24px;font-weight:800;margin-top:4px">${_esc(store.name)}</div>
+    </div>
+    <div style="padding:24px">
+      <p style="font-size:15px;line-height:1.6;margin:0 0 14px">Hi ${_esc(store.director_name || lead)},</p>
+      <p style="font-size:15px;line-height:1.6;margin:0 0 18px">Your team store is <b>live</b>. Everything in it is pre-approved, so families can order with confidence — just share the link or the code below.</p>
+      <div style="text-align:center;margin:8px 0 18px"><a href="${url}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:13px 30px;border-radius:10px;font-weight:800;font-size:15px">Shop the store →</a></div>
+      <div style="text-align:center;margin:0 0 18px">
+        <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="180" height="180" style="border:1px solid #e2e8f0;border-radius:12px"/>
+        <div style="font-size:12px;color:#64748b;margin-top:6px">Scan to shop — or share this image with your families.</div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:4px">${_esc(url)}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;border-top:1px solid #eef2f7;border-bottom:1px solid #eef2f7;margin:6px 0 16px">${infoRows}</table>
+      ${portalUrl ? `<p style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 6px">Want to follow orders as they come in? Here's your private tracking portal:</p><p style="margin:0 0 16px"><a href="${_esc(portalUrl)}" style="color:#2563eb;font-size:13px">Open your ${_esc(lead.toLowerCase())} portal →</a></p>` : ''}
+      <p style="font-size:13px;color:#94a3b8;line-height:1.6;margin:14px 0 0">Thanks for building with National Sports Apparel.</p>
+    </div>
+  </div>`;
+}
+
+// A print-ready flyer (own window) with a big QR and team colors.
+function flyerHtml(store) {
+  const url = _storefrontUrl(store);
+  const primary = _hex(store.primary_color, '#0b1f3a');
+  const accent = _hex(store.accent_color, '#e11d2a');
+  const close = _fmtDate(store.close_at);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(store.name)} — Flyer</title>
+  <style>
+    *{box-sizing:border-box} html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
+    .page{width:8.5in;min-height:11in;margin:0 auto;display:flex;flex-direction:column}
+    .hero{background:${primary};color:#fff;padding:64px 56px 48px;text-align:center}
+    .eyebrow{font-size:16px;letter-spacing:5px;text-transform:uppercase;font-weight:800;opacity:.85}
+    .title{font-size:52px;font-weight:900;line-height:1.05;margin:14px 0 0;text-transform:uppercase}
+    .body{flex:1;padding:48px 56px;text-align:center;color:#0f172a}
+    .scan{font-size:30px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:${accent}}
+    .qr{margin:22px auto;border:6px solid ${primary};border-radius:18px;display:inline-block;line-height:0}
+    .url{font-size:20px;font-weight:700;margin-top:10px;word-break:break-all}
+    .meta{font-size:18px;color:#475569;margin-top:24px;line-height:1.6}
+    .foot{background:${accent};color:#fff;text-align:center;padding:18px;font-weight:800;letter-spacing:1px;text-transform:uppercase}
+    .btn{margin:18px;text-align:center} @media print{.btn{display:none}}
+    @page{size:letter;margin:0}
+  </style></head><body>
+  <div class="btn"><button onclick="window.print()" style="padding:10px 22px;font-size:15px;font-weight:800;border:none;border-radius:8px;background:${primary};color:#fff;cursor:pointer">Print flyer</button></div>
+  <div class="page">
+    <div class="hero">
+      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:96px;margin-bottom:18px;background:#fff;border-radius:14px;padding:8px"/><br/>` : ''}
+      <div class="eyebrow">Official Team Store</div>
+      <div class="title">${_esc(store.name)}</div>
+    </div>
+    <div class="body">
+      <div class="scan">Scan to shop</div>
+      <div class="qr"><img src="${_qrImg(url, 520)}" alt="QR code" width="320" height="320"/></div>
+      <div class="url">${_esc(url)}</div>
+      <div class="meta">All gear is coach-approved.${close ? `<br/><b>Order by ${_esc(close)}.</b>` : ''}<br/>${_deliveryLabel(store)} about 4–5 weeks after the store closes.</div>
+    </div>
+    <div class="foot">National Sports Apparel</div>
+  </div>
+  </body></html>`;
+}
+
 function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -314,20 +397,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     return tag ? `${window.location.origin}/?portal=${encodeURIComponent(tag)}` : '';
   }, [cust]);
 
+  // Send the polished launch email (shop link + QR + key info + tracking portal).
   const emailDirector = useCallback(async (store) => {
-    const url = coachPortalUrl(store);
-    if (!url) { flash('No club alpha tag found for the portal link'); return; }
-    if (!store.director_email) { flash('Add a Club Director email in Settings first'); return; }
-    const html = `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:600px">
-      <p>Hi ${store.director_name || 'Coach'},</p>
-      <p>Here's your live tracking portal for the <b>${store.name}</b> team store. You can watch orders come in and follow each one through production and shipping.</p>
-      <p><a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:700">Open your team portal</a></p>
-      <p style="font-size:12px;color:#64748b">Or paste this link into your browser:<br>${url}</p>
-    </div>`;
-    const r = await sendBrevoEmail({ to: [{ email: store.director_email, name: store.director_name || '' }], subject: `Your ${store.name} team portal`, htmlContent: html, senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
+    const to = (store.director_email || store.coach_contact_email || '').trim();
+    if (!to) { flash('Add a coach/director email in the store’s Settings first'); return; }
+    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
     if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Portal link emailed to ' + store.director_email);
+    else flash('Launch email sent to ' + to);
   }, [coachPortalUrl, flash]);
+
+  // Open the print-ready flyer in its own tab.
+  const openFlyer = useCallback((store) => {
+    const w = window.open('', '_blank');
+    if (!w) { flash('Allow pop-ups to open the flyer.'); return; }
+    w.document.write(flyerHtml(store)); w.document.close();
+  }, [flash]);
 
   const loadStores = useCallback(async () => {
     setLoading(true); setErr(null); setNeedsMigration(false);
@@ -418,21 +502,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
   }, [loadDetail]);
 
   // ── writes ──────────────────────────────────────────────────────────
-  // When a coach-built store is published (draft→open), email the coach the link.
+  // When a store is launched, email the coach/director the polished launch email
+  // (shop link + scannable QR + key info + their tracking portal).
   const notifyCoachPublished = useCallback(async (store) => {
-    const to = (store.coach_contact_email || '').trim();
-    if (!to) { flash('Published (no coach email on file to notify).'); return; }
-    const safe = (s) => String(s || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-    const url = `${window.location.origin}/shop/${store.slug}`;
+    const to = (store.coach_contact_email || store.director_email || '').trim();
+    if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      await sendBrevoEmail({
-        to: [{ email: to }],
-        subject: `Your team store is live: ${store.name}`,
-        htmlContent: `<p>Good news — your team store <b>${safe(store.name)}</b> is now live!</p>\n<p><a href="${url}">${url}</a></p>\n<p>Share that link with your team. Thanks for building with National Sports Apparel!</p>`,
-      });
-      flash('Published — coach notified by email.');
-    } catch (e) { flash('Published (coach email failed: ' + (e.message || e) + ').'); }
-  }, [flash]);
+      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
+      flash('Launched — coach emailed the store link + QR.');
+    } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
+  }, [coachPortalUrl, flash]);
 
   const saveStore = useCallback(async (form, existingId) => {
     if (existingId) {
@@ -457,8 +536,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     if (error) { flash('Could not update status: ' + error.message); return; }
     setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
     if (sel?.id === store.id) setSel(data);
-    if (store.status !== 'open' && status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
-    flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
+    // On launch, email the coach/director the store link + flyer QR (any store with a
+    // recipient on file — not just coach-built ones).
+    if (store.status !== 'open' && status === 'open' && (data.coach_contact_email || data.director_email)) notifyCoachPublished(data);
+    else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
@@ -894,7 +975,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} />
       )}
@@ -1386,7 +1467,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onFlash, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1448,7 +1529,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
           {portalUrl && <button className="btn btn-sm btn-secondary" title={portalUrl} onClick={copyPortal}>{portalCopied ? '✓ Copied' : 'Copy coach portal link'}</button>}
-          {portalUrl && <button className="btn btn-sm btn-secondary" title={s.director_email ? `Email ${s.director_email}` : 'Add a director email in Settings'} disabled={!s.director_email} onClick={onEmailDirector} style={!s.director_email ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>Email director</button>}
+          {onFlyer && <button className="btn btn-sm btn-secondary" title="Open a printable flyer with a QR code to the store" onClick={onFlyer}>🖨️ Flyer</button>}
+          {(s.director_email || s.coach_contact_email)
+            ? <button className="btn btn-sm btn-secondary" title={`Email the launch link + QR to ${s.director_email || s.coach_contact_email}`} onClick={onEmailDirector}>✉️ Email store link</button>
+            : <button className="btn btn-sm btn-secondary" disabled title="Add a coach/director email in Settings first" style={{ opacity: 0.5, cursor: 'not-allowed' }}>✉️ Email store link</button>}
           {onSetStatus && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => onSetStatus(s, 'open')} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
