@@ -372,8 +372,13 @@ function flyerHtml(store) {
   </body></html>`;
 }
 
-function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) {
+function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
+  // Live snapshot of in-memory orders/estimates so the detail loader can aggregate the
+  // customer's full art library (their saved art + every art file off their SOs/ests),
+  // the same sources as the customer's Artwork tab — without re-querying.
+  const _live = useRef({});
+  _live.current = { sos, ests };
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [needsMigration, setNeedsMigration] = useState(false);
@@ -459,25 +464,30 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     const orders = ordRes.data || [];
     const orderIds = new Set(orders.map((o) => o.id));
     const stockByWp = {}; (stockRes.data || []).forEach((s) => { stockByWp[s.webstore_product_id] = s; });
-    // Customer art LIBRARY (+ parent-customer cascade) — the source for the Art
-    // panel. Staff-readable; applied art is denormalized onto items so the public
-    // storefront never needs to read it.
+    // Customer art LIBRARY — the SAME sources as the customer's Artwork tab: the team's
+    // + parent org's saved art_files, PLUS every art file off their sales orders &
+    // estimates (assembled in memory — that's where most file-backed art lives, which is
+    // why reading only customers.art_files showed just one). De-duped by id; archived out.
     let libraryArt = [];
     let storeColors = [];
     if (store.customer_id) {
       const { data: cust } = await supabase.from('customers').select('id,parent_id,art_files,alpha_tag,name,pantone_colors').eq('id', store.customer_id).maybeSingle();
-      const own = (cust?.art_files || []).map((a) => ({ ...a, _src: 'library', _srcLabel: 'Team library', _srcCustId: cust.id }));
-      let parentArt = [];
-      let parentColors = [];
+      let par = null;
       if (cust?.parent_id) {
-        const { data: par } = await supabase.from('customers').select('art_files,alpha_tag,name,pantone_colors').eq('id', cust.parent_id).maybeSingle();
-        parentArt = (par?.art_files || []).map((a) => ({ ...a, _src: 'parent', _srcLabel: (par?.alpha_tag || par?.name || 'Parent') + ' library', _srcCustId: cust.parent_id }));
-        parentColors = par?.pantone_colors || [];
+        const { data: p } = await supabase.from('customers').select('id,art_files,alpha_tag,name,pantone_colors').eq('id', cust.parent_id).maybeSingle();
+        par = p;
       }
-      libraryArt = [...own, ...parentArt].filter((a) => !a.archived);
-      // The store's color palette (child's pantone, falling back to the parent org's)
-      // — drives the picker's default "school colors" filter.
-      storeColors = (cust?.pantone_colors && cust.pantone_colors.length) ? cust.pantone_colors : parentColors;
+      const { sos: allSos, ests: allEsts } = _live.current;
+      const seen = new Set(); const acc = [];
+      const addArt = (a, label) => { if (!a || !a.id || a.archived || seen.has(a.id)) return; seen.add(a.id); acc.push({ ...a, _srcLabel: label }); };
+      (cust?.art_files || []).forEach((a) => addArt(a, 'Team library'));
+      (par?.art_files || []).forEach((a) => addArt(a, (par.alpha_tag || par.name || 'Parent') + ' library'));
+      (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => addArt(a, so.id)));
+      (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => addArt(a, e.id)));
+      libraryArt = acc;
+      // Store palette (child's pantone, falling back to the parent org's) drives the
+      // picker's default "school colors" filter.
+      storeColors = (cust?.pantone_colors && cust.pantone_colors.length) ? cust.pantone_colors : (par?.pantone_colors || []);
     }
     setDetail({
       catalog,
