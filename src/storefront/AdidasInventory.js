@@ -418,7 +418,7 @@ function ImageBox({ img, alt, height }) {
 }
 
 // ── Style card (one per item; colorways summarized) ──────────────────
-function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
+function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn, canFav, isFav, onToggleFav }) {
   // Signed-in coaches see their tier price (green) with retail struck through
   const tierPrice = (() => {
     if (!yourPriceFn) return null;
@@ -467,6 +467,17 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn }) {
         )}
         {matchCws.some((c) => c.inHouseUnits > 0) && (
           <span className="ai-badge" style={{ position: 'absolute', bottom: 10, left: 10, background: '#DCFCE7', color: '#166534' }}>In house — ships now</span>
+        )}
+        {/* Favorite/star — signed-in coaches only. role=button (not a real button)
+            so it doesn't nest inside the card's <button>; stops card open on click. */}
+        {canFav && (
+          <span role="button" tabIndex={0} aria-label={isFav ? 'Remove favorite' : 'Add favorite'} aria-pressed={isFav}
+            title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+            onClick={(e) => { e.stopPropagation(); onToggleFav && onToggleFav(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggleFav && onToggleFav(); } }}
+            style={{ position: 'absolute', bottom: 10, right: 10, width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,.92)', boxShadow: '0 1px 4px rgba(15,26,56,.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 16, lineHeight: 1, color: isFav ? '#F5B301' : '#9AA1AC' }}>
+            {isFav ? '★' : '☆'}
+          </span>
         )}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
@@ -756,6 +767,109 @@ function downscaleImage(file, maxDim = 1600) {
   });
 }
 
+// ── Saved-orders list (shared by the order drawer + the account overlay) ──
+function SavedOrdersList({ savedOrders = [], activeOrderId, savedLoading, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
+  const [renameId, setRenameId] = useState(null);
+  const [renameVal, setRenameVal] = useState('');
+  const savedBtn = { background: '#fff', border: '1px solid #E2E5EA', borderRadius: 7, padding: '4px 9px', fontSize: 11, fontWeight: 600, color: '#3A4150', cursor: 'pointer', fontFamily: 'inherit', flex: 'none' };
+  return (
+    <div style={{ marginTop: 4 }}>
+      {savedLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '6px 0' }}>Loading…</div>}
+      {!savedLoading && savedOrders.length === 0 && (
+        <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '4px 0 8px' }}>No saved orders yet — build a list and tap Save to keep it for later.</div>
+      )}
+      {savedOrders.map((o) => {
+        const u = (Array.isArray(o.lines) ? o.lines : []).reduce((a, l) => a + (parseInt(l.qty) || 0), 0);
+        const isActive = o.id === activeOrderId;
+        return (
+          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px', borderRadius: 8, background: isActive ? '#F0F4FF' : '#F7F8FA', border: '1px solid ' + (isActive ? '#C7D6FF' : '#EEF0F3'), marginBottom: 6 }}>
+            {renameId === o.id ? (
+              <input
+                className="ai-input" autoFocus value={renameVal}
+                onChange={(e) => setRenameVal(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); } if (e.key === 'Escape') setRenameId(null); }}
+                onBlur={() => { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); }}
+                style={{ flex: 1, padding: '4px 8px', fontSize: 12.5 }} />
+            ) : (
+              <button onClick={() => onLoadOrder && onLoadOrder(o)} title="Open this order"
+                style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.name || 'Untitled order'}</div>
+                <div style={{ fontSize: 11, color: '#6A7180', marginTop: 1 }}>
+                  {u} unit{u === 1 ? '' : 's'} · {fmtUpdated(o.updated_at)}
+                  {o.submit_count > 0 ? ` · sent ${o.submit_count}×` : ''}
+                  {o.created_by_name ? ` · ${o.created_by_name}` : ''}
+                </div>
+              </button>
+            )}
+            {renameId !== o.id && (
+              <>
+                <button onClick={() => onLoadOrder && onLoadOrder(o)} style={savedBtn}>Open</button>
+                <button onClick={() => { setRenameId(o.id); setRenameVal(o.name === 'Untitled order' ? '' : (o.name || '')); }} style={savedBtn}>Rename</button>
+                <button onClick={() => { if (window.confirm(`Delete "${o.name || 'Untitled order'}"? This can't be undone.`)) onDeleteOrder && onDeleteOrder(o.id); }} style={{ ...savedBtn, color: '#B91C1C' }}>Delete</button>
+              </>
+            )}
+          </div>
+        );
+      })}
+      {onNewOrder && <button onClick={() => onNewOrder()} style={{ background: 'none', border: '1px dashed #C6CAD2', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600, color: '#6A7180', cursor: 'pointer', fontFamily: 'inherit' }}>+ Start a new blank order</button>}
+    </div>
+  );
+}
+
+// ── Account overlay: a coach's home for saved orders + favorited items ──
+function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoading, favorites = [], favLoading, onOpenOrder, onRenameOrder, onDeleteOrder, onNewOrder, onUnfavorite, onOpenStyle }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="ai-modal-bg" onClick={onClose} role="dialog" aria-label="My account">
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, maxWidth: 780, width: '100%', overflow: 'hidden', boxShadow: '0 24px 60px rgba(15,26,56,.28)' }}>
+        <div style={{ background: '#191919', color: '#fff', padding: '18px 22px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 22, textTransform: 'uppercase' }}>My account</div>
+            <div style={{ fontSize: 12.5, color: '#9AA1AC', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{account.customerName || account.email} · your team pricing</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ border: 'none', background: '#2B2F38', color: '#fff', borderRadius: 8, width: 32, height: 32, fontSize: 16, cursor: 'pointer', fontWeight: 700 }}>✕</button>
+        </div>
+        <div style={{ padding: '16px 22px 22px', maxHeight: '74vh', overflowY: 'auto' }}>
+          <h3 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, textTransform: 'uppercase', margin: '4px 0 8px' }}>Saved orders{savedOrders.length ? ` (${savedOrders.length})` : ''}</h3>
+          <SavedOrdersList savedOrders={savedOrders} activeOrderId={activeOrderId} savedLoading={savedLoading}
+            onLoadOrder={onOpenOrder} onRenameOrder={onRenameOrder} onDeleteOrder={onDeleteOrder} onNewOrder={onNewOrder} />
+
+          <h3 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, textTransform: 'uppercase', margin: '22px 0 8px' }}>Favorites{favorites.length ? ` (${favorites.length})` : ''}</h3>
+          {favLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC' }}>Loading…</div>}
+          {!favLoading && favorites.length === 0 && (
+            <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '2px 0 6px' }}>No favorites yet — tap the ☆ on any item in the catalog to save it here.</div>
+          )}
+          {favorites.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))', gap: 12 }}>
+              {favorites.map((f) => (
+                <div key={f.id} style={{ border: '1px solid #EEF0F3', borderRadius: 10, overflow: 'hidden', position: 'relative' }}>
+                  <button onClick={() => onOpenStyle(f.style_key)} title="View colors & stock"
+                    style={{ border: 'none', background: '#fff', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', width: '100%', display: 'block' }}>
+                    <div style={{ aspectRatio: '1/1', background: '#F7F8FA', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {f.image_url ? <img src={f.image_url} alt={f.name || ''} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ color: '#C6CAD2', fontSize: 26 }}>★</span>}
+                    </div>
+                    <div style={{ padding: '8px 10px' }}>
+                      {f.brand && <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{f.brand}</div>}
+                      <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, lineHeight: 1.15, textTransform: 'uppercase' }}>{f.name || f.style_key}</div>
+                      {f.category && <div style={{ fontSize: 11, color: '#9AA1AC', marginTop: 2 }}>{f.category}</div>}
+                    </div>
+                  </button>
+                  <button onClick={() => onUnfavorite(f.style_key)} aria-label="Remove favorite" title="Remove favorite"
+                    style={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,.92)', boxShadow: '0 1px 4px rgba(0,0,0,.18)', cursor: 'pointer', color: '#F5B301', fontSize: 15, lineHeight: 1 }}>★</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Order list drawer: review lines, coach info, send to rep ─────────
 function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account,
   savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
@@ -774,8 +888,6 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
   const [orderName, setOrderName] = useState('');
   const [saveState, setSaveState] = useState('idle'); // idle | saving | saved
   const [savedOpen, setSavedOpen] = useState(false);
-  const [renameId, setRenameId] = useState(null);
-  const [renameVal, setRenameVal] = useState('');
   const activeOrder = (savedOrders || []).find((o) => o.id === activeOrderId) || null;
   // When the coach loads a different saved order, sync the name/notes fields to
   // it. Keyed on the loaded id only, so saving (which doesn't change the id)
@@ -802,7 +914,6 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
     notify && notify(forceNew ? 'Saved as a new order' : 'Order saved');
     setTimeout(() => setSaveState('idle'), 1600);
   };
-  const savedBtn = { background: '#fff', border: '1px solid #E2E5EA', borderRadius: 7, padding: '4px 9px', fontSize: 11, fontWeight: 600, color: '#3A4150', cursor: 'pointer', fontFamily: 'inherit', flex: 'none' };
 
   const setField = (k) => (e) => {
     const next = { ...coach, [k]: e.target.value };
@@ -931,46 +1042,8 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                     {activeOrder && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#6A7180', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>Editing: {activeOrder.name}</span>}
                   </button>
                   {savedOpen && (
-                    <div style={{ marginTop: 4 }}>
-                      {savedLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '6px 0' }}>Loading…</div>}
-                      {!savedLoading && savedOrders.length === 0 && (
-                        <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '4px 0 8px' }}>No saved orders yet — build a list and tap Save below to keep it for later.</div>
-                      )}
-                      {savedOrders.map((o) => {
-                        const u = (Array.isArray(o.lines) ? o.lines : []).reduce((a, l) => a + (parseInt(l.qty) || 0), 0);
-                        const isActive = o.id === activeOrderId;
-                        return (
-                          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px', borderRadius: 8, background: isActive ? '#F0F4FF' : '#F7F8FA', border: '1px solid ' + (isActive ? '#C7D6FF' : '#EEF0F3'), marginBottom: 6 }}>
-                            {renameId === o.id ? (
-                              <input
-                                className="ai-input" autoFocus value={renameVal}
-                                onChange={(e) => setRenameVal(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); } if (e.key === 'Escape') setRenameId(null); }}
-                                onBlur={() => { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); }}
-                                style={{ flex: 1, padding: '4px 8px', fontSize: 12.5 }} />
-                            ) : (
-                              <button onClick={() => onLoadOrder && onLoadOrder(o)} title="Load this order into your list"
-                                style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.name || 'Untitled order'}</div>
-                                <div style={{ fontSize: 11, color: '#6A7180', marginTop: 1 }}>
-                                  {u} unit{u === 1 ? '' : 's'} · {fmtUpdated(o.updated_at)}
-                                  {o.submit_count > 0 ? ` · sent ${o.submit_count}×` : ''}
-                                  {o.created_by_name ? ` · ${o.created_by_name}` : ''}
-                                </div>
-                              </button>
-                            )}
-                            {renameId !== o.id && (
-                              <>
-                                <button onClick={() => onLoadOrder && onLoadOrder(o)} style={savedBtn}>Load</button>
-                                <button onClick={() => { setRenameId(o.id); setRenameVal(o.name === 'Untitled order' ? '' : (o.name || '')); }} style={savedBtn}>Rename</button>
-                                <button onClick={() => { if (window.confirm(`Delete "${o.name || 'Untitled order'}"? This can't be undone.`)) onDeleteOrder && onDeleteOrder(o.id); }} style={{ ...savedBtn, color: '#B91C1C' }}>Delete</button>
-                              </>
-                            )}
-                          </div>
-                        );
-                      })}
-                      <button onClick={() => onNewOrder && onNewOrder()} style={{ background: 'none', border: '1px dashed #C6CAD2', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600, color: '#6A7180', cursor: 'pointer', fontFamily: 'inherit' }}>+ Start a new blank order</button>
-                    </div>
+                    <SavedOrdersList savedOrders={savedOrders} activeOrderId={activeOrderId} savedLoading={savedLoading}
+                      onLoadOrder={onLoadOrder} onRenameOrder={onRenameOrder} onDeleteOrder={onDeleteOrder} onNewOrder={onNewOrder} />
                   )}
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0 4px' }}>
                     <input className="ai-input" placeholder={activeOrder ? activeOrder.name : 'Name this order (e.g. Fall practice gear)'}
@@ -1336,6 +1409,60 @@ export default function AdidasInventory() {
     setActiveOrder(null);
   }, [list, setActiveOrder]);
 
+  // ── Favorites (starred styles, team-shared) + account overlay ──
+  const [favorites, setFavorites] = useState([]);
+  const [favLoading, setFavLoading] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const favKeys = useMemo(() => new Set(favorites.map((f) => f.style_key)), [favorites]);
+  const FAV_COLS = 'id,style_key,brand,name,category,image_url';
+
+  const loadFavorites = useCallback(async () => {
+    if (!coach || !coach.customerId) { setFavorites([]); return; }
+    setFavLoading(true);
+    const { data, error } = await supabase
+      .from('coach_favorite_items').select(FAV_COLS)
+      .eq('customer_id', coach.customerId).order('created_at', { ascending: false });
+    setFavLoading(false);
+    if (!error) setFavorites(data || []);
+  }, [coach]);
+  useEffect(() => { loadFavorites(); }, [loadFavorites]);
+
+  const unfavorite = useCallback(async (styleKey) => {
+    const existing = favorites.find((f) => f.style_key === styleKey);
+    if (!existing) return;
+    setFavorites((prev) => prev.filter((f) => f.id !== existing.id)); // optimistic
+    const { error } = await supabase.from('coach_favorite_items').delete().eq('id', existing.id);
+    if (error) { notify(error.message); loadFavorites(); }
+  }, [favorites, notify, loadFavorites]);
+
+  const toggleFavorite = useCallback(async (st) => {
+    if (!coach || !coach.customerId || !st) return;
+    if (favKeys.has(st.key)) { unfavorite(st.key); return; }
+    const cover = (st.colorways || []).find((c) => c.img);
+    const row = { customer_id: coach.customerId, created_by_email: coach.email, style_key: st.key,
+      brand: st.brand || null, name: st.name || null, category: st.category || null, image_url: (cover && cover.img) || null };
+    const { data, error } = await supabase.from('coach_favorite_items').insert(row).select(FAV_COLS).single();
+    if (error) { notify(error.message); return; }
+    setFavorites((prev) => [data, ...prev.filter((f) => f.style_key !== st.key)]);
+    notify('Added to favorites ★');
+  }, [coach, favKeys, unfavorite, notify]);
+
+  // Open a favorited style in the detail modal; guard against a stale favorite
+  // whose style isn't in the current (brand-filtered) catalog.
+  const openStyleByKey = useCallback((key) => {
+    if (!styles.some((s) => s.key === key)) { notify('That item isn’t in your current catalog view'); return; }
+    setAccountOpen(false);
+    setOpenStyle(key);
+  }, [styles, notify]);
+
+  // From the account overlay: open a saved order (load into cart + show drawer).
+  const openSavedOrderFromAccount = useCallback((o) => {
+    loadOrderIntoCart(o); setAccountOpen(false); setDrawerOpen(true);
+  }, [loadOrderIntoCart]);
+  const newOrderFromAccount = useCallback(() => {
+    newBlankOrder(); setAccountOpen(false); setDrawerOpen(true);
+  }, [newBlankOrder]);
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1603,6 +1730,10 @@ export default function AdidasInventory() {
       <span style={{ background: '#2B2F38', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#E7E9ED' }}>
         {coach.customerName || coach.email} · <b style={{ color: '#7CE08A' }}>your team pricing is on</b>
       </span>
+      <button onClick={() => setAccountOpen(true)}
+        style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+        My account{(savedOrders.length + favorites.length) ? ` (${savedOrders.length + favorites.length})` : ''}
+      </button>
       <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
     </>
   ) : signInOpen ? (
@@ -1780,7 +1911,8 @@ export default function AdidasInventory() {
           <>
             <div className="ai-grid">
               {visible.slice(0, shown).map(({ st, matchCws, popColor }) => (
-                <StyleCard key={st.key} st={st} matchCws={matchCws} colorSel={colorSel} popColor={popColor} onOpen={() => setOpenStyle(st.key)} yourPriceFn={yourPriceFn} />
+                <StyleCard key={st.key} st={st} matchCws={matchCws} colorSel={colorSel} popColor={popColor} onOpen={() => setOpenStyle(st.key)} yourPriceFn={yourPriceFn}
+                  canFav={!!coach} isFav={favKeys.has(st.key)} onToggleFav={() => toggleFavorite(st)} />
               ))}
             </div>
             {visible.length > shown && (
@@ -1839,6 +1971,24 @@ export default function AdidasInventory() {
           onRenameOrder={renameOrder}
           onDeleteOrder={deleteOrder}
           onNewOrder={newBlankOrder}
+        />
+      )}
+
+      {accountOpen && coach && (
+        <AccountPanel
+          account={coach}
+          onClose={() => setAccountOpen(false)}
+          savedOrders={savedOrders}
+          activeOrderId={activeOrderId}
+          savedLoading={savedLoading}
+          favorites={favorites}
+          favLoading={favLoading}
+          onOpenOrder={openSavedOrderFromAccount}
+          onRenameOrder={renameOrder}
+          onDeleteOrder={deleteOrder}
+          onNewOrder={newOrderFromAccount}
+          onUnfavorite={unfavorite}
+          onOpenStyle={openStyleByKey}
         />
       )}
 
