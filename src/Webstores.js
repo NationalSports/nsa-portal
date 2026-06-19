@@ -6,7 +6,7 @@ import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
-import { ART_PLACEMENTS } from './lib/artPlacements';
+import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -1467,7 +1467,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={detail?.libraryArt || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1547,7 +1547,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1677,7 +1677,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -1692,10 +1692,89 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
   );
 }
 
+// Per-item logo picker + on-garment placement. A decoration is stored as
+// { art_id, art_url, source_url, placement, color_label, x, y, w } where x/y are the
+// logo CENTER and w the width, as % of the garment image — the exact coordinates the
+// storefront DecoOverlay renders, so this preview matches what shoppers see.
+function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
+  const boxRef = useRef();
+  const [sel, setSel] = useState(0);
+  const drag = useRef(null);
+  const decos = Array.isArray(decorations) ? decorations : [];
+  const coord = (d, k) => { const p = placementById(d.placement); return d[k] != null ? d[k] : p[k]; };
+  const update = (i, patch) => onChange(decos.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+  const remove = (i) => { onChange(decos.filter((_, j) => j !== i)); setSel((s) => Math.max(0, s - (i <= s ? 1 : 0))); };
+  const addLogo = (art) => {
+    const url = artImgUrl(art); if (!url) return;
+    const p = placementById('left_chest');
+    onChange([...decos, { art_id: art.id, art_url: url, source_url: artSourceUrl(art), placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+    setSel(decos.length);
+  };
+  const onPtrMove = (e) => {
+    if (drag.current == null || !boxRef.current) return;
+    const r = boxRef.current.getBoundingClientRect();
+    update(drag.current, {
+      x: Math.max(0, Math.min(100, Math.round(((e.clientX - r.left) / r.width) * 100))),
+      y: Math.max(0, Math.min(100, Math.round(((e.clientY - r.top) / r.height) * 100))),
+    });
+  };
+  const endDrag = () => { drag.current = null; };
+  const current = decos[sel];
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>Logo &amp; placement <span style={{ fontWeight: 400, color: '#94a3b8' }}>· drag the logo on the garment, pick a spot, or resize</span></div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+        <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
+          style={{ position: 'relative', width: 220, aspectRatio: '4/5', background: '#f4f6f9', borderRadius: 10, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0, touchAction: 'none' }}>
+          {imageUrl ? <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} /> : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
+          {decos.map((d, i) => (
+            <img key={i} src={d.art_url} alt="" draggable={false}
+              onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = i; }}
+              style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+          ))}
+        </div>
+        <div style={{ flex: 1, minWidth: 230 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{library.length ? 'Add a logo from the library:' : 'No logos in this store’s library yet — upload art in the Art & Logos tab.'}</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            {library.map((a) => { const u = artImgUrl(a); if (!u) return null; return (
+              <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ width: 48, height: 48, padding: 3, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>
+                <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              </button>
+            ); })}
+          </div>
+          {decos.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo placed yet — tap one above to drop it on the garment.</div> : (
+            <div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                {decos.map((d, i) => (
+                  <button key={i} type="button" onClick={() => setSel(i)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid ' + (i === sel ? '#191919' : '#d1d5db'), background: i === sel ? '#191919' : '#fff', color: i === sel ? '#fff' : '#3A4150', borderRadius: 8, padding: '3px 8px', fontSize: 12, cursor: 'pointer' }}>
+                    <img src={d.art_url} alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} /> Logo {i + 1}
+                    <span onClick={(e) => { e.stopPropagation(); remove(i); }} style={{ color: i === sel ? '#fca5a5' : '#b91c1c', fontWeight: 800 }}>×</span>
+                  </button>
+                ))}
+              </div>
+              {current && <div style={{ background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Placement</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                  {ART_PLACEMENTS.map((p) => (
+                    <button key={p.id} type="button" onClick={() => update(sel, { placement: p.id, x: p.x, y: p.y, w: p.w })} style={{ border: '1px solid ' + (current.placement === p.id ? '#191919' : '#d1d5db'), background: current.placement === p.id ? '#191919' : '#fff', color: current.placement === p.id ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 10px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{p.label}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4 }}>Size — {Math.round(coord(current, 'w'))}% of garment</div>
+                <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
+              </div>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [image, setImage] = useState(item.image_url || null);
+  const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
   const [name, setName] = useState(item.display_name || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || 0);
@@ -1738,6 +1817,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], d
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
+      fields.decorations = decorations;
       // null = every available size (default). Store a subset only when one is set.
       const _allOn = allSizes.length === 0 || offeredSizes.length === 0 || offeredSizes.length >= allSizes.length;
       fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));
@@ -1801,6 +1881,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, availableSizes = [], d
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
         </div>
       </div>
+      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} decorations={decorations} onChange={setDecorations} library={library} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>

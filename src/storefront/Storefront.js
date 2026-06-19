@@ -312,7 +312,9 @@ function DecoOverlay({ decorations }) {
   if (!Array.isArray(decorations)) return null;
   return <>{decorations.filter((d) => d && d.art_url).map((d, i) => {
     const pl = placementById(d.placement);
-    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
+    // A decoration may carry its own x/y/w (editable placement) overriding the preset.
+    const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
+    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
   })}</>;
 }
 
