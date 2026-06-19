@@ -917,7 +917,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
-                                  {[['Item', ''], ['Color', ''], ['Size', ''], ['Ordered', 'c'], ['Billed', 'c'], ['Received', 'c'], ['Need', 'c'], ['Status', 'c'], ['Shipping', 'c']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Billed' ? 'Units the vendor has shipped (from uploaded bills)' : h === 'Received' ? 'Units received into the warehouse, allocated earliest-orders-first' : h === 'Need' ? 'Units still owed to this order' : undefined}>{h}</th>)}
+                                  {[['Item', ''], ['SKU', ''], ['Color', ''], ['Size', ''], ['Ordered', 'c'], ['Billed', 'c'], ['Received', 'c'], ['Need', 'c'], ['Status', 'c'], ['Shipping', 'c']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Billed' ? 'Units the vendor has shipped (from uploaded bills)' : h === 'Received' ? 'Units received into the warehouse, allocated earliest-orders-first' : h === 'Need' ? 'Units still owed to this order' : h === 'SKU' ? 'SKU from the linked Sales Order' : undefined}>{h}</th>)}
                                 </tr></thead>
                                 <tbody>
                                   {o.items.map((i) => {
@@ -929,7 +929,8 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                                     const ship = Math.max(0, qty - (Number(i.missing_qty) || 0)); const short = ship < qty;
                                     return (
                                       <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
-                                        <td style={td}>{i.name || i.sku || '—'}{t.sku ? <span style={{ marginLeft: 8, fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px' }} title="SKU from the linked Sales Order">{t.sku}</span> : null}</td>
+                                        <td style={td}>{i.name || i.sku || '—'}</td>
+                                        <td style={td}>{t.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }} title="SKU from the linked Sales Order">{t.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
                                         <td style={td}>{i.color || '—'}</td>
                                         <td style={td}>{i.size || '—'}</td>
                                         <td style={ctd}>{num(qty, true)}</td>

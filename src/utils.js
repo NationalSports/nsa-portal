@@ -323,6 +323,10 @@ const PICK_META = new Set(['pick_id', 'status', 'ship_dest', 'created_at', 'upda
 const SIZE_SKIP = new Set(['drop_ship', 'unit_cost', '_billed', '_tracking_numbers']);
 export function computeOrderTracking({ orders = [], so = null, products = [], includeIF = false }) {
   const norm = (s) => String(s == null ? '' : s).trim().toUpperCase();
+  // Size key for matching. OMG short lines carry an inseam ("M 7\"") while the SO
+  // aggregates them under the base size ("M"), so strip a trailing inseam/length
+  // before comparing. Leaves plain (S/M/L) and numeric (32) sizes untouched.
+  const sizeKey = (s) => { const u = norm(s); const stripped = u.replace(/\s*\d+\s*("|''|IN|INCH|INCHES)?$/, '').trim(); return stripped || u; };
   const isSizeQty = (k, v) => !SIZE_SKIP.has(k) && !PICK_META.has(k) && typeof v !== 'boolean' && Number(v) > 0;
 
   // On-hand inventory lookup by product_id → {size: qty}.
@@ -344,7 +348,7 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
   };
   (so && so.items ? so.items : []).forEach((it) => {
     const b = findOrCreate(it.sku, it.product_id, it.name);
-    const addSize = (size, field, n) => { if (!n) return; const k = norm(size); (b.sizes[k] = b.sizes[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
+    const addSize = (size, field, n) => { if (!n) return; const k = sizeKey(size); (b.sizes[k] = b.sizes[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
     (it.po_lines || []).forEach((po) => {
       const bi = po.billed || {}, r = po.received || {};
       new Set([...Object.keys(bi), ...Object.keys(r)]).forEach((sz) => {
@@ -389,13 +393,13 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
       if (i.is_bundle_parent) return;
       const qty = Number(i.qty) || 0;
       const b = resolve(i.sku, i.product_id, i.name);
-      const pool = b ? pools[idxOf.get(b)][norm(i.size)] : null;
+      const pool = b ? pools[idxOf.get(b)][sizeKey(i.size)] : null;
       const take = (field) => { if (!pool) return 0; const n = Math.max(0, Math.min(pool[field] || 0, qty)); pool[field] -= n; return n; };
       const onIf = take('onIf');
       const received = take('received');
       const billed = take('billed');
       const inv = invByPid[i.product_id] || {};
-      const onHand = Number(inv[i.size] || inv[norm(i.size)] || 0) || 0;
+      const onHand = Number(inv[i.size] || inv[norm(i.size)] || inv[sizeKey(i.size)] || 0) || 0;
       const covered = received + (includeIF ? onIf : 0);
       const shipped = i.line_status === 'shipped' || (Number(i.shipped_qty) || 0) >= qty;
       // "Backordered" only when the line is actually flagged; the normal
