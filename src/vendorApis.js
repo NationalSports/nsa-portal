@@ -870,6 +870,70 @@ const sanmarSubmitPO = async (payload, env = 'test') => {
   return data;
 };
 
+// ─── SanMar Unique_Key (partId) resolution for PO submission ───
+// sendPO keys every line by its Unique_Key (partId), which is specific to one
+// style+color+size. Orders built in the portal don't carry it, so before a PO can
+// be submitted we resolve it live from the product catalog. CORRECTNESS RULE: a key
+// is only assigned when a returned product's color AND size both normalize-equal the
+// line's — we never guess, so an unmatched line stays blocked (caller falls back to
+// manual ordering) rather than risk shipping the wrong item.
+const _smNorm = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const _smColor = (bi) => bi.catalogColor || bi.color || bi.colorName || bi.millColor || bi.colorCode || '';
+const _smSize = (bi) => bi.size || bi.sizeName || bi.apparelSize || bi.sizeCode || '';
+const _smKey = (r, bi) => String(bi.uniqueKey || bi.Unique_Key || bi.UniqueKey || r.uniqueKey || r.Unique_Key || '');
+
+// descriptors: [{ key, style, color, size }]. Resolves SanMar Unique_Keys (partIds)
+// via the product API. Returns { resolved: {key: uniqueKey}, candidates: {STYLE:
+// [{color,size,uniqueKey}]} } — candidates surfaces what SanMar actually returned so
+// a near-miss (e.g. color naming) can be diagnosed instead of silently failing.
+const sanmarResolvePartIds = async (descriptors) => {
+  const resolved = {};
+  const candidates = {};
+  const styles = [...new Set((descriptors || [])
+    .map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
+  for (const style of styles) {
+    const cand = [];
+    const map = {}; // normalized "color|size" -> uniqueKey
+    const addItems = (items) => {
+      for (const r of (items || [])) {
+        const bi = r.productBasicInfo || r;
+        const uk = _smKey(r, bi); if (!uk) continue;
+        const color = _smColor(bi), size = _smSize(bi);
+        cand.push({ color, size, uniqueKey: uk });
+        const mk = _smNorm(color) + '|' + _smNorm(size);
+        if (color && size && !(mk in map)) map[mk] = uk;
+      }
+    };
+    // One call per style returns every color/size variant with its Unique_Key.
+    try { const d = await sanmarGetProduct(style); addItems(d && d.items); }
+    catch (e) { console.warn('[SanMar] partId lookup failed for', style, e.message); }
+    const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
+    for (const d of mine) {
+      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      if (map[mk]) resolved[d.key] = map[mk];
+    }
+    // Fallback: size-specific query for any line the bulk lookup didn't resolve
+    // (covers styles whose bulk response omits per-size rows).
+    for (const d of mine) {
+      if (resolved[d.key]) continue;
+      try {
+        const dd = await sanmarGetProduct(style, d.color, d.size);
+        const items = (dd && dd.items) || [];
+        addItems(items);
+        for (const r of items) {
+          const bi = r.productBasicInfo || r;
+          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smNorm(_smSize(bi)) === _smNorm(d.size)) {
+            const uk = _smKey(r, bi); if (uk) { resolved[d.key] = uk; break; }
+          }
+        }
+      } catch (e) { /* leave unresolved — never guess */ }
+    }
+    const seen = new Set();
+    candidates[style] = cand.filter(c => { const k = c.color + '|' + c.size; if (seen.has(k)) return false; seen.add(k); return true; });
+  }
+  return { resolved, candidates };
+};
+
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
@@ -1182,4 +1246,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
