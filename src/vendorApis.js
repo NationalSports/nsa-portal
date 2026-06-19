@@ -1169,6 +1169,25 @@ const momentecSearchProducts = async (term, pageSize = 50, pageNumber = 1) =>
 const momentecGetCategories = async () =>
   await momentecApiCall('/categoryview/@top?depthAndLimit=11,11');
 
+// Submit a built Momentec order (the `order` object from buildMomentecOrderPayload) via
+// the proxy, which injects credentials server-side and POSTs to /v2/Order. env: 'stage'
+// (sandbox) | 'prod' (LIVE). Defaults to 'stage' so an accidental call can't place a real
+// production order. Resolves to { ok, env, orderId }; throws Error(<message>) on failure.
+const momentecSubmitOrder = async (order, env = 'stage') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=order&env=${encodeURIComponent(env)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || !data.orderId) {
+    console.error('[Momentec] order failed:', data.error || response.status, data.raw || '');
+    throw new Error(data.error || `Momentec order failed (HTTP ${response.status})`);
+  }
+  console.log(`[Momentec] order ok (${env}):`, data.orderId);
+  return data;
+};
+
 const testMomentecConnection = async () => {
   try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
@@ -1335,4 +1354,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
