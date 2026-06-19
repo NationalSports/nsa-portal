@@ -856,7 +856,7 @@ const testSanMarConnection = async () => {
 // { ok, env, transactionId, orderNumber }; throws Error(<SanMar message>) on failure.
 const sanmarSubmitPO = async (payload, env = 'test') => {
   const qs = `service=po&action=sendPO&env=${encodeURIComponent(env)}`;
-  const response = await fetch(`/.netlify/functions/sanmar-proxy?${qs}`, {
+  const response = await authFetch(`/.netlify/functions/sanmar-proxy?${qs}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
