@@ -15,7 +15,7 @@ import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -7571,6 +7571,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const s=artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
       };
       const itemLabels={need_to_order:'Need to Order',on_order:'On Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
+      // Family-apportioned receipts for every job, so the live ITEMS STATUS badge counts only a job's
+      // OWN share of shared line receipts — a backorder slice must not read its received sibling's
+      // units (which made a 0-received backorder badge "Partially Received").
+      const _jobAllocs=allocateJobFulfillment(jobs,safeItems(o));
+      const _jobFulById={};jobs.forEach((jj,ix)=>{if(jj&&jj.id)_jobFulById[jj.id]=_jobAllocs[ix];});
       // Effective item status for display. Items that already have IF (item fulfillment)
       // picks waiting to be pulled are in-house, so show "Waiting for Pull" instead of the
       // misleading "Need to Order". Items whose ordered sizes are already committed to POs
@@ -7579,14 +7584,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // item_status is left untouched (warehouse pull / PO receive flows own that); this
       // only relabels what the rep sees.
       const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';
-        // Compute coverage AND receipts live from the job's items, mirroring calcSOStatus —
-        // never trust stored fulfilled_units alone (it's only refreshed by recalcJobFulfillment,
-        // so a job received before this badge was rendered would read stale). coveredSz is what's
-        // committed (PO ordered − cancelled, or already picked); fulfilledSz is what's actually
-        // in-house (pulled picks + PO receipts). Receipts win, so a fully-received job reads
-        // "Items Received" instead of being stuck on "Ordered — Waiting" — including qty_only
-        // items whose units live in est_qty under the 'QTY' bucket.
-        let totalSz=0,coveredSz=0,fulfilledSz=0;
+        // Coverage is summed live (mirroring calcSOStatus): coveredSz is what's committed (PO ordered −
+        // cancelled, or already picked). RECEIPTS, though, come from allocateJobFulfillment (_ap) so a
+        // job counts only its OWN apportioned share of the shared line — a split sibling's receipts
+        // must never count here, else a 0-received backorder reads "Partially Received". Falls back to
+        // a live receipt sum when the job isn't in the apportioned set. qty_only items hold their
+        // count in est_qty under the 'QTY' bucket.
+        const _ap=(j&&j.id)?_jobFulById[j.id]:null;
+        let totalSz=0,coveredSz=0,fulfilledLive=0;
         (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
           let entries=Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
           if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
@@ -7596,10 +7601,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             coveredSz+=Math.min(need,picked+poOrd);
             const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-            fulfilledSz+=Math.min(need,pulledQty+rcvdQty);});
+            fulfilledLive+=Math.min(need,pulledQty+rcvdQty);});
         });
+        const fulfilledSz=_ap?safeNum(_ap.fulfilled):fulfilledLive;
         if(totalSz>0&&fulfilledSz>=totalSz)return'items_received';
-        if(fulfilledSz>0||ful>0)return'partially_received';
+        if(fulfilledSz>0)return'partially_received';
         if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
         if(coveredSz>0)return'on_order';
         return'need_to_order';};
