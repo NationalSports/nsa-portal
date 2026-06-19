@@ -1596,6 +1596,39 @@ export default function AdidasInventory() {
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
 
   const embedded = isEmbedded();
+  // Coach magic-link sign-in controls — shared by the full dark header (standalone
+  // page) and the compact bar shown when embedded on nationalsportsapparel.com/livelook.
+  const signInControls = coach ? (
+    <>
+      <span style={{ background: '#2B2F38', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#E7E9ED' }}>
+        {coach.customerName || coach.email} · <b style={{ color: '#7CE08A' }}>your team pricing is on</b>
+      </span>
+      <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
+    </>
+  ) : signInOpen ? (
+    signInState === 'sent' ? (
+      <span style={{ background: '#1E3A2A', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#7CE08A' }}>
+        ✓ Check your email for the sign-in link
+      </span>
+    ) : (
+      <>
+        <input value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)} placeholder="coach@school.org" type="email"
+          onKeyDown={(e) => { if (e.key === 'Enter') sendMagicLink(); }}
+          style={{ background: '#2B2F38', border: '1px solid #3A4150', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, color: '#fff', outline: 'none', fontFamily: 'inherit', width: 230 }} autoFocus />
+        <button onClick={sendMagicLink} disabled={signInState === 'sending'}
+          style={{ background: '#fff', color: '#191919', border: 'none', borderRadius: 999, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
+          {signInState === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
+        </button>
+        <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+        {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
+      </>
+    )
+  ) : (
+    <button onClick={() => setSignInOpen(true)}
+      style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+      Coach sign in — see your team pricing
+    </button>
+  );
   return (
     <div className="ai-root" style={{ fontFamily: BODY }}>
       <Styles />
@@ -1617,40 +1650,23 @@ export default function AdidasInventory() {
             Open a style, type the quantities you need per size, and send the list to your rep — they'll follow up with a formal estimate.
           </p>
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            {coach ? (
-              <>
-                <span style={{ background: '#2B2F38', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#E7E9ED' }}>
-                  {coach.customerName || coach.email} · <b style={{ color: '#7CE08A' }}>your team pricing is on</b>
-                </span>
-                <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
-              </>
-            ) : signInOpen ? (
-              signInState === 'sent' ? (
-                <span style={{ background: '#1E3A2A', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, fontWeight: 600, color: '#7CE08A' }}>
-                  ✓ Check your email for the sign-in link
-                </span>
-              ) : (
-                <>
-                  <input value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)} placeholder="coach@school.org" type="email"
-                    onKeyDown={(e) => { if (e.key === 'Enter') sendMagicLink(); }}
-                    style={{ background: '#2B2F38', border: '1px solid #3A4150', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, color: '#fff', outline: 'none', fontFamily: 'inherit', width: 230 }} autoFocus />
-                  <button onClick={sendMagicLink} disabled={signInState === 'sending'}
-                    style={{ background: '#fff', color: '#191919', border: 'none', borderRadius: 999, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-                    {signInState === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
-                  </button>
-                  <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
-                  {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
-                </>
-              )
-            ) : (
-              <button onClick={() => setSignInOpen(true)}
-                style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-                Coach sign in — see your team pricing
-              </button>
-            )}
+            {signInControls}
           </div>
         </div>
       </header>
+      )}
+
+      {/* Embedded (nationalsportsapparel.com/livelook): the marketing site hides
+          our dark header, so surface a compact coach sign-in strip here instead. */}
+      {embedded && (
+        <div style={{ background: '#191919', color: '#fff' }}>
+          <div style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 20px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {!coach && !signInOpen && (
+              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>Coaches — sign in for your team pricing &amp; saved orders</span>
+            )}
+            {signInControls}
+          </div>
+        </div>
       )}
 
       {/* Filter bar */}
