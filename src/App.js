@@ -1084,6 +1084,13 @@ const _mergeDbEstStatus=async(est)=>{
 };
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
+  // Never persist a customerless estimate. The "Select Customer *" rule is UI-only and save_estimate
+  // permits a null customer, so a draft built before a customer is chosen — or an existing estimate whose
+  // customer_id was dropped by a stale background save — would otherwise be written to the shared DB as an
+  // un-billable orphan (the EST-1276 case). Skip the DB write (the draft stays safe in local state);
+  // selecting a customer fires another _diffSave that persists it. This also blocks a stale save from
+  // nulling an already-saved estimate's customer.
+  if(!est.customer_id){if(!_bgSync&&typeof _dbNotify==='function')_dbNotify('Add a customer before this estimate can be saved.','error');return;}
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
