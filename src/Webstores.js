@@ -1902,20 +1902,34 @@ function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false,
     })();
     return () => { cancelled = true; };
   }, [product.id, product.name]);
+  // Collapse to one swatch per distinct color, preferring a row that actually has
+  // an image (the catalog has several SKUs per color, many without art); drop the
+  // base item's own color so we don't offer to add it twice.
+  const colorOptions = useMemo(() => {
+    const base = (product.color || '').trim().toLowerCase();
+    const map = new Map();
+    for (const s of siblings) {
+      const key = (s.color || '').trim().toLowerCase();
+      if (!key || key === base) continue;
+      const cur = map.get(key);
+      if (!cur || (!cur.image_front_url && s.image_front_url)) map.set(key, s);
+    }
+    return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
+  }, [siblings, product.color]);
   const toggleColor = (id) => setExtraColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selectedSiblings = siblings.filter((s) => extraColors.has(s.id));
+  const selectedSiblings = colorOptions.filter((s) => extraColors.has(s.id));
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
-      {siblings.length > 0 && (
+      {colorOptions.length > 0 && (
         <div style={{ margin: '0 0 12px', padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 7 }}>
             Also add other colors of this style <span style={{ fontWeight: 400, color: '#94a3b8' }}>· same price &amp; options apply to all</span>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {siblings.map((s) => {
+            {colorOptions.map((s) => {
               const on = extraColors.has(s.id);
               return (
                 <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku}
@@ -2000,7 +2014,7 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(48);
-  const [inStockOnly, setInStockOnly] = useState(true); // default: hide what we can't fulfill
+  const [inStockOnly, setInStockOnly] = useState(false); // default: show ALL colorways (out-of-stock just dims); toggle to hide
 
   useEffect(() => {
     if (q.trim().length < 2) { setResults([]); return; }
