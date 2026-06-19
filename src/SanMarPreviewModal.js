@@ -10,8 +10,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
 import { sanmarSubmitPO, sanmarResolvePartIds } from './vendorApis';
+import { NSA, NSA_WAREHOUSE } from './constants';
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', onClose, onSubmitted }) {
+// SanMar ships integrated orders to NSA's receiving address (Warehouse Consolidation).
+// PromoStandards requires a ContactDetails block on both OrderContact and ShipTo — without
+// it SanMar rejects the PO ("element 'shar:shipmentId'… ContactDetails is expected").
+const NSA_SHIP_TO = {
+  attentionTo: 'Receiving',
+  companyName: NSA.name,
+  address1: NSA_WAREHOUSE.street1,
+  address2: NSA_WAREHOUSE.street2,
+  city: NSA_WAREHOUSE.city,
+  region: NSA_WAREHOUSE.state,
+  postalCode: NSA_WAREHOUSE.zip,
+  country: 'US',
+};
+
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -26,11 +41,13 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   const isLive = env === 'prod';
 
+  // SanMar ships to NSA's receiving address (caller can override via the shipTo prop).
+  const ship = shipTo || NSA_SHIP_TO;
   // Base payload (no network) — exact lines/totals from the batch.
   const base = useMemo(() => {
-    const p = buildSanMarPOPayload({ poNumber, batchPOs });
+    const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: ship });
     return { payload: p, baseLines: p.PO.lineItems, totals: p._summary };
-  }, [batchPOs, poNumber]);
+  }, [batchPOs, poNumber, ship]);
 
   // Lines still missing a partId after the base build — these need a live lookup.
   const missing = useMemo(
@@ -165,6 +182,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Line Items" value={totals.lineCount} />
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
+          </div>
+          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
           </div>
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
