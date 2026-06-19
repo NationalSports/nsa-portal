@@ -1601,7 +1601,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} onPick={(p) => setPending(p)} onPickMany={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} library={library} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
@@ -1705,7 +1705,9 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 // storefront DecoOverlay renders, so this preview matches what shoppers see.
 function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
   const boxRef = useRef();
+  const fileRef = useRef();
   const [sel, setSel] = useState(0);
+  const [upBusy, setUpBusy] = useState(false);
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
   const coord = (d, k) => { const p = placementById(d.placement); return d[k] != null ? d[k] : p[k]; };
@@ -1716,6 +1718,19 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
     const p = placementById('left_chest');
     onChange([...decos, { art_id: art.id, art_url: url, source_url: artSourceUrl(art), placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
     setSel(decos.length);
+  };
+  // Upload a logo file (PNG/SVG/JPG) straight from here and drop it on the garment —
+  // no need to pre-load the Art & Logos library.
+  const uploadLogo = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    setUpBusy(true);
+    try {
+      const url = await cloudUpload(file, 'nsa-store-art');
+      const p = placementById('left_chest');
+      onChange([...decos, { art_id: null, art_url: url, source_url: url, placement: 'left_chest', color_label: 'original', x: p.x, y: p.y, w: p.w }]);
+      setSel(decos.length);
+    } catch (x) { /* cloudUpload surfaces error via toast */ }
+    setUpBusy(false);
   };
   const onPtrMove = (e) => {
     if (drag.current == null || !boxRef.current) return;
@@ -1741,13 +1756,19 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [] }) {
           ))}
         </div>
         <div style={{ flex: 1, minWidth: 230 }}>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{library.length ? 'Add a logo from the library:' : 'No logos in this store’s library yet — upload art in the Art & Logos tab.'}</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{library.length ? 'Tap a library logo to place it, or upload a new one:' : 'Upload a logo (PNG/SVG) to place it on the garment:'}</div>
+          <div
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadLogo(f); }}
+            style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center', padding: 8, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
             {library.map((a) => { const u = artImgUrl(a); if (!u) return null; return (
               <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ width: 48, height: 48, padding: 3, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>
                 <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               </button>
             ); })}
+            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} style={{ width: 48, height: 48, borderRadius: 8, border: '1.5px dashed #cbd5e1', background: '#fff', cursor: 'pointer', color: '#6A7180', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>{upBusy ? '…' : '+ Logo'}</button>
+            <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadLogo(f); e.target.value = ''; }} />
+            <span style={{ fontSize: 11, color: '#9AA1AC' }}>drop a file or click +</span>
           </div>
           {decos.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo placed yet — tap one above to drop it on the garment.</div> : (
             <div>
@@ -2138,7 +2159,7 @@ const productMatchesColors = (productColor, words) => {
 // hands off to SinglePriceEditor (price / fundraising / personalization),
 // unchanged. State is a simple "filter spec" ({ q, brand, category }) so the
 // future AI-brief and customer self-serve flows can drive the same engine.
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], initialFilter = {} }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], library = [], initialFilter = {} }) {
   const [q, setQ] = useState(initialFilter.q || '');
   const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
   const [catSel, setCatSel] = useState(initialFilter.category || null);
@@ -2150,6 +2171,8 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], i
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
   const [selected, setSelected] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkDecos, setBulkDecos] = useState([]);
   const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Footwear'];
 
   // Load when there's a search OR a chosen category/brand — so a rep can browse by
@@ -2256,9 +2279,27 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], i
       {selProducts.length > 0 && (
         <div style={{ position: 'sticky', bottom: 0, background: 'rgba(255,255,255,.97)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: '0 0 12px 12px' }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => onPickMany && onPickMany(selProducts)}>Add {selProducts.length} to store →</button>
+          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
           <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
+        </div>
+      )}
+      {bulkOpen && (
+        <div onClick={() => setBulkOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the store</div>
+              <button onClick={() => setBulkOpen(false)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 6 }}>Optionally place a logo — it'll be applied to <b>all {selProducts.length}</b> at the same spot. You can fine-tune any item afterward.</div>
+              <LogoPlacer imageUrl={selProducts[0] && selProducts[0].image_front_url} decorations={bulkDecos} onChange={setBulkDecos} library={library} />
+              <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to store →`}</button>
+                <button className="btn btn-secondary" onClick={() => setBulkOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
