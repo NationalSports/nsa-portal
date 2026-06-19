@@ -2256,6 +2256,21 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState('');
+  // Quick-pick options that hone the AI without typing. They're woven into the brief
+  // the model reads, so it still returns editable brand/category/color facets.
+  const [gender, setGender] = useState([]);
+  const [types, setTypes] = useState([]);
+  const [hues, setHues] = useState([]);
+  const GENDERS = ["Men's", "Women's", 'Youth', 'Unisex'];
+  const TYPES = ['Tees', '1/4 Zip', 'Hoodies', 'Crews', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Headwear', 'Bags', 'Cleats'];
+  const HUES = ['Black', 'White', 'Red', 'Royal', 'Navy', 'Grey', 'Green', 'Gold', 'Orange', 'Maroon', 'Purple', 'Pink'];
+  const toggleIn = (arr, setArr, v) => setArr(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+  const structured = [
+    gender.length ? `${gender.join(' / ')} items` : '',
+    types.length ? `item types: ${types.join(', ')}` : '',
+    hues.length ? `colors: ${hues.join(', ')}` : '',
+  ].filter(Boolean).join('. ');
+  const fullBrief = `${structured}${structured && brief.trim() ? '. ' : ''}${brief.trim()}`.trim();
 
   // Brand/category come back as exact catalog values (reliable .in filters);
   // colors/keywords are matched in-memory to dodge PostgREST wildcard quirks.
@@ -2270,12 +2285,18 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
     let rows = data || [];
     const colors = (s.colors || []).map((c) => c.toLowerCase());
     const keywords = (s.keywords || []).map((k) => k.toLowerCase());
-    if (colors.length || keywords.length) {
-      rows = rows.filter((p) =>
-        colors.some((c) => (p.color || '').toLowerCase().includes(c)) ||
-        keywords.some((k) => (p.name || '').toLowerCase().includes(k)));
-    }
-    rows = rows.slice(0, 200); // bound the inventory lookup; the grid is capped at 120 below
+    // Colors are a reliable product attribute — when the brief names colors, keep only
+    // on-palette items. Off-color hits were the main "items all over the place" source.
+    if (colors.length) rows = rows.filter((p) => colors.some((c) => (p.color || '').toLowerCase().includes(c)));
+    // Relevance score from keyword hits in name/SKU (e.g. "training", "3 stripe", a
+    // style number like JX4452) so the closest matches lead and weak ones trail.
+    const scoreOf = (p) => {
+      const hay = `${p.name || ''} ${p.sku || ''}`.toLowerCase();
+      return keywords.reduce((a, k) => a + (hay.includes(k) ? 1 : 0), 0);
+    };
+    for (const r of rows) r._score = scoreOf(r);
+    rows.sort((a, b) => (b._score - a._score) || (a.name || '').localeCompare(b.name || ''));
+    rows = rows.slice(0, 120);
     const stock = await fetchStockMap(rows);
     for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
     return rows;
@@ -2286,14 +2307,17 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
   const applyFilter = (cands, inStock) => {
     const visible = (inStock ? cands.filter((p) => (p._stock?.units || 0) > 0) : cands).slice(0, 120);
     setMatches(visible);
-    setSel(new Set(visible.map((p) => p.id)));
+    // Pre-check only the on-brief matches when the brief had keywords; otherwise the
+    // whole (color-narrowed) set. Avoids "Add" dumping loosely-related items.
+    const hasKw = visible.some((p) => (p._score || 0) > 0);
+    setSel(new Set(visible.filter((p) => !hasKw || (p._score || 0) > 0).map((p) => p.id)));
   };
 
   const generate = async () => {
-    if (!brief.trim()) return;
+    if (!fullBrief) return;
     setBusy(true); setErr(''); setSpec(null); setCandidates([]); setMatches([]); setSel(new Set());
     try {
-      const d = await invokeEdgeFn(supabase, 'ai-store-builder', { brief: brief.trim() });
+      const d = await invokeEdgeFn(supabase, 'ai-store-builder', { brief: fullBrief });
       if (!d?.ok) throw new Error(d?.error || 'The AI could not read that brief.');
       setSpec(d.spec);
       const cands = await loadCandidates(d.spec);
@@ -2337,12 +2361,22 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', letterSpacing: '.01em' }}>✨ Build with AI</div>
           {onClose && <button className="ai-iconbtn" onClick={onClose} aria-label="Close">✕ Close</button>}
         </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+          {[['Who', GENDERS, gender, setGender], ['Item types', TYPES, types, setTypes], ['Colors', HUES, hues, setHues]].map(([lbl, list, arr, setArr]) => (
+            <div key={lbl} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', minWidth: 74, paddingTop: 5 }}>{lbl}</span>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {list.map((v) => <FilterBtn key={v} on={arr.includes(v)} onClick={() => toggleIn(arr, setArr, v)}>{v}</FilterBtn>)}
+              </div>
+            </div>
+          ))}
+        </div>
         <textarea className="ai-search" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) generate(); }}
-          placeholder={'Describe the store — e.g. "Adidas-centric, in-stock black/white/royal, D4T black shorts and baseball cleats"'}
+          placeholder={'Add detail (optional) — e.g. "training-focused, include style JX4452, prefer crew necks"'}
           style={{ resize: 'vertical', minHeight: 56, lineHeight: 1.4 }} aria-label="Store brief" />
         <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="ai-more" style={{ margin: 0 }} onClick={generate} disabled={busy || !brief.trim()}>{busy ? 'Reading the brief…' : 'Find items'}</button>
+          <button className="ai-more" style={{ margin: 0 }} onClick={generate} disabled={busy || !fullBrief}>{busy ? 'Reading the brief…' : 'Find items'}</button>
           {err && <span style={{ color: '#b91c1c', fontSize: 12.5, fontWeight: 600 }}>{err}</span>}
         </div>
 
