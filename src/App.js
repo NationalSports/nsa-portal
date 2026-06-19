@@ -11682,37 +11682,7 @@ export default function App(){
 
       {/* Regular (non-batch) PO match — handled above now */}
 
-      {/* Ordered batches history */}
-      {!batchScan.trim()&&submittedBatches.length>0&&<div className="card" style={{marginBottom:16}}>
-        <div className="card-header"><h2>Ordered Batch POs</h2></div>
-        <div className="card-body" style={{padding:0}}>
-          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
-          {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
-            <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
-            <td>{sb.vendor_name}</td>
-            <td style={{fontSize:11}}>{sb.source_pos.map(sp=>sp.so_id).join(', ')}</td>
-            <td style={{fontWeight:600}}>{sb.total_units}</td>
-            <td style={{fontWeight:700}}>${sb.total_cost.toFixed(2)}</td>
-            <td style={{fontSize:11,color:'#64748b'}}>{sb.submitted_at}</td>
-            <td style={{fontSize:11}}>{sb.submitted_by?.split(' ')[0]}</td>
-            <td><span className={`badge ${sb.status==='received'?'badge-green':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
-            <td style={{textAlign:'right',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
-              <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px',fontSize:11}} title={'Delete '+sb.po_number+' (removes the PO and unlinks it from any sales orders)'} onClick={()=>{
-                const warn=sb.status==='received'?`⚠️ ${sb.po_number} is marked Received. Inventory was already credited when it arrived — deleting will NOT reverse those quantities.\n\nDelete anyway?`:`Delete batch PO ${sb.po_number}?\n\nThis removes the PO and unlinks it from any source sales orders. This cannot be undone.`;
-                if(!window.confirm(warn))return;
-                const soIdsToFix=new Set((sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean));
-                soIdsToFix.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;
-                  const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_po_number!==sb.po_number&&pl.po_id!==sb.po_number)}));
-                  savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
-                });
-                setSubmittedBatches(prev=>prev.filter(b=>b.po_number!==sb.po_number));
-                nf('Deleted '+sb.po_number);
-              }}>🗑 Delete</button>
-            </td>
-          </tr>)}
-          </tbody></table>
-        </div>
-      </div>}
+      {/* Ordered batches history — moved below the active queue to keep batches at the top */}
 
       {/* Pending queue */}
       {!batchScan.trim()&&<>
@@ -11874,6 +11844,38 @@ export default function App(){
             </div>
           </div>
         </div>})}
+
+      {/* Ordered batches history — collapsed below the queue so the active batches stay on top */}
+      {!batchScan.trim()&&submittedBatches.length>0&&<details className="card" style={{marginBottom:16}}>
+        <summary style={{cursor:'pointer',padding:'12px 16px',fontWeight:800,fontSize:15,color:'#0f172a'}}>Ordered Batch POs <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({submittedBatches.length})</span></summary>
+        <div className="card-body" style={{padding:0,borderTop:'1px solid #e2e8f0'}}>
+          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
+          {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
+            <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
+            <td>{sb.vendor_name}</td>
+            <td style={{fontSize:11}}>{sb.source_pos.map(sp=>sp.so_id).join(', ')}</td>
+            <td style={{fontWeight:600}}>{sb.total_units}</td>
+            <td style={{fontWeight:700}}>${sb.total_cost.toFixed(2)}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{sb.submitted_at}</td>
+            <td style={{fontSize:11}}>{sb.submitted_by?.split(' ')[0]}</td>
+            <td><span className={`badge ${sb.status==='received'?'badge-green':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
+            <td style={{textAlign:'right',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+              <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px',fontSize:11}} title={'Delete '+sb.po_number+' (removes the PO and unlinks it from any sales orders)'} onClick={()=>{
+                const warn=sb.status==='received'?`⚠️ ${sb.po_number} is marked Received. Inventory was already credited when it arrived — deleting will NOT reverse those quantities.\n\nDelete anyway?`:`Delete batch PO ${sb.po_number}?\n\nThis removes the PO and unlinks it from any source sales orders. This cannot be undone.`;
+                if(!window.confirm(warn))return;
+                const soIdsToFix=new Set((sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean));
+                soIdsToFix.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;
+                  const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_po_number!==sb.po_number&&pl.po_id!==sb.po_number)}));
+                  savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
+                });
+                setSubmittedBatches(prev=>prev.filter(b=>b.po_number!==sb.po_number));
+                nf('Deleted '+sb.po_number);
+              }}>🗑 Delete</button>
+            </td>
+          </tr>)}
+          </tbody></table>
+        </div>
+      </details>}
 
       {/* Batch-eligible vendors */}
       <div className="card"><div className="card-header"><h2>Batch-Eligible Vendors</h2></div><div className="card-body">
