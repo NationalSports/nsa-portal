@@ -83,10 +83,19 @@ const fmtPrice = (p) => {
   if (!n) return null;
   return '$' + (Number.isInteger(n) ? n : n.toFixed(2));
 };
+// Short date for the saved-orders list (handles ISO timestamps, e.g. "Jun 19").
+const fmtUpdated = (d) => {
+  const dt = new Date(d);
+  if (isNaN(dt)) return '';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
 
 // ── Order list persistence + clipboard ───────────────────────────────
 const LIST_KEY = 'nsa_adidas_order_list';
 const COACH_KEY = 'nsa_adidas_coach_info';
+// Which saved order (coach_saved_orders.id) the working cart is tied to, so a
+// reload keeps the cart linked to its saved order. null = unsaved working cart.
+const ACTIVE_ORDER_KEY = 'nsa_adidas_active_order';
 const loadJson = (k, fb) => { try { return JSON.parse(localStorage.getItem(k)) ?? fb; } catch { return fb; } };
 const saveJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 async function copyText(t) {
@@ -748,7 +757,8 @@ function downscaleImage(file, maxDim = 1600) {
 }
 
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account }) {
+function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account,
+  savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
   const [coach, setCoach] = useState(() => {
     const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
     // Signed-in coach account prefills anything the browser doesn't remember
@@ -759,11 +769,40 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
   const [state, setState] = useState('idle'); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState('');
 
+  // Saved-order controls (signed-in coaches only): name the current list, save
+  // it, browse the team's saved orders, rename/delete.
+  const [orderName, setOrderName] = useState('');
+  const [saveState, setSaveState] = useState('idle'); // idle | saving | saved
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [renameId, setRenameId] = useState(null);
+  const [renameVal, setRenameVal] = useState('');
+  const activeOrder = (savedOrders || []).find((o) => o.id === activeOrderId) || null;
+  // When the coach loads a different saved order, sync the name/notes fields to
+  // it. Keyed on the loaded id only, so saving (which doesn't change the id)
+  // never clobbers what they're typing.
+  useEffect(() => {
+    if (!activeOrderId) return;
+    const o = (savedOrders || []).find((x) => x.id === activeOrderId);
+    if (o) { setOrderName(o.name && o.name !== 'Untitled order' ? o.name : ''); setNotes(o.notes || ''); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeOrderId]);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  const doSave = async (forceNew) => {
+    if (!account || !list.length || !onSaveOrder) return;
+    setSaveState('saving');
+    const r = await onSaveOrder({ name: orderName, notes, forceNew });
+    if (r && r.error) { setSaveState('idle'); notify && notify(r.error); return; }
+    setSaveState('saved');
+    notify && notify(forceNew ? 'Saved as a new order' : 'Order saved');
+    setTimeout(() => setSaveState('idle'), 1600);
+  };
+  const savedBtn = { background: '#fff', border: '1px solid #E2E5EA', borderRadius: 7, padding: '4px 9px', fontSize: 11, fontWeight: 600, color: '#3A4150', cursor: 'pointer', fontFamily: 'inherit', flex: 'none' };
 
   const setField = (k) => (e) => {
     const next = { ...coach, [k]: e.target.value };
@@ -829,9 +868,18 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) throw new Error(d.error || 'Something went wrong');
-      setState('sent');
-      clearList();
-      setImages([]);
+      if (account && onSaveOrder) {
+        // Record the submit against the coach's saved order (creating one if the
+        // cart wasn't saved yet) and keep the list — submitted orders stay
+        // editable and re-submittable. The image attachments are email-only.
+        await onSaveOrder({ name: orderName, notes, submit: { requestId: d.id } });
+        setState('sent');
+        setImages([]);
+      } else {
+        setState('sent');
+        clearList();
+        setImages([]);
+      }
     } catch (e) {
       setState('error');
       setErrMsg(e.message || 'Could not send — please try again');
@@ -855,14 +903,95 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
               Your rep has your list and will follow up with a formal estimate at your team pricing.
               A copy went to <b>{coach.email}</b>'s rep inbox — reply there with any changes.
             </p>
-            <button className="ai-more" style={{ margin: '18px auto 0' }} onClick={onClose}>Done</button>
+            {account ? (
+              <>
+                <p style={{ fontSize: 13, color: '#6A7180', lineHeight: 1.5, marginTop: 6 }}>
+                  We saved this as <b>{orderName.trim() || 'Untitled order'}</b> in your team's orders — edit it and re-send anytime.
+                </p>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap' }}>
+                  <button className="ai-more" onClick={() => setState('idle')}>Back to this order</button>
+                  <button className="ai-more" onClick={onClose}>Done</button>
+                </div>
+              </>
+            ) : (
+              <button className="ai-more" style={{ margin: '18px auto 0' }} onClick={onClose}>Done</button>
+            )}
           </div>
         ) : (
           <>
             <div style={{ flex: 1, overflowY: 'auto', padding: '6px 20px' }}>
+              {account && (
+                <div style={{ margin: '8px 0 2px' }}>
+                  <button
+                    onClick={() => setSavedOpen((s) => !s)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none', padding: '6px 0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: '#191919' }}>
+                    <span style={{ fontSize: 11, color: '#9AA1AC' }}>{savedOpen ? '▾' : '▸'}</span>
+                    Saved orders{savedOrders.length ? ` (${savedOrders.length})` : ''}
+                    <span style={{ flex: 1 }} />
+                    {activeOrder && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#6A7180', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>Editing: {activeOrder.name}</span>}
+                  </button>
+                  {savedOpen && (
+                    <div style={{ marginTop: 4 }}>
+                      {savedLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '6px 0' }}>Loading…</div>}
+                      {!savedLoading && savedOrders.length === 0 && (
+                        <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '4px 0 8px' }}>No saved orders yet — build a list and tap Save below to keep it for later.</div>
+                      )}
+                      {savedOrders.map((o) => {
+                        const u = (Array.isArray(o.lines) ? o.lines : []).reduce((a, l) => a + (parseInt(l.qty) || 0), 0);
+                        const isActive = o.id === activeOrderId;
+                        return (
+                          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px', borderRadius: 8, background: isActive ? '#F0F4FF' : '#F7F8FA', border: '1px solid ' + (isActive ? '#C7D6FF' : '#EEF0F3'), marginBottom: 6 }}>
+                            {renameId === o.id ? (
+                              <input
+                                className="ai-input" autoFocus value={renameVal}
+                                onChange={(e) => setRenameVal(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); } if (e.key === 'Escape') setRenameId(null); }}
+                                onBlur={() => { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); }}
+                                style={{ flex: 1, padding: '4px 8px', fontSize: 12.5 }} />
+                            ) : (
+                              <button onClick={() => onLoadOrder && onLoadOrder(o)} title="Load this order into your list"
+                                style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.name || 'Untitled order'}</div>
+                                <div style={{ fontSize: 11, color: '#6A7180', marginTop: 1 }}>
+                                  {u} unit{u === 1 ? '' : 's'} · {fmtUpdated(o.updated_at)}
+                                  {o.submit_count > 0 ? ` · sent ${o.submit_count}×` : ''}
+                                  {o.created_by_name ? ` · ${o.created_by_name}` : ''}
+                                </div>
+                              </button>
+                            )}
+                            {renameId !== o.id && (
+                              <>
+                                <button onClick={() => onLoadOrder && onLoadOrder(o)} style={savedBtn}>Load</button>
+                                <button onClick={() => { setRenameId(o.id); setRenameVal(o.name === 'Untitled order' ? '' : (o.name || '')); }} style={savedBtn}>Rename</button>
+                                <button onClick={() => { if (window.confirm(`Delete "${o.name || 'Untitled order'}"? This can't be undone.`)) onDeleteOrder && onDeleteOrder(o.id); }} style={{ ...savedBtn, color: '#B91C1C' }}>Delete</button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <button onClick={() => onNewOrder && onNewOrder()} style={{ background: 'none', border: '1px dashed #C6CAD2', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600, color: '#6A7180', cursor: 'pointer', fontFamily: 'inherit' }}>+ Start a new blank order</button>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0 4px' }}>
+                    <input className="ai-input" placeholder={activeOrder ? activeOrder.name : 'Name this order (e.g. Fall practice gear)'}
+                      value={orderName} onChange={(e) => setOrderName(e.target.value)} style={{ flex: 1 }} />
+                    <button onClick={() => doSave(false)} disabled={!list.length || saveState === 'saving'}
+                      style={{ border: 'none', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: list.length ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: list.length ? '#191919' : '#C6CAD2', color: '#fff', whiteSpace: 'nowrap' }}>
+                      {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved ✓' : activeOrder ? 'Save' : 'Save order'}
+                    </button>
+                    {activeOrder && (
+                      <button onClick={() => doSave(true)} disabled={!list.length || saveState === 'saving'} title="Save as a separate copy"
+                        style={{ border: '1px solid #E2E5EA', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', background: '#fff', color: '#3A4150', whiteSpace: 'nowrap' }}>
+                        Save as new
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ borderBottom: '1px solid #EEF0F3', margin: '6px 0 2px' }} />
+                </div>
+              )}
               {list.length === 0 && (
                 <p style={{ fontSize: 14, color: '#6A7180', padding: '22px 0', textAlign: 'center' }}>
-                  Your list is empty — open a style and type quantities under the sizes you need.
+                  Your list is empty — {account ? 'load a saved order above, or open' : 'open'} a style and type quantities under the sizes you need.
                 </p>
               )}
               {groups.map((g) => {
@@ -1005,6 +1134,7 @@ export default function AdidasInventory() {
   const [shown, setShown] = useState(PAGE_SIZE);
   const [openStyle, setOpenStyle] = useState(null);
   const [list, setList] = useState(() => loadJson(LIST_KEY, []));
+  const [activeOrderId, setActiveOrderId] = useState(() => loadJson(ACTIVE_ORDER_KEY, null));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -1120,6 +1250,91 @@ export default function AdidasInventory() {
     const l = list.find((x) => x.sku === sku && x.size === size);
     return l ? l.qty : 0;
   }, [list]);
+
+  // ── Saved orders (signed-in coaches; team-shared via coach_saved_orders) ──
+  const [savedOrders, setSavedOrders] = useState([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const SAVED_COLS = 'id,name,notes,lines,status,submit_count,last_submitted_at,created_by_name,updated_at';
+  const setActiveOrder = useCallback((id) => { setActiveOrderId(id); saveJson(ACTIVE_ORDER_KEY, id); }, []);
+
+  // Load the team's saved orders whenever the signed-in account changes (RLS
+  // limits the rows to this coach's customer); clears on sign-out.
+  const loadSavedOrders = useCallback(async () => {
+    if (!coach || !coach.customerId) { setSavedOrders([]); return; }
+    setSavedLoading(true);
+    const { data, error } = await supabase
+      .from('coach_saved_orders').select(SAVED_COLS)
+      .eq('customer_id', coach.customerId).order('updated_at', { ascending: false });
+    setSavedLoading(false);
+    if (!error) setSavedOrders(data || []);
+  }, [coach]);
+  useEffect(() => { loadSavedOrders(); }, [loadSavedOrders]);
+
+  const linesForSave = useCallback(() => list.map((l) => ({
+    sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size,
+    qty: l.qty, price: l.price, inbound: l.inbound || null, decoration: l.decoration || null,
+  })), [list]);
+
+  // Create or update a saved order from the current cart. forceNew always inserts
+  // a copy; submit marks it submitted and bumps the counters but keeps it
+  // editable/re-submittable. Returns { data } or { error }.
+  const saveOrder = useCallback(async ({ name, notes, forceNew, submit } = {}) => {
+    if (!coach || !coach.customerId) return { error: 'Sign in to save orders' };
+    const clean = { name: (name || '').trim() || 'Untitled order', notes: (notes || '').trim() || null, lines: linesForSave(), updated_by_email: coach.email };
+    const targetId = forceNew ? null : activeOrderId;
+    try {
+      if (targetId) {
+        const patch = { ...clean };
+        if (submit) {
+          const cur = savedOrders.find((o) => o.id === targetId);
+          patch.status = 'submitted';
+          patch.submit_count = ((cur && cur.submit_count) || 0) + 1;
+          patch.last_submitted_at = new Date().toISOString();
+          if (submit.requestId) patch.last_request_id = submit.requestId;
+        }
+        const { data, error } = await supabase.from('coach_saved_orders').update(patch).eq('id', targetId).select(SAVED_COLS).single();
+        if (error) return { error: error.message };
+        setSavedOrders((prev) => [data, ...prev.filter((o) => o.id !== data.id)]);
+        setActiveOrder(data.id);
+        return { data };
+      }
+      const ins = { customer_id: coach.customerId, created_by_email: coach.email, created_by_name: coach.name || null, brand: 'adidas', ...clean };
+      if (submit) { ins.status = 'submitted'; ins.submit_count = 1; ins.last_submitted_at = new Date().toISOString(); if (submit.requestId) ins.last_request_id = submit.requestId; }
+      const { data, error } = await supabase.from('coach_saved_orders').insert(ins).select(SAVED_COLS).single();
+      if (error) return { error: error.message };
+      setSavedOrders((prev) => [data, ...prev]);
+      setActiveOrder(data.id);
+      return { data };
+    } catch (e) { return { error: e.message || 'Could not save' }; }
+  }, [coach, activeOrderId, savedOrders, linesForSave, setActiveOrder]);
+
+  const loadOrderIntoCart = useCallback((o) => {
+    if (list.length && activeOrderId !== o.id && !window.confirm('Replace your current list with this saved order?')) return;
+    const lines = Array.isArray(o.lines) ? o.lines : [];
+    setList(lines); saveJson(LIST_KEY, lines);
+    setActiveOrder(o.id);
+    notify(`Loaded “${o.name || 'Untitled order'}”`);
+  }, [list, activeOrderId, setActiveOrder, notify]);
+
+  const renameOrder = useCallback(async (id, name) => {
+    const nm = (name || '').trim() || 'Untitled order';
+    const { data, error } = await supabase.from('coach_saved_orders').update({ name: nm, updated_by_email: coach && coach.email }).eq('id', id).select(SAVED_COLS).single();
+    if (!error && data) setSavedOrders((prev) => prev.map((o) => (o.id === id ? data : o)));
+    else if (error) notify(error.message);
+  }, [coach, notify]);
+
+  const deleteOrder = useCallback(async (id) => {
+    const { error } = await supabase.from('coach_saved_orders').delete().eq('id', id);
+    if (error) { notify(error.message); return; }
+    setSavedOrders((prev) => prev.filter((o) => o.id !== id));
+    if (activeOrderId === id) setActiveOrder(null);
+  }, [activeOrderId, setActiveOrder, notify]);
+
+  const newBlankOrder = useCallback(() => {
+    if (list.length && !window.confirm('Clear your current list to start a new order?')) return;
+    setList([]); saveJson(LIST_KEY, []);
+    setActiveOrder(null);
+  }, [list, setActiveOrder]);
 
   useEffect(() => {
     let alive = true;
@@ -1579,11 +1794,13 @@ export default function AdidasInventory() {
         );
       })()}
 
-      {list.length > 0 && !drawerOpen && (
+      {/* Show the launcher when there's a working list, or — for signed-in
+          coaches — when the team has saved orders to reopen even with an empty cart. */}
+      {(list.length > 0 || (coach && savedOrders.length > 0)) && !drawerOpen && (
         <button className="ai-fab" onClick={() => setDrawerOpen(true)}>
-          Order list
+          {list.length > 0 ? 'Order list' : 'Saved orders'}
           <span style={{ background: '#fff', color: '#191919', borderRadius: 999, minWidth: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 800, padding: '0 6px' }}>
-            {list.reduce((a, l) => a + l.qty, 0)}
+            {list.length > 0 ? list.reduce((a, l) => a + l.qty, 0) : savedOrders.length}
           </span>
         </button>
       )}
@@ -1598,6 +1815,14 @@ export default function AdidasInventory() {
           onClose={() => setDrawerOpen(false)}
           notify={notify}
           account={coach}
+          savedOrders={savedOrders}
+          activeOrderId={activeOrderId}
+          savedLoading={savedLoading}
+          onSaveOrder={saveOrder}
+          onLoadOrder={loadOrderIntoCart}
+          onRenameOrder={renameOrder}
+          onDeleteOrder={deleteOrder}
+          onNewOrder={newBlankOrder}
         />
       )}
 
