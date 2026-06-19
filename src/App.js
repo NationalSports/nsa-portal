@@ -246,6 +246,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
+import SSOrderModal from './SSOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
@@ -3671,6 +3672,7 @@ export default function App(){
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   const[expandedVendors,setExpandedVendors]=useState({});// which vendor batch cards are expanded (collapsed by default)
   const[sanmarPreview,setSanMarPreview]=useState(null);// {poNumber,batchPOs,vendorName} — SanMar dry-run preview modal
+  const[ssOrder,setSSOrder]=useState(null);// {poNumber,batchPOs,vendorName} — S&S Activewear API order modal
   // Inventory adjustments log & inventory POs
   const[invAdjLog,setInvAdjLog]=useState(()=>loadState('inv_adj_log',[]));// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
   // Pure initializer — no side effects so StrictMode double-invocation is safe.
@@ -11857,6 +11859,10 @@ export default function App(){
               onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:()=>orderVendorBatch({vendorKey:vk})})}>
               🚀 Submit SanMar Order (API)
             </button>}
+            {vk==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:()=>orderVendorBatch({vendorKey:vk})})}>
+              🚀 Order via S&S API
+            </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
               Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
@@ -11909,6 +11915,7 @@ export default function App(){
       </div></div>
       </>}
       {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}/>}
+      {ssOrder&&<SSOrderModal {...ssOrder} onClose={()=>setSSOrder(null)}/>}
     </>);
   };
 

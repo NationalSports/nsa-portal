@@ -970,6 +970,95 @@ const ssGetStyles = async () => await ssApiCall('/Styles');
 const ssGetBrands = async () => await ssApiCall('/Brands');
 const ssGetCategories = async () => await ssApiCall('/Categories');
 
+// ─── S&S Activewear SKU resolution + order submit ───
+// S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
+// order lines carry style/color/size, so resolve the Sku live from the Products API.
+// CORRECTNESS RULE: only fill a Sku on an exact color+size match — never guess, so an
+// unmatched line stays blocked (caller falls back to manual ordering).
+const ssResolveSkus = async (descriptors) => {
+  const resolved = {};
+  const candidates = {};
+  const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
+  for (const style of styles) {
+    let items = [];
+    try {
+      // S&S /Products?style= expects a numeric styleID, not the style name — so resolve
+      // the styleID first via /Styles?search= (the same path our other S&S lookups use),
+      // then fetch that style's products.
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(style));
+      const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
+      const match = sa.find(s => _smNorm(s.partNumber) === _smNorm(style) || _smNorm(s.styleName) === _smNorm(style)) || sa[0];
+      const styleID = match && (match.styleID || match.StyleID);
+      if (styleID) {
+        const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
+        items = Array.isArray(data) ? data : (data ? [data] : []);
+      }
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
+    const cand = [];
+    const map = {}; // normalized "color|size" -> sku
+    for (const r of items) {
+      const sku = String(r.sku || r.Sku || r.gtin || '');
+      if (!sku) continue;
+      const color = r.colorName || r.color || '';
+      const size = r.sizeName || r.size || '';
+      cand.push({ color, size, sku });
+      const mk = _smNorm(color) + '|' + _smNorm(size);
+      if (color && size && !(mk in map)) map[mk] = sku;
+    }
+    candidates[style] = cand;
+    for (const d of descriptors) {
+      if (String(d.style || '').toUpperCase().trim() !== style) continue;
+      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      if (map[mk]) resolved[d.key] = map[mk];
+    }
+    // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
+    // For any line still unmatched, retry against the base style — still an exact color+size match.
+    const _dash = style.lastIndexOf('-');
+    const _base = _dash > 0 ? style.slice(0, _dash) : '';
+    if (_base && descriptors.some(d => String(d.style || '').toUpperCase().trim() === style && !resolved[d.key])) {
+      let items2 = [];
+      try {
+        const sl2 = await ssApiCall('/Styles?search=' + encodeURIComponent(_base));
+        const sa2 = Array.isArray(sl2) ? sl2 : (sl2 ? [sl2] : []);
+        const m2 = sa2.find(s => _smNorm(s.partNumber) === _smNorm(_base) || _smNorm(s.styleName) === _smNorm(_base)) || sa2[0];
+        const sid2 = m2 && (m2.styleID || m2.StyleID);
+        if (sid2) { const d2 = await ssApiCall('/Products/?style=' + encodeURIComponent(sid2)); items2 = Array.isArray(d2) ? d2 : (d2 ? [d2] : []); }
+      } catch (e) { /* leave unresolved */ }
+      for (const r of items2) {
+        const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
+        const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
+        candidates[style].push({ color, size, sku });
+        const mk2 = _smNorm(color) + '|' + _smNorm(size);
+        for (const d of descriptors) {
+          if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
+          if (_smNorm(d.color) + '|' + _smNorm(d.size) === mk2) resolved[d.key] = sku;
+        }
+      }
+    }
+  }
+  return { resolved, candidates };
+};
+
+// Submit a built S&S order (the `order` object from buildSSOrderPayload) via
+// POST /v2/orders/. When order.testOrder is true, S&S creates & cancels it — a safe
+// validation with nothing shipped. Resolves to { orderNumber, invoiceNumber,
+// lineErrors }; throws Error(<S&S message>) on failure.
+const ssSubmitOrder = async (order) => {
+  const data = await ssApiCall('/orders', { method: 'POST', body: JSON.stringify(order) });
+  const arr = Array.isArray(data) ? data : (data?.Orders || data?.orders || (data?.orderNumber ? [data] : []));
+  const lineErrors = (data && (data.LineErrors || data.lineErrors)) || [];
+  const first = arr[0] || {};
+  const orderNumber = first.orderNumber || first.OrderNumber || data?.orderNumber;
+  if (!orderNumber) {
+    const msg = lineErrors.length
+      ? lineErrors.map(e => e.error || e.Error || e.message || (typeof e === 'string' ? e : JSON.stringify(e))).join('; ')
+      : (data?.message || data?.error || (typeof data === 'string' ? data : 'S&S did not return an order number'));
+    throw new Error(msg);
+  }
+  console.log(`[S&S] order ok (${order.testOrder ? 'TEST' : 'LIVE'}):`, orderNumber);
+  return { orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data };
+};
+
 const testSSConnection = async () => {
   try { await ssGetBrands(); console.log('[S&S] Connection test successful'); return true; }
   catch (error) { console.error('[S&S] Connection test failed:', error); return false; }
@@ -1246,4 +1335,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
