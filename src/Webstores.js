@@ -379,15 +379,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
     // panel. Staff-readable; applied art is denormalized onto items so the public
     // storefront never needs to read it.
     let libraryArt = [];
+    let storeColors = [];
     if (store.customer_id) {
-      const { data: cust } = await supabase.from('customers').select('id,parent_id,art_files,alpha_tag,name').eq('id', store.customer_id).maybeSingle();
+      const { data: cust } = await supabase.from('customers').select('id,parent_id,art_files,alpha_tag,name,pantone_colors').eq('id', store.customer_id).maybeSingle();
       const own = (cust?.art_files || []).map((a) => ({ ...a, _src: 'library', _srcLabel: 'Team library', _srcCustId: cust.id }));
       let parentArt = [];
+      let parentColors = [];
       if (cust?.parent_id) {
-        const { data: par } = await supabase.from('customers').select('art_files,alpha_tag,name').eq('id', cust.parent_id).maybeSingle();
+        const { data: par } = await supabase.from('customers').select('art_files,alpha_tag,name,pantone_colors').eq('id', cust.parent_id).maybeSingle();
         parentArt = (par?.art_files || []).map((a) => ({ ...a, _src: 'parent', _srcLabel: (par?.alpha_tag || par?.name || 'Parent') + ' library', _srcCustId: cust.parent_id }));
+        parentColors = par?.pantone_colors || [];
       }
       libraryArt = [...own, ...parentArt].filter((a) => !a.archived);
+      // The store's color palette (child's pantone, falling back to the parent org's)
+      // — drives the picker's default "school colors" filter.
+      storeColors = (cust?.pantone_colors && cust.pantone_colors.length) ? cust.pantone_colors : parentColors;
     }
     setDetail({
       catalog,
@@ -401,6 +407,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], onCreateSO, onOpenSO }) 
       transfers: transferRes.data || [],
       coupons: couponRes.data || [],
       libraryArt,
+      storeColors,
     });
     setDetailLoading(false);
   }, []);
@@ -1467,7 +1474,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={detail?.libraryArt || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={detail?.libraryArt || []} storeColors={detail?.storeColors || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1547,7 +1554,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1594,7 +1601,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} onPick={(p) => setPending(p)} onPickMany={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
@@ -2082,48 +2089,100 @@ function ProductSearch({ label, onPick, onClose, compact }) {
   );
 }
 
+// Map a store's pantone colors to the color-WORDS that appear in catalog color
+// strings, so the picker can default to a school's colors. Each family lists the
+// words seen in product colors ("Team Green / White", "Athletic Gold/Black", …).
+const _COLOR_FAMILIES = [
+  { fam: 'white', rgb: [245, 245, 245], words: ['white'] },
+  { fam: 'black', rgb: [25, 25, 25], words: ['black'] },
+  { fam: 'grey', rgb: [128, 128, 128], words: ['grey', 'gray', 'onix', 'onyx', 'charcoal', 'silver', 'graphite', 'pewter', 'heather'] },
+  { fam: 'red', rgb: [200, 16, 46], words: ['red', 'scarlet', 'crimson', 'cardinal'] },
+  { fam: 'maroon', rgb: [111, 38, 61], words: ['maroon', 'burgundy', 'wine', 'cardinal'] },
+  { fam: 'orange', rgb: [255, 106, 19], words: ['orange'] },
+  { fam: 'gold', rgb: [255, 184, 28], words: ['gold', 'vegas', 'maize'] },
+  { fam: 'yellow', rgb: [250, 224, 60], words: ['yellow'] },
+  { fam: 'green', rgb: [0, 132, 61], words: ['green', 'kelly', 'forest'] },
+  { fam: 'teal', rgb: [0, 142, 151], words: ['teal', 'aqua', 'mint'] },
+  { fam: 'blue', rgb: [0, 87, 184], words: ['blue', 'royal', 'carolina'] },
+  { fam: 'navy', rgb: [0, 34, 68], words: ['navy'] },
+  { fam: 'purple', rgb: [95, 37, 159], words: ['purple', 'violet'] },
+  { fam: 'pink', rgb: [227, 28, 121], words: ['pink', 'rose'] },
+  { fam: 'brown', rgb: [90, 58, 41], words: ['brown'] },
+  { fam: 'tan', rgb: [182, 165, 147], words: ['tan', 'khaki', 'beige', 'sand', 'taupe', 'stone', 'cream', 'natural'] },
+];
+const _hexToRgb = (hex) => { const h = String(hex || '').replace('#', ''); if (h.length !== 6) return null; return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; };
+const colorFamilyOf = (hex) => {
+  const rgb = _hexToRgb(hex); if (!rgb) return null;
+  let best = null, bd = Infinity;
+  for (const f of _COLOR_FAMILIES) { const d = (f.rgb[0] - rgb[0]) ** 2 + (f.rgb[1] - rgb[1]) ** 2 + (f.rgb[2] - rgb[2]) ** 2; if (d < bd) { bd = d; best = f; } }
+  return best;
+};
+const storeColorWords = (pantone) => {
+  const words = new Set();
+  for (const pc of (pantone || [])) { const f = colorFamilyOf(pc && pc.hex); if (f) f.words.forEach((w) => words.add(w)); }
+  return [...words];
+};
+// Match a product's PRIMARY (first) color segment so "Team Green / White" (green-led)
+// is excluded for a red/white school, while "White / Black" (white-led) is included.
+const productMatchesColors = (productColor, words) => {
+  if (!words.length) return true;
+  const primary = String(productColor || '').split(/[/,|]| - /)[0].toLowerCase();
+  return words.some((w) => primary.includes(w));
+};
+
 // ── Catalog product picker — live-look card grid for adding items to a store ──
 // Same visual language as the public catalog (/adidas live-look): a search box,
 // brand/category quick-filter pills, and a responsive card grid. Picking a card
 // hands off to SinglePriceEditor (price / fundraising / personalization),
 // unchanged. State is a simple "filter spec" ({ q, brand, category }) so the
 // future AI-brief and customer self-serve flows can drive the same engine.
-function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], initialFilter = {} }) {
   const [q, setQ] = useState(initialFilter.q || '');
   const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
   const [catSel, setCatSel] = useState(initialFilter.category || null);
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [limit, setLimit] = useState(48);
-  const [inStockOnly, setInStockOnly] = useState(false); // default: show ALL colorways (out-of-stock just dims); toggle to hide
+  const [limit, setLimit] = useState(60);
+  const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
+  const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
+  const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
+  useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
+  const [selected, setSelected] = useState(() => new Set());
+  const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Footwear'];
 
+  // Load when there's a search OR a chosen category/brand — so a rep can browse by
+  // filter without typing. No filter + no query shows the browse prompt.
+  const active = q.trim().length >= 2 || !!brandSel || !!catSel;
   useEffect(() => {
-    if (q.trim().length < 2) { setResults([]); return; }
+    if (!active) { setResults([]); return; }
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      const { data } = await supabase
-        .from('products')
-        .select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
-        .or(`name.ilike.%${q}%,sku.ilike.%${q}%`)
-        .limit(limit);
+      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
+      if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+      if (brandSel) query = query.eq('brand', brandSel);
+      if (catSel) query = query.eq('category', catSel);
+      const { data } = await query.limit(limit);
       const rows = data || [];
-      // Annotate each hit with live availability (same source as the catalog
-      // live-look) so the in-stock filter and the per-card badges agree.
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [q, limit]);
+  }, [q, brandSel, catSel, limit, active]);
 
-  // Quick-filter pills derived from the current result set.
   const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
-  const cats = [...new Set(results.map((r) => r.category).filter(Boolean))].sort();
-  const matched = results.filter((r) => (!brandSel || r.brand === brandSel) && (!catSel || r.category === catSel));
+  const matched = results.filter((r) => !colorOnly || productMatchesColors(r.color, colorWords));
   const inStockN = matched.reduce((a, r) => a + ((r._stock?.units || 0) > 0 ? 1 : 0), 0);
   const shown = inStockOnly ? matched.filter((r) => (r._stock?.units || 0) > 0) : matched;
-  const enough = q.trim().length >= 2;
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selProducts = shown.filter((p) => selected.has(p.id));
+
+  const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
+    <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
+      <span style={{ width: 14, height: 14, borderRadius: 4, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff', background: on ? c : '#cbd5e1' }}>{on ? '✓' : ''}</span>{children}
+    </button>
+  );
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -2135,65 +2194,73 @@ function ProductPicker({ label, onPick, onClose, initialFilter = {} }) {
         </div>
 
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search your catalog — name, style name, or SKU…" aria-label="Search products" />
+          placeholder="Search by name or SKU — or pick a category below to browse…" aria-label="Search products" />
 
-        {enough && (
-          <div style={{ marginTop: 12 }}>
-            <InStockToggle on={inStockOnly} onToggle={() => setInStockOnly((v) => !v)} count={inStockN} total={matched.length} />
-          </div>
-        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+          {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
+        </div>
 
-        {enough && (brands.length > 1 || cats.length > 1) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
-            {brands.length > 1 && brands.map((b) => (
-              <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>
-            ))}
-            {brands.length > 1 && cats.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 3px' }} />}
-            {cats.length > 1 && cats.map((c) => (
-              <FilterBtn key={'c-' + c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>
-            ))}
+        {active && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12, alignItems: 'center' }}>
+            {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
+            {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockN} of {matched.length} in stock</span>
+            {brands.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 2px' }} />}
+            {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
           </div>
         )}
 
         <div style={{ marginTop: 16 }}>
-          {!enough && (
+          {!active && (
             <div style={{ textAlign: 'center', color: '#9AA1AC', fontSize: 14, padding: '34px 10px', fontWeight: 600 }}>
-              Search your catalog to add items — try a brand, a style name, or a SKU.
+              Pick a category above, or search by name/SKU, to browse what's available.
             </div>
           )}
-          {enough && searching && results.length === 0 && (
+          {active && searching && results.length === 0 && (
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching…</div>
           )}
-          {enough && !searching && shown.length === 0 && (
+          {active && !searching && shown.length === 0 && (
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
               {matched.length > 0 && inStockOnly
-                ? 'No in-stock matches — turn off “In stock only” to see out-of-stock items.'
-                : 'No matches. Try a different name or SKU.'}
+                ? 'No in-stock matches — turn off "In stock only" to see more.'
+                : colorOnly && colorWords.length
+                  ? 'No matches in the school colors — turn off "School colors" to see all.'
+                  : 'No matches. Try another category or search.'}
             </div>
           )}
           {shown.length > 0 && (
             <div className="ai-grid">
-              {shown.map((p) => <PickerCard key={p.id} p={p} onAdd={() => onPick(p)} />)}
+              {shown.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
             </div>
           )}
-          {enough && !searching && results.length >= limit && (
-            <ShowMore onClick={() => setLimit((n) => n + 48)}>Show more results</ShowMore>
+          {active && !searching && results.length >= limit && (
+            <ShowMore onClick={() => setLimit((n) => n + 60)}>Show more results</ShowMore>
           )}
         </div>
       </KitScope>
+      {selProducts.length > 0 && (
+        <div style={{ position: 'sticky', bottom: 0, background: 'rgba(255,255,255,.97)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: '0 0 12px 12px' }}>
+          <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
+          <button className="btn btn-primary" onClick={() => onPickMany && onPickMany(selProducts)}>Add {selProducts.length} to store →</button>
+          <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
+          <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
+        </div>
+      )}
     </div>
   );
 }
 
-// One catalog item, in the live-look card style.
-function PickerCard({ p, onAdd }) {
+// One catalog item, live-look card style. Click toggles selection (multi-select);
+// "Details" opens the per-item editor for price/fundraising/personalization.
+function PickerCard({ p, selected, onToggle, onDetails }) {
   const [imgErr, setImgErr] = useState(false);
   const st = p._stock || { units: 0, sizes: [], incoming: false };
   const out = (st.units || 0) <= 0;
   // Prefer the live in-stock sizes; fall back to the catalog's listed sizes.
   const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(p.available_sizes) ? p.available_sizes : []);
   return (
-    <button className="ai-card" onClick={onAdd} aria-label={`Add ${p.name || p.sku} to store`}>
+    <div className="ai-card" onClick={onToggle} role="button" aria-pressed={selected} style={{ position: 'relative', cursor: 'pointer', outline: selected ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
+      <div onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (selected ? '#2563eb' : '#cbd5e1'), background: selected ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{selected ? '✓' : ''}</div>
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
         {p.image_front_url && !imgErr
           ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
@@ -2219,11 +2286,12 @@ function PickerCard({ p, onAdd }) {
             {sizes.length > 10 && <span className="ai-chip" style={{ color: '#6A7180' }}>+{sizes.length - 10}</span>}
           </div>
         )}
-        <div style={{ marginTop: 'auto', fontSize: 12.5, fontWeight: 800, color: '#191919', borderTop: '1px dashed #E6E8EC', paddingTop: 8, textTransform: 'uppercase', letterSpacing: '.03em' }}>
-          Add to store →
+        <div style={{ marginTop: 'auto', display: 'flex', gap: 8, borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: selected ? '#dbeafe' : '#191919', color: selected ? '#1d4ed8' : '#fff' }}>{selected ? '✓ Selected' : 'Select'}</button>
+          {onDetails && <button type="button" onClick={(e) => { e.stopPropagation(); onDetails(); }} title="Set price, fundraising & options" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Details →</button>}
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
