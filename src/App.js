@@ -486,6 +486,10 @@ const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecut
 let _pollCycle=0;
 const _FULL_SYNC_EVERY=10;// every 10th poll = ~10 minutes (cold tables change rarely; realtime covers the rest)
 let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
+// app_state keys that are large and applied ONLY on the initial load — the poll/realtime reload
+// handlers never read them, so routine reloads exclude them rather than drag ~1.1 MB of JSON
+// (so_history 662kB + est_history 371kB + qb_config 82kB + …) on every fetch.
+const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_log','wh_recent_actions','job_time_logs'];
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -496,6 +500,7 @@ const _safeQuery=(table,opts)=>{
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
   const fetchPage=(start)=>{
     let q=supabase.from(table).select('*');
+    if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
     return q.range(start,start+pageSize-1);
   };
@@ -731,7 +736,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null} = opts;
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -747,6 +752,10 @@ const _dbLoad = async (opts={}) => {
     // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
     const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
     const _cold=q=>()=>(coreOnly||only)?_skip():q();
+    // Mirror of the _grp('products',…,true) gate: products are (re)built on initial + full polls + a
+    // products-realtime reload, but NOT on coreOnly polls or non-products selective reloads. Drives
+    // whether app_state needs to carry the _pimg_ image-fallback rows below.
+    const _productsLoading=only?only.has('products'):!coreOnly;
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -794,7 +803,18 @@ const _dbLoad = async (opts={}) => {
       _cold(()=>_safeQuery('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
-      ()=>only&&!only.has('products')&&!only.has('app_state')?_skip():_safeQuery('app_state'),
+      // A full SELECT * here was ~1.66 MB/call (~14% of DB CPU). Routine poll/realtime reloads apply
+      // only 6 small keys (inv_pos, inv_adj_log, inv_po_counter, submitted_batches, batch_pos,
+      // company_info), so fetch the whole table ONLY on the initial load (fullState); otherwise drop
+      // the init-only history/config blobs, and drop the _pimg_ rows too unless products are being
+      // (re)built this load (they feed product image fallbacks and nothing else).
+      ()=>{
+        if(only&&!only.has('products')&&!only.has('app_state'))return _skip();
+        if(fullState)return _safeQuery('app_state');
+        const not=[['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']];
+        if(!_productsLoading)not.push(['id','like','_pimg_*']);
+        return _safeQuery('app_state',{not});
+      },
       _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
       _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
       _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
@@ -3853,7 +3873,7 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad({histInvoices:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        const d=await Promise.race([_dbLoad({histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -3937,7 +3957,7 @@ export default function App(){
             // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
-            const d2=await _dbLoad({histInvoices:true});
+            const d2=await _dbLoad({histInvoices:true,fullState:true});
             if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
