@@ -64,12 +64,11 @@ exports.handler = async () => {
 
   try {
     // Momentec vendor id
-    const vRes = await sb('vendors?api_provider=eq.momentec&select=id,api_price_discount&limit=1');
+    const vRes = await sb('vendors?api_provider=eq.momentec&select=id&limit=1');
     const vendors = await vRes.json();
-    const vendor = Array.isArray(vendors) && vendors[0];
-    const vendorId = vendor && vendor.id;
+    const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
     if (!vendorId) return { statusCode: 200, body: 'No Momentec vendor configured (api_provider=momentec)' };
-    const discount = num(vendor.api_price_discount) || 0.15;
+    const discount = 0.15;
 
     // Paginate all products
     const pageSize = 50;

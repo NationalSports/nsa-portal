@@ -118,25 +118,32 @@ exports.handler = async () => {
     const feedUrl  = process.env.RICHARDSON_FEED_URL ||
       `${DEFAULT_FEED_URL}&user=${encodeURIComponent(feedUser)}&apikey=${encodeURIComponent(feedKey)}`;
     console.log('[richardson-sync] fetching stock feed…');
-    const feedRes = await fetch(feedUrl, { headers: { Accept: 'application/json' } });
+    const feedRes = await fetch(feedUrl, { headers: { Accept: 'application/json' }, redirect: 'follow' });
     if (!feedRes.ok) throw new Error('Richardson feed HTTP ' + feedRes.status);
     const feedText = await feedRes.text();
+    console.log('[richardson-sync] feed text length:', feedText.length, 'starts with:', feedText.trimStart().slice(0, 30));
     if (feedText.trimStart().startsWith('<')) throw new Error('Richardson feed returned HTML — check RICHARDSON_FEED_KEY');
     const rawRows = JSON.parse(feedText);
-    if (!Array.isArray(rawRows)) throw new Error('Richardson feed expected array');
+    if (!Array.isArray(rawRows)) throw new Error('Richardson feed expected array, got: ' + typeof rawRows + ' keys=' + (rawRows && typeof rawRows === 'object' ? Object.keys(rawRows).slice(0, 5).join(',') : ''));
     console.log('[richardson-sync] feed rows:', rawRows.length);
+    if (rawRows.length > 0) {
+      console.log('[richardson-sync] first row keys:', Object.keys(rawRows[0]).join(', '));
+      console.log('[richardson-sync] first row sample:', JSON.stringify(rawRows[0]).slice(0, 300));
+    }
 
     // 3. Group by style → color → sizes
     const byStyle = {};
+    let skippedNoStyle = 0, skippedNoColorSize = 0;
     for (const row of rawRows) {
-      const style = String(row.Style || '').trim();
-      if (!style) continue;
-      const { color, size } = parseDescription(row.Description, style);
-      if (!color || !size) continue;
-      const qty = (parseInt(row['Oregon DC']) || 0) + (parseInt(row['Texas DC']) || 0);
-      const nextAvail = toISODate(String(row['Next Avail'] || ''));
-      const sku = String(row.SKU || '').trim();
-      const upc = String(row.UPC || '').trim();
+      const style = String(row.Style || row.style || '').trim();
+      if (!style) { skippedNoStyle++; continue; }
+      const desc = row.Description || row.description || '';
+      const { color, size } = parseDescription(desc, style);
+      if (!color || !size) { skippedNoColorSize++; continue; }
+      const qty = (parseInt(row['Oregon DC'] || row['OregonDC'] || row.oregon_dc || 0)) + (parseInt(row['Texas DC'] || row['TexasDC'] || row.texas_dc || 0));
+      const nextAvail = toISODate(String(row['Next Avail'] || row['NextAvail'] || row.next_avail || ''));
+      const sku = String(row.SKU || row.sku || '').trim();
+      const upc = String(row.UPC || row.upc || '').trim();
       if (!byStyle[style]) byStyle[style] = {};
       const byColor = byStyle[style];
       if (!byColor[color]) byColor[color] = { variants: [], firstSku: sku };
@@ -144,7 +151,7 @@ exports.handler = async () => {
     }
 
     const styles = Object.keys(byStyle);
-    console.log('[richardson-sync] styles:', styles.length);
+    console.log('[richardson-sync] styles:', styles.length, '| skippedNoStyle:', skippedNoStyle, '| skippedNoColorSize:', skippedNoColorSize);
 
     let productsUpserted = 0, invRows = 0;
     const errors = [];
