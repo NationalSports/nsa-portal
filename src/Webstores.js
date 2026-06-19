@@ -1848,7 +1848,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -1867,7 +1867,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
 // { art_id, art_url, source_url, placement, color_label, x, y, w } where x/y are the
 // logo CENTER and w the width, as % of the garment image — the exact coordinates the
 // storefront DecoOverlay renders, so this preview matches what shoppers see.
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [] }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const backRef = useRef();
@@ -1879,6 +1879,16 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
   const sideOf = (d) => d.side || 'front';
+  // Team palette for recolor swatches — the customer's PMS colors (e.g. Red, Royal),
+  // deduped, so a single-color logo can be stamped in each team color per garment.
+  const palette = [];
+  { const seen = new Set();
+    (storeColors || []).forEach((pc) => {
+      let h = pantoneHex(pc && pc.code) || (pc && pc.hex) || '';
+      if (h && h[0] !== '#') h = '#' + h;
+      if (/^#[0-9a-f]{6}$/i.test(h) && !seen.has(h.toLowerCase())) { seen.add(h.toLowerCase()); palette.push({ label: (pc && (pc.name || pc.code)) || h, hex: h }); }
+    });
+  }
   const frontUrl = imageUrl;
   const backUrl = backImageUrl || stockBackImg || '';
   const stageUrl = side === 'back' ? backUrl : frontUrl;
@@ -1904,18 +1914,20 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
     catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
-  // Recolor the selected logo from its ORIGINAL cutout (so white→black→white round-trips
-  // cleanly) and re-upload the variant. original just restores the source cutout.
+  // Recolor the selected logo from its ORIGINAL cutout (so swaps round-trip cleanly) and
+  // re-upload the variant. choice is 'original' | 'white' | 'black' | a hex (#rrggbb) — so
+  // a single-color logo can be team Red on one garment, Royal on another. color_label keeps
+  // the choice for the active-swatch highlight.
   const recolor = async (i, choice) => {
     const d = decos[i]; if (!d) return;
     const orig = d.orig_url || d.art_url; if (!orig) return;
     if (choice === 'original') { update(i, { art_url: orig, color_label: 'original' }); return; }
+    const hex = choice === 'white' ? '#ffffff' : choice === 'black' ? '#000000' : choice;
     setRecoloring(choice); setNote('');
     try {
-      const hex = choice === 'white' ? '#ffffff' : '#000000';
       const blob = await recolorToBlob(orig, hex);
       const ext = isSvg(orig) ? 'svg' : 'png';
-      const file = new File([blob], `logo-${choice}.${ext}`, { type: blob.type });
+      const file = new File([blob], `logo-${String(hex).replace('#', '')}.${ext}`, { type: blob.type });
       const url = await cloudUpload(file, 'nsa-store-art');
       update(i, { art_url: url, color_label: choice });
     } catch (e) { setNote('Could not recolor: ' + (e.message || e)); }
@@ -2008,10 +2020,19 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4 }}>Size — {Math.round(coord(current, 'w'))}% of garment</div>
                 <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', margin: '10px 0 4px' }}>Color <span style={{ fontWeight: 400, color: '#94a3b8' }}>· recolor the logo for this garment</span></div>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
                   {[['original', 'Original'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = (current.color_label || 'original') === c; return (
                     <button key={c} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c)} style={{ flex: 1, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === c ? '…' : lbl}</button>
                   ); })}
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {palette.map((c) => { const on = (current.color_label || '') === c.hex; return (
+                    <button key={c.hex + c.label} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c.hex)} title={c.label} style={{ width: 26, height: 26, borderRadius: 6, border: on ? '2px solid #191919' : '1px solid #cbd5e1', background: c.hex, cursor: recoloring ? 'wait' : 'pointer', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.35)' }}>{recoloring === c.hex ? '…' : ''}</button>
+                  ); })}
+                  <label title="Custom color" style={{ width: 26, height: 26, borderRadius: 6, border: '1px dashed #cbd5e1', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, position: 'relative', color: '#64748b' }}>＋
+                    <input type="color" disabled={!!recoloring} onChange={(e) => recolor(sel, e.target.value)} style={{ position: 'absolute', width: 0, height: 0, opacity: 0 }} />
+                  </label>
+                  {palette.length === 0 && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Add team PMS colors to the customer to get color swatches here.</span>}
                 </div>
               </div>}
             </div>
@@ -2023,7 +2044,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
@@ -2134,7 +2155,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
         </div>
       </div>
-      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />}
+      {!isBundle && <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} onSaveLogo={onSaveLogo} />}
       <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
         <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
