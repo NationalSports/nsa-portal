@@ -2002,21 +2002,24 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const current = decos[sel];
   const currentOnSide = current && sideOf(current) === side;
   const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side);
+  const card = { background: '#fff', border: '1px solid #eef2f7', borderRadius: 12, padding: 12, marginBottom: 10 };
+  const cardTitle = { fontSize: 11, fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 8 };
+  const cardHint = { fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' };
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>Logo &amp; placement <span style={{ fontWeight: 400, color: '#94a3b8' }}>· drag the logo on the garment, pick a spot, or resize</span></div>
-      {canBack && <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-        {['front', 'back'].map((s) => { const on = side === s; return (
-          <button key={s} type="button" onClick={() => switchSide(s)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '4px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{s === 'front' ? 'Front' : 'Back'}</button>
-        ); })}
-        {side === 'back' && onBackImageChange && <button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : backUrl ? 'Replace back image' : '+ Add back image'}</button>}
-        <input ref={backRef} type="file" accept="image/*,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadBack(f); e.target.value = ''; }} />
-      </div>}
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      {/* HERO CANVAS */}
+      <div style={{ flex: '0 0 auto', width: 'min(460px, 46vw)' }}>
+        {canBack && (
+          <div style={{ display: 'flex', gap: 4, padding: 3, background: '#eef1f5', borderRadius: 10, marginBottom: 10, width: 'fit-content' }}>
+            {['front', 'back'].map((s) => { const on = side === s; return (
+              <button key={s} type="button" onClick={() => switchSide(s)} style={{ border: 'none', background: on ? '#fff' : 'transparent', color: on ? '#191919' : '#64748b', borderRadius: 8, padding: '5px 20px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', boxShadow: on ? '0 1px 3px rgba(0,0,0,.12)' : 'none' }}>{s === 'front' ? 'Front' : 'Back'}</button>
+            ); })}
+          </div>
+        )}
         <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
-          style={{ position: 'relative', width: 'min(380px, 60vw)', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: 10, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0, touchAction: 'none' }}>
+          style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: 'radial-gradient(circle at 50% 36%, #ffffff 0%, #eceff3 100%)', borderRadius: 16, overflow: 'hidden', border: '1px solid #e2e8f0', touchAction: 'none' }}>
           {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
-            : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 12, fontWeight: 700 }}>+ Add a back image</button>
+            : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
           {decos.map((d, i) => (sideOf(d) === side ? (
             <img key={i} src={d.art_url} alt="" draggable={false}
@@ -2024,61 +2027,73 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
           ) : null))}
         </div>
-        <div style={{ flex: 1, minWidth: 230 }}>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{library.length ? 'Tap a library logo to place it, or upload a new one:' : 'Upload a logo (PNG/SVG) to place it on the garment:'}</div>
+        {side === 'back' && onBackImageChange && stageUrl && <div style={{ textAlign: 'center', marginTop: 8 }}><button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : 'Replace back image'}</button></div>}
+        <input ref={backRef} type="file" accept="image/*,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadBack(f); e.target.value = ''; }} />
+        {shown.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10, justifyContent: 'center' }}>
+            {shown.map(({ d, i }, n) => (
+              <button key={i} type="button" onClick={() => setSel(i)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid ' + (i === sel ? '#191919' : '#d1d5db'), background: i === sel ? '#191919' : '#fff', color: i === sel ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}>
+                <img src={d.art_url} alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} /> Logo {n + 1}
+                <span onClick={(e) => { e.stopPropagation(); remove(i); }} style={{ color: i === sel ? '#fca5a5' : '#b91c1c', fontWeight: 800 }}>×</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* CONTROLS */}
+      <div style={{ flex: 1, minWidth: 300 }}>
+        <div style={card}>
+          <div style={cardTitle}>Logo library <span style={cardHint}>· tap to place · drop a PNG / SVG / AI to add</span></div>
           <div
             onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
             onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadLogo(f); }}
-            style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center', padding: 8, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(66px, 1fr))', gap: 8, padding: 10, border: '1.5px dashed #d7dbe2', borderRadius: 12, background: '#fafbfc' }}>
             {library.map((a) => { const u = artPlaceUrl(a); if (!u) return null; return (
-              <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ width: 48, height: 48, padding: 3, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>
-                <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              <button key={a.id} type="button" onClick={() => addLogo(a)} title={a.name || 'Logo'} style={{ aspectRatio: '1', padding: 5, borderRadius: 10, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <img src={u} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
               </button>
             ); })}
-            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} style={{ width: 48, height: 48, borderRadius: 8, border: '1.5px dashed #cbd5e1', background: '#fff', cursor: 'pointer', color: '#6A7180', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>{upBusy ? '…' : '+ Logo'}</button>
+            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} style={{ aspectRatio: '1', borderRadius: 10, border: '1.5px dashed #cbd5e1', background: '#fff', cursor: 'pointer', color: '#6A7180', fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>{upBusy ? '…' : '+ Logo'}</button>
             <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadLogo(f); e.target.value = ''; }} />
-            <span style={{ fontSize: 11, color: '#9AA1AC' }}>drop a file or click +</span>
           </div>
-          {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginBottom: 8 }}>{note}</div>}
-          {shown.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No logo on the {side} yet — tap one above to drop it on the garment.</div> : (
-            <div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                {shown.map(({ d, i }, n) => (
-                  <button key={i} type="button" onClick={() => setSel(i)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid ' + (i === sel ? '#191919' : '#d1d5db'), background: i === sel ? '#191919' : '#fff', color: i === sel ? '#fff' : '#3A4150', borderRadius: 8, padding: '3px 8px', fontSize: 12, cursor: 'pointer' }}>
-                    <img src={d.art_url} alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} /> Logo {n + 1}
-                    <span onClick={(e) => { e.stopPropagation(); remove(i); }} style={{ color: i === sel ? '#fca5a5' : '#b91c1c', fontWeight: 800 }}>×</span>
-                  </button>
-                ))}
-              </div>
-              {currentOnSide && <div style={{ background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, padding: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Placement</div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                  {ART_PLACEMENTS.map((p) => (
-                    <button key={p.id} type="button" onClick={() => update(sel, { placement: p.id, x: p.x, y: p.y, w: p.w })} style={{ border: '1px solid ' + (current.placement === p.id ? '#191919' : '#d1d5db'), background: current.placement === p.id ? '#191919' : '#fff', color: current.placement === p.id ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 10px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{p.label}</button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4 }}>Size — {Math.round(coord(current, 'w'))}% of garment</div>
-                <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', margin: '10px 0 4px' }}>Color <span style={{ fontWeight: 400, color: '#94a3b8' }}>· recolor the logo for this garment</span></div>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
-                  {[['original', 'Original'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = (current.color_label || 'original') === c; return (
-                    <button key={c} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c)} style={{ flex: 1, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === c ? '…' : lbl}</button>
-                  ); })}
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {palette.map((c) => { const on = (current.color_label || '') === c.hex; return (
-                    <button key={c.hex + c.label} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c.hex)} title={c.label} style={{ width: 26, height: 26, borderRadius: 6, border: on ? '2px solid #191919' : '1px solid #cbd5e1', background: c.hex, cursor: recoloring ? 'wait' : 'pointer', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.35)' }}>{recoloring === c.hex ? '…' : ''}</button>
-                  ); })}
-                  <label title="Custom color" style={{ width: 26, height: 26, borderRadius: 6, border: '1px dashed #cbd5e1', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, position: 'relative', color: '#64748b' }}>＋
-                    <input type="color" disabled={!!recoloring} onChange={(e) => recolor(sel, e.target.value)} style={{ position: 'absolute', width: 0, height: 0, opacity: 0 }} />
-                  </label>
-                  {palette.length === 0 && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Add team PMS colors to the customer to get color swatches here.</span>}
-                </div>
-                <ApplyToOthers deco={current} siblings={siblings} onApply={onApplyToItems} />
-              </div>}
-            </div>
-          )}
+          {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginTop: 8 }}>{note}</div>}
         </div>
+
+        {shown.length === 0 ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '6px 2px' }}>No logo on the {side} yet — tap a logo above to drop it on the garment, then position &amp; recolor it here.</div> : currentOnSide && <React.Fragment>
+          <div style={card}>
+            <div style={cardTitle}>Placement</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {ART_PLACEMENTS.map((p) => (
+                <button key={p.id} type="button" onClick={() => update(sel, { placement: p.id, x: p.x, y: p.y, w: p.w })} style={{ border: '1px solid ' + (current.placement === p.id ? '#191919' : '#d1d5db'), background: current.placement === p.id ? '#191919' : '#fff', color: current.placement === p.id ? '#fff' : '#3A4150', borderRadius: 999, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+          <div style={card}>
+            <div style={cardTitle}>Size <span style={cardHint}>· {Math.round(coord(current, 'w'))}% of garment width</span></div>
+            <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
+          </div>
+          <div style={card}>
+            <div style={cardTitle}>Color <span style={cardHint}>· recolor for this garment</span></div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              {[['original', 'Original'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = (current.color_label || 'original') === c; return (
+                <button key={c} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c)} style={{ flex: 1, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === c ? '…' : lbl}</button>
+              ); })}
+            </div>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
+              {palette.map((c) => { const on = (current.color_label || '') === c.hex; return (
+                <button key={c.hex + c.label} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c.hex)} title={c.label} style={{ width: 28, height: 28, borderRadius: 7, border: on ? '2px solid #191919' : '1px solid #cbd5e1', background: c.hex, cursor: recoloring ? 'wait' : 'pointer', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.35)' }}>{recoloring === c.hex ? '…' : ''}</button>
+              ); })}
+              <label title="Custom color" style={{ width: 28, height: 28, borderRadius: 7, border: '1px dashed #cbd5e1', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 14, position: 'relative', color: '#64748b' }}>＋
+                <input type="color" disabled={!!recoloring} onChange={(e) => recolor(sel, e.target.value)} style={{ position: 'absolute', width: 0, height: 0, opacity: 0 }} />
+              </label>
+              {palette.length === 0 && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Add team PMS colors to the customer for quick swatches.</span>}
+            </div>
+          </div>
+          <div style={card}>
+            <ApplyToOthers deco={current} siblings={siblings} onApply={onApplyToItems} />
+          </div>
+        </React.Fragment>}
       </div>
     </div>
   );
