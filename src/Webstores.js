@@ -2909,7 +2909,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [catSel, setCatSel] = useState(initialFilter.category || null);
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [limit, setLimit] = useState(60);
+  const [limit, setLimit] = useState(300);
   const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
@@ -2928,7 +2928,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [bKit, setBKit] = useState('');
   const [bRequired, setBRequired] = useState(false);
   const [bOptions, setBOptions] = useState([]);
-  const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Footwear'];
+  const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'];
+  // A pill maps to one or more real DB category values (the catalog has singular/plural
+  // and split variants), so "Hoods" also catches "Hood", "Jersey" catches the tops/bottoms, etc.
+  const CAT_MAP = { 'Hoods': ['Hoods', 'Hood'], 'Jersey': ['Jersey', 'Jerseys', 'Jersey Tops', 'Jersey Bottoms'], 'Accessories': ['Accessories', 'Sport Accessories'] };
 
   // Load when there's a search OR a chosen category/brand — so a rep can browse by
   // filter without typing. No filter + no query shows the browse prompt.
@@ -2941,15 +2944,18 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
       if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
       if (brandSel) query = query.eq('brand', brandSel);
-      if (catSel) query = query.eq('category', catSel);
-      const { data } = await query.limit(limit);
+      if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+      // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+      // category like Tees doesn't bury the school's colors past the row limit.
+      if (colorOnly && colorWords.length) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      const { data } = await query.order('name').order('color').limit(limit);
       const rows = data || [];
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [q, brandSel, catSel, limit, active]);
+  }, [q, brandSel, catSel, limit, active, colorOnly, colorWords]);
 
   const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
   // "In stock" means a real size run, not 1–2 stragglers: for S/M/L/XL apparel, require
@@ -3039,7 +3045,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
             </div>
           )}
           {active && !searching && results.length >= limit && (
-            <ShowMore onClick={() => setLimit((n) => n + 60)}>Show more results</ShowMore>
+            <ShowMore onClick={() => setLimit((n) => n + 200)}>Show more results</ShowMore>
           )}
         </div>
       </KitScope>
