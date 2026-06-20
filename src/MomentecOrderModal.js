@@ -2,12 +2,13 @@
 // (POST /v2/Order). Defaults to the STAGE (sandbox) environment, so an accidental
 // submit can't place a real production order; flip "Live production order" to send
 // to prod (behind an explicit confirm). Each line's Momentec order SKU
-// (design.colorCode.size) is stamped on the item when it's added in the Order
-// Editor, so no live SKU lookup is needed here. Credentials (logonId/password)
-// are injected server-side by momentec-proxy and never appear in this payload.
-import React, { useMemo, useState } from 'react';
+// (design.colorCode.size) comes from the stamped fields when present, and is
+// otherwise resolved live from /v2/Style (momentecResolveSkus) — so it works for
+// items added any way. Credentials (logonId/password) are injected server-side by
+// momentec-proxy and never appear in this payload.
+import React, { useEffect, useMemo, useState } from 'react';
 import { buildMomentecOrderPayload } from './momentecOrder';
-import { momentecSubmitOrder } from './vendorApis';
+import { momentecSubmitOrder, momentecResolveSkus } from './vendorApis';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -28,17 +29,38 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [resolving, setResolving] = useState(true);
+  const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
+  const [candidates, setCandidates] = useState({});     // STYLE -> [{color,colorCode,size,sku}]
+  const [resolveErr, setResolveErr] = useState('');
 
   const ship = shipTo || NSA_SHIP_TO;
   const env = live ? 'prod' : 'stage';
 
-  // Build the order (no network) — SKUs are already stamped on each line item.
-  const built = useMemo(() => buildMomentecOrderPayload({ poNumber, batchPOs, shipTo: ship }), [poNumber, batchPOs, ship]);
-  const lines = built.lines;
-  const totals = built.summary;
-  const warnings = built.warnings || [];
+  // Base lines (no network) — sku comes from the stamped _mt_skus when present.
+  const baseLines = useMemo(() => buildMomentecOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
+  const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
-  const blocked = lines.length === 0 || warnings.length > 0;
+  // Resolve any line without a stamped SKU live from /v2/Style.
+  useEffect(() => {
+    let cancelled = false;
+    if (!missing.length) { setResolving(false); return; }
+    setResolving(true); setResolveErr('');
+    momentecResolveSkus(missing)
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(resolved || {}); setCandidates(candidates || {}); })
+      .catch(e => { if (!cancelled) setResolveErr(e.message || 'SKU lookup failed'); })
+      .finally(() => { if (!cancelled) setResolving(false); });
+    return () => { cancelled = true; };
+  }, [missing]);
+
+  // Overlay resolved SKUs, then recompute warnings + the order that will be submitted.
+  const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus]);
+  const warnings = useMemo(() => lines.filter(l => !l.sku).map(l => `Line (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) has no matched Momentec SKU`), [lines]);
+  const built = useMemo(() => buildMomentecOrderPayload({ poNumber, lineItems: lines, shipTo: ship }), [poNumber, lines, ship]);
+  const totals = built.summary;
+  const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
+
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -92,11 +114,33 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             </div>
           )}
 
-          {!done && warnings.length > 0 && (
+          {!done && resolving && (
+            <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
+              <strong>🔄 Looking up Momentec SKUs…</strong> Matching each line to its design.color.size SKU. Submit unlocks once every line has one.
+            </div>
+          )}
+
+          {!done && !resolving && resolveErr && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>⚠ Cannot submit — {warnings.length} line(s) without a Momentec SKU:</strong>
+              <strong>⚠ Couldn't reach Momentec to look up SKUs:</strong> {resolveErr}. Try reopening, or order manually.
+            </div>
+          )}
+
+          {!done && !resolving && warnings.length > 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
+              <strong>⚠ Cannot submit — {warnings.length} line(s) without a matched Momentec SKU:</strong>
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
-              <div style={{ marginTop: 6, color: '#7f1d1d' }}>Re-add these lines from the Momentec live search in the Order Editor so their order SKU gets stamped, then reopen this. Otherwise order those lines manually.</div>
+              {unresolvedStyles.some(st => (candidates[st] || []).length) && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #fecaca' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Colors Momentec lists for these styles (for matching):</div>
+                  {unresolvedStyles.map(st => (candidates[st] || []).length ? (
+                    <div key={st} style={{ marginBottom: 4 }}>
+                      <code>{st}</code>: {[...new Set((candidates[st] || []).map(c => c.color).filter(Boolean))].slice(0, 16).join(' · ') || '(no colors returned)'}
+                    </div>
+                  ) : null)}
+                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color is listed but didn't match, it's a naming difference — tell me and I'll fix it. Otherwise order those lines manually.</div>
+                </div>
+              )}
             </div>
           )}
 
@@ -135,7 +179,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
                   {lines.map((l, i) => (
                     <tr key={l.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{i + 1}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>{l.sku || '⚠ missing'}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>{l.sku || (resolving ? '…' : '⚠ missing')}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
                       <td style={td}>{l.color || '—'}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
@@ -181,10 +225,10 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={blocked ? 'Every line needs a Momentec SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : blocked ? 'Every line needs a Momentec SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
-                {submitting ? 'Submitting…' : live ? '🚀 Place Order with Momentec' : '🧪 Submit Stage Order'}
+                {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with Momentec' : '🧪 Submit Stage Order'}
               </button>
             </>
           )}

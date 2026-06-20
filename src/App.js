@@ -11923,15 +11923,15 @@ export default function App(){
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
-            {vk==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+            {vk==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:()=>orderVendorBatch({vendorKey:vk})})}>
               🚀 Submit SanMar Order (API)
             </button>}
-            {vk==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+            {vk==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:()=>orderVendorBatch({vendorKey:vk})})}>
               🚀 Order via S&S API
             </button>}
-            {vk==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
+            {vk==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:()=>orderVendorBatch({vendorKey:vk})})}>
               🚀 Order via Momentec API
             </button>}

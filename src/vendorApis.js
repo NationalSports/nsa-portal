@@ -1247,6 +1247,40 @@ const momentecStyleV2 = async (design, env = 'prod') => {
   return { sku: d, styleName, brandName: 'Momentec', styleImage, styleBackImage, _mtId: d, _mtPrice: minPrice, colors };
 };
 
+// Resolve missing Momentec order SKUs (design.colorCode.size) live from /v2/Style,
+// matching each line's color (name or code) to a colorway. Mirrors ssResolveSkus so
+// the order modal never depends on an SKU stamped at add-time (it also covers items
+// added via change-color / change-SKU / older sessions).
+// `missing` = [{ key, style, color, size }] → { resolved: {key:sku}, candidates: {STYLE:[{color,colorCode,size,sku}]} }.
+const momentecResolveSkus = async (missing) => {
+  const byDesign = new Map();
+  for (const m of (missing || [])) {
+    const design = String(m.style || '').split('.')[0].trim();
+    if (!design) continue;
+    if (!byDesign.has(design)) byDesign.set(design, []);
+    byDesign.get(design).push(m);
+  }
+  const resolved = {}, candidates = {};
+  await Promise.all([...byDesign.keys()].map(async (design) => {
+    const style = await momentecStyleV2(design).catch(() => null);
+    if (!style) return;
+    const cand = [];
+    for (const c of (style.colors || [])) for (const s of (c.sizes || [])) {
+      cand.push({ color: c.colorName, colorCode: c.colorCode, size: s.sizeName, sku: `${c.sku}.${s.sizeName}` });
+    }
+    candidates[String(design).toUpperCase()] = cand;
+    for (const m of byDesign.get(design)) {
+      const wantColor = String(m.color || '').toLowerCase().trim();
+      const wantSize = String(m.size || '').toLowerCase().trim();
+      const hit = cand.find((x) =>
+        String(x.size || '').toLowerCase() === wantSize &&
+        (String(x.color || '').toLowerCase() === wantColor || String(x.colorCode || '').toLowerCase() === wantColor));
+      if (hit) resolved[m.key] = hit.sku;
+    }
+  }));
+  return { resolved, candidates };
+};
+
 const testMomentecConnection = async () => {
   try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
@@ -1413,4 +1447,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };

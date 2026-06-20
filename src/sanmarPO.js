@@ -46,6 +46,7 @@ export function buildSanMarLineItems(batchPOs) {
   let lineNumber = 1;
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
+      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._sanmar_style || (String(it.sku || '').split(/[\s_]/)[0] || it.sku || '');
       const color = it._sanmar_color || it.color || '';
       // SanMar upcharges extended sizes (2XL+). Per-size costs (if captured at PO

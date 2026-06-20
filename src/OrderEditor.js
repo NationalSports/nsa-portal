@@ -1756,7 +1756,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(n.includes('s&s')||n.includes('s & s')||n.includes('ss activewear'))return 'sss';
     return null;};
   const buildApiOrderFromPO=(po,lines)=>{
-    if(!po||po.po_type==='outside_deco')return null;
+    if(!po||po.po_type==='outside_deco'||po.drop_ship)return null;// drop ship goes direct to the customer — API order isn't valid
     const vk=_apiVendorKey(po.vendor);if(!vk)return null;
     const poId=po.po_id;const items=safeItems(o);const payloadItems=[];
     (lines||[]).forEach(ln=>{const it=items[ln.lineIdx];if(!it)return;
