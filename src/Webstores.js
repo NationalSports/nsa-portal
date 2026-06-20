@@ -1373,6 +1373,7 @@ const BLANK = {
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
   fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
+  size_upcharge_enabled: true,
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
@@ -1616,6 +1617,11 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         </div>}
         <div style={{ borderTop: '1px solid #f3f4f7', margin: '6px 0 2px' }} />
         <Toggle label={'Show families the "$X supports the team" line on the storefront'} checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
+      </Section>
+
+      <Section title="Bigger-size pricing">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Vendors charge more for 2XL/3XL and up. With this on, those sizes automatically cost the shopper a little more on the storefront — just enough to cover the bigger-size cost — while standard sizes stay the same. Turn it off to charge one price for every size.</div>
+        <Toggle label="Charge more for bigger sizes (2XL/3XL+)" checked={f.size_upcharge_enabled !== false} onChange={(v) => set('size_upcharge_enabled', v)} />
       </Section>
 
       </div>

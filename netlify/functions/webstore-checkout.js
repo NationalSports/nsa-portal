@@ -59,6 +59,15 @@ async function priceCart(sb, store, cart) {
   const { data: wprods, error: wpErr } = await sb.from('webstore_products').select('*').eq('store_id', store.id).in('id', wids);
   if (wpErr) return { error: 'Could not load products: ' + wpErr.message };
   const byId = {}; (wprods || []).forEach((p) => { byId[p.id] = p; });
+  // Per-size upcharges (2XL/3XL+) are published by the storefront view; read them
+  // server-side so the price the shopper saw is the price we charge. Resilient: if
+  // the column isn't present yet, no upcharge is applied.
+  const upMap = {};
+  try {
+    const { data: upRows } = await sb.from('webstore_storefront_products')
+      .select('webstore_product_id,size_upcharges').eq('store_id', store.id).in('webstore_product_id', wids);
+    (upRows || []).forEach((r) => { upMap[r.webstore_product_id] = r.size_upcharges || {}; });
+  } catch (_) { /* pre-migration: no size upcharges */ }
   const bundleIds = (wprods || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
   let bundleItems = [];
   if (bundleIds.length) {
@@ -103,9 +112,12 @@ async function priceCart(sb, store, cart) {
       const pnum = wp.takes_number ? String(l.player_number || '').trim().slice(0, 4) : '';
       if (wp.takes_number && !pnum) return { error: 'An item in your cart is missing a jersey number — please re-add it.' };
       const nameExtra = pname ? r2(wp.name_upcharge) : 0;
-      subtotal += r2(unitPrice * qty);
+      const size = (l.size || '').trim() || null;
+      const sizeExtra = size ? r2(Number((upMap[wp.id] || {})[size]) || 0) : 0;
+      const unit = r2(unitPrice + sizeExtra);
+      subtotal += r2(unit * qty);
       fundraise += r2((fundAmt + nameExtra) * qty);
-      lines.push({ kind: 'single', wp, qty, size: (l.size || '').trim() || null, unit_price: unitPrice, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unitPrice + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, image: wp.image_url });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, image: wp.image_url });
     }
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise) };
