@@ -498,8 +498,10 @@ const _lastLoadTimedOut=new Set();
 const _everHydratedItems=new Set();
 // Circuit breaker: track consecutive poll failures to implement exponential backoff
 let _pollConsecutiveFailures=0;
-const _POLL_BASE_INTERVAL=60000;// 60s normal interval (realtime handles instant sync)
-const _POLL_MAX_INTERVAL=120000;// 2min max backoff
+const _POLL_BASE_INTERVAL=120000;// 120s backstop. Realtime pushes live changes instantly and a
+// reload also fires on tab-focus (see onVis), so the poll is only a safety net for missed events /
+// cross-device sync — halving its frequency ~halves steady-state poll query volume.
+const _POLL_MAX_INTERVAL=300000;// 5min max backoff
 const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
 // Tiered polling: core tables every 60s, full sync (including cold tables) every 5th cycle (~5 min)
 let _pollCycle=0;
