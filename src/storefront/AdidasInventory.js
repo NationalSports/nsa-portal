@@ -1569,8 +1569,17 @@ export default function AdidasInventory() {
   useEffect(() => {
     let alive = true;
     const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
-    const baseQ = () => supabase.from('products').select(PROD_SELECT)
-      .in('brand', effectiveBrands).eq('is_active', true).or('is_archived.is.null,is_archived.eq.false');
+    // Unrestricted accounts get the named-brand catalog PLUS every SanMar-sourced
+    // item (the "Non Branded" lines) regardless of their exact brand string;
+    // restricted coaches stay locked to just their allowed named brands.
+    const unrestricted = effectiveBrands === CATALOG_BRANDS;
+    const baseQ = () => {
+      const q = supabase.from('products').select(PROD_SELECT)
+        .eq('is_active', true).or('is_archived.is.null,is_archived.eq.false');
+      return unrestricted
+        ? q.or('brand.in.(' + CATALOG_BRANDS.map((b) => '"' + b + '"').join(',') + '),inventory_source.eq.sanmar')
+        : q.in('brand', effectiveBrands);
+    };
     (async () => {
       try {
         // Phase 1: quick load — featured styles (all) + first 150 non-featured (images first).

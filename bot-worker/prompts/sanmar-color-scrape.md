@@ -1,61 +1,58 @@
-# SanMar Color Page Scrape — COWORK runbook
+# SanMar Style Pull (sanmarsports.com) — runbook
 
-Goal: pull every style/SKU number listed on `https://sanmarsports.com/pages/color` and
-upsert them into the Supabase `sanmar_style_seeds` table so the daily SanMar brands sync
-(`sanmar-brands-sync-background`) automatically picks them up.
+Goal: refresh the Supabase `sanmar_style_seeds` table with every style on
+sanmarsports.com, so the daily `sanmar-brands-sync-background` ingests them into
+the catalog. **No scraping needed** — sanmarsports.com is a Shopify store and
+exposes a public products JSON API.
 
-## What the page contains
+## The data source (preferred — API, not scraping)
 
-`https://sanmarsports.com/pages/color` is a SanMar public catalog page listing styles
-grouped by brand and color family. Each style has a style number (e.g. `K500`, `PC61`,
-`DT6000`, `3001C`). The goal is to collect **every style number visible on the page**,
-including any that require scrolling or clicking "load more" / pagination.
+`https://sanmarsports.com/products.json?limit=250&page=N` returns up to 250
+products per page as JSON. Page through it (page=1,2,3,…) until a page returns an
+empty `products` array. Each product has:
+
+- `handle` — the **style number**, lowercase (e.g. `pc78yzh` → `PC78YZH`)
+- `title` — ends with the same style number
+- `vendor` — the brand (e.g. "Port Authority", "New Era", "Gildan")
+- `variants[].sku` — SanMar's per-color/size SKUs (not needed for seeding)
+
+As of the last pull there were ~750 styles across ~27 brands over 3 pages.
 
 ## Steps
 
-1. Navigate to `https://sanmarsports.com/pages/color`. Wait for the page to fully load
-   (watch for style numbers or product tiles to appear).
-
-2. Scroll to the bottom of the page, clicking any "load more", "show all", or pagination
-   controls until no new items appear. The page may be infinite-scroll or paginated.
-
-3. Extract all style numbers from the page. Style numbers are short alphanumeric codes
-   (e.g. `K500`, `PC61`, `DT6000`, `3001C`, `ST850`, `DM108`). They typically appear:
-   - In product tile headings or captions
-   - In product URLs (e.g. `/products/K500`)
-   - In `data-style` or `data-sku` attributes
-   Collect them into a deduplicated list. Ignore color codes (e.g. `K500-537`); keep only
-   the base style (everything before the first `-`).
-
-4. Report how many unique styles you found.
-
-5. Upsert to Supabase `sanmar_style_seeds` table. Use the Supabase REST API:
+1. Fetch each page of `products.json` until empty. Collect, per product:
+   - `style` = `handle` upper-cased and trimmed
+   - `brand` = `vendor`
+2. Canonicalize brand so the four it shares with our catalog match exactly:
+   Port Authority, Sport-Tek, District, Bella+Canvas (others: keep vendor as-is).
+3. Deduplicate by `style`.
+4. Upsert to Supabase `sanmar_style_seeds` via the REST API:
    - URL: `{SUPABASE_URL}/rest/v1/sanmar_style_seeds`
    - Method: POST
-   - Headers: `apikey: {SUPABASE_SERVICE_ROLE_KEY}`, `Authorization: Bearer {KEY}`,
-     `Content-Type: application/json`, `Prefer: resolution=merge-duplicates,return=minimal`
-   - Body: array of `{ "style": "K500", "source": "cowork_scrape", "scraped_at": "<ISO timestamp>" }`
-   - Batch in groups of 500 to avoid payload limits.
+   - Headers: `apikey: {SERVICE_ROLE_KEY}`, `Authorization: Bearer {KEY}`,
+     `Content-Type: application/json`,
+     `Prefer: resolution=merge-duplicates,return=minimal`
+   - Body: array of `{ "style": "K500", "brand": "Port Authority",
+     "source": "shopify_api", "scraped_at": "<ISO timestamp>" }`
+   - Batch in groups of 500.
+5. Report: pages read, unique styles found, rows upserted.
 
-6. After upserting, trigger the brands sync to process the newly seeded styles:
-   - POST to `{SITE_URL}/.netlify/functions/sanmar-brands-sync-background`
-   - (Optional — safe to skip if the daily cron will run soon)
+## What the sync does with the seeds
 
-7. Report: styles found, styles upserted, any errors.
+`sanmar-brands-sync-background` reads `sanmar_style_seeds` and pulls each style
+from SanMar's PromoStandards API — EXCEPT:
+- **Nike** — handled by `sanmar-nike-sync` (kept branded "Nike")
+- **Richardson** — its own live feed (`richardson-sync`)
 
-## Environment variables needed
-
-- `SUPABASE_URL` — the project's Supabase REST URL
-- `SUPABASE_SERVICE_ROLE_KEY` — service role key (never the anon key)
-- `SITE_URL` — the Netlify site URL (for triggering the sync, optional)
+Everything else lands in the catalog and shows under the **"Non Branded"** filter
+on LiveLook (each card still shows its real brand). Re-running this pull is safe
+and idempotent (primary key = `style`); new styles are picked up on the next
+sync, large sets converge over a couple of runs.
 
 ## Notes
 
-- This is a read-only scrape of a public page — no login required.
-- Re-running is safe; the upsert is idempotent (primary key = style).
-- If a style number is already in `products` with a SanMar vendor, the sync will just
-  refresh it; no duplicates are created.
-- Brands in scope: Port Authority, Sport-Tek, District, Bella+Canvas. The sync function
-  filters by brand after fetching style info, so scraping all visible styles is fine.
-- If the page requires JavaScript to render (SPA), use the Playwright browser tool to
-  wait for the product grid to load before extracting style numbers.
+- Public page, no login. If `products.json` is ever blocked, fall back to the
+  Playwright browser tool on the category/color pages, but the JSON API is the
+  reliable path.
+- This only refreshes the *seed list*. Inventory, images, sizes, and pricing all
+  come from the SanMar PromoStandards API inside the sync, not from this pull.

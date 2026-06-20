@@ -3,8 +3,10 @@
 // (/adidas, /livelook) shows these brands with images, sizes, and live
 // warehouse inventory.
 //
-// Brands covered (all available on S&S with brand-name filtering):
-//   Port Authority, Sport-Tek, District, Bella+Canvas, Boxercraft, Gildan
+// Brands covered (S&S brand-name filtering):
+//   Boxercraft. (The other apparel brands — Port Authority, Sport-Tek, District,
+//   Bella+Canvas, Gildan, Jerzees — are now sourced from SanMar; see
+//   sanmar-brands-sync. Old S&S rows for those are retired at cutover.)
 //
 // Writes:
 //   products     — one row per style+color, id 'ssb-{styleName}-{colorCode}',
@@ -21,16 +23,12 @@
 
 const SS_CDN = 'https://cdn.ssactivewear.com/';
 
-// Brands to pull from S&S (case-insensitive regex match against s.brandName)
+// Brands to pull from S&S (case-insensitive regex match against s.brandName).
+// SanMar is now the source for the apparel brands we used to pull from S&S
+// (Port Authority, Sport-Tek, District, Bella+Canvas, Gildan, Jerzees) — see
+// sanmar-brands-sync. S&S only still owns Boxercraft, which SanMar doesn't carry.
 const BRAND_PATTERNS = [
-  { re: /^port\s+authority$/i,  canonical: 'Port Authority'  },
-  { re: /^sport-tek$/i,         canonical: 'Sport-Tek'       },
-  { re: /^district$/i,          canonical: 'District'        },
-  { re: /^bella\+canvas$/i,     canonical: 'Bella+Canvas'    },
-  { re: /^bella\s+canvas$/i,    canonical: 'Bella+Canvas'    },
   { re: /^boxercraft$/i,        canonical: 'Boxercraft'      },
-  { re: /^gildan$/i,            canonical: 'Gildan'          },
-  { re: /^jerzees$/i,           canonical: 'Gildan'          },
 ];
 function canonicalBrand(name) {
   for (const { re, canonical } of BRAND_PATTERNS) if (re.test(name)) return canonical;
