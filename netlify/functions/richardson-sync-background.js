@@ -70,10 +70,22 @@ function mapCategory(style, description) {
   return 'Hats';
 }
 
-// "112 Solid Black MD-LG" → { color: "Solid Black", size: "MD-LG" }
+// Two description formats exist in the Richardson feed:
+//   Format 1 (hats):    "112 Solid Black MD-LG"  → strip style prefix, last token = size
+//   Format 2 (apparel): "Rise Performance ... Black Size 2XL" → word before "Size" = color
 function parseDescription(description, style) {
   if (!description) return { color: '', size: '' };
   let s = String(description).trim();
+  // Format 2: "... [Color] Size [SizeValue]" — detect " Size " keyword near the end
+  const sizeMatch = s.match(/\s+Size\s+(\S+)\s*$/i);
+  if (sizeMatch) {
+    const size = sizeMatch[1];
+    const beforeSize = s.slice(0, sizeMatch.index).trim();
+    const words = beforeSize.split(/\s+/);
+    const color = words.pop() || '';
+    return { color, size };
+  }
+  // Format 1: "[Style] [Color words...] [Size]"
   if (style) {
     const re = new RegExp('^' + String(style).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+', 'i');
     s = s.replace(re, '');
@@ -164,7 +176,7 @@ exports.handler = async () => {
         const cost = getLevel4Price(style);
         const retail = cost ? Math.round(cost * 2 * 100) / 100 : null;
         for (const [color, grp] of Object.entries(byStyle[style])) {
-          const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 20) || 'NA';
+          const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 40) || 'NA';
           const productSku = style + '-' + colorSlug;
           const productId = 'rich-' + productSku;
           const category = mapCategory(style, color);

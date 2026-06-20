@@ -157,13 +157,34 @@ export const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='
 export const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 
 // ── File open helper ──
-export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}};
+export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){_openPdfSmart(u)}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}};
 
 // ── File filtering helpers ──
 export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
 export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+
+// ── PDF open (resilient to Cloudinary's PDF-delivery block) ──
+// Cloudinary refuses to deliver PDFs on free/untrusted accounts (HTTP 401,
+// x-cld-error "deny or ACL failure"), which the browser shows as a blank
+// "Failed to load PDF document" tab — the exact error the decoration team hit.
+// Image delivery is never blocked, so when the real PDF is denied we fall back
+// to a high-res PNG render of page 1 so the design is still viewable/printable
+// instead of a dead end. Once "Allow delivery of PDF and ZIP files" is enabled
+// in Cloudinary's Security settings the HEAD probe returns 200 and the original
+// (multi-page) PDF opens normally — and we then trust delivery for the rest of
+// the session and skip the probe. Non-Cloudinary PDFs open directly. The blank
+// tab is grabbed synchronously so pop-up blockers still honour the click.
+let _cldPdfDeliveryOk=false;
+export const _openPdfSmart=u=>{
+  if(!isUrl(u))return;
+  const win=window.open('','_blank');
+  const go=t=>{try{if(win&&!win.closed){win.location.href=t;return}}catch(_){/* cross-origin guard */}window.open(t,'_blank','noopener')};
+  if(_cldPdfDeliveryOk||!u.includes('res.cloudinary.com')){go(u);return}
+  const fallback=()=>{const png=_cloudinaryPdfThumb(u);go(png?png.replace('pg_1,f_png','pg_1,f_png,w_2400'):u)};
+  fetch(u,{method:'HEAD'}).then(r=>{if(r.ok){_cldPdfDeliveryOk=true;go(u)}else fallback()}).catch(fallback);
+};
 
 // ── Brevo SMS ──
 // SMS is currently disabled (see _smsUiEnabled). The browser must never hold the

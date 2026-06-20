@@ -19,7 +19,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -507,6 +507,10 @@ const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecut
 let _pollCycle=0;
 const _FULL_SYNC_EVERY=10;// every 10th poll = ~10 minutes (cold tables change rarely; realtime covers the rest)
 let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
+// app_state keys that are large and applied ONLY on the initial load — the poll/realtime reload
+// handlers never read them, so routine reloads exclude them rather than drag ~1.1 MB of JSON
+// (so_history 662kB + est_history 371kB + qb_config 82kB + …) on every fetch.
+const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_log','wh_recent_actions','job_time_logs'];
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -517,6 +521,7 @@ const _safeQuery=(table,opts)=>{
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
   const fetchPage=(start)=>{
     let q=supabase.from(table).select('*');
+    if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
     return q.range(start,start+pageSize-1);
   };
@@ -752,7 +757,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null} = opts;
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -768,6 +773,10 @@ const _dbLoad = async (opts={}) => {
     // always carry full child parity (otherwise snapshots would mis-diff and trigger re-saves).
     const _grp=(g,q,cold)=>()=>{if(only)return only.has(g)?q():_skip();if(cold&&coreOnly)return _skip();return q()};
     const _cold=q=>()=>(coreOnly||only)?_skip():q();
+    // Mirror of the _grp('products',…,true) gate: products are (re)built on initial + full polls + a
+    // products-realtime reload, but NOT on coreOnly polls or non-products selective reloads. Drives
+    // whether app_state needs to carry the _pimg_ image-fallback rows below.
+    const _productsLoading=only?only.has('products'):!coreOnly;
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -778,12 +787,19 @@ const _dbLoad = async (opts={}) => {
       rDismissedTodos,rDismissedNotifs,
       rHistInvs] = await _batch([
       _cold(()=>_safeQuery('team_members',{order:'name'})),
-      _grp('customers',()=>_safeQuery('customers',{order:'name'})),
-      _grp('customers',()=>_safeQuery('customer_contacts')),
+      // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
+      // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
+      // Parent and ALL children share the cold flag so a coreOnly load skips them together (group
+      // parity); setCust below is .length-guarded and the snapshot is preserved on coreOnly so an
+      // empty skip can never wipe customer state or the _diffSave baseline.
+      _grp('customers',()=>_safeQuery('customers',{order:'name'}),true),
+      _grp('customers',()=>_safeQuery('customer_contacts'),true),
       _cold(()=>_safeQuery('vendors',{order:'name'})),
-      // cold=true: products is the #1 database-CPU cost — the full ~47k-row catalog was being
-      // re-fetched on EVERY 60s poll per tab (paged LIMIT/OFFSET). Skip it on coreOnly polls;
-      // realtime (products is subscribed) + the every-10th full poll keep it fresh.
+      // products + product_inventory are COLD: a 17k-row catalog that changes only via the daily
+      // vendor syncs. Realtime (products channel) + the ~10-min full poll keep them fresh; re-pulling
+      // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
+      // (poll 4180, realtime 4031) and the poll snapshot is preserved on coreOnly (see prod: below),
+      // so a skipped coreOnly load can never empty state or the _diffSave baseline.
       _grp('products',()=>_safeQuery('products',{order:'name'}),true),
       _grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
@@ -808,15 +824,23 @@ const _dbLoad = async (opts={}) => {
       _cold(()=>_safeQuery('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
-      // cold: app_state is ~10k rows (mostly _pimg_ product-image fallbacks). Skip coreOnly polls
-      //       too; it loads on initial, on a products realtime reload (fallbacks ride with products),
-      //       and on the every-10th full poll. Cross-tab config (batch_pos etc.) syncs on full polls.
-      ()=>{if(only)return(only.has('products')||only.has('app_state'))?_safeQuery('app_state'):_skip();return coreOnly?_skip():_safeQuery('app_state');},
-      _grp('customers',()=>_safeQuery('customer_promo_programs')),
-      _grp('customers',()=>_safeQuery('customer_promo_periods')),
-      _grp('customers',()=>_safeQuery('customer_promo_usage')),
-      _grp('customers',()=>_safeQuery('customer_credits')),
-      _grp('customers',()=>_safeQuery('customer_credit_usage')),
+      // A full SELECT * here was ~1.66 MB/call (~14% of DB CPU). Routine poll/realtime reloads apply
+      // only 6 small keys (inv_pos, inv_adj_log, inv_po_counter, submitted_batches, batch_pos,
+      // company_info), so fetch the whole table ONLY on the initial load (fullState); otherwise drop
+      // the init-only history/config blobs, and drop the _pimg_ rows too unless products are being
+      // (re)built this load (they feed product image fallbacks and nothing else).
+      ()=>{
+        if(only&&!only.has('products')&&!only.has('app_state'))return _skip();
+        if(fullState)return _safeQuery('app_state');
+        const not=[['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']];
+        if(!_productsLoading)not.push(['id','like','_pimg_*']);
+        return _safeQuery('app_state',{not});
+      },
+      _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
+      _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
+      _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
+      _grp('customers',()=>_safeQuery('customer_credits'),true),
+      _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
       _cold(()=>_safeQuery('rep_csr_assignments')),
       _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
       _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
@@ -2394,7 +2418,7 @@ const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
-const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){if(_dbNotify)_dbNotify('Legacy file: '+u+' — re-upload to enable downloads')}};
+const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){_openPdfSmart(u)}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){if(_dbNotify)_dbNotify('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
@@ -3871,7 +3895,7 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad({histInvoices:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        const d=await Promise.race([_dbLoad({histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -3955,7 +3979,7 @@ export default function App(){
             // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
-            const d2=await _dbLoad({histInvoices:true});
+            const d2=await _dbLoad({histInvoices:true,fullState:true});
             if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
@@ -4169,11 +4193,7 @@ export default function App(){
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
         const _prevSnap=_dbSnap.current;
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,
-          // products is now cold (skipped on coreOnly polls) — preserve its snapshot like the other
-          // cold tables so the auto-save diff doesn't see a false "all 47k products changed" and
-          // re-save the entire catalog. State itself is preserved by the d.products.length guard below.
-          prod:d._coreOnly?_prevSnap.prod:pollProd,
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
@@ -4205,7 +4225,7 @@ export default function App(){
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
-        setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
+        if(d.customers.length)setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
