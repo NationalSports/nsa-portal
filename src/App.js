@@ -28058,13 +28058,17 @@ export default function App(){
   const[dvTab,setDvTab]=useState('embroidery');
   const[dvNewName,setDvNewName]=useState('');
   const[dvAddr,setDvAddr]=useState({});// draft ship-to address for the deco vendor being edited
+  const[featBrand,setFeatBrand]=useState('');
+  const[featProds,setFeatProds]=useState([]);
+  const[featSearch,setFeatSearch]=useState('');
+  const[featLoading,setFeatLoading]=useState(false);
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud'],['featured','Featured Styles']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -28595,6 +28599,58 @@ export default function App(){
           </div>
         </div>
       </>}
+
+      {/* FEATURED STYLES */}
+      {settingsTab==='featured'&&(()=>{
+        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
+        const loadFeatProds=async(brand)=>{
+          setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');
+          const{data}=await supabase.from('products').select('id,sku,name,color,image_front_url,is_featured').eq('brand',brand).eq('is_active',true).order('name');
+          setFeatProds(data||[]);setFeatLoading(false);
+        };
+        const toggleFeat=async(id,cur)=>{
+          setFeatProds(prev=>prev.map(p=>p.id===id?{...p,is_featured:!cur}:p));
+          const{error}=await supabase.from('products').update({is_featured:!cur}).eq('id',id);
+          if(error)nf('Error saving: '+error.message,'error');
+        };
+        const filtered=featProds.filter(p=>{
+          if(!featSearch)return true;
+          const s=featSearch.toLowerCase();
+          return(p.name||'').toLowerCase().includes(s)||(p.sku||'').toLowerCase().includes(s)||(p.color||'').toLowerCase().includes(s);
+        });
+        const featCount=featProds.filter(p=>p.is_featured).length;
+        return(<>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h3>Featured Styles</h3></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>Featured styles always appear first in the LiveLook catalog. Star the styles you want coaches and customers to see immediately when they open the page.</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+                {FEAT_BRANDS.map(b=><button key={b} className={`btn btn-sm ${featBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>featBrand!==b&&loadFeatProds(b)}>{b}</button>)}
+              </div>
+              {featBrand&&<>
+                <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
+                  <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
+                  {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} featured</span>}
+                  {featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>Loading…</span>}
+                </div>
+                {!featLoading&&filtered.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
+                  {filtered.map(p=>(
+                    <div key={p.id} onClick={()=>toggleFeat(p.id,!!p.is_featured)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:p.is_featured?'#bae6fd':'#e2e8f0',background:p.is_featured?'#f0f9ff':'#fff',cursor:'pointer'}}>
+                      {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0}}/>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name||p.sku}</div>
+                        <div style={{fontSize:11,color:'#64748b'}}>{[p.color,p.sku].filter(Boolean).join(' · ')}</div>
+                      </div>
+                      <span style={{fontSize:20,color:p.is_featured?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{p.is_featured?'★':'☆'}</span>
+                    </div>
+                  ))}
+                </div>
+              </>}
+            </div>
+          </div>
+        </>);
+      })()}
     </>)};
 
   // ─── SALES TOOLS PAGE ───

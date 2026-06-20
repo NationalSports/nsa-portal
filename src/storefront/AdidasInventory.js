@@ -310,6 +310,96 @@ async function fetchAllPages(buildQuery) {
   }
 }
 
+function buildStyles(prods, inv, inHouseRows) {
+  const bySku = {};
+  let synced = null;
+  for (const r of inv) {
+    (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
+    if (r.last_synced && (!synced || r.last_synced > synced)) synced = r.last_synced;
+  }
+  const inHouseByPid = {};
+  for (const r of inHouseRows) {
+    (inHouseByPid[r.product_id] = inHouseByPid[r.product_id] || {})[r.size] =
+      (inHouseByPid[r.product_id]?.[r.size] || 0) + (r.quantity || 0);
+  }
+  const seen = new Set();
+  const styleMap = new Map();
+  for (const p of prods) {
+    if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
+    // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
+    // not blank stock — keep them out of the live-look catalog.
+    if (p.inventory_source === 'momentec' && /custom/i.test(p.name || '')) continue;
+    const inHouse = inHouseByPid[p.id] || null;
+    const sizes = bySku[p.sku] || [];
+    if (p.inventory_source === 'agron' && !sizes.length) continue;
+    if (!sizes.length && !inHouse) continue;
+    seen.add(p.sku);
+    if (inHouse) {
+      for (const [size, qty] of Object.entries(inHouse)) {
+        const ex = sizes.find((s) => s.size === size);
+        if (ex) ex.ih = qty;
+        else sizes.push({ size, q: 0, fd: null, fq: null, ih: qty });
+      }
+    }
+    sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+    const availNow = (s) => (s.q || 0) + (s.ih || 0);
+    const inStock = new Set(sizes.filter((s) => availNow(s) > 0).map((s) => s.size));
+    const cat = normCategory(p.category);
+    const colorInfo = classifyColor(p.color_category, p.color);
+    const cw = {
+      sku: p.sku,
+      color: p.color || '',
+      family: colorInfo.primary,
+      tags: colorInfo.tags,
+      img: p.image_front_url || p.image_back_url || '',
+      price: Number(p.retail_price) || 0,
+      sell: p.catalog_sell_price != null ? Number(p.catalog_sell_price) : null,
+      pricing_group: p.pricing_group || null,
+      category: cat,
+      sizes,
+      inStock,
+      units: sizes.reduce((a, s) => a + availNow(s), 0),
+      inHouseUnits: sizes.reduce((a, s) => a + (s.ih || 0), 0),
+      hasIncoming: sizes.some((s) => !availNow(s) && s.fd && s.fq),
+      strongRun: cat === 'Footwear'
+        ? [...inStock].length >= 8
+        : STRONG_SIZES.every((sz) => sizes.some((s) => s.size === sz && availNow(s) >= STRONG_MIN)),
+    };
+    const displayName = p.name.replace(/^adidas\s+/i, '');
+    const key = displayName.toUpperCase() + '|' + cat;
+    let st = styleMap.get(key);
+    if (!st) {
+      st = {
+        key,
+        brand: p.brand || 'Adidas',
+        name: displayName,
+        category: cat,
+        gender: deriveGender(p.name, p.sku, cat),
+        sport: deriveSport(p.name),
+        description: '',
+        colorways: [],
+        isFeatured: false,
+      };
+      styleMap.set(key, st);
+    }
+    if (p.description && !st.description) st.description = p.description;
+    if (p.is_featured) st.isFeatured = true;
+    st.colorways.push(cw);
+  }
+  const grouped = [...styleMap.values()];
+  for (const st of grouped) {
+    st.colorways.sort((a, b) => b.units - a.units);
+    st.inHouseUnits = st.colorways.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
+    const prices = st.colorways.map((c) => c.price).filter(Boolean);
+    st.priceMin = prices.length ? Math.min(...prices) : 0;
+    st.priceMax = prices.length ? Math.max(...prices) : 0;
+    st.coreText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
+    st.fullText = st.coreText + ' ' + (st.description || '').toLowerCase();
+  }
+  grouped.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+  return { grouped, synced };
+}
+
 function Styles() {
   return (
     <>
@@ -1164,6 +1254,7 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
 // ── Page ─────────────────────────────────────────────────────────────
 export default function AdidasInventory() {
   const [loading, setLoading] = useState(true);
+  const [loadingAll, setLoadingAll] = useState(false);
   const [error, setError] = useState('');
   const [styles, setStyles] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
@@ -1465,16 +1556,46 @@ export default function AdidasInventory() {
 
   useEffect(() => {
     let alive = true;
+    const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
+    const baseQ = () => supabase.from('products').select(PROD_SELECT)
+      .in('brand', effectiveBrands).eq('is_active', true).or('is_archived.is.null,is_archived.eq.false');
     (async () => {
       try {
-        const [prods, inv, inHouseRows] = await Promise.all([
-          fetchAllPages(() => supabase
-            .from('products')
-            .select('id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source')
-            .in('brand', effectiveBrands)
-            .eq('is_active', true)
-            .or('is_archived.is.null,is_archived.eq.false')
-            .order('sku')),
+        // Phase 1: quick load — featured styles (all) + first 150 non-featured (images first).
+        // Fetches inventory only for these SKUs so first paint is fast.
+        const [featRes, quickRes] = await Promise.all([
+          baseQ().eq('is_featured', true).order('name'),
+          baseQ().or('is_featured.is.null,is_featured.eq.false')
+            .order('image_front_url', { ascending: false, nullsFirst: false })
+            .order('name').limit(150),
+        ]);
+        if (!alive) return;
+        if (featRes.error) throw featRes.error;
+        if (quickRes.error) throw quickRes.error;
+        const quickProds = [...(featRes.data || []), ...(quickRes.data || [])];
+        const quickSkus = [...new Set(quickProds.map((p) => p.sku))];
+        const quickIds  = [...new Set(quickProds.map((p) => p.id))];
+        const [invRes, ihRes] = await Promise.all([
+          supabase.from('inventory_unified')
+            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
+            .in('sku', quickSkus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(10000),
+          supabase.from('product_inventory')
+            .select('product_id,size,quantity')
+            .in('product_id', quickIds).gt('quantity', 0).limit(5000),
+        ]);
+        if (!alive) return;
+        if (invRes.error) throw invRes.error;
+        if (ihRes.error) throw ihRes.error;
+        const { grouped: quickStyles, synced: quickSynced } = buildStyles(quickProds, invRes.data || [], ihRes.data || []);
+        if (!alive) return;
+        setStyles(quickStyles);
+        setLastSynced(quickSynced);
+        setLoading(false);
+        setLoadingAll(true);
+
+        // Phase 2: full load in background — replaces the quick set once ready.
+        const [allProds, allInv, allIh] = await Promise.all([
+          fetchAllPages(() => baseQ().order('sku')),
           // Live per-size stock. Reads inventory_unified (adidas CLICK + Agron),
           // so Agron accessories (socks/bags/hats/…, brand=Adidas) render the same
           // as CLICK. CLICK & Agron SKUs are disjoint, so the union is a clean
@@ -1482,120 +1603,24 @@ export default function AdidasInventory() {
           fetchAllPages(() => supabase
             .from('inventory_unified')
             .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .or('stock_qty.gt.0,future_delivery_qty.gt.0')
-            .order('id')),
+            .or('stock_qty.gt.0,future_delivery_qty.gt.0').order('id')),
           // NSA's own warehouse stock — these ship immediately and rank first,
           // even when adidas no longer carries the SKU (e.g. HI0707).
           fetchAllPages(() => supabase
             .from('product_inventory')
-            .select('product_id,size,quantity')
-            .gt('quantity', 0)
-            .order('id')),
+            .select('product_id,size,quantity').gt('quantity', 0).order('id')),
         ]);
         if (!alive) return;
-
-        const bySku = {};
-        let synced = null;
-        for (const r of inv) {
-          (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
-          if (r.last_synced && (!synced || r.last_synced > synced)) synced = r.last_synced;
-        }
-        const inHouseByPid = {};
-        for (const r of inHouseRows) {
-          (inHouseByPid[r.product_id] = inHouseByPid[r.product_id] || {})[r.size] =
-            (inHouseByPid[r.product_id]?.[r.size] || 0) + (r.quantity || 0);
-        }
-
-        // Build colorways, then group into styles by cleaned name.
-        const seen = new Set();
-        const styleMap = new Map();
-        for (const p of prods) {
-          if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
-          // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
-          // not blank stock — keep them out of the live-look catalog.
-          if (p.inventory_source === 'momentec' && /custom/i.test(p.name || '')) continue;
-          const inHouse = inHouseByPid[p.id] || null;
-          const sizes = bySku[p.sku] || [];
-          // Agron accessories must be carried by Agron itself. An Agron SKU with
-          // no agron_inventory row is only here because NSA happens to hold a
-          // stray unit in-house — not orderable from this catalog — so drop it,
-          // even when it's on our shelf. (CLICK & Agron SKUs are disjoint, so
-          // `sizes` for an Agron SKU is purely its Agron stock/inbound.)
-          if (p.inventory_source === 'agron' && !sizes.length) continue;
-          // Otherwise: no Cowork data AND nothing in-house — can't vouch for it.
-          if (!sizes.length && !inHouse) continue;
-          seen.add(p.sku);
-          // Merge NSA warehouse stock into the size list: ih rides alongside
-          // the adidas qty, and in-house-only sizes get their own entry.
-          if (inHouse) {
-            for (const [size, qty] of Object.entries(inHouse)) {
-              const ex = sizes.find((s) => s.size === size);
-              if (ex) ex.ih = qty;
-              else sizes.push({ size, q: 0, fd: null, fq: null, ih: qty });
-            }
-          }
-          sizes.sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
-          const availNow = (s) => (s.q || 0) + (s.ih || 0);
-          const inStock = new Set(sizes.filter((s) => availNow(s) > 0).map((s) => s.size));
-          const cat = normCategory(p.category);
-          const colorInfo = classifyColor(p.color_category, p.color);
-          const cw = {
-            sku: p.sku,
-            color: p.color || '',
-            family: colorInfo.primary,
-            tags: colorInfo.tags,
-            img: p.image_front_url || p.image_back_url || '',
-            price: Number(p.retail_price) || 0,
-            sell: p.catalog_sell_price != null ? Number(p.catalog_sell_price) : null,
-            pricing_group: p.pricing_group || null,
-            category: cat,
-            sizes,
-            inStock,
-            units: sizes.reduce((a, s) => a + availNow(s), 0),
-            inHouseUnits: sizes.reduce((a, s) => a + (s.ih || 0), 0),
-            hasIncoming: sizes.some((s) => !availNow(s) && s.fd && s.fq),
-            strongRun: cat === 'Footwear'
-              ? [...inStock].length >= 8
-              : STRONG_SIZES.every((sz) => sizes.some((s) => s.size === sz && availNow(s) >= STRONG_MIN)),
-          };
-          const displayName = p.name.replace(/^adidas\s+/i, '');
-          const key = displayName.toUpperCase() + '|' + cat;
-          let st = styleMap.get(key);
-          if (!st) {
-            st = {
-              key,
-              brand: p.brand || 'Adidas',
-              name: displayName,
-              category: cat,
-              gender: deriveGender(p.name, p.sku, cat),
-              sport: deriveSport(p.name),
-              description: '',
-              colorways: [],
-            };
-            styleMap.set(key, st);
-          }
-          if (p.description && !st.description) st.description = p.description;
-          st.colorways.push(cw);
-        }
-
-        const grouped = [...styleMap.values()];
-        for (const st of grouped) {
-          st.colorways.sort((a, b) => b.units - a.units);
-          st.inHouseUnits = st.colorways.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
-          const prices = st.colorways.map((c) => c.price).filter(Boolean);
-          st.priceMin = prices.length ? Math.min(...prices) : 0;
-          st.priceMax = prices.length ? Math.max(...prices) : 0;
-          st.coreText = (st.name + ' ' + st.category + ' ' + (st.sport || '') + ' ' + st.gender + ' ' + st.colorways.map((c) => c.sku + ' ' + c.color + ' ' + [...c.tags].join(' ')).join(' ')).toLowerCase();
-          st.fullText = st.coreText + ' ' + (st.description || '').toLowerCase();
-        }
-        grouped.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
-        setStyles(grouped);
-        setLastSynced(synced);
-        setLoading(false);
+        const { grouped: fullStyles, synced: fullSynced } = buildStyles(allProds, allInv, allIh);
+        if (!alive) return;
+        setStyles(fullStyles);
+        if (fullSynced) setLastSynced(fullSynced);
+        setLoadingAll(false);
       } catch (e) {
         if (!alive) return;
         setError(e.message || String(e));
         setLoading(false);
+        setLoadingAll(false);
       }
     })();
     return () => { alive = false; };
@@ -1648,7 +1673,7 @@ export default function AdidasInventory() {
     const score = (v) => {
       const ih = v.matchCws.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
       const units = v.matchCws.reduce((a, c) => a + c.units, 0);
-      let s = 0;
+      let s = v.st.isFeatured ? 50000 : 0;
       if (ih > 0) s += 1000 + Math.min(ih, 500) / 5;
       s += popScore(v.st);
       s += bagMerchBoost(v.st); // duffels (Defender / Team Issue first) lead the Bags category
@@ -1922,6 +1947,11 @@ export default function AdidasInventory() {
               <button className="ai-more" onClick={() => setShown(s => s + PAGE_SIZE * 2)}>
                 Show more ({visible.length - shown} remaining)
               </button>
+            )}
+            {loadingAll && (
+              <div style={{ textAlign: 'center', padding: '12px 0 4px', color: '#94a3b8', fontSize: 12 }}>
+                Loading full catalog…
+              </div>
             )}
           </>
         )}
