@@ -1263,7 +1263,6 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
 // ── Page ─────────────────────────────────────────────────────────────
 export default function AdidasInventory() {
   const [loading, setLoading] = useState(true);
-  const [loadingAll, setLoadingAll] = useState(false);
   const [error, setError] = useState('');
   const [styles, setStyles] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
@@ -1582,66 +1581,40 @@ export default function AdidasInventory() {
     };
     (async () => {
       try {
-        // Phase 1: quick load — featured styles (all) + first 150 non-featured (images first).
-        // Fetches inventory only for these SKUs so first paint is fast.
+        // Load featured styles (all) + first 500 non-featured sorted by image quality.
+        // Inventory is scoped to just these SKUs so the query stays fast.
         const [featRes, quickRes] = await Promise.all([
           baseQ().eq('is_featured', true).order('name'),
           baseQ().or('is_featured.is.null,is_featured.eq.false')
             .order('image_front_url', { ascending: false, nullsFirst: false })
-            .order('name').limit(150),
+            .order('name').limit(500),
         ]);
         if (!alive) return;
         if (featRes.error) throw featRes.error;
         if (quickRes.error) throw quickRes.error;
-        const quickProds = [...(featRes.data || []), ...(quickRes.data || [])];
-        const quickSkus = [...new Set(quickProds.map((p) => p.sku))];
-        const quickIds  = [...new Set(quickProds.map((p) => p.id))];
+        const prods = [...(featRes.data || []), ...(quickRes.data || [])];
+        const skus  = [...new Set(prods.map((p) => p.sku))];
+        const ids   = [...new Set(prods.map((p) => p.id))];
         const [invRes, ihRes] = await Promise.all([
           supabase.from('inventory_unified')
             .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', quickSkus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(10000),
+            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(20000),
           supabase.from('product_inventory')
             .select('product_id,size,quantity')
-            .in('product_id', quickIds).gt('quantity', 0).limit(5000),
+            .in('product_id', ids).gt('quantity', 0).limit(5000),
         ]);
         if (!alive) return;
         if (invRes.error) throw invRes.error;
         if (ihRes.error) throw ihRes.error;
-        const { grouped: quickStyles, synced: quickSynced } = buildStyles(quickProds, invRes.data || [], ihRes.data || []);
+        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || []);
         if (!alive) return;
-        setStyles(quickStyles);
-        setLastSynced(quickSynced);
+        setStyles(grouped);
+        setLastSynced(synced);
         setLoading(false);
-        setLoadingAll(true);
-
-        // Phase 2: full load in background — replaces the quick set once ready.
-        const [allProds, allInv, allIh] = await Promise.all([
-          fetchAllPages(() => baseQ().order('sku')),
-          // Live per-size stock. Reads inventory_unified (adidas CLICK + Agron),
-          // so Agron accessories (socks/bags/hats/…, brand=Adidas) render the same
-          // as CLICK. CLICK & Agron SKUs are disjoint, so the union is a clean
-          // by-SKU join and `id` stays globally unique for range pagination.
-          fetchAllPages(() => supabase
-            .from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .or('stock_qty.gt.0,future_delivery_qty.gt.0').order('id')),
-          // NSA's own warehouse stock — these ship immediately and rank first,
-          // even when adidas no longer carries the SKU (e.g. HI0707).
-          fetchAllPages(() => supabase
-            .from('product_inventory')
-            .select('product_id,size,quantity').gt('quantity', 0).order('id')),
-        ]);
-        if (!alive) return;
-        const { grouped: fullStyles, synced: fullSynced } = buildStyles(allProds, allInv, allIh);
-        if (!alive) return;
-        setStyles(fullStyles);
-        if (fullSynced) setLastSynced(fullSynced);
-        setLoadingAll(false);
       } catch (e) {
         if (!alive) return;
         setError(e.message || String(e));
         setLoading(false);
-        setLoadingAll(false);
       }
     })();
     return () => { alive = false; };
@@ -1984,11 +1957,6 @@ export default function AdidasInventory() {
               <button className="ai-more" onClick={() => setShown(s => s + PAGE_SIZE * 2)}>
                 Show more ({visible.length - shown} remaining)
               </button>
-            )}
-            {loadingAll && (
-              <div style={{ textAlign: 'center', padding: '12px 0 4px', color: '#94a3b8', fontSize: 12 }}>
-                Loading full catalog…
-              </div>
             )}
           </>
         )}
