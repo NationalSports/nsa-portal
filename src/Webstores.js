@@ -885,11 +885,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel?.customer_id || !url) return null;
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
-    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url, name: name || 'logo' }], status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
-    // Production source art (.ai/.eps/.pdf) has no web-ready preview — keep it as a source
-    // file only (no preview_url) so the Art tab asks for a placeable PNG/SVG instead of
-    // trying to stamp the raw .ai url onto a garment.
-    const rec = opts.source ? { ...base, kind: 'art' } : { ...base, preview_url: url, kind: 'logo' };
+    // When a vector (.ai/.eps/.pdf) is rasterized, opts.sourceFile is the original art and
+    // `url` is the web-ready PNG preview — keep both (source file + placeable preview).
+    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url: opts.sourceFile || url, name: name || 'logo' }], status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    // Production source art (.ai/.eps/.pdf) with no preview stays source-only so the Art tab
+    // asks for a placeable PNG/SVG instead of stamping the raw .ai url onto a garment.
+    const rec = opts.source ? { ...base, kind: 'art' } : { ...base, preview_url: url, web_logo_url: url, kind: 'logo' };
     const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
     if (error) { flash('Could not save logo: ' + error.message); return null; }
     // Also drop it into THIS store's curated art set so it's pickable on items now.
@@ -2111,6 +2112,19 @@ function ApplyToOthers({ deco, siblings, onApply }) {
   );
 }
 
+// Cloudinary can rasterize the first page of a PDF/AI/EPS to a PNG via a delivery transform,
+// so dropped vector art gets a placeable web preview. Returns null for non-Cloudinary urls.
+const vectorPreviewUrl = (url) => {
+  if (!url || !/res\.cloudinary\.com/.test(url)) return null;
+  let u = url.replace('/raw/upload/', '/image/upload/');
+  if (!/\/image\/upload\//.test(u)) return null;
+  u = u.replace('/image/upload/', '/image/upload/f_png,pg_1,w_1000,c_limit/');
+  u = u.replace(/\.(ai|eps|pdf)(\?|$)/i, '.png$2');
+  if (!/\.png(\?|$)/i.test(u)) u += '.png';
+  return u;
+};
+const _probeImg = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res(true); im.onerror = () => res(false); im.src = u; });
+
 function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems }) {
   const boxRef = useRef();
   const fileRef = useRef();
@@ -2220,19 +2234,24 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
     try {
       const url = await cloudUpload(file, 'nsa-store-art');
       const label = name.replace(/\.[^.]+$/, '');
-      // Persist into the customer's art library (reusable on every piece, and it carries to
-      // the sales order + mockup later). Images go in as placeable logos; .ai/.eps/.pdf go in
-      // as production source art with no web preview.
-      let artId = null;
-      if (onSaveLogo) { const rec = await onSaveLogo(url, label, { source: !isImg }); artId = (rec && rec.id) || null; }
+      const place = (artUrl, artId, sourceUrl) => { const p = placementById(defaultPlacement); onChange([...decos, { art_id: artId, art_url: artUrl, orig_url: artUrl, source_url: sourceUrl || artUrl, placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]); setSel(decos.length); setNote(''); };
       if (isImg) {
-        // Web-ready — stamp it on the garment straight away.
-        const p = placementById(defaultPlacement);
-        onChange([...decos, { art_id: artId, art_url: url, orig_url: url, source_url: url, placement: defaultPlacement, color_label: 'original', side, x: p.x, y: p.y, w: p.w }]);
-        setSel(decos.length); setNote('');
+        let artId = null;
+        if (onSaveLogo) { const rec = await onSaveLogo(url, label); artId = (rec && rec.id) || null; }
+        place(url, artId, url);
       } else {
-        // Production art can't be previewed/placed until a clean PNG/SVG is attached for it.
-        setNote('Added “' + label + '” as production art. Drop a PNG or SVG to place & recolor it on the garment.');
+        // Vector — try to rasterize a placeable PNG preview (keeping the .ai as the source).
+        const png = vectorPreviewUrl(url);
+        const ok = png ? await _probeImg(png) : false;
+        if (ok) {
+          let artId = null;
+          if (onSaveLogo) { const rec = await onSaveLogo(png, label, { sourceFile: url }); artId = (rec && rec.id) || null; }
+          place(png, artId, url);
+        } else {
+          // Couldn't rasterize — keep it as production source art to attach a PNG to later.
+          if (onSaveLogo) await onSaveLogo(url, label, { source: true });
+          setNote('Added “' + label + '” as production art. Drop a PNG or SVG to place & recolor it on the garment.');
+        }
       }
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
