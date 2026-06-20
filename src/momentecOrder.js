@@ -19,6 +19,7 @@ export function buildMomentecOrderLines(batchPOs) {
   const warnings = [];
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
+      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._mt_style || it.sku || '';
       const color = it._mt_color || it.color || '';
       const skuBySize = it._mt_skus || {};

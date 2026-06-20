@@ -195,7 +195,8 @@ exports.handler = async (event) => {
 
           for (const [cwSku, g] of colors) {
             const retail = msrpVal > 0 ? msrpVal : g.price;
-            const cost = retail > 0 ? Math.round(retail * (1 - discount) * 100) / 100 : 0;
+            // Dealer cost = retail/MSRP × 0.5 (wholesale) × (1 − dealer discount).
+            const cost = retail > 0 ? Math.round(retail * 0.5 * (1 - discount) * 100) / 100 : 0;
             const sell = cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null;
             productRows.push({
               id: `mt-${g.dz}-${g.colorCode}`,
