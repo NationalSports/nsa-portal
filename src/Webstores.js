@@ -130,6 +130,110 @@ function buildPackingLists(store, label, groups) {
   </style></head><body>${slips || '<div class="slip">No orders.</div>'}</body></html>`;
 }
 
+// Batch availability ("FAFO") report. For a set of orders, lay out exactly
+// what we can fill, what we can't, and *whose* items fall short. Scarce stock
+// (ours + Adidas) is allocated first-ordered-first-served, so any shortfall
+// lands on the latest orders — the fair, defensible call when we can't cover
+// everyone. Products with no stock record are made-to-order (decorated/custom)
+// and treated as available, matching the batch flow's own inventory check.
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
+  const keyOf = (pid, size) => pid + '|' + (size || 'OS');
+  // Earliest orders claim stock first.
+  const sorted = [...lines].sort((a, b) => {
+    const ta = orderById[a.order_id]?.created_at || '', tb = orderById[b.order_id]?.created_at || '';
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+  const remaining = {};   // product|size -> units left to allocate (Infinity if untracked)
+  const itemAgg = {};     // product|size -> rollup row
+  const orderShort = {};  // order_id -> { order, lines: [...] }
+  let totalUnits = 0, shortUnits = 0, untrackedUnits = 0;
+
+  sorted.forEach((i) => {
+    const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
+    totalUnits += need;
+    if (!pid) { untrackedUnits += need; return; }
+    const k = keyOf(pid, size);
+    const st = stockByPid[pid];
+    const wh = Number((st?.size_stock || {})[size]) || 0;
+    const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
+    const tracked = !!st;
+    if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
+    if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
+    const row = itemAgg[k];
+    row.needed += need;
+    const give = Math.min(need, Math.max(0, remaining[k]));
+    remaining[k] -= give;
+    row.filled += give;
+    if (!tracked) untrackedUnits += need;
+    const short = need - give;
+    if (short > 0) {
+      shortUnits += short;
+      const o = orderById[i.order_id] || {};
+      const bucket = orderShort[i.order_id] || (orderShort[i.order_id] = { order: o, lines: [] });
+      bucket.lines.push({ name: row.name, sku: i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
+    }
+  });
+
+  const rows = Object.values(itemAgg);
+  const shortRows = rows.filter((r) => r.filled < r.needed).sort((a, b) => (b.needed - b.filled) - (a.needed - a.filled));
+  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const shortOrders = Object.values(orderShort).sort((a, b) => (a.order.created_at || '') < (b.order.created_at || '') ? -1 : 1);
+  const ordersTotal = Object.keys(orderById).length;
+  const availUnits = totalUnits - shortUnits;
+
+  const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const itemRow = (r) => {
+    const avail = r.tracked ? r.ours + r.adidas : '—';
+    const sh = r.needed - r.filled;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${r.tracked ? r.ours : '—'}</td><td class="c">${r.tracked ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+  };
+  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
+
+  const orderBlock = (b) => {
+    const o = b.order;
+    const who = [o.buyer_name, o.buyer_email].filter(Boolean).map(esc).join(' · ');
+    const ls = b.lines.map((l) => `<tr><td>${esc(l.name)}${l.sku ? `<div class="sub">${esc(l.sku)}</div>` : ''}</td><td class="c">${esc(l.size)}</td><td class="c">${[l.number ? '#' + esc(l.number) : '', esc(l.player)].filter(Boolean).join(' ') || '—'}</td><td class="c b"><span class="neg">−${l.short}</span></td></tr>`).join('');
+    return `<div class="ord"><div class="oh">${who || 'Order'}${o.created_at ? `<span class="dt">${new Date(o.created_at).toLocaleDateString()}</span>` : ''}</div>
+      <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Player</th><th class="c">Short</th></tr></thead><tbody>${ls}</tbody></table></div>`;
+  };
+
+  printHtml(`<!doctype html><html><head><title>Availability — ${esc(store.name)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:760px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:24px 0 8px;border-bottom:2px solid #0b1220;padding-bottom:5px}
+    h3 .ct{float:right;color:#94a3b8;font-weight:600}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:96px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip.bad{background:#fef2f2;border-color:#fecaca}
+    .chip .n{font-size:22px;font-weight:900}.chip.bad .n{color:#b91c1c}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+    .grid td.c{text-align:center}.grid td.b{font-weight:800}
+    .grid tr.r td{background:#fef2f2}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
+    .ord{border:1px solid #fecaca;border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fff}
+    .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
+    @media print{.chip{-webkit-print-color-adjust:exact;print-color-adjust:exact}.grid tr.r td,.ord,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <h1>Batch Availability Report</h1>
+    <div class="meta">${esc(store.name)} · ${esc(label)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">
+      ${chip(totalUnits, 'Units')}
+      ${chip(availUnits, 'Available')}
+      ${chip(shortUnits, 'Short', shortUnits > 0)}
+      ${chip(ordersTotal - shortOrders.length, 'Orders OK')}
+      ${chip(shortOrders.length, 'Orders short', shortOrders.length > 0)}
+    </div>
+    ${untrackedUnits ? `<div class="meta" style="margin-top:8px">${untrackedUnits} made-to-order unit${untrackedUnits === 1 ? '' : 's'} (no stock record) counted as available.</div>` : ''}
+    ${shortRows.length ? `<h3>Not available <span class="ct">${shortRows.length} item${shortRows.length === 1 ? '' : 's'}</span></h3>${itemTable(shortRows)}` : ''}
+    ${shortOrders.length ? `<h3>Whose items are short <span class="ct">${shortOrders.length} order${shortOrders.length === 1 ? '' : 's'}</span></h3>${shortOrders.map(orderBlock).join('')}` : '<h3>Whose items are short</h3><div class="ok">✓ Every order can be filled in full.</div>'}
+    <h3>Available <span class="ct">${okRows.length} item${okRows.length === 1 ? '' : 's'}</span></h3>${okRows.length ? itemTable(okRows) : '<div class="meta">No fully-available stock items.</div>'}
+  </body></html>`);
+}
+
 // Convert a webstore order to a ShipStation order (ship-to-home label).
 function webstoreToShipStation(order, items, store, imageByPid = {}) {
   const a = order.ship_address || {};
@@ -543,6 +647,26 @@ function Webstores({ cust = [], REPS = [], cu, onCreateSO, onOpenSO }) {
     flash('Package created'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Gather this store's unbatched orders + their stock picture (shared by the
+  // availability report and the batch flow's inventory check).
+  const gatherBatch = useCallback(() => {
+    const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const openIds = new Set(open.map((o) => o.id));
+    const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const stockByPid = {};
+    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
+    return { open, openIds, lines, stockByPid, orderById };
+  }, [detail]);
+
+  // Open the printable availability ("FAFO") report for the pending batch.
+  const availabilityReport = useCallback(() => {
+    if (!sel || !detail) return;
+    const { open, lines, stockByPid, orderById } = gatherBatch();
+    if (!open.length) { flash('No unbatched orders to report'); return; }
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById);
+  }, [sel, detail, gatherBatch, flash]);
+
   // Batch all not-yet-batched orders into one Sales Order via the app's normal
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
@@ -567,7 +691,7 @@ function Webstores({ cust = [], REPS = [], cu, onCreateSO, onOpenSO }) {
       if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
     });
     const head = `Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`;
-    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Create the Sales Order anyway?` : head;
+    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Use "Availability report" to see who's affected.\n\nCreate the Sales Order anyway?` : head;
     if (!window.confirm(msg)) return;
 
     // Which products collect a number / name (from catalog singles + bundle components).
@@ -665,7 +789,7 @@ function Webstores({ cust = [], REPS = [], cu, onCreateSO, onOpenSO }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -941,7 +1065,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
@@ -1024,7 +1148,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -2091,7 +2215,7 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -2186,6 +2310,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
         <select style={sel} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>{['all', 'pending', 'in_production', 'shipped', 'complete'].map((s) => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}</option>)}</select>
         <select style={sel} value={fPay} onChange={(e) => setFPay(e.target.value)}><option value="all">All payment</option><option value="paid">Paid</option><option value="unpaid">Team tab</option></select>
         <select style={sel} value={fBatch} onChange={(e) => setFBatch(e.target.value)}><option value="all">All</option><option value="unbatched">Not batched</option><option value="batched">Batched</option></select>
+        {onAvailabilityReport && (
+          <button className="btn btn-secondary" disabled={!unbatchedCount} onClick={onAvailabilityReport} title={unbatchedCount ? 'What can we fill, and whose items fall short?' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+            📋 Availability report
+          </button>
+        )}
         <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
           Create Sales Order ({unbatchedCount})
         </button>
