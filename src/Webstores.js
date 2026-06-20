@@ -1929,6 +1929,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'template' ? null : 'template'); setPending(null); }}>🎯 Start from a template</button>
         <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'import' ? null : 'import'); setPending(null); }}>⬆ Import list (Excel / Sheets)</button>
+        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'custom' ? null : 'custom'); setPending(null); }}>＋ New custom product</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'ai' ? null : 'ai'); setPending(null); }}>✨ Build with AI</button>
         <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
@@ -1938,6 +1939,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'custom' && <CustomProductCreator catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd) => { if (alsoAdd && onAddSingle) await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
@@ -3096,6 +3098,112 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
               <div style={{ fontSize: 11.5, color: '#9AA1AC', marginTop: 14 }}>Using a template adds its products to this store (skipping any already added). Prices, colors &amp; art stay fully editable after.</div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Common sizing scales, so a rep picks a type instead of typing sizes every time.
+const SIZE_PRESETS = [
+  { label: 'Adult S–XL', sizes: ['S', 'M', 'L', 'XL'] },
+  { label: 'Adult S–2XL', sizes: ['S', 'M', 'L', 'XL', '2XL'] },
+  { label: 'Adult S–3XL', sizes: ['S', 'M', 'L', 'XL', '2XL', '3XL'] },
+  { label: 'Adult S–4XL', sizes: ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'] },
+  { label: 'Adult XS–XL', sizes: ['XS', 'S', 'M', 'L', 'XL'] },
+  { label: 'Adult XS–2XL', sizes: ['XS', 'S', 'M', 'L', 'XL', '2XL'] },
+  { label: 'Adult XS–3XL', sizes: ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'] },
+  { label: 'Youth XS–XL', sizes: ['YXS', 'YS', 'YM', 'YL', 'YXL'] },
+  { label: 'Youth S–XL', sizes: ['YS', 'YM', 'YL', 'YXL'] },
+  { label: 'Numeric 28–40', sizes: ['28', '30', '32', '34', '36', '38', '40'] },
+  { label: 'One size (OSFA)', sizes: ['OSFA'] },
+];
+
+// Quick-create a master catalog product (saved to `products` for reuse in any store):
+// name, vendor, sizing type, image, cost. Optionally drops it straight into this store.
+function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
+  const [vendors, setVendors] = useState([]);
+  const [name, setName] = useState('');
+  const [sku, setSku] = useState('');
+  const [vendorId, setVendorId] = useState('');
+  const [brand, setBrand] = useState('');
+  const [category, setCategory] = useState('');
+  const [color, setColor] = useState('');
+  const [sizes, setSizes] = useState(['S', 'M', 'L', 'XL']);
+  const [newSize, setNewSize] = useState('');
+  const [cost, setCost] = useState('');
+  const [price, setPrice] = useState('');
+  const [image, setImage] = useState(null);
+  const [imgBusy, setImgBusy] = useState(false);
+  const [alsoAdd, setAlsoAdd] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
+
+  const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
+  const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes([...sizes, s]); setNewSize(''); };
+
+  const save = async () => {
+    if (!name.trim()) { setErr('Give the item a name.'); return; }
+    setSaving(true); setErr('');
+    const id = 'p' + Date.now() + Math.random().toString(36).slice(2, 6);
+    const finalSku = (sku.trim() || ('CUS-' + Date.now().toString(36).toUpperCase())).toUpperCase();
+    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, image_front_url: image || null, is_active: true, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
+    const { error } = await supabase.from('products').insert(row);
+    setSaving(false);
+    if (error) { setErr('Could not save: ' + error.message); return; }
+    onCreated && onCreated(row, alsoAdd);
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>New custom product</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>Saved to the product catalog for reuse in any store. Only a name is required.</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ flex: '0 0 auto', width: 160 }}>
+              <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Product image" />
+            </div>
+            <div style={{ flex: 1, minWidth: 280 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Row label="Name"><input className="form-input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Custom Booster Tee" /></Row>
+                <Row label="SKU (blank = auto)"><input className="form-input" value={sku} onChange={(e) => setSku(e.target.value)} placeholder="auto" style={{ width: 150 }} /></Row>
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Row label="Vendor"><select className="form-input" value={vendorId} onChange={(e) => setVendorId(e.target.value)} style={{ minWidth: 180 }}><option value="">— none —</option>{vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select></Row>
+                <Row label="Brand"><input className="form-input" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="optional" style={{ width: 150 }} /></Row>
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Row label="Category"><input className="form-input" list="cpc-cats" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Tees" /><datalist id="cpc-cats">{catSuggestions.map((c) => <option key={c} value={c} />)}</datalist></Row>
+                <Row label="Color"><input className="form-input" value={color} onChange={(e) => setColor(e.target.value)} placeholder="optional" style={{ width: 150 }} /></Row>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <Row label="Sizing type"><select className="form-input" value={presetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) setSizes(p.sizes); }} style={{ width: 190 }}>{SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}{presetLabel === 'Custom' && <option value="Custom">Custom</option>}</select></Row>
+              <Row label="Cost (NSA)"><input className="form-input" type="number" step="0.01" min={0} value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
+              <Row label="Retail price"><input className="form-input" type="number" step="0.01" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+              {sizes.map((s) => <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', borderRadius: 7, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{s}<button type="button" onClick={() => setSizes(sizes.filter((x) => x !== s))} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button></span>)}
+              <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSize(); } }} />
+            </div>
+          </div>
+
+          {err && <div style={{ fontSize: 12.5, color: '#b91c1c', fontWeight: 600, marginTop: 10 }}>{err}</div>}
+
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" disabled={saving || imgBusy || !name.trim()} onClick={save}>{saving ? 'Saving…' : 'Save to catalog'}</button>
+            <Toggle label="Also add to this store" checked={alsoAdd} onChange={setAlsoAdd} />
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          </div>
         </div>
       </div>
     </div>
