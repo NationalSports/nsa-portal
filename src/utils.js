@@ -1,7 +1,7 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
 import { supabase as _sbAuthClient } from './lib/supabase';
-import { PDFDocument } from 'pdf-lib';
+// pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
@@ -315,6 +315,7 @@ export const printDoc=opts=>{
 export const printPdfLabels=async(base64List)=>{
   const list=(base64List||[]).filter(Boolean);
   if(!list.length)return 0;
+  const {PDFDocument}=await import('pdf-lib');
   const out=await PDFDocument.create();
   let added=0,failed=0;
   for(const b64 of list){
