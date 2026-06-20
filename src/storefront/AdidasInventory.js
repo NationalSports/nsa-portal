@@ -395,6 +395,29 @@ function buildStyles(prods, inv, inHouseRows) {
     if (p.is_featured) st.isFeatured = true;
     st.colorways.push(cw);
   }
+  // Momentec's catalog runs to 1,600+ in-stock styles — far too many for the
+  // grid. Curate down to MAX_MOMENTEC: only styles with a product image are
+  // eligible (imageless Momentec items are dropped entirely), featured styles
+  // are always kept, then the rest fill by in-stock units. Drop any Momentec
+  // style with no image and not featured outright.
+  const MAX_MOMENTEC = 100;
+  const isMomentec = (st) => st.brand === 'Momentec';
+  const hasImg = (st) => st.colorways.some((c) => c.img);
+  for (const [k, st] of [...styleMap]) {
+    if (isMomentec(st) && !st.isFeatured && !hasImg(st)) styleMap.delete(k);
+  }
+  const momentecKeys = [...styleMap.keys()].filter((k) => isMomentec(styleMap.get(k)));
+  if (momentecKeys.length > MAX_MOMENTEC) {
+    const unitTotal = (st) => st.colorways.reduce((s, c) => s + c.units, 0);
+    // Featured first (always kept), then by in-stock units.
+    momentecKeys.sort((a, b) => {
+      const sa = styleMap.get(a), sb = styleMap.get(b);
+      return (sb.isFeatured - sa.isFeatured) || (unitTotal(sb) - unitTotal(sa));
+    });
+    for (const k of momentecKeys.slice(MAX_MOMENTEC)) {
+      if (!styleMap.get(k).isFeatured) styleMap.delete(k);
+    }
+  }
   const grouped = [...styleMap.values()];
   for (const st of grouped) {
     st.colorways.sort((a, b) => b.units - a.units);
@@ -1263,6 +1286,7 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
 // ── Page ─────────────────────────────────────────────────────────────
 export default function AdidasInventory() {
   const [loading, setLoading] = useState(true);
+  const [loadingAll, setLoadingAll] = useState(true); // Phase-2 full-catalog load still running
   const [error, setError] = useState('');
   const [styles, setStyles] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
@@ -1569,6 +1593,7 @@ export default function AdidasInventory() {
 
   useEffect(() => {
     let alive = true;
+    setLoadingAll(true);
     const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
     // Unrestricted accounts get the named-brand catalog PLUS every SanMar-sourced
     // item (the "Non Branded" lines) regardless of their exact brand string;
@@ -1583,18 +1608,46 @@ export default function AdidasInventory() {
     };
     (async () => {
       try {
-        // Load featured styles (all) + first 500 non-featured sorted by image quality.
-        // Inventory is scoped to just these SKUs so the query stays fast.
-        const [featRes, quickRes] = await Promise.all([
+        // Phase 1: featured (all) + per-brand teaser so every brand chip
+        // appears from first paint. A single 500-item image-sorted query was
+        // monopolized by Adidas/UA (most images), hiding every other brand.
+        // For unrestricted accounts run one query per brand in parallel with
+        // a per-brand cap; restricted accounts only have a few brands so the
+        // original single query is fine.
+        const mkBrandQ = (brand) =>
+          supabase.from('products').select(PROD_SELECT)
+            .eq('is_active', true).or('is_archived.is.null,is_archived.eq.false')
+            .eq('brand', brand).or('is_featured.is.null,is_featured.eq.false')
+            .order('image_front_url', { ascending: false, nullsFirst: false }).order('name');
+
+        const [featRes, ...quickResults] = await Promise.all([
           baseQ().eq('is_featured', true).order('name'),
-          baseQ().or('is_featured.is.null,is_featured.eq.false')
-            .order('image_front_url', { ascending: false, nullsFirst: false })
-            .order('name').limit(500),
+          ...(unrestricted
+            ? [
+                // SanMar-sourced items (Port Authority, Sport-Tek, District, Bella+Canvas, …)
+                supabase.from('products').select(PROD_SELECT)
+                  .eq('is_active', true).or('is_archived.is.null,is_archived.eq.false')
+                  .eq('inventory_source', 'sanmar').or('is_featured.is.null,is_featured.eq.false')
+                  .order('image_front_url', { ascending: false, nullsFirst: false }).order('name').limit(200),
+                mkBrandQ('Adidas').limit(80),
+                mkBrandQ('Under Armour').limit(80),
+                mkBrandQ('Nike').limit(50),
+                mkBrandQ('Richardson').limit(50),
+                mkBrandQ('Momentec').limit(40),
+                mkBrandQ('Gildan').limit(30),
+                mkBrandQ('Boxercraft').limit(30),
+              ]
+            : [
+                baseQ().or('is_featured.is.null,is_featured.eq.false')
+                  .order('image_front_url', { ascending: false, nullsFirst: false })
+                  .order('name').limit(500),
+              ]
+          ),
         ]);
         if (!alive) return;
         if (featRes.error) throw featRes.error;
-        if (quickRes.error) throw quickRes.error;
-        const prods = [...(featRes.data || []), ...(quickRes.data || [])];
+        for (const r of quickResults) if (r.error) throw r.error;
+        const prods = [...(featRes.data || []), ...quickResults.flatMap((r) => r.data || [])];
         const skus  = [...new Set(prods.map((p) => p.sku))];
         const ids   = [...new Set(prods.map((p) => p.id))];
         const [invRes, ihRes] = await Promise.all([
@@ -1613,10 +1666,67 @@ export default function AdidasInventory() {
         setStyles(grouped);
         setLastSynced(synced);
         setLoading(false);
+
+        // ── Phase 2 (background): the FULL catalog ──────────────────────
+        // Phase 1 is only a 500-item teaser that skews to whichever brands
+        // have the most images (Adidas/UA), so smaller brands never load.
+        // Strategy: fetch ALL in-scope products first (~45K rows, paged),
+        // then query inventory scoped to exactly those SKUs in batched
+        // parallel waves — avoids a slow offset-pagination scan of the full
+        // 136K-row inventory_unified view.
+        try {
+          const allProds = await fetchAllPages(() => baseQ().order('name'));
+          if (!alive) return;
+
+          const allSkus = [...new Set(allProds.map((p) => p.sku))];
+          const allIds  = [...new Set(allProds.map((p) => p.id))];
+
+          // Chunk into groups of 400 to stay within PostgREST URL limits.
+          const chunks = (arr, n) =>
+            Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
+          const skuBatches = chunks(allSkus, 400);
+          const idBatches  = chunks(allIds,  400);
+
+          // Fetch all batches in waves of 6 (mirrors fetchAllPages concurrency).
+          const wavesFetch = async (batches, buildReq) => {
+            const rows = [];
+            for (let w = 0; w < batches.length; w += 6) {
+              if (!alive) return rows;
+              const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
+              for (const r of res) {
+                if (r.error) throw r.error;
+                rows.push(...(r.data || []));
+              }
+            }
+            return rows;
+          };
+
+          const [allInv, allIh] = await Promise.all([
+            wavesFetch(skuBatches, (skus) =>
+              supabase.from('inventory_unified')
+                .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
+                .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
+            wavesFetch(idBatches, (ids) =>
+              supabase.from('product_inventory')
+                .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000)),
+          ]);
+          if (!alive) return;
+
+          const full = buildStyles(allProds, allInv, allIh);
+          if (!alive) return;
+          setStyles(full.grouped);
+          if (full.synced) setLastSynced(full.synced);
+        } catch (e) {
+          // Keep the Phase-1 teaser on screen if the full load fails.
+          console.warn('[livelook] full catalog load failed:', (e && e.message) || e);
+        } finally {
+          if (alive) setLoadingAll(false);
+        }
       } catch (e) {
         if (!alive) return;
         setError(e.message || String(e));
         setLoading(false);
+        setLoadingAll(false);
       }
     })();
     return () => { alive = false; };
@@ -1915,6 +2025,7 @@ export default function AdidasInventory() {
             </div>
             <span style={{ fontSize: 13, color: '#6A7180', fontWeight: 600, marginLeft: 'auto' }}>
               {loading ? 'Loading…' : `${visible.length} style${visible.length === 1 ? '' : 's'}`}
+              {!loading && loadingAll ? ' · loading more…' : ''}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
