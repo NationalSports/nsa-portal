@@ -8,20 +8,35 @@ import { createClient } from '@supabase/supabase-js';
 import { _sbAuthLock } from './lib/supabase';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
-import * as XLSX from 'xlsx';
-import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
-import { createWorker } from 'tesseract.js';
-import html2pdf from 'html2pdf.js';
-import { jsPDF } from 'jspdf';
-import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
-import ImageTracer from 'imagetracerjs';
+// Heavy, point-of-use libraries (xlsx, jspdf, svg2pdf, html2pdf, imagetracerjs, tesseract.js)
+// are deliberately NOT imported statically here — a static import pulls them into the eager
+// main bundle that loads on first open, even though nothing on the dashboard uses them. They
+// are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
+// export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
+// stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
+
+// Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
+// paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
+// out of the critical initial bundle. Pure prefetch; safe no-op where the idle API is missing.
+const _warmHeavyLibs = () => {
+  // Feature libraries used only by point-of-use actions (Excel import, PDF/SVG export, OCR).
+  import('xlsx'); import('jspdf'); import('svg2pdf.js');
+  import('html2pdf.js'); import('imagetracerjs'); import('pdf-lib');
+  // High-probability next screens — prefetch their lazy chunks during idle so the first
+  // navigation into an order or customer is instant instead of waiting on a chunk download.
+  import('./OrderEditor'); import('./CustDetail');
+};
+if (typeof window !== 'undefined') {
+  if ('requestIdleCallback' in window) window.requestIdleCallback(_warmHeavyLibs, { timeout: 10000 });
+  else setTimeout(_warmHeavyLibs, 4000);
+}
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -4320,6 +4335,7 @@ export default function App(){
     if(!supabase||!file){nf('No file selected','error');return}
     setAdidasSyncUploading(true);
     try{
+      const XLSX=await import('xlsx');
       const data=await file.arrayBuffer();
       const wb=XLSX.read(data,{type:'array'});
       const ws=wb.Sheets[wb.SheetNames[0]];
@@ -13039,6 +13055,7 @@ export default function App(){
                   const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
                   document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
                   const _siPdfName=siInv.id+(siBillName&&siBillName!=='—'?' - '+siBillName:'')+'.pdf';
+                  const html2pdf=(await import('html2pdf.js')).default;
                   const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_siPdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
                   document.body.removeChild(container);
                   const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
@@ -22937,6 +22954,7 @@ export default function App(){
     const handleInvCSVUpload=async(file)=>{
       setInvUpload(x=>({...x,uploading:true,fileName:file.name}));
       try{
+        const XLSX=await import('xlsx');
         const data=await file.arrayBuffer();
         const wb=XLSX.read(data,{type:'array'});
         const ws=wb.Sheets[wb.SheetNames[0]];
@@ -25269,12 +25287,12 @@ export default function App(){
                 onDrop={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
                   const f=e.dataTransfer.files[0];if(!f)return;
                   const isXls=/\.xlsx?$/i.test(f.name);
-                  if(isXls){const reader=new FileReader();reader.onload=ev=>{try{const wb=XLSX.read(ev.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
+                  if(isXls){const reader=new FileReader();reader.onload=async ev=>{try{const XLSX=await import('xlsx');const wb=XLSX.read(ev.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
                   else{const reader=new FileReader();reader.onload=ev=>{setBulkImp(x=>({...x,raw:ev.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}}}
                 onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt,.xlsx,.xls';
                   input.onchange=ev=>{const f=ev.target.files[0];if(!f)return;
                     const isXls=/\.xlsx?$/i.test(f.name);
-                    if(isXls){const reader=new FileReader();reader.onload=e2=>{try{const wb=XLSX.read(e2.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
+                    if(isXls){const reader=new FileReader();reader.onload=async e2=>{try{const XLSX=await import('xlsx');const wb=XLSX.read(e2.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
                     else{const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}};input.click()}}>
                 📂 Drop CSV/TSV/Excel file here or click to browse
                 {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.replace(/\r\n?/g,'\n').split('\n').length-1} rows loaded</div>}
@@ -29420,6 +29438,8 @@ export default function App(){
                     holder.style.cssText='position:fixed;left:-99999px;top:0;opacity:0;pointer-events:none;';
                     const live=document.importNode(svgEl,true);
                     holder.appendChild(live);document.body.appendChild(holder);
+                    const {jsPDF}=await import('jspdf');
+                    const {svg2pdf}=await import('svg2pdf.js');
                     const pdf=new jsPDF({orientation:w>=h?'landscape':'portrait',unit:'pt',format:[w,h]});
                     await svg2pdf(live,pdf,{width:w,height:h});
                     pdf.save((vecFile?.name||'image').replace(/\.[^.]+$/,'')+'.pdf');
@@ -29510,7 +29530,8 @@ export default function App(){
     }else{
       // Local imagetracerjs fallback
       const img=new Image();
-      img.onload=()=>{
+      img.onload=async()=>{
+        const ImageTracer=(await import('imagetracerjs')).default;
         const canvas=document.createElement('canvas');
         canvas.width=img.width;canvas.height=img.height;
         const ctx=canvas.getContext('2d');

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
-import html2pdf from 'html2pdf.js';
+// html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml } from './utils';
 
 const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
@@ -198,6 +198,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         document.body.appendChild(container);
         await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
         const _pdfName=(estimate?.id||'document')+(customer?.name?' - '+customer.name:'')+'.pdf';
+        const html2pdf=(await import('html2pdf.js')).default;
         const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_pdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
         document.body.removeChild(container);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
