@@ -453,17 +453,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
     const costByPid = {};
+    const imgBackByPid = {};
     if (pidList.length) {
-      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost').in('id', pidList);
+      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost,image_back_url').in('id', pidList);
       for (const cp of costRows || []) {
         const cc = (cp.is_clearance && cp.clearance_cost != null) ? Number(cp.clearance_cost) : Number(cp.nsa_cost);
         costByPid[cp.id] = Number.isFinite(cc) ? cc : null;
+        if (cp.image_back_url) imgBackByPid[cp.id] = cp.image_back_url;
       }
     }
     const catIds = new Set(catalog.map((c) => c.id));
     const orders = ordRes.data || [];
     const orderIds = new Set(orders.map((o) => o.id));
     const stockByWp = {}; (stockRes.data || []).forEach((s) => { stockByWp[s.webstore_product_id] = s; });
+    // The storefront snapshot doesn't carry back images — fall back to the master product's
+    // image_back_url so the editor's Back tab (and mockups) show it without a manual upload.
+    catalog.forEach((c) => { const back = c.product_id && imgBackByPid[c.product_id]; if (!back) return; const s = stockByWp[c.id]; if (s) { if (!s.image_back_url) s.image_back_url = back; } else { stockByWp[c.id] = { image_back_url: back }; } });
     // Customer art LIBRARY — the SAME sources as the customer's Artwork tab: the team's
     // + parent org's saved art_files, PLUS every art file off their sales orders &
     // estimates (assembled in memory — that's where most file-backed art lives, which is
@@ -1854,7 +1859,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -2239,6 +2244,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   const [colorSibs, setColorSibs] = useState([]);
   const [pickedColors, setPickedColors] = useState(() => new Set());
   const [addingColors, setAddingColors] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
   useEffect(() => {
     if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); return; }
     let cancelled = false;
@@ -2306,6 +2312,8 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
       fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));
     }
     onSave(fields);
+    // Stay on the item after saving — just confirm briefly on the button.
+    setJustSaved(true); setTimeout(() => setJustSaved(false), 1800);
   };
 
   const catListId = 'cat-suggest-' + item.id;
@@ -2428,8 +2436,8 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
       </React.Fragment>}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, position: 'sticky', bottom: 0, background: '#f6f7f9', paddingTop: 12, borderTop: '1px solid #e5e8ec' }}>
-        <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : 'Save changes'}</button>
-        <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
+        <button className="btn btn-secondary" onClick={onCancel}>{justSaved ? 'Close' : 'Cancel'}</button>
         {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
       </div>
     </div>
