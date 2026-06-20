@@ -28066,6 +28066,7 @@ export default function App(){
   const[featColor,setFeatColor]=useState('');
   const[featLoading,setFeatLoading]=useState(false);
   const[featShowHidden,setFeatShowHidden]=useState(false);
+  const[featShowNoImg,setFeatShowNoImg]=useState(false);
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
@@ -28653,6 +28654,7 @@ export default function App(){
           st.colorways.push(p);st.ids.push(p.id);
           if(p.is_featured)st.isFeatured=true;
           if(!p.is_archived)st.isHidden=false;
+          if(p.image_front_url)st.hasImage=true;
         }
         const toggleFeat=async(st)=>{
           const newVal=!st.isFeatured;const ids=st.ids;
@@ -28676,8 +28678,10 @@ export default function App(){
           return pool.find(c=>c.image_front_url)||pool[0]||st.colorways[0];
         };
         const hiddenCount=styleList.filter(s=>s.isHidden).length;
+        const noImgCount=styleList.filter(s=>!s.hasImage).length;
         const filteredStyles=styleList.filter(st=>{
           if(!featShowHidden&&st.isHidden)return false;
+          if(featShowNoImg&&st.hasImage)return false;
           if(featCategory&&!st.colorways.some(c=>normCat(c.category)===featCategory))return false;
           if(featColor&&!st.colorways.some(c=>(c._tags||colorTags(c)).has(featColor)))return false;
           if(!featSearch)return true;
@@ -28707,6 +28711,7 @@ export default function App(){
                   <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
                   {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} style{featCount!==1?'s':''} featured</span>}
                   {hiddenCount>0&&<button className={`btn btn-sm ${featShowHidden?'btn-warning':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatShowHidden(h=>!h)}>⊗ {featShowHidden?'Hide':'Show'} hidden ({hiddenCount})</button>}
+                  {noImgCount>0&&<button className={`btn btn-sm ${featShowNoImg?'btn-danger':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatShowNoImg(h=>!h)}>📷 {featShowNoImg?'All items':'No image'} ({noImgCount})</button>}
                   {featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>Loading…</span>}
                   {!featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>{filteredStyles.length} style{filteredStyles.length!==1?'s':''}</span>}
                 </div>
@@ -28714,7 +28719,7 @@ export default function App(){
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
                   {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;const isHid=st.isHidden;return(
                     <div key={st.key} onClick={()=>!isHid&&toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isHid?'#e2e8f0':isFeat?'#bae6fd':'#e2e8f0',background:isHid?'#f8fafc':isFeat?'#f0f9ff':'#fff',cursor:isHid?'default':'pointer',opacity:isHid?0.55:1}}>
-                      {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0}}/>}
+                      {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}} title="No image">📷</div>}
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:12,fontWeight:600,color:isHid?'#94a3b8':'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
                         <div style={{fontSize:11,color:'#94a3b8'}}>{isHid?'Hidden from catalog':(st.colorways.length>1&&!featColor?`${st.colorways.length} colors`:[p.color,p.sku].filter(Boolean).join(' · '))}</div>
