@@ -28606,41 +28606,81 @@ export default function App(){
       {/* FEATURED STYLES */}
       {settingsTab==='featured'&&(()=>{
         const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
+        // Mirror LiveLook's color-family classification (src/storefront/AdidasInventory.js)
+        // so the filter matches the storefront and covers products with no color_category
+        // (the family is parsed from the free-text color, e.g. "Collegiate Navy" → Navy).
+        const COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown','Other'];
+        const SEGMENT_RULES=[['Navy',/NAVY/],['Royal',/ROYAL/],['Maroon',/MAROON|BURGUNDY|CARDINAL/],['Gold',/GOLD/],['Black',/BLACK/],['White',/WHITE|CREAM|IVORY/],['Grey',/GREY|GRAY|SILVER|CHARCOAL|HEATHER|ONIX|CARBON|GRANITE/],['Red',/\bRED\b|SCARLET|CRIMSON/],['Orange',/ORANGE|AMBER/],['Yellow',/YELLOW|LEMON|SOLAR/],['Green',/GREEN|FOREST|MINT|OLIVE/],['Blue',/BLUE|AQUA|TEAL|SKY|INDIGO/],['Purple',/PURPLE|VIOLET|REGAL/],['Pink',/PINK|MAGENTA|ROSE|FUCHSIA/],['Brown',/BROWN|KHAKI|TAN\b|EARTH/]];
+        const CC_ALIAS={'Light Grey':'Grey','Vegas Gold':'Gold'};
+        const colorTags=(p)=>{
+          const tags=new Set();
+          for(const seg of String(p.color||'').split('/').map(s=>s.trim()).filter(Boolean)){
+            const u=seg.toUpperCase();
+            for(const[fam,re]of SEGMENT_RULES){if(re.test(u)){tags.add(fam);break;}}
+          }
+          if(!tags.size){const cc=CC_ALIAS[p.color_category]||p.color_category;if(cc&&COLOR_FAMILIES.includes(cc))tags.add(cc);}
+          if(!tags.size)tags.add('Other');
+          return tags;
+        };
+        // Category cleanup matching LiveLook so the pills line up with the storefront.
+        const CAT_ALIAS={Hood:'Hoods',Jerseys:'Jersey','Jersey Tops':'Jersey','Jersey Bottoms':'Jersey'};
+        const normCat=(c)=>CAT_ALIAS[c]||c||'Other';
         const loadFeatProds=async(brand)=>{
           setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');setFeatCategory('');setFeatColor('');
-          const{data}=await supabase.from('products').select('id,sku,name,color,color_category,category,image_front_url,is_featured').eq('brand',brand).eq('is_active',true).order('name');
-          setFeatProds(data||[]);setFeatLoading(false);
+          // Paginate past PostgREST's 1000-row cap so every colorway is pulled in.
+          const PAGE=1000;let all=[],from=0;
+          for(;;){
+            const{data,error}=await supabase.from('products')
+              .select('id,sku,name,color,color_category,category,image_front_url,is_featured')
+              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+            if(error){nf('Error loading: '+error.message,'error');break;}
+            all=all.concat(data||[]);
+            if(!data||data.length<PAGE)break;
+            from+=PAGE;
+          }
+          // Classify color once at load time (not per render) so typing stays snappy.
+          setFeatProds(all.map(p=>({...p,_tags:colorTags(p)})));setFeatLoading(false);
         };
-        // Style = all products sharing the same name (all colorways of one style)
-        const styleMap={};
+        // Collapse colorways into one entry per style (same name = same style).
+        const styleList=[];const styleByKey={};const colorSet=new Set();
         for(const p of featProds){
+          if(!p.name)continue;
           const k=p.name.trim().toUpperCase();
-          if(!styleMap[k])styleMap[k]={isFeatured:false,ids:[]};
-          styleMap[k].ids.push(p.id);
-          if(p.is_featured)styleMap[k].isFeatured=true;
+          let st=styleByKey[k];
+          if(!st){st={key:k,name:p.name,colorways:[],ids:[],isFeatured:false};styleByKey[k]=st;styleList.push(st);}
+          (p._tags||colorTags(p)).forEach(t=>colorSet.add(t));
+          st.colorways.push(p);st.ids.push(p.id);
+          if(p.is_featured)st.isFeatured=true;
         }
-        const toggleFeat=async(p)=>{
-          const k=p.name.trim().toUpperCase();
-          const st=styleMap[k];const newVal=!st.isFeatured;const ids=st.ids;
+        const toggleFeat=async(st)=>{
+          const newVal=!st.isFeatured;const ids=st.ids;
           setFeatProds(prev=>prev.map(x=>ids.includes(x.id)?{...x,is_featured:newVal}:x));
           const{error}=await supabase.from('products').update({is_featured:newVal}).in('id',ids);
           if(error)nf('Error saving: '+error.message,'error');
         };
-        const cats=[...new Set(featProds.map(p=>p.category).filter(Boolean))].sort();
-        const colors=[...new Set(featProds.map(p=>p.color_category).filter(Boolean))].sort();
-        const filtered=featProds.filter(p=>{
-          if(featCategory&&p.category!==featCategory)return false;
-          if(featColor&&p.color_category!==featColor)return false;
+        const cats=[...new Set(featProds.map(p=>normCat(p.category)).filter(Boolean))].sort();
+        const colors=COLOR_FAMILIES.filter(f=>f!=='Other'&&colorSet.has(f));
+        // Pick the colorway to show on a style card: the filtered color if set, else one with an image.
+        const pickCw=(st)=>{
+          let pool=st.colorways;
+          if(featColor)pool=pool.filter(c=>(c._tags||colorTags(c)).has(featColor));
+          return pool.find(c=>c.image_front_url)||pool[0]||st.colorways[0];
+        };
+        const filteredStyles=styleList.filter(st=>{
+          if(featCategory&&!st.colorways.some(c=>normCat(c.category)===featCategory))return false;
+          if(featColor&&!st.colorways.some(c=>(c._tags||colorTags(c)).has(featColor)))return false;
           if(!featSearch)return true;
           const s=featSearch.toLowerCase();
-          return(p.name||'').toLowerCase().includes(s)||(p.sku||'').toLowerCase().includes(s)||(p.color||'').toLowerCase().includes(s);
+          return st.name.toLowerCase().includes(s)||st.colorways.some(c=>(c.sku||'').toLowerCase().includes(s)||(c.color||'').toLowerCase().includes(s));
         });
-        const featCount=Object.values(styleMap).filter(s=>s.isFeatured).length;
+        const RENDER_CAP=400;
+        const shown=filteredStyles.slice(0,RENDER_CAP);
+        const featCount=styleList.filter(s=>s.isFeatured).length;
         return(<>
           <div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h3>Featured Styles</h3></div>
             <div className="card-body">
-              <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>Featured styles always appear first in the LiveLook catalog. Starring any colorway features the entire style across all colors.</div>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>Featured styles always appear first in the LiveLook catalog. Each card is one style — starring it features all of its colors. Filter by color to preview a specific colorway.</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
                 {FEAT_BRANDS.map(b=><button key={b} className={`btn btn-sm ${featBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>featBrand!==b&&loadFeatProds(b)}>{b}</button>)}
               </div>
@@ -28656,20 +28696,22 @@ export default function App(){
                   <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
                   {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} style{featCount!==1?'s':''} featured</span>}
                   {featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>Loading…</span>}
+                  {!featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>{filteredStyles.length} style{filteredStyles.length!==1?'s':''}</span>}
                 </div>
-                {!featLoading&&filtered.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
+                {!featLoading&&filteredStyles.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
-                  {filtered.map(p=>{const isFeat=!!styleMap[p.name.trim().toUpperCase()]?.isFeatured;return(
-                    <div key={p.id} onClick={()=>toggleFeat(p)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isFeat?'#bae6fd':'#e2e8f0',background:isFeat?'#f0f9ff':'#fff',cursor:'pointer'}}>
+                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;return(
+                    <div key={st.key} onClick={()=>toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isFeat?'#bae6fd':'#e2e8f0',background:isFeat?'#f0f9ff':'#fff',cursor:'pointer'}}>
                       {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0}}/>}
                       <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name||p.sku}</div>
-                        <div style={{fontSize:11,color:'#64748b'}}>{[p.color,p.sku].filter(Boolean).join(' · ')}</div>
+                        <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
+                        <div style={{fontSize:11,color:'#64748b'}}>{st.colorways.length>1&&!featColor?`${st.colorways.length} colors`:[p.color,p.sku].filter(Boolean).join(' · ')}</div>
                       </div>
                       <span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>
                     </div>
                   );})}
                 </div>
+                {filteredStyles.length>RENDER_CAP&&<div style={{fontSize:12,color:'#94a3b8',textAlign:'center',marginTop:8}}>Showing first {RENDER_CAP} of {filteredStyles.length} — use search or filters to narrow.</div>}
               </>}
             </div>
           </div>
