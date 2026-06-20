@@ -2099,6 +2099,18 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const [upBusy, setUpBusy] = useState(false);
   const [note, setNote] = useState('');
   const [recoloring, setRecoloring] = useState('');
+  const [swapFrom, setSwapFrom] = useState(null);   // a logo color the rep wants to change
+  const [imgPalette, setImgPalette] = useState([]); // the selected logo's own colors
+  // Detect the selected logo's colors so the rep can recolor just one of them.
+  useEffect(() => {
+    let cancelled = false;
+    const url = decos[sel] && sideOf(decos[sel]) === side ? decos[sel].art_url : null;
+    setSwapFrom(null);
+    if (!url) { setImgPalette([]); return; }
+    (async () => { try { const p = await extractPalette(url); if (!cancelled) setImgPalette(p); } catch (e) { if (!cancelled) setImgPalette([]); } })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel, decos[sel] && decos[sel].art_url, side]);
   const [dragOver, setDragOver] = useState(false);
   const drag = useRef(null);
   const decos = Array.isArray(decorations) ? decorations : [];
@@ -2157,6 +2169,24 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
     } catch (e) { setNote('Could not recolor: ' + (e.message || e)); }
     setRecoloring('');
   };
+  // Change just ONE color of the logo (the selected swapFrom) to a target — applied to the
+  // current art so swaps can be chained (white→red, then gold→navy).
+  const swapColor = async (i, toHex) => {
+    const d = decos[i]; if (!d || !swapFrom) return;
+    setRecoloring(toHex); setNote('');
+    try {
+      const base = d.art_url;
+      const blob = await swapColorToBlob(base, swapFrom, toHex);
+      const ext = isSvg(base) ? 'svg' : 'png';
+      const file = new File([blob], `logo-swap.${ext}`, { type: blob.type });
+      const url = await cloudUpload(file, 'nsa-store-art');
+      update(i, { art_url: url, color_label: 'custom' });
+      setSwapFrom(null);
+    } catch (e) { setNote('Could not change that color: ' + (e.message || e)); }
+    setRecoloring('');
+  };
+  // A target swatch either swaps the selected logo color, or recolors the whole logo.
+  const applyColor = (i, hex) => (swapFrom ? swapColor(i, hex) : recolor(i, hex));
   // Upload a logo file (PNG/SVG/JPG) straight from here and drop it on the garment —
   // no need to pre-load the Art & Logos library.
   const uploadLogo = async (file) => {
@@ -2283,18 +2313,29 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
             <input type="range" min={8} max={70} value={Math.round(coord(current, 'w'))} onChange={(e) => update(sel, { w: Number(e.target.value) })} style={{ width: '100%' }} />
           </div>
           <div style={card}>
-            <div style={cardTitle}>Color <span style={cardHint}>· recolor for this garment</span></div>
+            <div style={cardTitle}>Color <span style={cardHint}>· change one color, or recolor the whole logo</span></div>
+            {imgPalette.length > 0 && (
+              <div style={{ marginBottom: 9 }}>
+                <div style={{ fontSize: 10.5, color: swapFrom ? '#2563eb' : '#94a3b8', fontWeight: swapFrom ? 700 : 500, marginBottom: 5 }}>{swapFrom ? 'Changing this color — pick a new one below' : 'Logo colors · tap one to change just it'}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {imgPalette.map((c) => { const on = swapFrom === c.hex; return (
+                    <button key={c.hex} type="button" disabled={!!recoloring} onClick={() => setSwapFrom(on ? null : c.hex)} title={on ? 'Selected — pick a new color below' : 'Change this color'} style={{ width: 26, height: 26, borderRadius: 13, border: on ? '3px solid #2563eb' : '1px solid #cbd5e1', background: c.hex, cursor: 'pointer', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.08)' }} />
+                  ); })}
+                </div>
+              </div>
+            )}
+            <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 6 }}>{swapFrom ? 'Change it to:' : 'Recolor the whole logo:'}</div>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              {[['original', 'Original'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = (current.color_label || 'original') === c; return (
-                <button key={c} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c)} style={{ flex: 1, border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === c ? '…' : lbl}</button>
-              ); })}
+              <button type="button" disabled={!!recoloring} onClick={() => recolor(sel, 'original')} style={{ flex: 1, border: '1px solid #d1d5db', background: '#fff', color: '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>Original</button>
+              <button type="button" disabled={!!recoloring} onClick={() => applyColor(sel, '#ffffff')} style={{ flex: 1, border: '1px solid #d1d5db', background: '#fff', color: '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === '#ffffff' ? '…' : 'White'}</button>
+              <button type="button" disabled={!!recoloring} onClick={() => applyColor(sel, '#000000')} style={{ flex: 1, border: '1px solid #d1d5db', background: '#fff', color: '#3A4150', borderRadius: 8, padding: '5px 0', fontSize: 11.5, fontWeight: 700, cursor: recoloring ? 'wait' : 'pointer' }}>{recoloring === '#000000' ? '…' : 'Black'}</button>
             </div>
             <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
-              {palette.map((c) => { const on = (current.color_label || '') === c.hex; return (
-                <button key={c.hex + c.label} type="button" disabled={!!recoloring} onClick={() => recolor(sel, c.hex)} title={c.label} style={{ width: 28, height: 28, borderRadius: 7, border: on ? '2px solid #191919' : '1px solid #cbd5e1', background: c.hex, cursor: recoloring ? 'wait' : 'pointer', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.35)' }}>{recoloring === c.hex ? '…' : ''}</button>
-              ); })}
+              {palette.map((c) => (
+                <button key={c.hex + c.label} type="button" disabled={!!recoloring} onClick={() => applyColor(sel, c.hex)} title={c.label} style={{ width: 28, height: 28, borderRadius: 7, border: '1px solid #cbd5e1', background: c.hex, cursor: recoloring ? 'wait' : 'pointer', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.35)' }}>{recoloring === c.hex ? '…' : ''}</button>
+              ))}
               <label title="Custom color" style={{ width: 28, height: 28, borderRadius: 7, border: '1px dashed #cbd5e1', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 14, position: 'relative', color: '#64748b' }}>＋
-                <input type="color" disabled={!!recoloring} onChange={(e) => recolor(sel, e.target.value)} style={{ position: 'absolute', width: 0, height: 0, opacity: 0 }} />
+                <input type="color" disabled={!!recoloring} onChange={(e) => applyColor(sel, e.target.value)} style={{ position: 'absolute', width: 0, height: 0, opacity: 0 }} />
               </label>
               {palette.length === 0 && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>Add team PMS colors to the customer for quick swatches.</span>}
             </div>
@@ -4034,6 +4075,63 @@ async function recolorToBlob(url, hex) {
   const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
   const d = ctx.getImageData(0, 0, c.width, c.height); const px = d.data; const [r, g, b] = hexRgb(hex);
   for (let i = 0; i < px.length; i += 4) { if (px[i + 3] > 8) { px[i] = r; px[i + 1] = g; px[i + 2] = b; } }
+  ctx.putImageData(d, 0, 0);
+  return await new Promise((res) => c.toBlob(res, 'image/png'));
+}
+
+const _loadImg = (url) => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+const _toHex = (r, g, b) => '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+
+// The logo's own dominant colors, so a rep can pick the white / gold / etc. to change.
+async function extractPalette(url, max = 7) {
+  if (!url) return [];
+  if (isSvg(url)) {
+    const txt = await fetch(url).then((r) => r.text());
+    const hexes = [...txt.matchAll(/#[0-9a-fA-F]{6}/g)].map((m) => m[0].toLowerCase());
+    return [...new Set(hexes)].slice(0, max).map((hex) => ({ hex }));
+  }
+  const img = await _loadImg(url);
+  const ratio = (img.naturalWidth || 1) / (img.naturalHeight || 1);
+  const w = 64, h = Math.max(1, Math.round(64 / (ratio || 1)));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+  const px = ctx.getImageData(0, 0, w, h).data;
+  const counts = new Map();
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] < 128) continue; // skip transparent
+    const r = Math.round(px[i] / 24) * 24, g = Math.round(px[i + 1] / 24) * 24, b = Math.round(px[i + 2] / 24) * 24;
+    const key = (r << 16) | (g << 8) | b; counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const out = [];
+  for (const [key] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
+    const r = (key >> 16) & 255, g = (key >> 8) & 255, b = key & 255;
+    if (out.some((o) => (o.r - r) ** 2 + (o.g - g) ** 2 + (o.b - b) ** 2 < 900)) continue; // merge near-dupes
+    out.push({ r, g, b }); if (out.length >= max) break;
+  }
+  return out.map(({ r, g, b }) => ({ hex: _toHex(r, g, b) }));
+}
+
+// Replace ONE color in a logo (within a tolerance) with another, leaving every other color
+// intact — e.g. the white in a shield → red, or Vegas gold → navy. Soft falloff keeps edges.
+async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
+  if (isSvg(url)) {
+    const txt = await fetch(url).then((r) => r.text());
+    return new Blob([txt.split(fromHex.toLowerCase()).join(toHex.toLowerCase()).split(fromHex.toUpperCase()).join(toHex.toLowerCase())], { type: 'image/svg+xml' });
+  }
+  const img = await _loadImg(url);
+  const c = document.createElement('canvas'); c.width = img.naturalWidth || 400; c.height = img.naturalHeight || 400;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+  const d = ctx.getImageData(0, 0, c.width, c.height); const px = d.data;
+  const [fr, fg, fb] = hexRgb(fromHex); const [tr, tg, tb] = hexRgb(toHex); const tol2 = tol * tol;
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] < 8) continue;
+    const dr = px[i] - fr, dg = px[i + 1] - fg, db = px[i + 2] - fb; const dist2 = dr * dr + dg * dg + db * db;
+    if (dist2 > tol2) continue;
+    const wgt = 1 - Math.sqrt(dist2) / tol; // 1 at exact match, →0 at the tolerance edge
+    px[i] = Math.round(px[i] * (1 - wgt) + tr * wgt);
+    px[i + 1] = Math.round(px[i + 1] * (1 - wgt) + tg * wgt);
+    px[i + 2] = Math.round(px[i + 2] * (1 - wgt) + tb * wgt);
+  }
   ctx.putImageData(d, 0, 0);
   return await new Promise((res) => c.toBlob(res, 'image/png'));
 }
