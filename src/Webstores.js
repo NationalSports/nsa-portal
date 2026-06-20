@@ -3274,6 +3274,9 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
   const [alsoAdd, setAlsoAdd] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [showSizeTable, setShowSizeTable] = useState(false);
+  const [sizeCost, setSizeCost] = useState({}); // size -> cost override (e.g. 2XL+ cost more)
+  const [sizeQty, setSizeQty] = useState({});   // size -> in-house stock qty to seed
 
   useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
 
@@ -3285,10 +3288,16 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
     setSaving(true); setErr('');
     const id = 'p' + Date.now() + Math.random().toString(36).slice(2, 6);
     const finalSku = (sku.trim() || ('CUS-' + Date.now().toString(36).toUpperCase())).toUpperCase();
-    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, image_front_url: image || null, is_active: true, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
+    // Per-size cost overrides (e.g. 2XL/3XL cost more) → products.size_costs.
+    const size_costs = {};
+    for (const s of sizes) { const v = sizeCost[s]; if (v !== '' && v != null && !Number.isNaN(Number(v))) size_costs[s] = Number(v); }
+    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, is_active: true, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
     const { error } = await supabase.from('products').insert(row);
+    if (error) { setSaving(false); setErr('Could not save: ' + error.message); return; }
+    // Seed in-house warehouse stock so the item shows as fulfillable right away.
+    const invRows = sizes.map((s) => ({ product_id: id, size: s, quantity: Math.max(0, Math.floor(Number(sizeQty[s]) || 0)) })).filter((r) => r.quantity > 0);
+    if (invRows.length) { try { await supabase.from('product_inventory').insert(invRows); } catch (e) { /* non-fatal */ } }
     setSaving(false);
-    if (error) { setErr('Could not save: ' + error.message); return; }
     onCreated && onCreated(row, alsoAdd);
   };
 
@@ -3331,6 +3340,26 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
               {sizes.map((s) => <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', borderRadius: 7, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{s}<button type="button" onClick={() => setSizes(sizes.filter((x) => x !== s))} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button></span>)}
               <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSize(); } }} />
             </div>
+            {sizes.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <button type="button" onClick={() => setShowSizeTable((v) => !v)} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 700 }}>{showSizeTable ? '− Hide' : '+ Set'} per-size cost &amp; in-house stock</button>
+                {showSizeTable && (
+                  <div style={{ marginTop: 8, border: '1px solid #eef0f3', borderRadius: 10, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', gap: 8, padding: '6px 10px', background: '#f8fafc', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#64748b' }}>
+                      <div style={{ width: 70 }}>Size</div><div style={{ width: 130 }}>Cost (blank = base)</div><div style={{ width: 110 }}>In-house qty</div>
+                    </div>
+                    {sizes.map((s) => (
+                      <div key={s} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 10px', borderTop: '1px solid #f1f5f9' }}>
+                        <div style={{ width: 70, fontSize: 12.5, fontWeight: 700 }}>{s}</div>
+                        <input className="form-input" style={{ width: 130 }} type="number" step="0.01" min={0} placeholder={cost === '' ? 'base' : String(cost)} value={sizeCost[s] ?? ''} onChange={(e) => setSizeCost((m) => ({ ...m, [s]: e.target.value }))} />
+                        <input className="form-input" style={{ width: 110 }} type="number" step="1" min={0} placeholder="0" value={sizeQty[s] ?? ''} onChange={(e) => setSizeQty((m) => ({ ...m, [s]: e.target.value }))} />
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 11, color: '#94a3b8', padding: '6px 10px', borderTop: '1px solid #f1f5f9' }}>Cost overrides cover sizes that run pricier (2XL/3XL+). In‑house qty seeds your warehouse stock so the item shows as fulfillable.</div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {err && <div style={{ fontSize: 12.5, color: '#b91c1c', fontWeight: 600, marginTop: 10 }}>{err}</div>}
