@@ -734,7 +734,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const mockups=[...(art.mockup_files||[]),...itemMocks].filter(f=>f);
       const dispFiles=mockups.length?mockups:(art.files||[]).filter(f=>f);
       // Thumbnail: first renderable image across preview, mockups, then files.
-      const imgUrl=[art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
+      const imgUrl=[art.web_logo_url,art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
       const allProd=[];const seenP=new Set();
@@ -823,6 +823,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {/* Color Ways */}
               <div style={{marginBottom:6}}>
                 <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uCustArt(oi,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(customer,allCustomers,'pantone_colors')} threadColors={mergeColors(customer,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
+              </div>
+              {/* Web logo — clean transparent cutout used to place this art on webstore garments */}
+              <div style={{marginBottom:6}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#166534'}}>WEB LOGO</span><span style={{fontSize:9,color:'#94a3b8'}}>Clean PNG/SVG for webstores — placed &amp; recolored on garments</span></div>
+                {art.web_logo_url&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <div style={{width:54,height:54,borderRadius:6,background:'#fff',border:'1px solid #bbf7d0',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}><img src={art.web_logo_url} alt="" style={{maxWidth:'90%',maxHeight:'90%',objectFit:'contain'}}/></div>
+                  <button onClick={()=>uCustArt(oi,'web_logo_url','')} style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:4,border:'1px solid #fca5a5',background:'#fef2f2',color:'#dc2626',cursor:'pointer'}}>Remove</button>
+                </div>}
+                <div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
+                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-store-art');uCustArt(oi,'web_logo_url',url);nf('Web logo added')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}
+                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
+                  onDragLeave={e=>{e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0'}}
+                  onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0';const f=Array.from(e.dataTransfer.files)[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-store-art');uCustArt(oi,'web_logo_url',url);nf('Web logo added')}catch(err){nf('Upload failed: '+err.message,'error')}}}>
+                  <div style={{fontSize:11,color:'#166534',fontWeight:600}}>{art.web_logo_url?'Replace web logo':'Drop a transparent PNG/SVG or click to browse'}</div>
+                  <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>Used on webstores to place this art on garments</div></div>
               </div>
               <div style={{marginBottom:6}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>MOCKUP FILES</span></div>
@@ -938,6 +953,30 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
+    // Attach a clean web-ready logo (transparent PNG/SVG) — a cutout used to place this art
+    // on webstore garments. Saved as web_logo_url on the program-library copy AND every order
+    // art record that is this logo, so it's one source of truth that carries to stores & orders.
+    const setWebLogoFile=async(file)=>{
+      if(!file)return;
+      const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
+      if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
+      nf&&nf('Uploading '+file.name+'...');
+      let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      const hadLib=updateLibArt(a=>({...a,web_logo_url:url}));
+      if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logo_url:url,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
+      setCustArtDetail(d=>d?{...d,web_logo_url:url}:d);
+      nf&&nf('Web logo added');
+    };
+    const pickWebLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)setWebLogoFile(f)};inp.click()};
+    const removeWebLogo=()=>{
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      updateLibArt(a=>({...a,web_logo_url:''}));
+      setCustArtDetail(d=>d?{...d,web_logo_url:''}:d);
+      nf&&nf('Web logo removed');
+    };
     const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
     const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
@@ -1021,6 +1060,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
             </div>
           </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'3px 9px',background:'#f1f5f9',borderRadius:8,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}{(cw.inks||[]).filter(Boolean).length>0&&<span style={{display:'inline-flex',gap:2}}>{(cw.inks||[]).filter(Boolean).map((ink,ii)=><span key={ii} title={ink} style={{width:11,height:11,borderRadius:3,background:pantoneHex(ink)||'#cbd5e1',border:'1px solid #d1d5db'}}/>)}</span>}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
+        </div>
+        {/* Web logo — clean transparent cutout for webstore placement */}
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logo <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG — placed &amp; recolored on webstore garments</span></div>
+            {saveArt&&art.web_logo_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={removeWebLogo}>Remove</button>}
+          </div>
+          {art.web_logo_url&&<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
+            <div style={{width:80,height:80,borderRadius:8,background:'#fff',border:'1px solid #bbf7d0',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}><img src={art.web_logo_url} alt="" style={{maxWidth:'88%',maxHeight:'88%',objectFit:'contain'}}/></div>
+            <div style={{fontSize:11,color:'#166534',fontWeight:600}}>Ready for webstores ✓</div>
+          </div>}
+          {saveArt?<div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
+            onClick={pickWebLogo}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
+            onDragLeave={e=>{e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0'}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0';const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)setWebLogoFile(f)}}>
+            <div style={{fontSize:11,color:'#166534',fontWeight:600}}>{art.web_logo_url?'Replace web logo':'Drop a transparent PNG/SVG or click to browse'}</div>
+            <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>Used on webstores to place this art on garments</div></div>
+          :(art.web_logo_url?null:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No web logo</div>)}
         </div>
         {/* All mockup versions */}
         <div style={{marginBottom:16}}>

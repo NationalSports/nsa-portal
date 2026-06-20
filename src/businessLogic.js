@@ -443,6 +443,14 @@ function calcTotals(o, cust) {
       rev += eq * dp.sell;
       cost += eq * dp.cost;
     });
+    // Legacy per-item outside-deco POs: the supplier-bill refactor moved these
+    // onto o.deco_pos[], but historical orders still carry them on items[].po_lines —
+    // their decoration cost must still be counted so margins aren't overstated.
+    (it.po_lines || []).forEach(pl => {
+      if (pl.po_type !== 'outside_deco') return;
+      const plQty = Object.keys(safeSizes(it)).reduce((a, sz) => a + safeNum(pl[sz]), 0);
+      cost += plQty * safeNum(pl.unit_cost);
+    });
   });
   // Outside-deco POs live at the SO level (so.deco_pos), not per-item
   (o.deco_pos || []).forEach(dp => {

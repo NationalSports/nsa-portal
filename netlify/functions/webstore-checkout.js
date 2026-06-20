@@ -21,6 +21,24 @@ const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+// Effective per-item fundraising. Mirrors webstore_storefront_products
+// (migration 047) EXACTLY so the price charged equals the price the storefront
+// shows. A per-item fundraise_amount > 0 is the override and always wins;
+// otherwise the store-level rule applies when enabled — a percent of the item's
+// price OR a flat $ per item, optionally rounded UP to the next whole dollar.
+const effFund = (store, wp) => {
+  const item = Number(wp.fundraise_amount) || 0;
+  if (item > 0) return r2(item);
+  if (!store || !store.fundraise_enabled) return 0;
+  const pct = Number(store.fundraise_pct) || 0;
+  const flat = Number(store.fundraise_flat) || 0;
+  let amt;
+  if (pct > 0) amt = (Number(wp.retail_price) || 0) * pct / 100;
+  else if (flat > 0) amt = flat;
+  else return 0;
+  return store.fundraise_round ? Math.ceil(amt) : r2(amt);
+};
 const bad = (status, error, extra) => ({ statusCode: status, headers: HEADERS, body: JSON.stringify({ error, ...(extra || {}) }) });
 
 function getSb() {
@@ -55,7 +73,7 @@ async function priceCart(sb, store, cart) {
     const wp = byId[l && l.webstore_product_id];
     if (!wp || wp.active === false) return { error: 'An item in your cart is no longer available — please refresh the store.' };
     const unitPrice = r2(wp.retail_price);
-    const fundAmt = r2(wp.fundraise_amount);
+    const fundAmt = effFund(store, wp);
 
     if (wp.kind === 'bundle') {
       const comps = bundleItems.filter((b) => b.bundle_id === wp.id);
