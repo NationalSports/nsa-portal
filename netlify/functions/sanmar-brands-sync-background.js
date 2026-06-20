@@ -1,9 +1,9 @@
 // Background function (15-min limit): syncs SanMar styles into the portal so the
 // public Team Catalog (/adidas, /livelook) shows SanMar-sourced styles with
-// images, sizes, and live inventory. Ingests ALL SanMar brands EXCEPT Nike
-// (its own sanmar-nike-sync) and Richardson (its own richardson-sync). On
-// LiveLook these all surface under the "Non Branded" filter while each card
-// keeps its real brand.
+// images, sizes, and live inventory. Ingests the team-relevant SanMar brands
+// (excludes Nike & Richardson — own feeds — plus a few off-profile long-tail
+// lines; see EXCLUDE_BRAND_RE). On LiveLook these surface under the "Non Branded"
+// filter while each card keeps its real brand.
 //
 // SanMar's API is style-number-gated (no "list by brand" endpoint), so the
 // style set is seeded from:
@@ -28,13 +28,16 @@
 //      REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 //      (SANMAR_USERNAME + SANMAR_PASSWORD are used inside sanmar-proxy)
 
-// SanMar carries many brands and we ingest ALL of them from the style seeds,
-// EXCEPT two that have their own dedicated feed (excluding them avoids dup cards):
-//   • Nike       — its own SanMar sync (sanmar-nike-sync); kept branded "Nike"
-//   • Richardson — its own live feed (richardson-sync)
+// We ingest the team-relevant SanMar brands and exclude:
+//   • Nike, Richardson — have their own dedicated feeds (avoid dup cards); Nike
+//     stays branded "Nike", Richardson keeps its own live feed.
+//   • Off-profile "long tail" lines (resort / dress / industrial workwear /
+//     lifestyle) — trimmed to keep the Non Branded catalog tight for a team
+//     dealer: tentree, Tommy Bahama, Red Kap, Stanley/Stella, Brooks Brothers.
+//     (Seeds keep the full site list; this only gates ingest.)
 // Everything else (Port Authority, Sport-Tek, District, Bella+Canvas, Gildan,
-// New Era, OGIO, Eddie Bauer, North Face, Carhartt, …) is pulled in here.
-const EXCLUDE_BRAND_RE = /nike|richardson/i;
+// New Era, OGIO, Eddie Bauer, North Face, Carhartt, TravisMathew, …) is pulled in.
+const EXCLUDE_BRAND_RE = /nike|richardson|tentree|tommy\s*bahama|red\s*kap|stanley|brooks\s*brothers/i;
 
 const CATEGORY_RULES = [
   ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],

@@ -43,6 +43,9 @@ As of the last pull there were ~750 styles across ~27 brands over 3 pages.
 from SanMar's PromoStandards API — EXCEPT:
 - **Nike** — handled by `sanmar-nike-sync` (kept branded "Nike")
 - **Richardson** — its own live feed (`richardson-sync`)
+- **Off-profile long-tail brands** — trimmed to keep the catalog tight:
+  tentree, Tommy Bahama, Red Kap, Stanley/Stella, Brooks Brothers.
+  (They stay in the seed list — this only gates what gets ingested.)
 
 Everything else lands in the catalog and shows under the **"Non Branded"** filter
 on LiveLook (each card still shows its real brand). Re-running this pull is safe
