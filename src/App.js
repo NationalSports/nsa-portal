@@ -776,7 +776,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false, histInvoices=false, only=null, fullState=false} = opts;
+  const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -795,7 +795,7 @@ const _dbLoad = async (opts={}) => {
     // Mirror of the _grp('products',…,true) gate: products are (re)built on initial + full polls + a
     // products-realtime reload, but NOT on coreOnly polls or non-products selective reloads. Drives
     // whether app_state needs to carry the _pimg_ image-fallback rows below.
-    const _productsLoading=only?only.has('products'):!coreOnly;
+    const _productsLoading=essential?false:(only?only.has('products'):!coreOnly);
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -819,8 +819,11 @@ const _dbLoad = async (opts={}) => {
       // all ~18 pages every 60s was ~58% of DB CPU. Safe because the setters are .length-guarded
       // (poll 4180, realtime 4031) and the poll snapshot is preserved on coreOnly (see prod: below),
       // so a skipped coreOnly load can never empty state or the _diffSave baseline.
-      _grp('products',()=>_safeQuery('products',{order:'name'}),true),
-      _grp('products',()=>_safeQuery('product_inventory'),true),
+      // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
+      // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
+      // them fresh as before.
+      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name'}),true),
+      essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
       _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
@@ -850,10 +853,13 @@ const _dbLoad = async (opts={}) => {
       // (re)built this load (they feed product image fallbacks and nothing else).
       ()=>{
         if(only&&!only.has('products')&&!only.has('app_state'))return _skip();
-        if(fullState)return _safeQuery('app_state');
-        const not=[['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']];
+        if(fullState&&!essential)return _safeQuery('app_state');// full incl _pimg_ (non-essential initial load)
+        // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
+        // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
+        const not=[];
+        if(!fullState)not.push(['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
-        return _safeQuery('app_state',{not});
+        return _safeQuery('app_state',not.length?{not}:undefined);
       },
       _grp('customers',()=>_safeQuery('customer_promo_programs'),true),
       _grp('customers',()=>_safeQuery('customer_promo_periods'),true),
@@ -3914,7 +3920,10 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad({histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
+        // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
+        // never reads them). Paints fast; products stream in via the tier-2 load below.
+        const d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -3968,6 +3977,18 @@ export default function App(){
           if(as.company_info){const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
           if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
+          // ── Tier 2: stream in the heavy product catalog AFTER first paint ──
+          // products / product_inventory / app_state _pimg_ aren't needed to render the dashboard, so
+          // the load above skipped them (essential:true) to paint fast. Pull them in the background now
+          // and fill them in. Order items carry their own vendor_id/pricing (products.find is only a
+          // fallback), so the brief window before this resolves is safe. The snapshot is set before
+          // state so the catalog can't be seen as "all changed" and re-saved by the _diffSave effect.
+          _dbLoad({only:new Set(['products'])}).then(pd=>{
+            if(cancelled||!pd||!Array.isArray(pd.products)||!pd.products.length)return;
+            _dbSnap.current={..._dbSnap.current,prod:pd.products};
+            setProd(prev=>{const base=_dbSaveFailedIds.size?pd.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):pd.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
+            console.log('[DB] Tier 2: product catalog loaded ('+pd.products.length+' products)');
+          }).catch(e=>{console.warn('[DB] Tier 2 product load failed:',e?.message||e)});
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
           // Use a lock row to prevent multiple browsers from seeding simultaneously
