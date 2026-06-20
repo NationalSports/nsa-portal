@@ -654,7 +654,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     let slug = slugify(src.name) + '-copy';
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
     const { id, created_at, updated_at, ...rest } = src;
-    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false };
+    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false, ...(opts.rebrand ? { logo_url: null } : {}) };
     flash('Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
     if (error) { flash('Could not duplicate: ' + error.message); return; }
@@ -681,6 +681,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     setStores((prev) => [store, ...prev]);
     flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
+    // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
+    if (opts.rebrand) setEditing(store);
   }, [stores, flash]);
 
   // Mark / unmark a store as a reusable template — the starting point for
@@ -1287,7 +1289,8 @@ function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate, onTog
                   <Quick label="Sale window">{window_}</Quick>
                   <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
                     {onToggleTemplate && <button className="btn btn-sm btn-secondary" title={s.is_template ? 'Remove from templates' : 'Save as a reusable template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }}>{s.is_template ? '★ Template' : '☆ Template'}</button>}
-                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Duplicate this store" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
+                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Exact copy of this store as a new draft" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
+                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Copy this store for a new team, then open settings to swap the customer, colors & logo" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; rebrand</button>}
                     <span style={{ color: '#cbd5e1', fontSize: 20 }}>›</span>
                   </div>
                 </div>
