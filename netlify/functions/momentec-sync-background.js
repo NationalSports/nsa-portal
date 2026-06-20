@@ -190,7 +190,7 @@ exports.handler = async (event) => {
             const qty = Math.round(num(it.quantity));
             const price = num(it.list_price);
             if (price > g.price) g.price = price;
-            g.sizes.push({ size, qty });
+            g.sizes.push({ size, qty, price });
           }
 
           for (const [cwSku, g] of colors) {
@@ -198,6 +198,10 @@ exports.handler = async (event) => {
             // Dealer cost = retail/MSRP × 0.5 (wholesale) × (1 − dealer discount).
             const cost = retail > 0 ? Math.round(retail * 0.5 * (1 - discount) * 100) / 100 : 0;
             const sell = cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null;
+            // Per-size cost from each size's list price (2XL/3XL+ usually higher). Capture
+            // only sizes whose cost differs from the base; null when uniform.
+            const sizeCosts = {};
+            for (const s of g.sizes) { const sc = s.price > 0 ? Math.round(s.price * 0.5 * (1 - discount) * 100) / 100 : 0; if (sc > 0 && Math.abs(sc - cost) > 0.001) sizeCosts[s.size] = sc; }
             productRows.push({
               id: `mt-${g.dz}-${g.colorCode}`,
               vendor_id: vendorId,
@@ -209,6 +213,7 @@ exports.handler = async (event) => {
               category: cat,
               retail_price: retail || null,
               nsa_cost: cost || null,
+              size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
               catalog_sell_price: sell,
               is_active: true,
               available_sizes: g.sizes.map((s) => s.size),
