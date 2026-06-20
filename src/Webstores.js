@@ -2059,7 +2059,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'custom' && <CustomProductCreator catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd) => { if (alsoAdd && onAddSingle) await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} />}
+      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
@@ -3085,7 +3085,7 @@ function ProductSearch({ label, onPick, onClose, compact }) {
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      const { data } = await supabase.from('products').select('id,sku,name,color,category,retail_price,image_front_url').or(`name.ilike.%${q}%,sku.ilike.%${q}%`).limit(25);
+      const { data } = await supabase.from('products').select('id,sku,name,color,category,retail_price,image_front_url').or('is_active.is.null,is_active.eq.true').or(`name.ilike.%${q}%,sku.ilike.%${q}%`).limit(25);
       if (!cancelled) { setResults(data || []); setSearching(false); }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
@@ -3394,6 +3394,10 @@ const SIZE_PRESETS = [
   { label: 'Youth XS–XL', sizes: ['YXS', 'YS', 'YM', 'YL', 'YXL'] },
   { label: 'Youth S–XL', sizes: ['YS', 'YM', 'YL', 'YXL'] },
   { label: 'Numeric 28–40', sizes: ['28', '30', '32', '34', '36', '38', '40'] },
+  { label: 'Jersey (numeric)', sizes: ['36', '38', '40', '42', '44', '46', '48', '50', '52'] },
+  { label: 'Combo S/M · L/XL', sizes: ['S/M', 'L/XL'] },
+  { label: 'Combo XS/S–XL/2XL', sizes: ['XS/S', 'S/M', 'M/L', 'L/XL', 'XL/2XL'] },
+  { label: 'Hat — fitted', sizes: ['6 3/4', '6 7/8', '7', '7 1/8', '7 1/4', '7 3/8', '7 1/2', '7 5/8', '7 3/4'] },
   { label: 'One size (OSFA)', sizes: ['OSFA'] },
 ];
 
@@ -3450,7 +3454,7 @@ function PriceToMarginModal({ catalog = [], costByPid = {}, onApply, onClose }) 
   );
 }
 
-function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
+function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCreated }) {
   const [vendors, setVendors] = useState([]);
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
@@ -3470,11 +3474,26 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
   const [showSizeTable, setShowSizeTable] = useState(false);
   const [sizeCost, setSizeCost] = useState({}); // size -> cost override (e.g. 2XL+ cost more)
   const [sizeQty, setSizeQty] = useState({});   // size -> in-house stock qty to seed
+  const [reusable, setReusable] = useState(true); // recurring (save to catalog) vs one-time (this store only)
+  const [logo, setLogo] = useState(null);         // { art_url, art_id, source_url, label } to decorate the item with
+  const [logoBusy, setLogoBusy] = useState(false);
 
   useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
 
   const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
   const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes([...sizes, s]); setNewSize(''); };
+  const logoUrlOf = (it) => it && (it.web_logo_url || it.preview_url || it.art_url);
+  const storeLogos = (library || []).filter((it) => it && it.kind !== 'art' && logoUrlOf(it));
+  const pickLogoFile = async (file) => {
+    if (!file) return;
+    setLogoBusy(true);
+    try {
+      const url = await cloudUpload(file, 'nsa-webstores');
+      const png = file.type && file.type.startsWith('image/') ? url : (vectorPreviewUrl(url) || url);
+      setLogo({ art_url: png, art_id: 'cpc-' + Date.now().toString(36), source_url: url, label: file.name });
+    } catch (e) { /* cloudUpload surfaces a toast */ }
+    setLogoBusy(false);
+  };
 
   const save = async () => {
     if (!name.trim()) { setErr('Give the item a name.'); return; }
@@ -3484,14 +3503,17 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
     // Per-size cost overrides (e.g. 2XL/3XL cost more) → products.size_costs.
     const size_costs = {};
     for (const s of sizes) { const v = sizeCost[s]; if (v !== '' && v != null && !Number.isNaN(Number(v))) size_costs[s] = Number(v); }
-    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, is_active: true, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
+    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
     const { error } = await supabase.from('products').insert(row);
     if (error) { setSaving(false); setErr('Could not save: ' + error.message); return; }
     // Seed in-house warehouse stock so the item shows as fulfillable right away.
     const invRows = sizes.map((s) => ({ product_id: id, size: s, quantity: Math.max(0, Math.floor(Number(sizeQty[s]) || 0)) })).filter((r) => r.quantity > 0);
     if (invRows.length) { try { await supabase.from('product_inventory').insert(invRows); } catch (e) { /* non-fatal */ } }
     setSaving(false);
-    onCreated && onCreated(row, alsoAdd);
+    // Attach the chosen logo as a front decoration (default placement; fine-tune later in Art).
+    const decorations = logo ? [{ art_id: logo.art_id || ('cpc-' + Date.now().toString(36)), art_url: logo.art_url, orig_url: logo.art_url, source_url: logo.source_url || logo.art_url, placement: 'full-front', color_label: 'original', side: 'front', x: 50, y: 44, w: 30 }] : [];
+    const addToStore = reusable ? alsoAdd : true; // a one-time item only makes sense in this store
+    onCreated && onCreated(row, addToStore, decorations);
   };
 
   return (
@@ -3502,7 +3524,7 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         <div style={{ padding: 16 }}>
-          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>Saved to the product catalog for reuse in any store. Only a name is required.</div>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{reusable ? 'Saved to the product catalog for reuse in any store.' : 'Created for this store only — not added to the shared catalog.'} Only a name is required.</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <div style={{ flex: '0 0 auto', width: 160 }}>
               <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Product image" />
@@ -3555,11 +3577,40 @@ function CustomProductCreator({ catSuggestions = [], onClose, onCreated }) {
             )}
           </div>
 
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b', marginBottom: 6 }}>Logo <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· optional — drop one or pick from the store's logos; place it precisely later in Art &amp; colors</span></div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <label onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); const f = (e.dataTransfer.files || [])[0]; if (f) pickLogoFile(f); }} style={{ width: 86, height: 86, border: '1.5px dashed #d7dbe2', borderRadius: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: '#fafbfc', fontSize: 10.5, color: '#94a3b8', textAlign: 'center', padding: 6, flexShrink: 0 }}>
+                {logoBusy ? 'Uploading…' : <span>＋<br />Drop / browse</span>}
+                <input type="file" accept="image/*,.ai,.eps,.pdf,.svg" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) pickLogoFile(f); e.target.value = ''; }} />
+              </label>
+              {storeLogos.slice(0, 8).map((it) => { const u = logoUrlOf(it); const on = logo && logo.art_id === it.id; return (
+                <button key={it.id} type="button" title={it.label || it.name || 'logo'} onClick={() => setLogo({ art_url: u, art_id: it.id, source_url: u, label: it.label || it.name })} style={{ width: 64, height: 64, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 8, padding: 3, background: '#fff', cursor: 'pointer', flexShrink: 0 }}>
+                  <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                </button>
+              ); })}
+              {logo && <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 6 }}>
+                <div style={{ width: 64, height: 64, border: '2px solid #166534', borderRadius: 8, padding: 3, background: '#fff', flexShrink: 0 }}><img src={logo.art_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /></div>
+                <button type="button" onClick={() => setLogo(null)} className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }}>Clear</button>
+              </div>}
+            </div>
+          </div>
+
           {err && <div style={{ fontSize: 12.5, color: '#b91c1c', fontWeight: 600, marginTop: 10 }}>{err}</div>}
 
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" disabled={saving || imgBusy || !name.trim()} onClick={save}>{saving ? 'Saving…' : 'Save to catalog'}</button>
-            <Toggle label="Also add to this store" checked={alsoAdd} onChange={setAlsoAdd} />
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b', marginBottom: 6 }}>This item is</div>
+            <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }}>
+              {[['reuse', 'Reusable — save to catalog'], ['once', 'One‑time — this store only']].map(([v, lbl]) => { const on = reusable === (v === 'reuse'); return (
+                <button key={v} type="button" onClick={() => setReusable(v === 'reuse')} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: on ? '#fff' : 'transparent', color: on ? '#191919' : '#6A7180', boxShadow: on ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+              ); })}
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>{reusable ? 'Recurring item — kept in the catalog so you can drop it into other stores later.' : 'Just for this store — it won’t clutter the shared catalog or product search.'}</div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" disabled={saving || imgBusy || logoBusy || !name.trim()} onClick={save}>{saving ? 'Saving…' : reusable ? 'Save to catalog' : 'Add to this store'}</button>
+            {reusable && <Toggle label="Also add to this store" checked={alsoAdd} onChange={setAlsoAdd} />}
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           </div>
         </div>
@@ -3818,7 +3869,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
+      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').or('is_active.is.null,is_active.eq.true');
       if (favOnly) {
         // Favorites view — load every colorway of each starred STYLE (across all categories)
         // so the rep's + team's picks always show, regardless of color/stock filters.
@@ -4124,7 +4175,7 @@ function AiStoreBuilder({ onAddProducts, onClose, submitLabel }) {
   // source as the catalog live-look, so the in-stock toggle and the per-card
   // stock badges agree on exactly what's orderable right now.
   const loadCandidates = async (s) => {
-    let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').limit(300);
+    let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').or('is_active.is.null,is_active.eq.true').limit(300);
     if (s.brands?.length) q = q.in('brand', s.brands);
     if (s.categories?.length) q = q.in('category', s.categories);
     const { data } = await q;
