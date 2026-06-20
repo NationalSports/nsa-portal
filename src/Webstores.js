@@ -2748,10 +2748,22 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
     (!colorOnly || productMatchesColors(r.color, colorWords)) &&
     // The catalog tags some jerseys as Tees — keep the Tees view to actual tees.
     !(catSel === 'Tees' && /jersey/i.test(r.name || '')));
-  const inStockN = matched.reduce((a, r) => a + (wellStocked(r) ? 1 : 0), 0);
-  const shown = inStockOnly ? matched.filter(wellStocked) : matched;
+  // Collapse colorways → one card per STYLE (name), so the grid isn't the same short in six
+  // colors. The rep prefers an image + in-stock; other colorways are added later from the
+  // item editor's "Other colors of this garment".
+  const styleKey = (r) => (r.name || r.sku || r.id || '').trim().toLowerCase();
+  const colorCountByStyle = matched.reduce((m, r) => { const k = styleKey(r); m[k] = (m[k] || 0) + 1; return m; }, {});
+  const dedupeByStyle = (rows) => {
+    const map = new Map();
+    const score = (x) => (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
+    for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || score(r) > score(cur)) map.set(k, r); }
+    return [...map.values()];
+  };
+  const styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
+  const allStyleN = new Set(matched.map(styleKey)).size;
+  const inStockStyleN = new Set(matched.filter(wellStocked).map(styleKey)).size;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selProducts = shown.filter((p) => selected.has(p.id));
+  const selProducts = styles.filter((p) => selected.has(p.id));
 
   const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
     <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
@@ -2779,7 +2791,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12, alignItems: 'center' }}>
             {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
             {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
-            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockN} of {matched.length} in stock</span>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockStyleN} of {allStyleN} styles in stock</span>
             {brands.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 2px' }} />}
             {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
           </div>
@@ -2794,7 +2806,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
           {active && searching && results.length === 0 && (
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching…</div>
           )}
-          {active && !searching && shown.length === 0 && (
+          {active && !searching && styles.length === 0 && (
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
               {matched.length > 0 && inStockOnly
                 ? 'No in-stock matches — turn off "In stock only" to see more.'
@@ -2803,9 +2815,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
                   : 'No matches. Try another category or search.'}
             </div>
           )}
-          {shown.length > 0 && (
+          {styles.length > 0 && (
             <div className="ai-grid">
-              {shown.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -2881,7 +2893,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], l
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
 // "Details" opens the per-item editor for price/fundraising/personalization.
-function PickerCard({ p, selected, onToggle, onDetails }) {
+function PickerCard({ p, selected, moreColors = 0, onToggle, onDetails }) {
   const [imgErr, setImgErr] = useState(false);
   const st = p._stock || { units: 0, sizes: [], incoming: false };
   const out = (st.units || 0) <= 0;
@@ -2905,6 +2917,7 @@ function PickerCard({ p, selected, onToggle, onDetails }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
           <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
           {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
+          {moreColors > 0 && <div style={{ fontSize: 11, color: '#6A7180', marginTop: 3, fontWeight: 600 }}>+{moreColors} more color{moreColors === 1 ? '' : 's'} · add later</div>}
         </div>
         <div style={{ fontSize: 11.5, fontWeight: 800, color: st.units > 0 ? '#166534' : st.incoming ? '#92400e' : '#b91c1c' }}>
           {st.units > 0 ? `${st.units} in stock` : st.incoming ? 'Incoming only' : 'Out of stock'}
