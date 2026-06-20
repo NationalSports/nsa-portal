@@ -19542,12 +19542,17 @@ export default function App(){
               {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
                 <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
                   onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
-                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||'',
-                      destAddr:{company:dv?.name||'',street1:dv?.address_line1||'',street2:dv?.address_line2||'',city:dv?.city||'',state:dv?.state||'',zip:dv?.zip||'',phone:dv?.phone||''}}))}}>
+                    // Decorator's own saved address wins; otherwise fall back to its linked Vendor record's address.
+                    const lv=dv&&dv.vendor_id?vend.find(x=>x.id===dv.vendor_id):null;
+                    const addr=(dv&&(dv.address_line1||dv.city))
+                      ?{company:dv.name||'',street1:dv.address_line1||'',street2:dv.address_line2||'',city:dv.city||'',state:dv.state||'',zip:dv.zip||'',phone:dv.phone||''}
+                      :lv?{company:dv?.name||lv.name||'',street1:lv.address_line1||'',street2:lv.address_line2||'',city:lv.city||'',state:lv.state||'',zip:lv.zip||'',phone:lv.contact_phone||''}
+                      :{company:dv?.name||'',street1:'',street2:'',city:'',state:'',zip:'',phone:''};
+                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||lv?.contact_name||'',destAddr:addr}))}}>
                   <option value="">Select decorator…</option>
                   {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
-                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below (add it in Settings → Deco Vendors to save for next time).</div>}
+                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
               </div>}
               <div style={{display:'grid',gap:6}}>
                 <div style={{display:'flex',gap:6}}>
@@ -28198,6 +28203,14 @@ export default function App(){
         {/* SHIP-TO ADDRESS — used by Manual Ship when shipping goods to this decorator */}
         {editVendor&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h3 style={{color:'#7c3aed'}}>Ship-To Address — {editVendor.name}</h3></div><div className="card-body">
           <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Where the warehouse ships blanks/goods to this decorator. Prefills the Manual Ship form when you pick this decorator as the destination.</div>
+          <div style={{marginBottom:10,maxWidth:520}}>
+            <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Linked Vendor</label>
+            <select className="form-select" style={{fontSize:12}} value={editVendor.vendor_id||''} onChange={e=>saveDV({...editVendor,vendor_id:e.target.value||null,updated_at:new Date().toISOString()})}>
+              <option value="">— None —</option>
+              {[...vend].sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+            {(()=>{const lv=editVendor.vendor_id?vend.find(x=>x.id===editVendor.vendor_id):null;return lv&&(lv.address_line1||lv.city)?<div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>Vendor address on file: {[lv.address_line1,lv.city,lv.state,lv.zip].filter(Boolean).join(', ')}{!dvAddr.address_line1?' — used for Manual Ship unless you set a decorator-specific address below':''}</div>:lv?<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Linked vendor has no address yet — add one on the Vendors page.</div>:<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Link this decorator to its Vendor record to reuse that vendor's address automatically.</div>})()}
+          </div>
           <div style={{display:'grid',gap:8,maxWidth:520}}>
             <div style={{display:'flex',gap:8}}>
               <div style={{flex:1}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Attention / Contact</label>

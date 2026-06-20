@@ -833,7 +833,7 @@ function QuoteForm({token,supabaseClient}){
 // ─── VENDOR MODAL (create / edit) ───
 
 function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
-  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
+  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',address_line1:'',address_line2:'',city:'',state:'',zip:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
   const[f,setF]=useState(baseV);
   const[err,setErr]=useState('');
   const[showPw,setShowPw]=useState(false);
@@ -899,6 +899,17 @@ function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
       </div>
       <div style={{marginTop:10}}>
         <label className="form-label">Website</label><input className="form-input" value={f.website||''} onChange={e=>sv('website',e.target.value)} placeholder="https://"/>
+      </div>
+      <div style={{marginTop:14,padding:12,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+        <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:4}}>Ship-To Address</div>
+        <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>Where we ship blanks/goods to this vendor — prefills decoration / drop-ship POs (Manual Ship). Attention &amp; phone use the Contact Name / Phone above.</div>
+        <div><label className="form-label">Street Address</label><input className="form-input" value={f.address_line1||''} onChange={e=>sv('address_line1',e.target.value)} placeholder="123 Main St"/></div>
+        <div style={{marginTop:8}}><label className="form-label">Suite / Unit (optional)</label><input className="form-input" value={f.address_line2||''} onChange={e=>sv('address_line2',e.target.value)} placeholder="Ste 100"/></div>
+        <div style={{display:'grid',gridTemplateColumns:'2fr 70px 110px',gap:8,marginTop:8}}>
+          <div><label className="form-label">City</label><input className="form-input" value={f.city||''} onChange={e=>sv('city',e.target.value)}/></div>
+          <div><label className="form-label">State</label><input className="form-input" value={f.state||''} maxLength={2} onChange={e=>sv('state',e.target.value.toUpperCase())} placeholder="CA"/></div>
+          <div><label className="form-label">Zip</label><input className="form-input" value={f.zip||''} onChange={e=>sv('zip',e.target.value)}/></div>
+        </div>
       </div>
       <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:6}}>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.nsa_carries_inventory} onChange={e=>sv('nsa_carries_inventory',e.target.checked)}/>NSA carries inventory</label>
