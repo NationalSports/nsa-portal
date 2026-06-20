@@ -1918,12 +1918,19 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
+  // Side-by-side layout: a persistent item list on the left, the item editor in a
+  // pane on the right (no popup). Toggle back to the classic list+popup; remembered locally.
+  const [view, setView] = useState(() => { try { return localStorage.getItem('nsa_catalog_view') || 'split'; } catch { return 'split'; } });
+  useEffect(() => { try { localStorage.setItem('nsa_catalog_view', view); } catch {} }, [view]);
   const designOptions = transfers.filter((t) => t.kind === 'design').map((t) => ({ code: t.code, label: t.label }));
   const numberSets = [...new Set(transfers.filter((t) => t.kind === 'number').map((t) => `${t.tsize || ''}|${t.color || ''}`))].map((k) => { const [size, color] = k.split('|'); return { size, color }; });
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  // In side-by-side view keep one item selected so the editor pane is never empty
+  // (and re-home the selection if the chosen item gets removed).
+  useEffect(() => { if (view === 'split' && ordered.length && !ordered.some((p) => p.id === editId)) setEditId(ordered[0].id); }, [view, catalog]);
 
   // Drag-to-reorder: the grab handle on a row starts the drag; every row is a
   // drop target. Hovering the top/bottom half drops the item before/after that
@@ -1962,7 +1969,12 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'ai' ? null : 'ai'); setPending(null); }}>✨ Build with AI</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'margin' ? null : 'margin'); setPending(null); }}>💲 Price to margin</button>
-        <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
+        <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
+          {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
+            <button key={v} type="button" onClick={() => setView(v)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+          ))}
+        </div>
+        {view === 'table' && <button className="btn btn-sm btn-secondary" onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>}
       </div>
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
@@ -1982,6 +1994,61 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={() => { setMode('template'); setPending(null); }}>🎯 Browse templates</button>
             <button className="btn btn-secondary" onClick={() => { setMode('single'); setPending(null); }}>+ Add product</button>
+          </div>
+        </div>
+      ) : view === 'split' ? (
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          {/* Left: persistent, scrollable item list */}
+          <div style={{ width: 340, flexShrink: 0, position: 'sticky', top: 12, maxHeight: 'calc(100vh - 180px)', overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 12, background: '#fff' }}>
+            <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '9px 12px', borderBottom: '1px solid #eef0f3', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, zIndex: 1 }}>{ordered.length} item{ordered.length === 1 ? '' : 's'} · drag to reorder</div>
+            {ordered.map((p) => {
+              const stock = stockByWp[p.id];
+              const st = stockText(stock);
+              const label = p.display_name || stock?.name || p.sku || '(unnamed)';
+              const fund = Number(p.fundraise_amount) || 0;
+              const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
+              const sel = editId === p.id;
+              const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
+              return (
+                <div key={p.id} onClick={() => setEditId(p.id)}
+                  onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); }}
+                  style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
+                    borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
+                    background: sel ? '#f1f5f9' : '#fff',
+                    borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f4f6f9',
+                    borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
+                    opacity: dragId === p.id ? 0.4 : 1 }}>
+                  <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>
+                  <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}</div>
+                    <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)} · {st.text}</div>
+                  </div>
+                  {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
+                </div>
+              );
+            })}
+          </div>
+          {/* Right: editor pane for the selected item */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {(() => {
+              const p = ordered.find((x) => x.id === editId) || null;
+              if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
+              const stock = stockByWp[p.id];
+              return (
+                <div style={{ border: '1px solid #eef0f3', borderRadius: 14, background: '#fff' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 16px', borderBottom: '1px solid #eef0f3', borderRadius: '14px 14px 0 0' }}>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>{p.display_name || stock?.name || p.sku}</div>
+                    <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, p.display_name || stock?.name || p.sku)}>Remove</button>
+                  </div>
+                  <div style={{ padding: 14 }}>
+                    <CatalogItemEditor key={p.id} item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       ) : (
