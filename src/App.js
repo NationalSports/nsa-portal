@@ -28065,6 +28065,7 @@ export default function App(){
   const[featCategory,setFeatCategory]=useState('');
   const[featColor,setFeatColor]=useState('');
   const[featLoading,setFeatLoading]=useState(false);
+  const[featShowHidden,setFeatShowHidden]=useState(false);
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
@@ -28631,7 +28632,7 @@ export default function App(){
           const PAGE=1000;let all=[],from=0;
           for(;;){
             const{data,error}=await supabase.from('products')
-              .select('id,sku,name,color,color_category,category,image_front_url,is_featured')
+              .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
               .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
             if(error){nf('Error loading: '+error.message,'error');break;}
             all=all.concat(data||[]);
@@ -28647,15 +28648,23 @@ export default function App(){
           if(!p.name)continue;
           const k=p.name.trim().toUpperCase();
           let st=styleByKey[k];
-          if(!st){st={key:k,name:p.name,colorways:[],ids:[],isFeatured:false};styleByKey[k]=st;styleList.push(st);}
+          if(!st){st={key:k,name:p.name,colorways:[],ids:[],isFeatured:false,isHidden:true};styleByKey[k]=st;styleList.push(st);}
           (p._tags||colorTags(p)).forEach(t=>colorSet.add(t));
           st.colorways.push(p);st.ids.push(p.id);
           if(p.is_featured)st.isFeatured=true;
+          if(!p.is_archived)st.isHidden=false;
         }
         const toggleFeat=async(st)=>{
           const newVal=!st.isFeatured;const ids=st.ids;
           setFeatProds(prev=>prev.map(x=>ids.includes(x.id)?{...x,is_featured:newVal}:x));
           const{error}=await supabase.from('products').update({is_featured:newVal}).in('id',ids);
+          if(error)nf('Error saving: '+error.message,'error');
+        };
+        const toggleHide=async(e,st)=>{
+          e.stopPropagation();
+          const newVal=!st.isHidden;const ids=st.ids;
+          setFeatProds(prev=>prev.map(x=>ids.includes(x.id)?{...x,is_archived:newVal}:x));
+          const{error}=await supabase.from('products').update({is_archived:newVal}).in('id',ids);
           if(error)nf('Error saving: '+error.message,'error');
         };
         const cats=[...new Set(featProds.map(p=>normCat(p.category)).filter(Boolean))].sort();
@@ -28666,7 +28675,9 @@ export default function App(){
           if(featColor)pool=pool.filter(c=>(c._tags||colorTags(c)).has(featColor));
           return pool.find(c=>c.image_front_url)||pool[0]||st.colorways[0];
         };
+        const hiddenCount=styleList.filter(s=>s.isHidden).length;
         const filteredStyles=styleList.filter(st=>{
+          if(!featShowHidden&&st.isHidden)return false;
           if(featCategory&&!st.colorways.some(c=>normCat(c.category)===featCategory))return false;
           if(featColor&&!st.colorways.some(c=>(c._tags||colorTags(c)).has(featColor)))return false;
           if(!featSearch)return true;
@@ -28692,22 +28703,24 @@ export default function App(){
                 {colors.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
                   {colors.map(c=><button key={c} className={`btn btn-sm ${featColor===c?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatColor(featColor===c?'':c)}>{c}</button>)}
                 </div>}
-                <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
+                <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:10}}>
                   <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
                   {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} style{featCount!==1?'s':''} featured</span>}
+                  {hiddenCount>0&&<button className={`btn btn-sm ${featShowHidden?'btn-warning':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatShowHidden(h=>!h)}>⊗ {featShowHidden?'Hide':'Show'} hidden ({hiddenCount})</button>}
                   {featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>Loading…</span>}
                   {!featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>{filteredStyles.length} style{filteredStyles.length!==1?'s':''}</span>}
                 </div>
                 {!featLoading&&filteredStyles.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
-                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;return(
-                    <div key={st.key} onClick={()=>toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isFeat?'#bae6fd':'#e2e8f0',background:isFeat?'#f0f9ff':'#fff',cursor:'pointer'}}>
+                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;const isHid=st.isHidden;return(
+                    <div key={st.key} onClick={()=>!isHid&&toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isHid?'#e2e8f0':isFeat?'#bae6fd':'#e2e8f0',background:isHid?'#f8fafc':isFeat?'#f0f9ff':'#fff',cursor:isHid?'default':'pointer',opacity:isHid?0.55:1}}>
                       {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0}}/>}
                       <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
-                        <div style={{fontSize:11,color:'#64748b'}}>{st.colorways.length>1&&!featColor?`${st.colorways.length} colors`:[p.color,p.sku].filter(Boolean).join(' · ')}</div>
+                        <div style={{fontSize:12,fontWeight:600,color:isHid?'#94a3b8':'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
+                        <div style={{fontSize:11,color:'#94a3b8'}}>{isHid?'Hidden from catalog':(st.colorways.length>1&&!featColor?`${st.colorways.length} colors`:[p.color,p.sku].filter(Boolean).join(' · '))}</div>
                       </div>
-                      <span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>
+                      {!isHid&&<span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>}
+                      <span onClick={e=>toggleHide(e,st)} title={isHid?'Show in catalog':'Hide from catalog'} style={{fontSize:14,color:isHid?'#ef4444':'#cbd5e1',flexShrink:0,lineHeight:1,cursor:'pointer',userSelect:'none'}}>⊗</span>
                     </div>
                   );})}
                 </div>
