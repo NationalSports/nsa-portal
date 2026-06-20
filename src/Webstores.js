@@ -1793,7 +1793,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         {TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
       </div>
 
-      {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
+      {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
@@ -2028,7 +2028,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
                     <div onClick={() => setEditId(null)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-                      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
+                      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1240, margin: 'auto' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 1 }}>
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
@@ -2205,7 +2205,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   return (
     <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
       {/* HERO CANVAS */}
-      <div style={{ flex: '0 0 auto', width: 'min(460px, 46vw)' }}>
+      <div style={{ flex: '0 0 auto', width: 'min(360px, 40vw)' }}>
         {canBack && (
           <div style={{ display: 'flex', gap: 4, padding: 3, background: '#eef1f5', borderRadius: 10, marginBottom: 10, width: 'fit-content' }}>
             {['front', 'back'].map((s) => { const on = side === s; return (
@@ -2590,11 +2590,15 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
-        <ItemSection title="Product photo" hint="· the catalog image — and the garment you place art on">
-          <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />
-        </ItemSection>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+        <div>
         <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
           <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />
+        </ItemSection>
+        </div>
+        <div>
+        <ItemSection title="Product photo" hint="· the catalog image you decorate">
+          <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />
         </ItemSection>
 
         {onAddSingle && colorOptions.length > 0 && (
@@ -2625,6 +2629,8 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
             <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
           </div>
         </ItemSection>
+        </div>
+      </div>
       </React.Fragment>}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, position: 'sticky', bottom: 0, background: '#f6f7f9', paddingTop: 12, borderTop: '1px solid #e5e8ec' }}>
