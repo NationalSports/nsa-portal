@@ -1971,7 +1971,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'margin' ? null : 'margin'); setPending(null); }}>💲 Price to margin</button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
           {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
-            <button key={v} type="button" onClick={() => setView(v)} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+            <button key={v} type="button" onClick={() => { if (v === 'table') setEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
           ))}
         </div>
         {view === 'table' && <button className="btn btn-sm btn-secondary" onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>}
