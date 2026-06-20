@@ -1649,7 +1649,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1729,7 +1729,17 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], onApplyLogo, onSaveLogo, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+// Store-wide fundraising rule (Settings → Fundraising): a % of price or a flat $,
+// optionally rounded up to the next $1. A per-item amount always overrides it.
+const storeFundAmount = (price, sf) => {
+  if (!sf || !sf.enabled) return 0;
+  let amt = Number(sf.flat) > 0 ? Number(sf.flat) : (Number(price) || 0) * (Number(sf.pct) || 0) / 100;
+  if (sf.round) amt = Math.ceil(amt);
+  return Math.max(0, amt);
+};
+const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
+
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, onApplyLogo, onSaveLogo, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1794,6 +1804,8 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
                 const label = p.display_name || stock?.name || p.sku || '(unnamed)';
                 const fund = Number(p.fundraise_amount) || 0;
+                // Singles fall back to the store-wide fundraising rule when they have no own amount.
+                const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
                 const open = expandAll || openRows.has(p.id);
                 return (
                   <React.Fragment key={p.id}>
@@ -1834,8 +1846,8 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                         return <div style={{ fontSize: 10.5, fontWeight: 700, color: col, marginTop: 2 }} title={`Cost ${money(costByPid[p.product_id])}`}>{m >= 0 ? '+' : ''}{money(m)}{pct != null ? ` (${pct}%)` : ''} margin</div>;
                       })()}
                     </td>
-                    <td style={td}>{fund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(fund)}</span> : '—'}</td>
-                    <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + fund)}</td>
+                    <td style={td}>{effFund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(effFund)}{fund <= 0 ? <span style={{ color: '#94a3b8', fontWeight: 500 }}> · store</span> : null}</span> : '—'}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + effFund)}</td>
                     <td style={td}>
                       {p.kind === 'bundle' ? '—' : (
                         <div>
@@ -1859,7 +1871,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -2187,7 +2199,7 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
   .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
 
-function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
@@ -2227,7 +2239,11 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
   );
   const toggleSize = (sz) => setOfferedSizes((cur) => cur.includes(sz) ? cur.filter((s) => s !== sz) : [...cur, sz]);
-  const total = (Number(price) || 0) + (Number(fundraise) || 0);
+  // Singles fall back to the store-wide fundraising rule (10% + round-up etc.) when no
+  // per-item amount is set, so "Shopper pays" matches what families are actually charged.
+  const storeFundAmt = isBundle ? 0 : storeFundAmount(price, storeFund);
+  const effFund = isBundle ? (Number(fundraise) || 0) : effectiveFundraise(price, fundraise, storeFund);
+  const total = (Number(price) || 0) + effFund;
 
   // True-margin readout: garment cost + a rough $5 decoration cost (quantity unknown at
   // store-build time) when the item is decorated, so staff can price to ~45% margin.
@@ -2337,10 +2353,17 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
         <ItemSection title="Pricing & margin">
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
+            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? String(storeFundAmt) : '0'} /></Row>
             <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
             <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
           </div>
+          {!isBundle && storeFund?.enabled && (
+            <div style={{ fontSize: 11.5, color: storeFundAmt > 0 ? '#166534' : '#94a3b8', marginTop: 6 }}>
+              {Number(fundraise) > 0
+                ? `This item’s own fundraising overrides the store rule (store default would add ${money(storeFundAmt)}).`
+                : `Store fundraising adds ${Number(storeFund.flat) > 0 ? money(storeFund.flat) : (storeFund.pct || 0) + '%'}${storeFund.round ? ', rounded up to the next $1' : ''} = ${money(storeFundAmt)} — already in “Shopper pays.” Enter an amount to override.`}
+            </div>
+          )}
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here).</div>
           {!isBundle && (garmentCost != null
             ? <div style={{ marginTop: 10, padding: '8px 12px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5 }}>
