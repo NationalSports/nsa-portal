@@ -779,8 +779,11 @@ const _dbLoad = async (opts={}) => {
       _grp('customers',()=>_safeQuery('customers',{order:'name'})),
       _grp('customers',()=>_safeQuery('customer_contacts')),
       _cold(()=>_safeQuery('vendors',{order:'name'})),
-      _grp('products',()=>_safeQuery('products',{order:'name'})),
-      _grp('products',()=>_safeQuery('product_inventory')),
+      // cold=true: products is the #1 database-CPU cost — the full ~47k-row catalog was being
+      // re-fetched on EVERY 60s poll per tab (paged LIMIT/OFFSET). Skip it on coreOnly polls;
+      // realtime (products is subscribed) + the every-10th full poll keep it fresh.
+      _grp('products',()=>_safeQuery('products',{order:'name'}),true),
+      _grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
       _grp('estimates',()=>_safeQuery('estimate_items',{order:'item_index'})),
@@ -803,7 +806,10 @@ const _dbLoad = async (opts={}) => {
       _cold(()=>_safeQuery('issues')),
       // app_state rides along with products: product image fallbacks (_pimg_) live here, and the
       // products snapshot must include them or every image-only product would mis-diff and re-save.
-      ()=>only&&!only.has('products')&&!only.has('app_state')?_skip():_safeQuery('app_state'),
+      // cold: app_state is ~10k rows (mostly _pimg_ product-image fallbacks). Skip coreOnly polls
+      //       too; it loads on initial, on a products realtime reload (fallbacks ride with products),
+      //       and on the every-10th full poll. Cross-tab config (batch_pos etc.) syncs on full polls.
+      ()=>{if(only)return(only.has('products')||only.has('app_state'))?_safeQuery('app_state'):_skip();return coreOnly?_skip():_safeQuery('app_state');},
       _grp('customers',()=>_safeQuery('customer_promo_programs')),
       _grp('customers',()=>_safeQuery('customer_promo_periods')),
       _grp('customers',()=>_safeQuery('customer_promo_usage')),
@@ -4161,7 +4167,11 @@ export default function App(){
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
         const _prevSnap=_dbSnap.current;
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,
+          // products is now cold (skipped on coreOnly polls) — preserve its snapshot like the other
+          // cold tables so the auto-save diff doesn't see a false "all 47k products changed" and
+          // re-save the entire catalog. State itself is preserved by the d.products.length guard below.
+          prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
