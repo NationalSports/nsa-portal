@@ -5362,9 +5362,10 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
-  const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
+  const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
+  React.useEffect(()=>{if(selV){const u=vend.find(v=>v.id===selV.id);if(u&&u!==selV)setSelV(u);else if(!u)setSelV(null)}},[vend]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
@@ -9022,19 +9023,26 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)}/>;
-    return(<><div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})}/>;
+    const vToks=vendQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const fv=vToks.length?vend.filter(v=>{const hay=((v.name||'')+' '+(v.contact_name||'')+' '+(v.contact_email||'')+' '+(v.contact_phone||'')+' '+(v.rep_name||'')+' '+(v.api_provider||'')+' '+(v.vendor_type||'')+' '+(v.payment_terms||'')+' '+(v.notes||'')).toLowerCase();return vToks.every(t=>hay.includes(t))}):vend;
+    const nCols=isA?7:6;
+    return(<><div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+      <div className="search-bar" style={{flex:1,minWidth:220}}><Icon name="search"/><input placeholder="Search vendors by name, contact, rep, API…" value={vendQ} onChange={e=>setVendQ(e.target.value)}/></div>
+      {vendQ&&<button className="btn btn-secondary" onClick={()=>setVendQ('')}>Clear</button>}
       <button className="btn btn-primary" onClick={()=>setVM({open:true,v:null})}><Icon name="plus" size={14}/> New Vendor</button>
     </div>
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
+    {vendQ&&<div style={{fontSize:12,color:'#64748b',margin:'0 2px 8px'}}>Showing {fv.length} of {vend.length} vendors</div>}
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th><th></th></tr></thead><tbody>
-    {vend.map(v=><tr key={v.id} style={{cursor:'pointer'}} onClick={()=>setSelV(v)}>
+    {fv.map(v=><tr key={v.id} style={{cursor:'pointer'}} onClick={()=>setSelV(v)}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{v.name}</td><td><span className={`badge ${v.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{v.vendor_type==='api'?'API':'Upload'}</span></td>
       <td style={{fontSize:11}}>{v.contact_email}</td><td><span className="badge badge-gray">{v.payment_terms?.replace('net','Net ')}</span></td>
       {isA&&<td style={{fontWeight:700,color:(v._it||0)>0?'#dc2626':''}}>{(v._it||0)>0?'$'+v._it.toLocaleString():'--'}</td>}
-      <td><span className="badge badge-green">Active</span></td>
-      <td style={{textAlign:'right'}}><button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setVM({open:true,v})}}><Icon name="edit" size={12}/></button></td></tr>)}</tbody></table></div></div></>);};
+      <td>{v.is_active===false?<span className="badge badge-gray">Inactive</span>:<span className="badge badge-green">Active</span>}</td>
+      <td style={{textAlign:'right'}}><button className="btn btn-sm btn-secondary" title="Edit vendor" onClick={e=>{e.stopPropagation();setVM({open:true,v})}}><Icon name="edit" size={12}/></button></td></tr>)}
+    {fv.length===0&&<tr><td colSpan={nCols} style={{textAlign:'center',padding:24,color:'#94a3b8'}}>No vendors match “{vendQ}”.</td></tr>}</tbody></table></div></div></>);};
 
   // PRODUCT DETAIL VIEW
   // Store closure deps in a ref so the stable ProductDetail component can access fresh values
@@ -19581,12 +19589,17 @@ export default function App(){
               {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
                 <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
                   onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
-                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||'',
-                      destAddr:{company:dv?.name||'',street1:dv?.address_line1||'',street2:dv?.address_line2||'',city:dv?.city||'',state:dv?.state||'',zip:dv?.zip||'',phone:dv?.phone||''}}))}}>
+                    // Decorator's own saved address wins; otherwise fall back to its linked Vendor record's address.
+                    const lv=dv&&dv.vendor_id?vend.find(x=>x.id===dv.vendor_id):null;
+                    const addr=(dv&&(dv.address_line1||dv.city))
+                      ?{company:dv.name||'',street1:dv.address_line1||'',street2:dv.address_line2||'',city:dv.city||'',state:dv.state||'',zip:dv.zip||'',phone:dv.phone||''}
+                      :lv?{company:dv?.name||lv.name||'',street1:lv.address_line1||'',street2:lv.address_line2||'',city:lv.city||'',state:lv.state||'',zip:lv.zip||'',phone:lv.contact_phone||''}
+                      :{company:dv?.name||'',street1:'',street2:'',city:'',state:'',zip:'',phone:''};
+                    setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||lv?.contact_name||'',destAddr:addr}))}}>
                   <option value="">Select decorator…</option>
                   {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
-                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below (add it in Settings → Deco Vendors to save for next time).</div>}
+                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
               </div>}
               <div style={{display:'grid',gap:6}}>
                 <div style={{display:'flex',gap:6}}>
@@ -28237,6 +28250,14 @@ export default function App(){
         {/* SHIP-TO ADDRESS — used by Manual Ship when shipping goods to this decorator */}
         {editVendor&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h3 style={{color:'#7c3aed'}}>Ship-To Address — {editVendor.name}</h3></div><div className="card-body">
           <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Where the warehouse ships blanks/goods to this decorator. Prefills the Manual Ship form when you pick this decorator as the destination.</div>
+          <div style={{marginBottom:10,maxWidth:520}}>
+            <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Linked Vendor</label>
+            <select className="form-select" style={{fontSize:12}} value={editVendor.vendor_id||''} onChange={e=>saveDV({...editVendor,vendor_id:e.target.value||null,updated_at:new Date().toISOString()})}>
+              <option value="">— None —</option>
+              {[...vend].sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+            {(()=>{const lv=editVendor.vendor_id?vend.find(x=>x.id===editVendor.vendor_id):null;return lv&&(lv.address_line1||lv.city)?<div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>Vendor address on file: {[lv.address_line1,lv.city,lv.state,lv.zip].filter(Boolean).join(', ')}{!dvAddr.address_line1?' — used for Manual Ship unless you set a decorator-specific address below':''}</div>:lv?<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Linked vendor has no address yet — add one on the Vendors page.</div>:<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Link this decorator to its Vendor record to reuse that vendor's address automatically.</div>})()}
+          </div>
           <div style={{display:'grid',gap:8,maxWidth:520}}>
             <div style={{display:'flex',gap:8}}>
               <div style={{flex:1}}><label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Attention / Contact</label>
