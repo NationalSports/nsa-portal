@@ -1182,7 +1182,7 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error || !data.orderId) {
     console.error('[Momentec] order failed:', data.error || response.status, data.raw || '');
-    throw new Error(data.error || `Momentec order failed (HTTP ${response.status})`);
+    throw new Error((data.error || `Momentec order failed (HTTP ${response.status})`) + (data.raw ? `\n\nMomentec said: ${data.raw}` : ''));
   }
   console.log(`[Momentec] order ok (${env}):`, data.orderId);
   return data;
@@ -1215,7 +1215,9 @@ const momentecStyleV2 = async (design, env = 'prod') => {
   const infos = Array.isArray(data?.productInfo) ? data.productInfo : [];
   if (!infos.length) return null;
   const DISCOUNT = 0.15;
-  const cost = (v) => { const n = parseFloat(v); return n > 0 ? Math.round(n * (1 - DISCOUNT) * 100) / 100 : 0; };
+  // Momentec dealer cost = list/MSRP × 0.5 (wholesale) × (1 − dealer discount).
+  // Verified vs momentecbrands.com customer pricing across sizes, e.g. $12.10 × .5 × .85 = $5.14.
+  const cost = (v) => { const n = parseFloat(v); return n > 0 ? Math.round(n * 0.5 * (1 - DISCOUNT) * 100) / 100 : 0; };
   const usd = (Array.isArray(infos[0]?.MSRP) ? infos[0].MSRP : []).find((m) => String(m.currency).toUpperCase() === 'USD');
   const msrpCost = cost(usd?.value);
   const colorsMap = new Map();
