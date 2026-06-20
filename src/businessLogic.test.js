@@ -679,14 +679,12 @@ describe('Totals Calculation', () => {
 
   test('outside deco PO cost included in cost', () => {
     const so = makeSO({
-      items: [makeSOItem({
-        sizes: { M: 10 }, nsa_cost: 10, unit_sell: 20,
-        po_lines: [{ po_type: 'outside_deco', unit_cost: 5, M: 10 }],
-      })],
+      items: [makeSOItem({ sizes: { M: 10 }, nsa_cost: 10, unit_sell: 20 })],
+      deco_pos: [{ qty: 10, unit_cost: 5 }], // outside-deco POs live on so.deco_pos
       shipping_type: 'flat', shipping_value: 0,
     });
     const totals = calcTotals(so, {});
-    // cost = 10*10 (item) + 10*5 (outside deco PO) = 150
+    // cost = 10*10 (item) + 10*5 (outside-deco PO) = 150
     expect(totals.cost).toBe(150);
   });
 });
