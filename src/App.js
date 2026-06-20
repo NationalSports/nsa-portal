@@ -3863,7 +3863,9 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad({histInvoices:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // Initial load is core data only — the NetSuite invoice history (~20k rows) is deferred
+        // off the critical path and background-loaded after first paint (see setHistInvs below).
+        const d=await Promise.race([_dbLoad({}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -3889,6 +3891,11 @@ export default function App(){
           }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           setHistInvs(d.hist_invoices||[]);
+          // Deferred: now that the dashboard is rendering, background-load the heavy, read-only
+          // NetSuite invoice history (~20k rows). It isn't part of the save snapshot, so filling
+          // it in a beat later is safe and keeps first paint fast. Reuses _dbLoad with only:empty
+          // set (skips every other table) so the rows get the exact same normalization as before.
+          _dbLoad({histInvoices:true,only:new Set()}).then(h=>{if(!cancelled&&h&&Array.isArray(h.hist_invoices))setHistInvs(h.hist_invoices)}).catch(()=>{});
           setIssues(d.issues||[]);
           if(d.quote_requests)setQuoteRequests(d.quote_requests);
           if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
