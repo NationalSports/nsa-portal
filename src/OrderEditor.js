@@ -1422,7 +1422,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
       _colorBackImage:color.colorBackImage||'',
-      ...(isMT&&style._mtId?{_mtId:style._mtId}:{})
+      ...(isMT&&style._mtId?{_mtId:style._mtId}:{}),
+      // Stamp the Momentec order SKUs so a batch PO can be submitted via the API.
+      // Momentec's order SKU is design.colorCode.size; color.sku is the colorway
+      // (design.colorCode), so each size's full SKU is `${color.sku}.${sizeName}`.
+      ...(isMT&&color.sku?{
+        _mt_style:style.sku,
+        _mt_color:color.colorCode||'',
+        _mt_sku:color.sku,
+        _mt_skus:Object.fromEntries((color.sizes||[]).map(s=>[s.sizeName,`${color.sku}.${s.sizeName}`]).filter(([sz])=>sz)),
+      }:{})
     };
     // Build per-size cost map (e.g. 2XL+ costs more than S-XL)
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
