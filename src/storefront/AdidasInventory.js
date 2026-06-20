@@ -1772,6 +1772,8 @@ export default function AdidasInventory() {
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
 
   const embedded = isEmbedded();
+  const REQUEST_ACCT_HREF = 'mailto:stores@nationalsportsapparel.com?subject=LiveLook+Access+Request&body=Hi+NSA+team%2C%0A%0AI%27d+like+a+LiveLook+account+so+I+can+see+team+pricing+and+save+orders.%0A%0AName%3A+%0ASchool+%2F+Team%3A+%0AEmail%3A+';
+
   // Coach magic-link sign-in controls — shared by the full dark header (standalone
   // page) and the compact bar shown when embedded on nationalsportsapparel.com/livelook.
   const signInControls = coach ? (
@@ -1801,13 +1803,22 @@ export default function AdidasInventory() {
         </button>
         <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
         {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
+        <a href={REQUEST_ACCT_HREF} style={{ fontSize: 11.5, color: '#9AA1AC', textDecoration: 'underline', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+          No account? Request one →
+        </a>
       </>
     )
   ) : (
-    <button onClick={() => setSignInOpen(true)}
-      style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-      Coach sign in — see your team pricing
-    </button>
+    <>
+      <button onClick={() => setSignInOpen(true)}
+        style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+        Coach sign in — see your team pricing
+      </button>
+      <a href={REQUEST_ACCT_HREF}
+        style={{ fontSize: 13, color: '#9AA1AC', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+        Request an account
+      </a>
+    </>
   );
   return (
     <div className="ai-root" style={{ fontFamily: BODY }}>
@@ -1842,7 +1853,12 @@ export default function AdidasInventory() {
         <div style={{ background: '#191919', color: '#fff' }}>
           <div style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 20px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {!coach && !signInOpen && (
-              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>Coaches — sign in for your team pricing &amp; saved orders</span>
+              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>
+                Coaches —{' '}
+                <button onClick={() => setSignInOpen(true)} style={{ background: 'none', border: 'none', color: '#C3C8D0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit', padding: 0, textDecoration: 'underline' }}>sign in</button>
+                {' '}for team pricing &amp; saved orders, or{' '}
+                <a href={REQUEST_ACCT_HREF} style={{ color: '#C3C8D0', textDecoration: 'underline' }}>request an account</a>
+              </span>
             )}
             {signInControls}
           </div>
