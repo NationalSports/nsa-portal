@@ -1266,19 +1266,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=mtSearchGen.current;
     setMtSearching(true);
     try{
-      // /v2/Style is keyed by design number, so this resolves a design ("412000") or a
-      // colorway sku ("412000.B005") to the full color/size/price/live-stock set. Free-text
-      // name searches return nothing here — the catalog product search covers those now that
-      // Momentec styles live in the catalog as per-color rows.
-      const style=await momentecStyleV2(query);
-      const results=style?[style]:[];
+      // Resolve candidate Momentec design numbers from the query itself (a design like
+      // "412000" or a colorway sku "412000.B005") AND from matching Momentec catalog
+      // products — so name searches ("C2 TEE") still surface the live /v2/Style result.
+      const qLower=query.toLowerCase().trim();
+      const toks=qLower.split(/\s+/).filter(Boolean);
+      const designs=new Set();
+      const qDesign=query.split('.')[0].trim();
+      if(qDesign)designs.add(qDesign);
+      for(const p of (products||[])){
+        if(designs.size>=8)break;
+        if((p.brand||'').toLowerCase()!=='momentec')continue;
+        const sku=(p.sku||'').toLowerCase(),name=(p.name||'').toLowerCase();
+        if(toks.every(t=>sku.includes(t)||name.includes(t))){
+          const d=String(p.sku||'').split('.')[0].trim();
+          if(d)designs.add(d);
+        }
+      }
+      const styles=(await Promise.all([...designs].slice(0,8).map(d=>momentecStyleV2(d)))).filter(Boolean);
+      const seen=new Set();const results=[];
+      for(const s of styles){if(s&&!seen.has(s.sku)){seen.add(s.sku);results.push(s)}}
       mtSearchCache.current[cacheKey]=results.length?results:{length:0,_ts:Date.now()};
       if(gen===mtSearchGen.current)setMtResults(results);
     }catch(err){
       console.error('[Momentec] Style search failed:',err);
       if(gen===mtSearchGen.current)setMtResults([]);
     }finally{if(gen===mtSearchGen.current)setMtSearching(false)}
-  },[]);
+  },[products]);
   // ─── Live Richardson Product Search (StockInventory feed) ───
   const[rsResults,setRsResults]=useState([]);
   const[rsSearching,setRsSearching]=useState(false);
@@ -2417,7 +2431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;if(p.is_archived)return false;const tokens=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!tokens.length)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return tokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))});
+  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;if(p.is_archived)return false;if((p.brand||'').toLowerCase()==='momentec')return false;/* Momentec is served by the live /v2 vendor search below — keep its catalog rows out of these results */const tokens=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!tokens.length)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return tokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))});
   // Server-side product search fallback when local products don't match
   const[serverProducts,setServerProducts]=useState([]);
   const serverSearchTimer=useRef(null);
