@@ -99,10 +99,14 @@ exports.handler = async () => {
 
     // Style list: existing target-brand SanMar products + DB seeds + env seed
     const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&select=sku&brand=in.(' + TARGET_BRANDS.map((b) => '"' + b + '"').join(',') + ')')).json();
-    const dbSeeds = await (await sb('sanmar_style_seeds?select=style')).json();
+    const dbSeeds = await (await sb('sanmar_style_seeds?select=style,brand')).json();
     const styleOf = (sku) => String(sku || '').split('-')[0].trim();
     const seed = (process.env.SANMAR_BRAND_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...arr(dbSeeds).map((r) => r.style), ...seed].filter(Boolean))];
+    // Only attempt seeds whose brand this sync actually ingests — other brands
+    // would be fetched then skipped, burning the 15-min budget. Seeds with no
+    // brand (manually added) are always tried.
+    const seedStyles = arr(dbSeeds).filter((r) => !r.brand || TARGET_BRAND_RE.test(r.brand)).map((r) => r.style);
+    const styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...seedStyles, ...seed].filter(Boolean))];
     console.log('[sanmar-brands-sync] styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
     if (!styles.length) {
       return { statusCode: 200, body: JSON.stringify({ message: 'No brand styles to sync. Add SanMar style numbers to SANMAR_BRAND_STYLES env var (e.g. "K500,PC61,DT6000,3001C") to seed the catalog.', styles: 0 }) };
