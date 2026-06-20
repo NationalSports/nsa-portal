@@ -1683,6 +1683,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(cur){delete vendorInvCache.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n;});fetchVendorInventory(cur.sku,cur.vendor_id,{...cur,color:color.colorName});}
     nf('🎨 Color changed to '+color.colorName);
   };
+  // Inline color picker rendered UNDER a placed line item (reuses the same vendor
+  // swatch build as the add flow / old popup). Open state is colorPickerModal
+  // {itemIdx,sku,source,q}; only the matching line renders it.
+  const renderInlineColors=(idx)=>{
+    if(!colorPickerModal||colorPickerModal.itemIdx!==idx)return null;
+    const{sku,source}=colorPickerModal;const item=o.items[idx];if(!item)return null;
+    const results=source==='ss'?ssResults:source==='sm'?smResults:source==='mt'?mtResults:source==='rs'?rsResults:[];
+    const searching=source==='ss'?ssSearching:source==='sm'?smSearching:source==='mt'?mtSearching:source==='rs'?rsSearching:false;
+    const style=results.find(r=>(r.sku||'').toUpperCase()===(sku||'').toUpperCase())||results[0];
+    const colors=style?.colors||[];
+    const label=source==='ss'?'S&S Activewear':source==='sm'?'SanMar':source==='mt'?'Momentec':'Richardson';
+    const accent=source==='ss'?'#7c3aed':source==='sm'?'#0891b2':source==='mt'?'#b45309':'#dc2626';
+    const bg=source==='ss'?'#ede9fe':source==='sm'?'#cffafe':source==='mt'?'#fde68a':'#fecaca';
+    const q=(colorPickerModal.q||'').toLowerCase().trim();const shown=q?colors.filter(c=>(c.colorName||'').toLowerCase().includes(q)):colors;
+    return<div style={{padding:'8px 18px',borderBottom:'1px solid #f1f5f9',background:'#fafafa'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+        <span style={{fontSize:10,fontWeight:800,color:accent,textTransform:'uppercase',letterSpacing:0.5}}>Change Color · {label}</span>
+        {searching&&colors.length===0&&<span style={{fontSize:11,color:'#94a3b8'}}>Loading…</span>}
+        {!searching&&colors.length>0&&<span style={{fontSize:11,color:'#64748b'}}>{q?shown.length+' of '+colors.length+' match':colors.length+' color'+(colors.length!==1?'s':'')+' available'}</span>}
+        <button onClick={()=>setColorPickerModal(null)} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,lineHeight:1}} title="Close">✕</button>
+      </div>
+      {!searching&&colors.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'2px 0 4px'}}>No colors available for this SKU.</div>}
+      {colors.length>6&&<input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8,maxWidth:280}} autoFocus/>}
+      {colors.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:240,overflowY:'auto'}}>
+        {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(idx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
+          {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+          <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:130}}>{c.colorName||'Default'}</span>
+          {c.customerPrice>0&&<span style={{fontSize:9,color:accent}}>${c.customerPrice.toFixed(2)}</span>}
+          {c.totalQty>0&&<span style={{fontSize:9,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
+          {isCurrent&&<span style={{fontSize:9,color:accent,fontWeight:700}}>✓</span>}
+        </button>})}
+        {shown.length===0&&<div style={{padding:8,color:'#94a3b8',fontSize:12,width:'100%'}}>No colors match "{colorPickerModal.q}"</div>}
+      </div>}
+    </div>;
+  };
   const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
@@ -3178,7 +3213,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>uI(idx,'color',e.target.value)}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :(()=>{const liveSrc=item._ss_live?'ss':item._sm_live?'sm':item._mt_live?'mt':item._rs_live?'rs':(isSSItem(item)?'ss':isSanMarItem(item)?'sm':isMomentecItem(item)?'mt':isRichardsonItem(item)?'rs':null);
-                    return liveSrc?<button onClick={()=>setColorPickerModal({itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
+                    return liveSrc?<button onClick={()=>setColorPickerModal(m=>m&&m.itemIdx===idx?null:{itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
                   })()}
                 {item.customer_supplied&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700,border:'1px solid #a5f3fc'}}>🎁 Customer-Supplied</span>}
@@ -3234,6 +3269,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </>,document.body)}
             </div>
           </div></div>
+        {renderInlineColors(idx)}
         {/* SIZES ROW with financials inline */}
         {/* SIZES ROW — qty-only mode for estimates, or full size grid */}
         {/* Treat as qty-only ONLY when there's genuinely no size breakdown. A stale qty_only flag
@@ -11253,41 +11289,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
       {/* Change Color Modal — for vendor-live items where the SKU stays the same but color varies */}
-      {colorPickerModal&&(()=>{const{itemIdx,sku,source}=colorPickerModal;const item=o.items[itemIdx];if(!item)return null;
-        const results=source==='ss'?ssResults:source==='sm'?smResults:source==='mt'?mtResults:source==='rs'?rsResults:[];
-        const searching=source==='ss'?ssSearching:source==='sm'?smSearching:source==='mt'?mtSearching:source==='rs'?rsSearching:false;
-        const skuU=(sku||'').toUpperCase();
-        const style=results.find(r=>(r.sku||'').toUpperCase()===skuU)||results[0];
-        const colors=style?.colors||[];
-        const label=source==='ss'?'S&S Activewear':source==='sm'?'SanMar':source==='mt'?'Momentec':'Richardson';
-        const accent=source==='ss'?'#7c3aed':source==='sm'?'#0891b2':source==='mt'?'#b45309':'#dc2626';
-        const bg=source==='ss'?'#ede9fe':source==='sm'?'#cffafe':source==='mt'?'#fde68a':'#fecaca';
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setColorPickerModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-          <div className="modal-header"><h2>Change Color — {item.sku}</h2><button className="modal-close" onClick={()=>setColorPickerModal(null)}>×</button></div>
-          <div className="modal-body">
-            <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
-              <div style={{fontWeight:700}}>{item.name}</div>
-              <div style={{color:'#64748b'}}>Current color: <strong>{item.color||'(none)'}</strong> · Source: {label}</div>
-            </div>
-            {searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>Loading colors from {label}...</div>}
-            {!searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No colors available for this SKU.</div>}
-            {colors.length>0&&(()=>{const q=(colorPickerModal.q||'').toLowerCase().trim();const shown=q?colors.filter(c=>(c.colorName||'').toLowerCase().includes(q)):colors;return<>
-              <input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8}} autoFocus/>
-              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{q?shown.length+' of '+colors.length+' color'+(colors.length!==1?'s':'')+' match':colors.length+' color'+(colors.length!==1?'s':'')+' available'}</div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:360,overflowY:'auto'}}>
-                {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(itemIdx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
-                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
-                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:130}}>{c.colorName||'Default'}</span>
-                  {c.customerPrice>0&&<span style={{fontSize:9,color:accent}}>${c.customerPrice.toFixed(2)}</span>}
-                  {c.totalQty>0&&<span style={{fontSize:9,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
-                  {isCurrent&&<span style={{fontSize:9,color:accent,fontWeight:700}}>✓</span>}
-                </button>})}
-                {shown.length===0&&<div style={{padding:12,color:'#94a3b8',fontSize:12,width:'100%',textAlign:'center'}}>No colors match "{colorPickerModal.q}"</div>}
-              </div>
-            </>})()}
-          </div>
-        </div></div>})()}
-
     <CustModal isOpen={showCustEdit} onClose={()=>setShowCustEdit(false)} onSave={(updated)=>{if(onSaveCustomer)onSaveCustomer(updated);setCust(updated);setShowCustEdit(false)}} customer={cust} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS}/>
   </div>);
 }
