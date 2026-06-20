@@ -653,6 +653,31 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
     return { added: payload.length };
   }, [sel, detail, flash, loadDetail]);
 
+  // Apply a saved store template — resolve its SKUs to live products and add the ones not
+  // already in this store (carrying the template's category / price / fundraising / kit).
+  const applyTemplate = useCallback(async (tpl) => {
+    const items = Array.isArray(tpl?.items) ? tpl.items : [];
+    const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
+    if (!skus.length) { flash('That template has no items'); return { added: 0 }; }
+    const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+    const found = [];
+    for (let i = 0; i < variants.length; i += 150) {
+      const { data } = await supabase.from('products').select('id,sku,name,retail_price').in('sku', variants.slice(i, i + 150));
+      if (data) found.push(...data);
+    }
+    const byKey = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
+    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
+    const seen = new Set();
+    const rows = items.map((it) => {
+      const product = byKey.get(String(it.sku || '').trim().toUpperCase());
+      if (!product || existing.has(product.id) || seen.has(product.id)) return null;
+      seen.add(product.id);
+      return { product, price: (it.price != null && it.price !== '') ? it.price : product.retail_price, fundraise: it.fundraise || 0, category: it.category || null, kit_name: it.kit || null, required: !!it.required };
+    }).filter(Boolean);
+    if (!rows.length) { flash('All of this template’s items are already in the store'); return { added: 0 }; }
+    return addManyFromList(rows);
+  }, [detail, flash, addManyFromList]);
+
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
@@ -1068,7 +1093,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddMany={addManyFromList} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -1565,7 +1590,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1670,7 +1695,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1760,7 +1785,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, onApplyLogo, onSaveLogo, onAddSingle, onAddMany, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, onApplyLogo, onSaveLogo, onAddSingle, onAddMany, onApplyTemplate, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1801,6 +1826,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
   return (
     <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'template' ? null : 'template'); setPending(null); }}>🎯 Start from a template</button>
         <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'import' ? null : 'import'); setPending(null); }}>⬆ Import list (Excel / Sheets)</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
@@ -1811,10 +1837,21 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
+      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
-      {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
+      {catalog.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '34px 16px', border: '1.5px dashed #d7dbe2', borderRadius: 14, background: '#fafbfc' }}>
+          <div style={{ fontSize: 34, marginBottom: 6 }}>🎯</div>
+          <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>Start fast with a template</div>
+          <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 14 }}>Pick a pre‑built sport store (baseball, football, volleyball…) — then tweak. Or add products by hand.</div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={() => { setMode('template'); setPending(null); }}>🎯 Browse templates</button>
+            <button className="btn btn-secondary" onClick={() => { setMode('single'); setPending(null); }}>+ Add product</button>
+          </div>
+        </div>
+      ) : (
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
@@ -2733,6 +2770,128 @@ const productMatchesColors = (productColor, words) => {
   return words.some((w) => primary.includes(w));
 };
 
+const TEMPLATE_SPORTS = ['Baseball', 'Softball', 'Football', 'Basketball', 'Volleyball', 'Soccer', 'Wrestling', 'Track & Field', 'Cross Country', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swim', 'Cheer', 'Band', 'General / Spirit'];
+
+// Store templates — pick a pre-built sport store (the rep-facing fast start), or, for a
+// curator, save the current store as a template or draft one with AI. Applying a template
+// resolves its SKUs to live products and adds them to the store.
+function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [myEmail, setMyEmail] = useState('');
+  const [applying, setApplying] = useState('');
+  const [sportSel, setSportSel] = useState(null);
+  const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form'
+  const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
+  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
+  const [saving, setSaving] = useState(false);
+  const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name');
+    setTemplates(data || []); setLoading(false);
+  }, []);
+  useEffect(() => { (async () => { try { const { data } = await supabase.auth.getUser(); setMyEmail(data?.user?.email || ''); } catch (e) { /* */ } })(); load(); }, [load]);
+
+  const sports = [...new Set(templates.map((t) => t.sport).filter(Boolean))].sort();
+  const shown = sportSel ? templates.filter((t) => t.sport === sportSel) : templates;
+  const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
+
+  const startFromStore = () => {
+    const items = (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
+    setPendingItems(items); setMeta((m) => ({ ...m, name: '' })); setView('form');
+  };
+  const del = async (id) => { await supabase.from('store_templates').delete().eq('id', id); load(); };
+  const saveTemplate = async () => {
+    if (!meta.name.trim() || !pendingItems.length) return;
+    setSaving(true);
+    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: pendingItems, created_by: myEmail || null });
+    setSaving(false);
+    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' }); load(); }
+  };
+
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{view === 'form' ? 'Save as a template' : view === 'ai' ? 'Draft a template with AI' : '🎯 Start from a template'}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+
+          {view === 'ai' && (
+            <AiStoreBuilder submitLabel="Use these for a template →" onAddProducts={(prods) => { setPendingItems((prods || []).map((p) => ({ sku: p.sku, price: p.retail_price }))); setView('form'); }} onClose={() => setView('gallery')} />
+          )}
+
+          {view === 'form' && (
+            <div>
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{pendingItems.length} item{pendingItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
+                <Row label="Sport"><input className="form-input" list="tpl-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tpl-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+                <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+                <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+              </div>
+              <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+                <button className="btn btn-primary" disabled={!meta.name.trim() || !pendingItems.length || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
+                <button className="btn btn-secondary" onClick={() => setView('gallery')}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {view === 'gallery' && (
+            <div>
+              {isCurator && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', alignSelf: 'center' }}>Curator:</span>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save current store as template</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => setView('ai')}>✨ Draft with AI</button>
+                </div>
+              )}
+
+              {sports.length > 0 && (
+                <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
+                  <FilterBtn on={!sportSel} onClick={() => setSportSel(null)}>All</FilterBtn>
+                  {sports.map((s) => <FilterBtn key={s} on={sportSel === s} onClick={() => setSportSel(sportSel === s ? null : s)}>{s}</FilterBtn>)}
+                </div>
+              )}
+
+              {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
+                : shown.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: '#9AA1AC', fontSize: 13, padding: '28px 12px' }}>
+                    No templates yet.{isCurator ? ' Build a great store, then “Save current store as template,” or draft one with AI.' : ' Ask an admin to set some up — or add products by hand.'}
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
+                    {shown.map((t) => (
+                      <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
+                        <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
+                        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
+                          {t.brand_focus && chip(t.brand_focus)}
+                          {t.gender && chip(t.gender)}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}</div>
+                        <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
+                          <button className="btn btn-sm btn-primary" disabled={applying === t.id} onClick={async () => { setApplying(t.id); await onApply(t); setApplying(''); }} style={{ flex: 1 }}>{applying === t.id ? 'Adding…' : 'Use this →'}</button>
+                          {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              <div style={{ fontSize: 11.5, color: '#9AA1AC', marginTop: 14 }}>Using a template adds its products to this store (skipping any already added). Prices, colors &amp; art stay fully editable after.</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Bulk import — a sales rep drops an Excel / Google-Sheets (CSV) export of SKUs to populate
 // the store. Only a SKU column is required; optional Price, Fundraising, Category, Kit,
 // Mandatory. SKUs are matched to products (case-insensitive) and a preview shows
@@ -3250,7 +3409,7 @@ function InStockToggle({ on, onToggle, count, total }) {
 // ── Build with AI ── A plain-English brief → the ai-store-builder edge function
 // → a structured filter spec → matched catalog items → review/select → add to the
 // store. The interpreted tags are shown and editable, so the AI is never a black box.
-function AiStoreBuilder({ onAddProducts, onClose }) {
+function AiStoreBuilder({ onAddProducts, onClose, submitLabel }) {
   const [brief, setBrief] = useState('');
   const [spec, setSpec] = useState(null);
   const [candidates, setCandidates] = useState([]); // color/keyword-filtered rows, each carrying live _stock
@@ -3428,7 +3587,7 @@ function AiStoreBuilder({ onAddProducts, onClose }) {
       {chosen.length > 0 && (
         <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #eef0f3', padding: '12px 16px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, borderRadius: '0 0 8px 8px' }}>
           <span style={{ fontSize: 12, color: '#64748b' }}>Added at catalog price — adjust pricing &amp; fundraising in the list after.</span>
-          <button className="btn btn-primary" disabled={adding} onClick={async () => { setAdding(true); await onAddProducts(chosen); setAdding(false); }}>{adding ? 'Adding…' : `Add ${chosen.length} item${chosen.length === 1 ? '' : 's'} to store`}</button>
+          <button className="btn btn-primary" disabled={adding} onClick={async () => { setAdding(true); await onAddProducts(chosen); setAdding(false); }}>{adding ? 'Working…' : submitLabel ? `${submitLabel} (${chosen.length})` : `Add ${chosen.length} item${chosen.length === 1 ? '' : 's'} to store`}</button>
         </div>
       )}
     </div>
