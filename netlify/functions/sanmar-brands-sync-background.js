@@ -60,7 +60,10 @@ function canonicalBrand(name) {
   if (/sport-?tek/i.test(n)) return 'Sport-Tek';
   if (/^district$/i.test(n)) return 'District';
   if (/bella\+?canvas/i.test(n)) return 'Bella+Canvas';
-  return n || 'Other';
+  // Match the S&S canonical name exactly so the S&S→SanMar cutover finds the
+  // old rows to retire (S&S maps Gildan + Jerzees → "Gildan").
+  if (/gildan/i.test(n)) return 'Gildan';
+  return (n || 'Other').trim();
 }
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
@@ -125,6 +128,7 @@ exports.handler = async () => {
 
     let productsUpserted = 0, invRows = 0;
     const errors = [];
+    const syncedBrands = new Set(); // brands actually ingested this run (drives the S&S cutover)
 
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
@@ -210,6 +214,7 @@ exports.handler = async () => {
         });
         if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
         productsUpserted += prodRows.length;
+        if (prodRows.length) syncedBrands.add(brand);
 
         for (let j = 0; j < invUpserts.length; j += 500) {
           const ir = await sb('sanmar_inventory?on_conflict=sku,size', {
@@ -225,8 +230,24 @@ exports.handler = async () => {
       }
     }
 
-    console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', errors.length, 'errors');
-    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, errors: errors.slice(0, 10) }) };
+    // Cutover: now that SanMar is the source for these brands, retire the old
+    // S&S rows for any brand we actually ingested this run (e.g. Gildan moves
+    // from S&S → SanMar). Scoped to synced brands only, so a brand we didn't
+    // reach this run keeps its existing rows — no empty gap. Boxercraft stays on
+    // S&S because SanMar doesn't carry it (never enters syncedBrands).
+    let ssRetired = 0;
+    if (syncedBrands.size) {
+      const inList = [...syncedBrands].map((b) => '"' + String(b).replace(/"/g, '') + '"').join(',');
+      const cr = await sb('products?inventory_source=eq.ss_activewear&is_active=eq.true&brand=in.(' + inList + ')', {
+        method: 'PATCH', headers: { Prefer: 'return=representation', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: false }),
+      });
+      if (cr.ok) { const rows = await cr.json().catch(() => []); ssRetired = Array.isArray(rows) ? rows.length : 0; }
+      else console.warn('[sanmar-brands-sync] S&S cutover failed', cr.status, (await cr.text()).slice(0, 200));
+    }
+
+    console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', ssRetired, 'S&S rows retired,', errors.length, 'errors');
+    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
   } catch (e) {
     console.error('[sanmar-brands-sync]', e);
     return { statusCode: 500, body: e.message };
