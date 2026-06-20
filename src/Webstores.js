@@ -2772,6 +2772,110 @@ const productMatchesColors = (productColor, words) => {
 
 const TEMPLATE_SPORTS = ['Baseball', 'Softball', 'Football', 'Basketball', 'Volleyball', 'Soccer', 'Wrestling', 'Track & Field', 'Cross Country', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swim', 'Cheer', 'Band', 'General / Spirit'];
 
+const colorFamilyWords = (fam) => (_COLOR_FAMILIES.find((f) => f.fam === fam)?.words) || [fam];
+
+// Edit a saved template — rename / retag, add or drop items, and recolor (per item via a
+// color selector, or "recolor all" to a family). Saves back over the same template row.
+function TemplateEditor({ template, onClose, onSaved }) {
+  const [meta, setMeta] = useState({ name: template.name || '', sport: template.sport || '', brand_focus: template.brand_focus || 'Mixed', gender: template.gender || 'Unisex' });
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [addSku, setAddSku] = useState('');
+
+  const dedupeColorways = (rows) => { const m = new Map(); for (const r of rows || []) { const k = (r.color || '').trim().toLowerCase(); if (!k) continue; if (!m.has(k) || (!m.get(k).image_front_url && r.image_front_url)) m.set(k, r); } return [...m.values()].sort((a, b) => (a.color || '').localeCompare(b.color || '')); };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const raw = Array.isArray(template.items) ? template.items : [];
+      const skus = [...new Set(raw.map((i) => i.sku).filter(Boolean))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const byKey = new Map(); found.forEach((p) => { const k = String(p.sku || '').toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
+      const names = [...new Set(found.map((p) => p.name).filter(Boolean))];
+      const sib = [];
+      for (let i = 0; i < names.length; i += 40) { const { data } = await supabase.from('products').select('sku,name,color,image_front_url').in('name', names.slice(i, i + 40)); if (data) sib.push(...data); }
+      const byName = new Map(); sib.forEach((p) => { const a = byName.get(p.name) || []; a.push(p); byName.set(p.name, a); });
+      if (cancelled) return;
+      setItems(raw.map((it) => { const product = byKey.get(String(it.sku || '').toUpperCase()) || null; const options = product ? dedupeColorways(byName.get(product.name) || []) : []; return { sku: it.sku, category: it.category || null, product, options }; }));
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [template]);
+
+  const setColor = (idx, sku) => setItems((arr) => arr.map((it, i) => { if (i !== idx) return it; const opt = (it.options || []).find((o) => o.sku === sku); return { ...it, sku, product: opt ? { ...it.product, ...opt } : it.product }; }));
+  const removeItem = (idx) => setItems((arr) => arr.filter((_, i) => i !== idx));
+  const recolorAll = (fam) => setItems((arr) => arr.map((it) => { const opt = (it.options || []).find((o) => productMatchesColors(o.color, colorFamilyWords(fam))); return opt ? { ...it, sku: opt.sku, product: { ...it.product, ...opt } } : it; }));
+  const addBySku = async () => {
+    const s = addSku.trim(); if (!s) return;
+    const { data } = await supabase.from('products').select('id,sku,name,color,image_front_url,category').in('sku', [s, s.toUpperCase(), s.toLowerCase()]).limit(1);
+    const p = (data || [])[0];
+    if (p) { const { data: sib } = await supabase.from('products').select('sku,name,color,image_front_url').eq('name', p.name); setItems((arr) => [...arr, { sku: p.sku, category: p.category || null, product: p, options: dedupeColorways(sib || []) }]); }
+    setAddSku('');
+  };
+
+  const save = async () => {
+    if (!meta.name.trim() || !items.length) return;
+    setSaving(true);
+    const { error } = await supabase.from('store_templates').update({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, items: items.map((it) => ({ sku: it.sku, category: it.category || null })), updated_at: new Date().toISOString() }).eq('id', template.id);
+    setSaving(false);
+    if (!error) onSaved();
+  };
+
+  const RECOLOR_FAMS = ['black', 'white', 'grey', 'red', 'maroon', 'orange', 'gold', 'green', 'blue', 'navy', 'purple'];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <Row label="Template name"><input className="form-input" value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} /></Row>
+        <Row label="Sport"><input className="form-input" list="tpl-sports-edit" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} /><datalist id="tpl-sports-edit">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+        <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+        <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 10px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 10, marginBottom: 12 }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: '#475569' }}>Recolor all to:</span>
+        {RECOLOR_FAMS.map((f) => { const fam = _COLOR_FAMILIES.find((x) => x.fam === f); const rgb = fam ? `rgb(${fam.rgb.join(',')})` : '#ccc'; return (
+          <button key={f} type="button" title={f} onClick={() => recolorAll(f)} style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid #cbd5e1', background: rgb, cursor: 'pointer', padding: 0 }} />
+        ); })}
+        <span style={{ fontSize: 11, color: '#94a3b8' }}>swaps each item to that color when available</span>
+      </div>
+
+      {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading items…</div> : (
+        <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 10 }}>
+          {items.map((it, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderTop: i ? '1px solid #f1f5f9' : 'none' }}>
+              <div style={{ width: 38, height: 38, borderRadius: 6, background: '#f4f6f9', flexShrink: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{it.product?.image_front_url ? <img src={it.product.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1' }}>—</span>}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.product?.name || it.sku}</div>
+                <div style={{ fontSize: 10.5, color: '#9AA1AC', fontFamily: 'monospace' }}>{it.sku}{it.product ? '' : ' · not found'}</div>
+              </div>
+              {it.options?.length > 1
+                ? <select className="form-input" style={{ width: 170, fontSize: 12 }} value={it.sku} onChange={(e) => setColor(i, e.target.value)}>{it.options.map((o) => <option key={o.sku} value={o.sku}>{o.color}</option>)}</select>
+                : <span style={{ fontSize: 12, color: '#6A7180', width: 170 }}>{it.product?.color || '—'}</span>}
+              <button type="button" title="Remove" onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 17, cursor: 'pointer', padding: '0 4px' }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+        <input className="form-input" style={{ maxWidth: 220 }} placeholder="Add a SKU…" value={addSku} onChange={(e) => setAddSku(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBySku(); } }} />
+        <button type="button" className="btn btn-sm btn-secondary" onClick={addBySku}>＋ Add</button>
+        <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{items.length} item{items.length === 1 ? '' : 's'}</span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button className="btn btn-primary" disabled={!meta.name.trim() || !items.length || saving} onClick={save}>{saving ? 'Saving…' : 'Save template'}</button>
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 // Store templates — pick a pre-built sport store (the rep-facing fast start), or, for a
 // curator, save the current store as a template or draft one with AI. Applying a template
 // resolves its SKUs to live products and adds them to the store.
@@ -2781,7 +2885,8 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
   const [myEmail, setMyEmail] = useState('');
   const [applying, setApplying] = useState('');
   const [sportSel, setSportSel] = useState(null);
-  const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form'
+  const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form' | 'edit'
+  const [editingTpl, setEditingTpl] = useState(null);
   const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
   const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
   const [saving, setSaving] = useState(false);
@@ -2817,13 +2922,17 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div style={{ fontWeight: 800, fontSize: 16 }}>{view === 'form' ? 'Save as a template' : view === 'ai' ? 'Draft a template with AI' : '🎯 Start from a template'}</div>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{view === 'form' ? 'Save as a template' : view === 'ai' ? 'Draft a template with AI' : view === 'edit' ? 'Edit template' : '🎯 Start from a template'}</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         <div style={{ padding: 16 }}>
 
           {view === 'ai' && (
             <AiStoreBuilder submitLabel="Use these for a template →" onAddProducts={(prods) => { setPendingItems((prods || []).map((p) => ({ sku: p.sku, price: p.retail_price }))); setView('form'); }} onClose={() => setView('gallery')} />
+          )}
+
+          {view === 'edit' && editingTpl && (
+            <TemplateEditor template={editingTpl} onClose={() => { setView('gallery'); setEditingTpl(null); }} onSaved={() => { setView('gallery'); setEditingTpl(null); load(); }} />
           )}
 
           {view === 'form' && (
@@ -2877,6 +2986,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
                         <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
                           <button className="btn btn-sm btn-primary" disabled={applying === t.id} onClick={async () => { setApplying(t.id); await onApply(t); setApplying(''); }} style={{ flex: 1 }}>{applying === t.id ? 'Adding…' : 'Use this →'}</button>
+                          {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
                           {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
                       </div>
