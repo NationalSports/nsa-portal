@@ -162,7 +162,7 @@ exports.handler = async (event) => {
     const productRows = [];
     const invRows = [];
     const errors = [];
-    let designsOk = 0;
+    let designsOk = 0, customSkipped = 0;
     const stamp = new Date().toISOString();
 
     await mapPool(designs, concurrency, async (design) => {
@@ -170,6 +170,9 @@ exports.handler = async (event) => {
         const data = await style(design);
         for (const pi of arr(data.productInfo)) {
           const name = String(pi.Name || design);
+          // Skip Momentec "Custom" programs (made-to-order, not blank stock) so they
+          // never enter the catalog / live-look. Mirrors AdidasInventory's display guard.
+          if (/custom/i.test(name)) { customSkipped++; continue; }
           const desc = stripHtml(pi.longDescription).slice(0, 1000) || null;
           const msrp = arr(pi.MSRP).find((m) => String(m.currency).toUpperCase() === 'USD');
           const msrpVal = msrp ? num(msrp.value) : 0;
@@ -238,12 +241,12 @@ exports.handler = async (event) => {
     await upsertBatched('products', 'id', productRows);
     await upsertBatched('momentec_inventory', 'sku,size', invRows);
 
-    console.log('[momentec-sync] done:', productRows.length, 'products,', invRows.length, 'inventory rows,', errors.length, 'errors');
+    console.log('[momentec-sync] done:', productRows.length, 'products,', invRows.length, 'inventory rows,', customSkipped, 'custom skipped,', errors.length, 'errors');
     return {
       statusCode: 200,
       body: JSON.stringify({
         designs: designs.length, designsOk, products: productRows.length,
-        inventory_rows: invRows.length, errors: errors.slice(0, 10),
+        inventory_rows: invRows.length, customSkipped, errors: errors.slice(0, 10),
       }),
     };
   } catch (e) {

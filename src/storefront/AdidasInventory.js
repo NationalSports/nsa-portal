@@ -1511,6 +1511,9 @@ export default function AdidasInventory() {
         const styleMap = new Map();
         for (const p of prods) {
           if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
+          // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
+          // not blank stock — keep them out of the live-look catalog.
+          if (p.inventory_source === 'momentec' && /custom/i.test(p.name || '')) continue;
           const inHouse = inHouseByPid[p.id] || null;
           const sizes = bySku[p.sku] || [];
           // Agron accessories must be carried by Agron itself. An Agron SKU with
