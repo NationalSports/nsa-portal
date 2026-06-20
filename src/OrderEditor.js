@@ -10,6 +10,8 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
+import SSOrderModal from './SSOrderModal';
+import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
@@ -1006,7 +1008,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }
   };
-  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);
+  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);const[apiOrder,setApiOrder]=useState(null);// apiOrder: {vendorKey,poNumber,vendorName,batchPOs} — single-PO API order modal
   // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
   const[receivedConfirm,setReceivedConfirm]=useState(null);
   // Open the IF (pick) modal aggregating ALL line items that share the same pick_id.
@@ -1743,6 +1745,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div>;
   };
   const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+  // ─── Single-order API submission (S&S / SanMar / Momentec) ───
+  // A created PO can be sent to the vendor's API straight from the PO view — it
+  // doesn't have to go through the batch queue (e.g. a single order already over
+  // the free-ship threshold). Build the same { so_id, items } payload the batch
+  // modals consume, from this PO's own lines + quantities.
+  const _apiVendorKey=(vname)=>{const n=String(vname||'').toLowerCase();
+    if(n.includes('momentec'))return 'momentec';
+    if(n.includes('sanmar'))return 'sanmar';
+    if(n.includes('s&s')||n.includes('s & s')||n.includes('ss activewear'))return 'sss';
+    return null;};
+  const buildApiOrderFromPO=(po,lines)=>{
+    if(!po||po.po_type==='outside_deco')return null;
+    const vk=_apiVendorKey(po.vendor);if(!vk)return null;
+    const poId=po.po_id;const items=safeItems(o);const payloadItems=[];
+    (lines||[]).forEach(ln=>{const it=items[ln.lineIdx];if(!it)return;
+      const pl=(it.po_lines||[]).find(p=>p.po_id===poId);if(!pl)return;
+      const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&typeof v==='number'&&v>0)sizes[k]=v});
+      if(!Object.keys(sizes).length)return;
+      payloadItems.push({sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
+        ...(pl._size_costs?{_size_costs:pl._size_costs}:{}),
+        ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
+    });
+    if(!payloadItems.length)return null;
+    return {vendorKey:vk,poNumber:poId,vendorName:po.vendor,batchPOs:[{so_id:o.id,items:payloadItems}]};
+  };
+  // After a real submit, stamp the returned order id on the PO's lines for traceability.
+  const _recordApiOrder=(desc,r)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return;
+    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,api_order_id:oid,api_ordered_at:new Date().toLocaleString()}:pl)}));
+    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);};
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
@@ -6759,7 +6790,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 batchLineTotal=qty*batchUnitCost;
               }
               totalCost+=batchLineTotal;
-              const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx};
+              const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx,
+                // Carry Momentec order-SKU fields through so a batched Momentec PO can resolve
+                // each line's design.colorCode.size SKU at submit time (buildMomentecOrderLines).
+                ...(pit._mt_skus?{_mt_style:pit._mt_style,_mt_color:pit._mt_color,_mt_sku:pit._mt_sku,_mt_skus:pit._mt_skus}:{})};
               if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
               if(isDropShip)bItem.drop_ship=true;
               batchItems.push(bItem);
@@ -7006,6 +7040,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       })()}
 
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
+      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>
@@ -10374,6 +10411,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     vendorName:vendor,
                   });
                 }}>📧 Email Vendor{vendorEmail?'':' ⚠'}</button>
+                {(()=>{const _ao=buildApiOrderFromPO(po,allLines);return _ao?
+                  <button className="btn btn-sm" style={{marginTop:8,marginLeft:6,fontSize:11,background:'#16a34a',color:'white'}} title={'Order this PO directly through '+_ao.vendorName+' (API) — no batch needed'} onClick={()=>{setApiOrder(_ao);setEditPO(null)}}>🚀 Submit via API</button>:null})()}
               </>;
             })()}
           </div>
