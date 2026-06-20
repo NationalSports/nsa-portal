@@ -3212,6 +3212,7 @@ let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
 let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
@@ -28061,6 +28062,7 @@ export default function App(){
   const[featBrand,setFeatBrand]=useState('');
   const[featProds,setFeatProds]=useState([]);
   const[featSearch,setFeatSearch]=useState('');
+  const[featCategory,setFeatCategory]=useState('');
   const[featLoading,setFeatLoading]=useState(false);
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
@@ -28604,8 +28606,8 @@ export default function App(){
       {settingsTab==='featured'&&(()=>{
         const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
         const loadFeatProds=async(brand)=>{
-          setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');
-          const{data}=await supabase.from('products').select('id,sku,name,color,image_front_url,is_featured').eq('brand',brand).eq('is_active',true).order('name');
+          setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');setFeatCategory('');
+          const{data}=await supabase.from('products').select('id,sku,name,color,category,image_front_url,is_featured').eq('brand',brand).eq('is_active',true).order('name');
           setFeatProds(data||[]);setFeatLoading(false);
         };
         const toggleFeat=async(id,cur)=>{
@@ -28613,7 +28615,9 @@ export default function App(){
           const{error}=await supabase.from('products').update({is_featured:!cur}).eq('id',id);
           if(error)nf('Error saving: '+error.message,'error');
         };
+        const cats=[...new Set(featProds.map(p=>p.category).filter(Boolean))].sort();
         const filtered=featProds.filter(p=>{
+          if(featCategory&&p.category!==featCategory)return false;
           if(!featSearch)return true;
           const s=featSearch.toLowerCase();
           return(p.name||'').toLowerCase().includes(s)||(p.sku||'').toLowerCase().includes(s)||(p.color||'').toLowerCase().includes(s);
@@ -28628,6 +28632,10 @@ export default function App(){
                 {FEAT_BRANDS.map(b=><button key={b} className={`btn btn-sm ${featBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>featBrand!==b&&loadFeatProds(b)}>{b}</button>)}
               </div>
               {featBrand&&<>
+                {cats.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                  <button className={`btn btn-sm ${!featCategory?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory('')}>All</button>
+                  {cats.map(c=><button key={c} className={`btn btn-sm ${featCategory===c?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory(featCategory===c?'':c)}>{c}</button>)}
+                </div>}
                 <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
                   <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
                   {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} featured</span>}
