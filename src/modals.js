@@ -44,7 +44,7 @@ function VendorB2BPanel({vendor}){
   </div></div>;
 }
 
-function VendDetail({vendor,products,onUpdateProducts,onBack}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit}){
   const[syncing,setSyncing]=React.useState(false);
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
@@ -89,7 +89,10 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       alert('S&S Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
     }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
   };
-  return(<div><button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Vendors</button>
+  return(<div><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+    <button className="btn btn-secondary" onClick={onBack}><Icon name="back" size={14}/> All Vendors</button>
+    {onEdit&&<button className="btn btn-primary" onClick={onEdit}><Icon name="edit" size={14}/> Edit Vendor</button>}
+  </div>
   <div className="card" style={{marginBottom:16}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="package" size={28}/></div>
   <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{vendor.name}</span><span className={`badge ${vendor.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{vendor.vendor_type==='api'?'API':'Upload'}</span><span className="badge badge-gray">{vendor.payment_terms?.replace('net','Net ')}</span>{vendor.nsa_carries_inventory&&<span className="badge badge-green">Stock</span>}</div>

@@ -5320,9 +5320,10 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
-  const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
+  const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
+  React.useEffect(()=>{if(selV){const u=vend.find(v=>v.id===selV.id);if(u&&u!==selV)setSelV(u);else if(!u)setSelV(null)}},[vend]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
@@ -8980,19 +8981,26 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)}/>;
-    return(<><div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})}/>;
+    const vToks=vendQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const fv=vToks.length?vend.filter(v=>{const hay=((v.name||'')+' '+(v.contact_name||'')+' '+(v.contact_email||'')+' '+(v.contact_phone||'')+' '+(v.rep_name||'')+' '+(v.api_provider||'')+' '+(v.vendor_type||'')+' '+(v.payment_terms||'')+' '+(v.notes||'')).toLowerCase();return vToks.every(t=>hay.includes(t))}):vend;
+    const nCols=isA?7:6;
+    return(<><div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+      <div className="search-bar" style={{flex:1,minWidth:220}}><Icon name="search"/><input placeholder="Search vendors by name, contact, rep, API…" value={vendQ} onChange={e=>setVendQ(e.target.value)}/></div>
+      {vendQ&&<button className="btn btn-secondary" onClick={()=>setVendQ('')}>Clear</button>}
       <button className="btn btn-primary" onClick={()=>setVM({open:true,v:null})}><Icon name="plus" size={14}/> New Vendor</button>
     </div>
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
+    {vendQ&&<div style={{fontSize:12,color:'#64748b',margin:'0 2px 8px'}}>Showing {fv.length} of {vend.length} vendors</div>}
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th><th></th></tr></thead><tbody>
-    {vend.map(v=><tr key={v.id} style={{cursor:'pointer'}} onClick={()=>setSelV(v)}>
+    {fv.map(v=><tr key={v.id} style={{cursor:'pointer'}} onClick={()=>setSelV(v)}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{v.name}</td><td><span className={`badge ${v.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{v.vendor_type==='api'?'API':'Upload'}</span></td>
       <td style={{fontSize:11}}>{v.contact_email}</td><td><span className="badge badge-gray">{v.payment_terms?.replace('net','Net ')}</span></td>
       {isA&&<td style={{fontWeight:700,color:(v._it||0)>0?'#dc2626':''}}>{(v._it||0)>0?'$'+v._it.toLocaleString():'--'}</td>}
-      <td><span className="badge badge-green">Active</span></td>
-      <td style={{textAlign:'right'}}><button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setVM({open:true,v})}}><Icon name="edit" size={12}/></button></td></tr>)}</tbody></table></div></div></>);};
+      <td>{v.is_active===false?<span className="badge badge-gray">Inactive</span>:<span className="badge badge-green">Active</span>}</td>
+      <td style={{textAlign:'right'}}><button className="btn btn-sm btn-secondary" title="Edit vendor" onClick={e=>{e.stopPropagation();setVM({open:true,v})}}><Icon name="edit" size={12}/></button></td></tr>)}
+    {fv.length===0&&<tr><td colSpan={nCols} style={{textAlign:'center',padding:24,color:'#94a3b8'}}>No vendors match “{vendQ}”.</td></tr>}</tbody></table></div></div></>);};
 
   // PRODUCT DETAIL VIEW
   // Store closure deps in a ref so the stable ProductDetail component can access fresh values
