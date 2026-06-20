@@ -3475,7 +3475,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
         // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
         // category like Tees doesn't bury the school's colors past the row limit.
-        if (colorOnly && colorWords.length) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+        // School colors only narrow when BROWSING; a typed search overrides them so a
+        // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
+        if (colorOnly && colorWords.length && q.trim().length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
       }
       const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
       const rows = data || [];
@@ -3498,8 +3500,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     const inSt = new Set((st.sizes || []).map(String));
     return APPAREL.every((s) => inSt.has(s));
   };
+  const isSearch = q.trim().length >= 2;
   const matched = results.filter((r) =>
-    (!colorOnly || productMatchesColors(r.color, colorWords)) &&
+    (isSearch || !colorOnly || productMatchesColors(r.color, colorWords)) &&
     // The catalog tags some jerseys as Tees — keep the Tees view to actual tees.
     !(catSel === 'Tees' && /jersey/i.test(r.name || '')));
   // Collapse colorways → one card per STYLE (name), so the grid isn't the same short in six
