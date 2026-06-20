@@ -1782,6 +1782,44 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
+// Lighten (pct>0) or darken (pct<0) a #rrggbb hex by a percentage — for the
+// store-themed header gradient.
+function shadeHex(hex, pct) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length !== 6) return hex || '#192853';
+  const n = parseInt(h, 16); if (Number.isNaN(n)) return hex;
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const t = pct < 0 ? 0 : 255, p = Math.min(1, Math.abs(pct) / 100);
+  r = Math.round((t - r) * p + r); g = Math.round((t - g) * p + g); b = Math.round((t - b) * p + b);
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+// Compact dropdown menu — collapses a cluster of buttons into one. `items` is an
+// array of { label, icon?, hint?, title?, onClick, disabled?, danger?, divider? }.
+function MenuButton({ label, items = [], primary = false, align = 'left', icon }) {
+  const [open, setOpen] = useState(false);
+  const list = items.filter(Boolean);
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <button type="button" className={`btn btn-sm ${primary ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setOpen((v) => !v)} aria-expanded={open}>{icon ? icon + ' ' : ''}{label} ▾</button>
+      {open && <>
+        <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+        <div style={{ position: 'absolute', top: '100%', [align === 'right' ? 'right' : 'left']: 0, marginTop: 4, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, boxShadow: '0 12px 30px rgba(0,0,0,.16)', zIndex: 41, minWidth: 210, padding: 4 }}>
+          {list.map((it, i) => it.divider
+            ? <div key={i} style={{ height: 1, background: '#eef0f3', margin: '4px 2px' }} />
+            : <button key={i} type="button" disabled={it.disabled} title={it.title || ''} onClick={() => { setOpen(false); it.onClick && it.onClick(); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '8px 10px', borderRadius: 7, cursor: it.disabled ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, color: it.disabled ? '#cbd5e1' : (it.danger ? '#b91c1c' : '#1f2937') }}
+                onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = '#f1f5f9'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}>
+                {it.icon != null && <span style={{ width: 18, textAlign: 'center', flexShrink: 0 }}>{it.icon}</span>}
+                <span style={{ flex: 1 }}>{it.label}</span>
+                {it.hint && <span style={{ fontSize: 11, color: '#94a3b8' }}>{it.hint}</span>}
+              </button>)}
+        </div>
+      </>}
+    </div>
+  );
+}
+
 function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
@@ -1804,16 +1842,19 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     return Object.entries(m).map(([id, count]) => ({ id, count }));
   })();
 
-  const TABS = [
+  // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
+  // live behind the header ⚙ Settings button (the rich editor), not a tab.
+  const PRIMARY_TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
-    { id: 'art', label: 'Art & Logos' },
     { id: 'orders', label: `Orders (${orders.length})` },
+    { id: 'art', label: 'Art & Logos' },
+    { id: 'analytics', label: 'Analytics' },
+  ];
+  const MORE_TABS = [
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
-    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
-    { id: 'analytics', label: 'Analytics' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
-    { id: 'settings', label: 'Settings' },
+    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
   ];
   // product_id -> stock (warehouse + Adidas) for the batch health check.
   const productStock = {};
@@ -1843,33 +1884,49 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         <button className="btn btn-sm btn-secondary" onClick={onBack}>← Back to All Stores</button>
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
-          {portalUrl && <button className="btn btn-sm btn-secondary" title={portalUrl} onClick={copyPortal}>{portalCopied ? '✓ Copied' : 'Copy coach portal link'}</button>}
-          {onFlyer && <button className="btn btn-sm btn-secondary" title="Open a printable flyer with a QR code to the store" onClick={onFlyer}>🖨️ Flyer</button>}
-          {(s.director_email || s.coach_contact_email)
-            ? <button className="btn btn-sm btn-secondary" title={`Email the launch link + QR to ${s.director_email || s.coach_contact_email}`} onClick={onEmailDirector}>✉️ Email store link</button>
-            : <button className="btn btn-sm btn-secondary" disabled title="Add a coach/director email in Settings first" style={{ opacity: 0.5, cursor: 'not-allowed' }}>✉️ Email store link</button>}
+          <MenuButton label="Share" align="right" items={[
+            portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
+            onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
+            (s.director_email || s.coach_contact_email)
+              ? { label: 'Email store link', icon: '✉️', title: `Email the launch link + QR to ${s.director_email || s.coach_contact_email}`, onClick: onEmailDirector }
+              : { label: 'Email store link', icon: '✉️', title: 'Add a coach/director email in Settings first', disabled: true },
+          ]} />
           {onSetStatus && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => onSetStatus(s, 'open')} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
-          <button className="btn btn-sm btn-primary" onClick={onEdit}>Edit settings</button>
+          <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>{s.name}</div>
-            <div style={{ fontSize: 13, color: '#64748b' }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
-            <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
+      {(() => {
+        const primary = s.primary_color || '#192853';
+        const accent = s.accent_color || '#962C32';
+        const stripes = 'repeating-linear-gradient(-55deg, transparent 0 22px, rgba(255,255,255,0.05) 22px 44px)';
+        const BannerStat = ({ label, value }) => <div><div style={{ fontSize: 21, fontWeight: 800, lineHeight: 1 }}>{value}</div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.72)', textTransform: 'uppercase', letterSpacing: 0.7, marginTop: 4 }}>{label}</div></div>;
+        return (
+          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 12, marginBottom: 12, background: `linear-gradient(120deg, ${primary} 0%, ${shadeHex(primary, -24)} 100%)`, borderBottom: `3px solid ${accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.14)' }}>
+            <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
+            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '14px 18px', color: '#fff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 13, minWidth: 0 }}>
+                {s.logo_url
+                  ? <img src={s.logo_url} alt="" style={{ height: 48, width: 48, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, flexShrink: 0, boxShadow: '0 2px 8px rgba(0,0,0,.28)' }} />
+                  : <div style={{ height: 48, width: 48, borderRadius: 10, background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 22, flexShrink: 0 }}>{(s.name || '?')[0].toUpperCase()}</div>}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 0.2, lineHeight: 1.05, textTransform: 'uppercase' }}>{s.name}</div>
+                  <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.82)', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
+                  <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0 }}>
+                <BannerStat label="Orders" value={orders.length} />
+                <BannerStat label="Players" value={playerCount} />
+                <BannerStat label="Sales" value={money(totalSales)} />
+                {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 18, textAlign: 'right' }}>
-            <Stat label="Orders" value={orders.length} />
-            <Stat label="Players" value={playerCount} />
-            <Stat label="Sales" value={money(totalSales)} />
-            {fundraiseTotal > 0 && <Stat label="Fundraising" value={money(fundraiseTotal)} tone="#166534" />}
-          </div>
-        </div>
-      </div></div>
+        );
+      })()}
 
       {soSummary.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sales Orders created</span>
@@ -1881,8 +1938,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         ))}
       </div></div>}
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-        {TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        {PRIMARY_TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
+        <MenuButton label={MORE_TABS.find((t) => t.id === tab)?.label || 'More'} primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
       </div>
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
@@ -2040,19 +2098,24 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
   return (
     <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'template' ? null : 'template'); setPending(null); }}>🎯 Start from a template</button>
-        <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'import' ? null : 'import'); setPending(null); }}>⬆ Import list (Excel / Sheets)</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'custom' ? null : 'custom'); setPending(null); }}>＋ New custom product</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'ai' ? null : 'ai'); setPending(null); }}>✨ Build with AI</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'margin' ? null : 'margin'); setPending(null); }}>💲 Price to margin</button>
+        <MenuButton label="Add items" primary items={[
+          { label: 'Browse products', icon: '🔎', onClick: () => { setMode('single'); setPending(null); } },
+          { label: 'New custom product', icon: '＋', onClick: () => { setMode('custom'); setPending(null); } },
+          { label: 'Import list (Excel / Sheets)', icon: '⬆', onClick: () => { setMode('import'); setPending(null); } },
+          { divider: true },
+          { label: 'Start from a template', icon: '🎯', onClick: () => { setMode('template'); setPending(null); } },
+          { label: 'Create a package', icon: '📦', onClick: () => { setMode('bundle'); setPending(null); } },
+          { label: 'Build with AI', icon: '✨', onClick: () => { setMode('ai'); setPending(null); } },
+        ]} />
+        <MenuButton label="Tools" items={[
+          { label: 'Price to margin', icon: '💲', onClick: () => { setMode('margin'); setPending(null); } },
+          (view === 'table') && { label: expandAll ? 'Collapse all sizes' : 'Expand all sizes', icon: '↕', onClick: () => { setExpandAll((v) => !v); setOpenRows(new Set()); } },
+        ]} />
         <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
           {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
             <button key={v} type="button" onClick={() => { if (v === 'table') setEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
           ))}
         </div>
-        {view === 'table' && <button className="btn btn-sm btn-secondary" onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>}
       </div>
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
@@ -4005,7 +4068,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         </div>
       </KitScope>
       {selProducts.length > 0 && (
-        <div style={{ position: 'sticky', bottom: 0, background: 'rgba(255,255,255,.97)', backdropFilter: 'blur(6px)', borderTop: '1px solid #eef0f3', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: '0 0 12px 12px' }}>
+        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
           <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
