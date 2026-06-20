@@ -1650,14 +1650,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Change the color on an existing vendor-live item without losing decorations/sizes.
   const changeItemVendorColor=(itemIdx,style,color)=>{
-    setO(e=>({...e,items:safeItems(e).map((it,x)=>x===itemIdx?{
-      ...it,
-      color:color.colorName,
-      _colorImage:color.colorFrontImage||style.styleImage||it._colorImage||'',
-      _colorBackImage:color.colorBackImage||it._colorBackImage||''
-    }:it),updated_at:new Date().toLocaleString()}));
+    const cur=o.items[itemIdx];
+    setO(e=>({...e,items:safeItems(e).map((it,x)=>{
+      if(x!==itemIdx)return it;
+      const next={...it,
+        color:color.colorName,
+        _colorImage:color.colorFrontImage||style.styleImage||it._colorImage||'',
+        _colorBackImage:color.colorBackImage||it._colorBackImage||''};
+      // If the line is still a blank vendor stub (OSFA-only, no cost — e.g. a Momentec item
+      // pulled from the catalog before it had real colors), backfill sizes + pricing from the
+      // picked color so it matches a freshly added vendor line.
+      const cs=Array.isArray(it.available_sizes)?it.available_sizes:[];
+      const blank=(cs.length===0||(cs.length===1&&normSzName(cs[0])==='OSFA'))&&!(Number(it.nsa_cost)>0)&&!(Number(it.unit_sell)>0);
+      if(blank){
+        const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+        if(apiSizes.length)next.available_sizes=apiSizes;
+        const cost=color.customerPrice||color.piecePrice||0;
+        if(cost>0){
+          const mk=o.default_markup||1.65;
+          next.nsa_cost=cost;next.unit_sell=rQ(cost*mk);
+          const sizePrice={};(color.sizes||[]).forEach(s=>{if(s.sizeName)sizePrice[s.sizeName]=s.price||cost});
+          next._sizeCosts=sizePrice;
+          const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
+          next._sizeSells=sizeSell;
+        }
+      }
+      return next;
+    }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
     setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
+    // Refresh live per-size stock for the newly chosen color (inventory cache is keyed by sku).
+    if(cur){delete vendorInvCache.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n;});fetchVendorInventory(cur.sku,cur.vendor_id,{...cur,color:color.colorName});}
     nf('🎨 Color changed to '+color.colorName);
   };
   const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
