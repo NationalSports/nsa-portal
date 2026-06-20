@@ -13,7 +13,7 @@ try { if (STRIPE_PK) _stripePromise = loadStripe(STRIPE_PK); } catch { _stripePr
 const cartKey = (slug) => 'nsa_cart_' + slug;
 const loadCart = (slug) => { try { return JSON.parse(localStorage.getItem(cartKey(slug)) || '[]'); } catch { return []; } };
 const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JSON.stringify(items)); } catch {} };
-const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0);
+const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
@@ -60,6 +60,9 @@ function StoreStyles() {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
+// Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
+// publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
+const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
 const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
@@ -404,7 +407,8 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
   const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
   const nameUp = Number(p.name_upcharge) || 0;
-  const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
+  const upNow = sizeUp(p, size);
+  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = sizesArr.length > 0;
   const needNumber = !!p.takes_number;
   const isPersonalized = needNumber || !!p.takes_name;
@@ -414,6 +418,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
       name: p.name, color: p.color || null, image: p.image_front_url || null, size: size || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
+      size_extra: upNow,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
       player_number: needNumber ? num.trim() : null,
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
@@ -446,7 +451,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
         <div style={{ paddingTop: 4 }}>
           <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,4vw,42px)', margin: '0 0 8px', letterSpacing: 0.2, lineHeight: 0.98, textTransform: 'uppercase' }}>{p.name}</h1>
           <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
-          <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p))}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: '#64748b', fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 
           <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
@@ -455,9 +460,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {sizes.map((sz) => {
-                const q = effSizeQty(p, sz); const sel = size === sz; const out = q <= 0 && !incoming;
-                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={q > 0 ? `${q} available` : incoming ? 'Backorder' : 'Out of stock'}
-                  style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}</button>;
+                const q = effSizeQty(p, sz); const sel = size === sz; const out = q <= 0 && !incoming; const up = sizeUp(p, sz);
+                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+                  style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
               })}
             </div>
           </div>}
@@ -475,7 +480,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
             </div>
           )}
 
-          {p.takes_name && nameUp > 0 && pname.trim() ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
+          {(upNow > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
           {!isPersonalized && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 8, marginBottom: 4 }}>
               <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220' }}>Qty</div>
@@ -607,7 +612,10 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
 // ── Cart ─────────────────────────────────────────────────────────────
 function lineDetail(l) {
   if (l.kind === 'bundle') return (l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`);
-  return [[l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · ')].filter(Boolean);
+  return [
+    [l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · '),
+    Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
+  ].filter(Boolean);
 }
 function CartPage({ store, theme, cart, onUpdate }) {
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;

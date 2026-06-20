@@ -120,6 +120,12 @@ exports.handler = async () => {
           const sizes = [...new Set(recs.map((r) => r.sizeName).filter(Boolean))];
           const cost  = Number(r0.customerPrice) || Number(r0.piecePrice) || 0;
           const map   = Number(r0.mapPrice) || 0;
+          // Per-size cost — many styles charge more for 2XL/3XL+. Capture only the sizes
+          // whose cost differs from the base (nsa_cost stays the base); null when uniform.
+          const _scMap = {};
+          for (const r of recs) { const sz = String(r.sizeName || '').trim(); const sc = Number(r.customerPrice) || Number(r.piecePrice) || 0; if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
+          const sizeCosts = {};
+          for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           const img   = r0.colorFrontImage || r0.styleImage || '';
           const retail = map > 1 ? map : (cost > 0 ? Math.round(cost * 2) : 0);
           prodRows.push({
@@ -132,6 +138,7 @@ exports.handler = async () => {
             category: mapCategory(st.title, st.baseCategory),
             retail_price: retail,
             nsa_cost: cost,
+            size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
             catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
             is_active: true,
             available_sizes: sizes,

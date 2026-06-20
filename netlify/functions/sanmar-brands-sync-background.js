@@ -159,6 +159,12 @@ exports.handler = async () => {
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
           const cost   = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
+          // Per-size cost (2XL/3XL+ often run higher). Capture only sizes that differ from
+          // the base; nsa_cost stays the base, size_costs is null when uniform.
+          const _scMap = {};
+          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = num(r.piecePrice || r.customerPrice || r.casePrice); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
+          const sizeCosts = {};
+          for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           const title  = r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName);
           prodRows.push({
@@ -171,6 +177,7 @@ exports.handler = async () => {
             category: mapCategory(title),
             retail_price: retail,
             nsa_cost: cost,
+            size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
             catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
             is_active: true,
             available_sizes: sizes,
