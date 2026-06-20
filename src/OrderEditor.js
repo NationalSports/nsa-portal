@@ -3480,19 +3480,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Match by item_idx OR sku+color. We saw cases where a batch entry's
           // item_idx pointed at the wrong row (possibly a stale index from before
           // an item was reordered/deleted) and the BATCH row silently vanished.
-          // Matching on sku+color too — but only when no OTHER row in the order
-          // is already claiming the same batch entry via exact item_idx — keeps
-          // the row visible without producing dupes.
+          // A batch remembers its line by position (item_idx). That index goes stale when line
+          // items are added/removed/reordered, so trust it only when it still points to a line
+          // with the same sku+color (which also disambiguates duplicate lines). Otherwise match
+          // by sku+color, attaching to the first such line — so a batch never lands on an
+          // unrelated row just because positions shifted, and never shows on two rows.
           const itemSku=item.sku;
           const itemColor=(item.color||'').toLowerCase().trim();
-          const claimedByIdx=new Set();
-          (batchPOs||[]).filter(bp=>bp.so_id===o.id).forEach(bp=>(bp.items||[]).forEach(it=>{if(it.item_idx!=null)claimedByIdx.add(bp.id+'|'+it.item_idx)}));
+          const _allItems=safeItems(o);
+          const _bc=(c)=>(c||'').toLowerCase().trim();
+          const _pinValid=(it)=>{if(it.item_idx==null)return false;const li=_allItems[it.item_idx];return !!li&&li.sku===it.sku&&_bc(li.color)===_bc(it.color)};
+          const _firstIdx=(it)=>_allItems.findIndex(li=>li&&li.sku===it.sku&&_bc(li.color)===_bc(it.color));
           const bpMatches=(batchPOs||[]).filter(bp=>bp.so_id===o.id).flatMap(bp=>bp.items.filter(it=>{
-            if(it.item_idx===idx)return true;
-            // Already pinned to a different row by exact index — don't double-match
-            if(it.item_idx!=null&&claimedByIdx.has(bp.id+'|'+it.item_idx)&&it.item_idx!==idx)return false;
-            // Fall back to SKU+color
-            return it.sku===itemSku&&(it.color||'').toLowerCase().trim()===itemColor;
+            if(it.sku!==itemSku||_bc(it.color)!==itemColor)return false;
+            return _pinValid(it)?it.item_idx===idx:_firstIdx(it)===idx;
           }).map(it=>({...it,bpo_id:bp.id,vendor_name:bp.vendor_name,created_at:bp.created_at})));
           if(!bpMatches.length)return null;
           return<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
