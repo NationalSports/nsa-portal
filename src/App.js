@@ -525,24 +525,43 @@ const _safeQuery=(table,opts)=>{
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
     return q.range(start,start+pageSize-1);
   };
+  const _classifyPage=(r)=>{
+    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204'))return'missing';
+    if(r.error)return'error';
+    return'ok';
+  };
   const pagedFetch=async()=>{
-    const all=[];
-    for(let start=0;start<hardLimit;start+=pageSize){
-      const r=await fetchPage(start);
-      if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
-        _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};
+    // Fetch page 0 first — most tables fit in one page, and it tells us whether to keep going.
+    const first=await fetchPage(0);
+    const c0=_classifyPage(first);
+    if(c0==='missing'){_missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};}
+    if(c0==='error'){
+      // Partial/incomplete load: a page failed. Treat it exactly like a timeout — mark the table
+      // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
+      // flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
+      // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
+      _lastLoadTimedOut.add(table);return first;
+    }
+    const all=(first.data||[]).slice();
+    if(all.length<pageSize)return{data:all,error:null,status:200};
+    // Larger table: fetch the remaining pages in bounded-concurrency WAVES rather than one sequential
+    // round-trip per 1000 rows. First-open paged ~20 (products) / ~10 (app_state) / ~9 (history) pages
+    // one at a time — a network round-trip each — which dominated the ~16s load. Pages stay correctly
+    // ordered because each is a fixed .range() slice of the same ordered query.
+    const WAVE=5;
+    let start=pageSize,done=false;
+    while(!done&&start<hardLimit){
+      const starts=[];
+      for(let k=0;k<WAVE&&start<hardLimit;k++,start+=pageSize)starts.push(start);
+      const results=await Promise.all(starts.map(s=>fetchPage(s)));
+      for(const r of results){
+        const c=_classifyPage(r);
+        if(c==='missing'){done=true;break;}// table vanished mid-page (unlikely) — stop, keep what we have
+        if(c==='error'){_lastLoadTimedOut.add(table);return r;}
+        const rows=r.data||[];
+        all.push(...rows);
+        if(rows.length<pageSize)done=true;// reached the final (short) page
       }
-      if(r.error){
-        // Partial/incomplete load: a page failed part-way through pagination. Treat it exactly like a timeout —
-        // mark the table untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and
-        // hydration flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
-        // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
-        _lastLoadTimedOut.add(table);
-        return r;
-      }
-      const rows=r.data||[];
-      all.push(...rows);
-      if(rows.length<pageSize)break;
     }
     return{data:all,error:null,status:200};
   };
