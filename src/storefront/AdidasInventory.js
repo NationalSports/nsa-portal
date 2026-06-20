@@ -1268,6 +1268,7 @@ export default function AdidasInventory() {
   const [lastSynced, setLastSynced] = useState(null);
   const [search, setSearch] = useState('');
   const [brand, setBrand] = useState('All');
+  const [subBrand, setSubBrand] = useState('All');
   const [category, setCategory] = useState('All');
   const [gender, setGender] = useState('All');
   const [sport, setSport] = useState('All');
@@ -1387,6 +1388,7 @@ export default function AdidasInventory() {
   useEffect(() => {
     if (brand !== 'All' && !availBrandGroups.includes(brand)) setBrand('All');
   }, [availBrandGroups, brand]);
+  useEffect(() => { setSubBrand('All'); }, [brand]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1643,6 +1645,7 @@ export default function AdidasInventory() {
     const out = [];
     for (const st of styles) {
       if (brand !== 'All' && brandGroup(st.brand) !== brand) continue;
+      if (brand === NON_BRANDED && subBrand !== 'All' && st.brand !== subBrand) continue;
       if (category !== 'All' && st.category !== category) continue;
       if (gender !== 'All' && st.gender !== gender) continue;
       if (sport !== 'All' && st.sport !== sport) continue;
@@ -1694,7 +1697,7 @@ export default function AdidasInventory() {
       }
     }
     return mixed;
-  }, [styles, search, brand, category, gender, sport, cwMatcher, colorSel]);
+  }, [styles, search, brand, subBrand, category, gender, sport, cwMatcher, colorSel]);
 
   // Facet options (with counts under everything-but-this-facet filtering kept
   // simple: counts reflect the full availability mode, not cross-facets)
@@ -1721,7 +1724,19 @@ export default function AdidasInventory() {
     };
   }, [styles, includeIncoming]);
 
-  useEffect(() => { setShown(PAGE_SIZE); }, [search, brand, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming, needBy]);
+  const subBrandOptions = useMemo(() => {
+    if (brand !== NON_BRANDED) return [];
+    const counts = {};
+    for (const st of styles) {
+      if (brandGroup(st.brand) !== NON_BRANDED) continue;
+      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      if (!anyAvail) continue;
+      counts[st.brand] = (counts[st.brand] || 0) + 1;
+    }
+    return Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)).map(([v, n]) => ({ v, n }));
+  }, [styles, brand, includeIncoming]);
+
+  useEffect(() => { setShown(PAGE_SIZE); }, [search, brand, subBrand, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming, needBy]);
 
   // Deep link: /adidas?style=<sku> opens that style's detail view (Share button)
   useEffect(() => {
@@ -1738,8 +1753,8 @@ export default function AdidasInventory() {
     saveJson('nsa_adidas_team_colors', next);
     return next;
   });
-  const clearFilters = () => { setSearch(''); setBrand('All'); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); setNeedBy(''); };
-  const hasFilters = search || brand !== 'All' || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly || needBy;
+  const clearFilters = () => { setSearch(''); setBrand('All'); setSubBrand('All'); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); setNeedBy(''); };
+  const hasFilters = search || brand !== 'All' || subBrand !== 'All' || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly || needBy;
 
   const openData = openStyle && visible.find((v) => v.st.key === openStyle);
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
@@ -1849,6 +1864,12 @@ export default function AdidasInventory() {
             <select className="ai-select" value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
               <option value="All">All brands</option>
               {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+            </select>
+            )}
+            {brand === NON_BRANDED && subBrandOptions.length > 1 && (
+            <select className="ai-select" value={subBrand} onChange={(e) => setSubBrand(e.target.value)} aria-label="Brand name">
+              <option value="All">All brands</option>
+              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
             </select>
             )}
             <select className="ai-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Item type">
