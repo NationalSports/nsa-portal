@@ -2903,6 +2903,10 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // hands off to SinglePriceEditor (price / fundraising / personalization),
 // unchanged. State is a simple "filter spec" ({ q, brand, category }) so the
 // future AI-brief and customer self-serve flows can drive the same engine.
+// Who may edit the shared/curated "TEAM" favorites that show first for everyone. Personal
+// favorites are open to any signed-in rep; only these emails can curate the shared list.
+const FAV_CURATORS = ['smpeterson327@gmail.com'];
+
 function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], onSaveLogo, initialFilter = {} }) {
   const [q, setQ] = useState(initialFilter.q || '');
   const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
@@ -2928,6 +2932,39 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [bKit, setBKit] = useState('');
   const [bRequired, setBRequired] = useState(false);
   const [bOptions, setBOptions] = useState([]);
+  // Favorites — each rep stars products (rep_email = me); a shared/curated list (rep_email
+  // = 'TEAM') shows for everyone. Favorites sort first in every category and can be filtered to.
+  const [myEmail, setMyEmail] = useState('');
+  const [favMine, setFavMine] = useState(() => new Set());
+  const [favTeam, setFavTeam] = useState(() => new Set());
+  const [favOnly, setFavOnly] = useState(false);   // show only favorites
+  const [curate, setCurate] = useState(false);     // star toggles the shared TEAM list
+  const favUnion = useMemo(() => new Set([...favMine, ...favTeam]), [favMine, favTeam]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let email = '';
+      try { const { data } = await supabase.auth.getUser(); email = data?.user?.email || ''; } catch (e) { /* not signed in */ }
+      if (cancelled) return;
+      setMyEmail(email);
+      const { data: favs } = await supabase.from('rep_product_favorites').select('rep_email,product_id').in('rep_email', [email || '__none__', 'TEAM']);
+      if (cancelled) return;
+      const mine = new Set(), team = new Set();
+      (favs || []).forEach((f) => { if (f.rep_email === 'TEAM') team.add(f.product_id); else mine.add(f.product_id); });
+      setFavMine(mine); setFavTeam(team);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const toggleFav = async (pid) => {
+    const owner = curate ? 'TEAM' : myEmail;
+    if (!owner) return;
+    const set = curate ? favTeam : favMine;
+    const setter = curate ? setFavTeam : setFavMine;
+    const has = set.has(pid);
+    const next = new Set(set); has ? next.delete(pid) : next.add(pid); setter(next); // optimistic
+    if (has) await supabase.from('rep_product_favorites').delete().eq('rep_email', owner).eq('product_id', pid);
+    else await supabase.from('rep_product_favorites').insert({ rep_email: owner, product_id: pid });
+  };
   const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'];
   // A pill maps to one or more real DB category values (the catalog has singular/plural
   // and split variants), so "Hoods" also catches "Hood", "Jersey" catches the tops/bottoms, etc.
@@ -2935,27 +2972,39 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
   // Load when there's a search OR a chosen category/brand — so a rep can browse by
   // filter without typing. No filter + no query shows the browse prompt.
-  const active = q.trim().length >= 2 || !!brandSel || !!catSel;
+  const active = q.trim().length >= 2 || !!brandSel || !!catSel || favOnly;
   useEffect(() => {
     if (!active) { setResults([]); return; }
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
       let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
-      if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-      if (brandSel) query = query.eq('brand', brandSel);
-      if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-      // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
-      // category like Tees doesn't bury the school's colors past the row limit.
-      if (colorOnly && colorWords.length) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
-      const { data } = await query.order('name').order('color').limit(limit);
+      if (favOnly) {
+        // Favorites view — load the starred products directly (across every category) so
+        // the rep's + team's picks always show, regardless of color/stock filters.
+        const ids = [...favUnion];
+        if (!ids.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+        query = query.in('id', ids);
+        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+        if (brandSel) query = query.eq('brand', brandSel);
+        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+      } else {
+        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+        if (brandSel) query = query.eq('brand', brandSel);
+        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+        // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+        // category like Tees doesn't bury the school's colors past the row limit.
+        if (colorOnly && colorWords.length) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      }
+      const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
       const rows = data || [];
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [q, brandSel, catSel, limit, active, colorOnly, colorWords]);
+    // favOnly toggling refetches; toggling individual stars updates the grid client-side.
+  }, [q, brandSel, catSel, limit, active, colorOnly, colorWords, favOnly]);
 
   const brands = [...new Set(results.map((r) => r.brand).filter(Boolean))].sort();
   // "In stock" means a real size run, not 1–2 stragglers: for S/M/L/XL apparel, require
@@ -2979,11 +3028,15 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const colorCountByStyle = matched.reduce((m, r) => { const k = styleKey(r); m[k] = (m[k] || 0) + 1; return m; }, {});
   const dedupeByStyle = (rows) => {
     const map = new Map();
-    const score = (x) => (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
+    // A favorited colorway wins the card so the star shows on the rep; then image, then stock.
+    const score = (x) => (favUnion.has(x.id) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
     for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || score(r) > score(cur)) map.set(k, r); }
     return [...map.values()];
   };
-  const styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
+  let styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
+  if (favOnly) styles = styles.filter((p) => favUnion.has(p.id));
+  // Favorites first (stable within each group), then everything else.
+  styles = [...styles.filter((p) => favUnion.has(p.id)), ...styles.filter((p) => !favUnion.has(p.id))];
   const allStyleN = new Set(matched.map(styleKey)).size;
   const inStockStyleN = new Set(matched.filter(wellStocked).map(styleKey)).size;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -3011,6 +3064,13 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
         </div>
 
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
+          {togBtn(favOnly, () => setFavOnly((v) => !v), `★ Favorites${favUnion.size ? ' (' + favUnion.size + ')' : ''}`, '#b45309', '#fef3c7')}
+          {FAV_CURATORS.includes((myEmail || '').toLowerCase()) && togBtn(curate, () => setCurate((v) => !v), 'Curate shared list', '#7c3aed', '#ede9fe')}
+          {curate && <span style={{ fontSize: 11.5, color: '#7c3aed', fontWeight: 700 }}>Starring now edits the shared list everyone sees</span>}
+          {!myEmail && <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Sign in to save favorites</span>}
+        </div>
+
         {active && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12, alignItems: 'center' }}>
             {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
@@ -3032,7 +3092,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {active && !searching && styles.length === 0 && (
             <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
-              {matched.length > 0 && inStockOnly
+              {favOnly && favUnion.size === 0
+                ? 'No favorites yet — tap the ☆ on any product to save it here (your picks + the shared list show first in every category).'
+                : matched.length > 0 && inStockOnly
                 ? 'No in-stock matches — turn off "In stock only" to see more.'
                 : colorOnly && colorWords.length
                   ? 'No matches in the school colors — turn off "School colors" to see all.'
@@ -3041,7 +3103,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} fav={favUnion.has(p.id)} team={favTeam.has(p.id)} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p.id)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -3120,7 +3182,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
 // "Details" opens the per-item editor for price/fundraising/personalization.
-function PickerCard({ p, selected, moreColors = 0, onToggle, onDetails }) {
+function PickerCard({ p, selected, moreColors = 0, fav = false, team = false, canFav = false, curate = false, onToggleFav, onToggle, onDetails }) {
   const [imgErr, setImgErr] = useState(false);
   const st = p._stock || { units: 0, sizes: [], incoming: false };
   const out = (st.units || 0) <= 0;
@@ -3129,6 +3191,10 @@ function PickerCard({ p, selected, moreColors = 0, onToggle, onDetails }) {
   return (
     <div className="ai-card" onClick={onToggle} role="button" aria-pressed={selected} style={{ position: 'relative', cursor: 'pointer', outline: selected ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
       <div onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (selected ? '#2563eb' : '#cbd5e1'), background: selected ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{selected ? '✓' : ''}</div>
+      {canFav && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); onToggleFav && onToggleFav(); }} title={fav ? (team ? 'Shared team favorite' : 'Your favorite') : (curate ? 'Add to the shared list' : 'Add to your favorites')}
+          style={{ position: 'absolute', top: 8, left: 40, zIndex: 2, width: 26, height: 26, borderRadius: 7, border: 'none', background: 'rgba(255,255,255,.92)', cursor: 'pointer', fontSize: 16, lineHeight: '26px', padding: 0, color: fav ? '#f59e0b' : '#b6bcc6', boxShadow: '0 1px 3px rgba(0,0,0,.12)' }}>{fav ? '★' : '☆'}</button>
+      )}
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
         {p.image_front_url && !imgErr
           ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
@@ -3142,6 +3208,7 @@ function PickerCard({ p, selected, moreColors = 0, onToggle, onDetails }) {
         <div>
           {p.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
+          {team && <span style={{ fontSize: 10, fontWeight: 800, color: '#7c3aed', background: '#ede9fe', borderRadius: 5, padding: '1px 6px', marginTop: 3, display: 'inline-block' }}>★ Team pick</span>}
           <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
           {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
           {moreColors > 0 && <div style={{ fontSize: 11, color: '#6A7180', marginTop: 3, fontWeight: 600 }}>+{moreColors} more color{moreColors === 1 ? '' : 's'} · add later</div>}
