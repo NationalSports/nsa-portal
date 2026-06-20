@@ -32,6 +32,15 @@ const CATALOG_BRANDS = [
   'Boxercraft', 'Gildan',
 ];
 
+// LiveLook collapses the brand FILTER to the three brands coaches actually pick
+// by — Adidas / Under Armour / Nike — and lumps everything else (SanMar lines,
+// Richardson, Boxercraft, Gildan, …) under one "Non Branded" bucket. The product
+// CARD still shows each item's real brand; this only changes the filter chips.
+const NAMED_BRANDS = ['Adidas', 'Under Armour', 'Nike'];
+const NON_BRANDED = 'Non Branded';
+const brandGroup = (b) => (NAMED_BRANDS.includes(b) ? b : NON_BRANDED);
+const BRAND_FILTERS = [...NAMED_BRANDS, NON_BRANDED];
+
 // ── Sizes ────────────────────────────────────────────────────────────
 const SIZE_ORDER = [
   '3XS', '2XS', 'XXS', 'XS', '2XS/XS', 'XS/S', 'S', 'S/M', 'M', 'M/L', 'L', 'L/XL',
@@ -1371,11 +1380,14 @@ export default function AdidasInventory() {
     const allow = Array.isArray(coach?.allowedBrands) ? coach.allowedBrands.filter((b) => CATALOG_BRANDS.includes(b)) : [];
     return allow.length ? allow : CATALOG_BRANDS;
   }, [coach]);
-  // Don't strand a coach on a brand their account can no longer see (e.g. the
-  // restriction tightened mid-session) — the brand picker hides at one brand.
+  // Brand-filter groups available to this account (named brands they can see +
+  // "Non Branded" if any non-named brand is in reach).
+  const availBrandGroups = useMemo(() => [...new Set(effectiveBrands.map(brandGroup))], [effectiveBrands]);
+  // Don't strand a coach on a brand group their account can no longer see (e.g.
+  // the restriction tightened mid-session) — the brand picker hides at one brand.
   useEffect(() => {
-    if (brand !== 'All' && !effectiveBrands.includes(brand)) setBrand('All');
-  }, [effectiveBrands, brand]);
+    if (brand !== 'All' && !availBrandGroups.includes(brand)) setBrand('All');
+  }, [availBrandGroups, brand]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1648,7 +1660,7 @@ export default function AdidasInventory() {
     const matchQ = q ? compileSearch(q) : null;
     const out = [];
     for (const st of styles) {
-      if (brand !== 'All' && st.brand !== brand) continue;
+      if (brand !== 'All' && brandGroup(st.brand) !== brand) continue;
       if (category !== 'All' && st.category !== category) continue;
       if (gender !== 'All' && st.gender !== gender) continue;
       if (sport !== 'All' && st.sport !== sport) continue;
@@ -1709,7 +1721,7 @@ export default function AdidasInventory() {
     for (const st of styles) {
       const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
       if (!anyAvail) continue;
-      if (st.brand) brands[st.brand] = (brands[st.brand] || 0) + 1;
+      if (st.brand) brands[brandGroup(st.brand)] = (brands[brandGroup(st.brand)] || 0) + 1;
       cats[st.category] = (cats[st.category] || 0) + 1;
       genders[st.gender] = (genders[st.gender] || 0) + 1;
       if (st.sport) sports[st.sport] = (sports[st.sport] || 0) + 1;
@@ -1718,8 +1730,8 @@ export default function AdidasInventory() {
       }
     }
     return {
-      // Keep CATALOG_BRANDS order (Adidas, Under Armour, Nike), only those present
-      brands: CATALOG_BRANDS.filter((b) => brands[b]).map((b) => ({ v: b, n: brands[b] })),
+      // Collapsed to filter groups (Adidas, Under Armour, Nike, Non Branded), only those present
+      brands: BRAND_FILTERS.filter((b) => brands[b]).map((b) => ({ v: b, n: brands[b] })),
       categories: Object.keys(cats).sort().map((c) => ({ v: c, n: cats[c] })),
       genders: ["Men's", "Women's", 'Youth', 'Unisex'].filter((g) => genders[g]).map((g) => ({ v: g, n: genders[g] })),
       sports: Object.keys(sports).sort().map((s) => ({ v: s, n: sports[s] })),
