@@ -1772,7 +1772,7 @@ export default function AdidasInventory() {
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
 
   const embedded = isEmbedded();
-  const REQUEST_ACCT_HREF = 'mailto:stores@nationalsportsapparel.com?subject=LiveLook+Access+Request&body=Hi+NSA+team%2C%0A%0AI%27d+like+a+LiveLook+account+so+I+can+see+team+pricing+and+save+orders.%0A%0AName%3A+%0ASchool+%2F+Team%3A+%0AEmail%3A+';
+  const REQUEST_ACCT_HREF = 'mailto:steve@nationalsportsapparel.com?subject=LiveLook+Access+Request&body=Hi+NSA+team%2C%0A%0AI%27d+like+a+LiveLook+account+so+I+can+see+team+pricing+and+save+orders.%0A%0AName%3A+%0ASchool+%2F+Team%3A+%0AEmail%3A+';
 
   // Coach magic-link sign-in controls — shared by the full dark header (standalone
   // page) and the compact bar shown when embedded on nationalsportsapparel.com/livelook.
