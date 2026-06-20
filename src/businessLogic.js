@@ -264,7 +264,10 @@ const jobLiveArtIds = (j, o) => {
 // family the pool must be apportioned, never double-counted: after a split-by-received the
 // parent's open remainder would otherwise re-count the very receipts its slice was created to
 // own. Slices claim first (deepest split first — matching the receipts-go-to-the-split-first
-// convention used when a split is created); the root parent takes what's left. Each job is
+// convention used when a split is created); the root parent takes what's left. EXCEPTION: a slice
+// flagged split_open is a backorder peeled OFF a producible parent ("split off backorder"), so it
+// claims LAST within its family — the received units stay on the parent, and the backorder slice
+// fills only as its own not-yet-received units actually arrive. Each job is
 // capped at its own per-size quantities (gi.sizes when the split recorded them, else the full
 // item sizes). Returns one {total, fulfilled, fulSizes[<item index>]} entry per job, aligned
 // with the jobs array.
@@ -280,9 +283,11 @@ const allocateJobFulfillment = (jobs, items) => {
     // units, so they share one apportioning pool — otherwise each would count the same receipts.
     // Treating the split_group as the family root makes receipts fill one design, then the next.
     const root = (j && j.split_group) ? ('sg:' + j.split_group) : ((cur && cur.id) || (j && j.id) || '');
-    return { root, depth };
+    return { root, depth, open: (j && j.split_open) ? 1 : 0 };
   };
-  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (b.m.depth - a.m.depth) || (a.i - b.i));
+  // open: 0 (received parent / normal slice) sorts before 1 (backorder slice) so the backorder
+  // claims its family's receipts last; within each open-tier the deepest split still claims first.
+  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (a.m.open - b.m.open) || (b.m.depth - a.m.depth) || (a.i - b.i));
   const claimed = {}; // family root::item_idx::size -> units already taken by deeper slices
   const out = new Array(jobs.length);
   order.forEach(e => {
@@ -789,7 +794,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
