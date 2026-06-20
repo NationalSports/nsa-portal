@@ -13,7 +13,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
-import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
@@ -526,11 +526,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
         }catch(e){console.warn('[SM] Image fetch error for',sku,e.message)}
       }else if(isMT){
-        // Momentec: fetch product detail for images
+        // Momentec: per-color images from /v2/Style (CDN pattern {design}_{color}_{front|back}.jpg)
         try{
-          const detail=await momentecGetProductByPartNumber(sku);
-          const entry=detail?.CatalogEntryView?.[0];
-          if(entry){front=entry.thumbnail||entry.fullImage||'';back=entry.fullImageBack||entry.backImage||''}
+          const style=await momentecStyleV2(sku);
+          if(style){
+            const cl=(color||'').toLowerCase();
+            const c=style.colors.find(x=>(x.colorName||'').toLowerCase()===cl||(x.sku||'').toLowerCase()===String(sku).toLowerCase())||style.colors[0];
+            if(c){front=c.colorFrontImage||style.styleImage||'';back=c.colorBackImage||style.styleBackImage||''}
+          }
         }catch(e){console.warn('[MT] Image fetch error for',sku,e.message)}
       }
       const result={front,back};
@@ -637,95 +640,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }else if(isMT){
         // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
-        const mtId=item?._mtId;
         try{
-          // Get product detail — prefer byId (fast), fall back to search
-          let entry=null;
-          if(mtId){
-            try{const d=await momentecGetProductById(mtId);entry=d?.CatalogEntryView?.[0]}
-            catch(e){console.warn('[Momentec] byId failed for',mtId)}
-          }
-          if(!entry){
-            try{const d=await momentecGetProductByPartNumber(sku);entry=d?.CatalogEntryView?.[0]}
-            catch(e){console.warn('[Momentec] byPartNumber failed for',sku)}
-          }
-          if(!entry){
-            try{const sr=await momentecSearchProducts(sku,5,1);
-              const entries=sr?.CatalogEntryView||sr?.catalogEntryView||[];
-              const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
-              if(match){
-                const uid=match.uniqueID;
-                if(uid){try{const d2=await momentecGetProductById(uid);entry=d2?.CatalogEntryView?.[0]}catch(e){}}
-                if(!entry)entry=match;
-              }
-            }catch(e){console.warn('[Momentec] Search failed for',sku)}
-          }
-          if(entry){
-            const skus=entry.SKUs||entry.sKUs||[];
-            console.log('[Momentec] Product',sku,': SKUs=',skus.length,skus.length>0?'sample:'+JSON.stringify(skus[0]).slice(0,300):'');
-            const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
-            const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
+          // Real colors/sizes/live stock from /v2/Style (replaces the storefront child-SKU probing).
+          const style=await momentecStyleV2(sku);
+          if(style){
             const itemColor=(item?.color||'').toLowerCase();
-            // Map child SKUs to sizes and extract any inventory data
-            const childParts=[];
-            for(const sk of skus){
-              const skColor=(getSkColor(sk)||'').toLowerCase();
-              if(itemColor&&skColor&&!skColor.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())&&!itemColor.includes(skColor.split('/')[0].split(' ')[0].toLowerCase()))continue;
-              const sz=normSzName(getSkSize(sk));
-              if(!sz)continue;
-              const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
-              if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
-              const pn=sk.partNumber||sk.SKUPartNumber||'';
-              const uid=sk.uniqueID||'';
-              const skuUid=sk.SKUUniqueID||sk.skuUniqueID||uid;
-              if(pn||skuUid)childParts.push({pn,uid,skuUid,sz});
+            // Pick the matching color; if none specified/matched, sum all colors for style-level availability.
+            let cols=style.colors;
+            if(itemColor){
+              const m=style.colors.filter(c=>{const cn=(c.colorName||'').toLowerCase();const hc=cn.split('/')[0].split(' ')[0];const ic=itemColor.split('/')[0].split(' ')[0];return cn===itemColor||(hc&&ic&&(cn.includes(ic)||itemColor.includes(hc)))});
+              if(m.length)cols=m;
             }
-            // Try HCL Commerce inventory availability endpoint for child SKUs
-            // Correct endpoint: /inventoryavailability/{id} (not /byProductId/ or /byPartNumber/)
-            if(Object.keys(sizeQty).length===0&&childParts.length>0){
-              // Use SKUUniqueID for child SKU inventory lookups
-              const skuIds=childParts.filter(x=>x.skuUid||x.uid).map(x=>x.skuUid||x.uid);
-              if(skuIds.length>0){
-                try{
-                  const invData=await momentecApiCall(`/inventoryavailability/${skuIds.join(',')}`);
-                  const invItems=invData?.InventoryAvailability||[];
-                  console.log('[Momentec] Inventory:',invItems.length,'items');
-                  for(const inv of invItems){
-                    const pid=inv.productId||inv.inventoryAvailabilityByProductId||'';
-                    const status=(inv.inventoryStatus||'').toLowerCase();
-                    const isAvail=status==='available'||status==='instock'||status==='in stock';
-                    // Momentec only publishes a binary in-stock flag (availableQuantity comes back
-                    // as MAX_DOUBLE), never a real count. Map available→999 ("In Stock"), out→0 ("Out").
-                    // Use max so any in-stock SKU wins for a size, and so duplicates don't sum.
-                    const rawQty=parseFloat(inv.availableQuantity||0);
-                    const qty=(rawQty>999999||isAvail)?999:parseInt(rawQty)||0;
-                    const match=childParts.find(x=>(x.skuUid||x.uid)===pid);
-                    if(match)sizeQty[match.sz]=Math.max(sizeQty[match.sz]||0,qty);
-                  }
-                }catch(e){console.warn('[Momentec] Inventory error:',e.message)}
+            for(const c of cols){
+              for(const s of c.sizes){
+                const sz=normSzName(s.sizeName);if(!sz)continue;
+                if(s.qty>0)sizeQty[sz]=Math.max(sizeQty[sz]||0,s.qty);
+                if(s.price>0)sizePrice[sz]=s.price;
               }
             }
           }
-        }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
-        // Fallback: if no child SKUs found, try direct inventory check on the parent style
-        if(Object.keys(sizeQty).length===0){
-          try{
-            const invData=await momentecApiCall(`/inventoryavailability/${encodeURIComponent(sku)}`);
-            const invItems=invData?.InventoryAvailability||[];
-            console.log('[Momentec] Direct inventory for',sku,':',invItems.length,'items');
-            for(const inv of invItems){
-              const status=(inv.inventoryStatus||'').toLowerCase();
-              const isAvail=status==='available'||status==='instock'||status==='in stock';
-              const rawQty=parseFloat(inv.availableQuantity||0);
-              if(isAvail||rawQty>0){
-                // No size breakdown available — mark all sizes as available
-                const itemSizes=Object.keys(item?.sizes||{}).filter(s=>s);
-                const displaySizes=itemSizes.length>0?itemSizes:(item?.available_sizes||['S','M','L','XL','2XL']);
-                displaySizes.forEach(sz=>{sizeQty[normSzName(sz)]=999});
-              }
-            }
-          }catch(e){console.warn('[Momentec] Direct inventory error for',sku,e.message)}
-        }
+        }catch(e){console.warn('[Momentec] /v2/Style inventory error for',sku,e.message)}
         console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const hasMtInv=Object.values(sizeQty).some(v=>v>0);
         const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
@@ -1332,145 +1266,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=mtSearchGen.current;
     setMtSearching(true);
     try{
-      const data=await momentecSearchProducts(query,50,1);
-      const rawEntries=data?.CatalogEntryView||[];
-      // Filter results to those whose partNumber or name actually match the search term
-      const qLower=query.toLowerCase().trim();
-      const entries=rawEntries.filter(e=>{
-        const pn=(e.partNumber||'').toLowerCase();
-        const nm=(e.name||'').toLowerCase();
-        return pn.includes(qLower)||nm.includes(qLower);
-      });
-      if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Helper: extract wholesale/offer price from an HCL Commerce entry
-      const getOfferPrice=(e)=>{
-        const prices=e.Price||e.price||[];
-        if(!prices.length)console.warn('[Momentec] No Price array on',e.partNumber||e.name,{keys:Object.keys(e),offerPrice:e.offerPrice,salePrice:e.salePrice,listPrice:e.listPrice});
-        // Prefer Offer usage (wholesale/dealer price)
-        let offer=0,display=0;
-        if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0){if(u==='offer'||u==='sale')offer=v;else if(u==='display'||u==='list')display=v}}}
-        if(offer>0)return offer;
-        // Try offerPrice/salePrice fields
-        const op=parseFloat(e.offerPrice||e.salePrice||0);if(op>0)return op;
-        // Fall back to Display/List * 0.5 (retail-to-wholesale estimate) — this is a guess, not real pricing.
-        // Log it so we can identify entries where Momentec didn't return an Offer price.
-        if(display>0){console.warn('[Momentec] No Offer price on',e.partNumber||e.name,'— estimating wholesale as Display * 0.5 =',(display*0.5).toFixed(2));return display*0.5}
-        const lp=parseFloat(e.listPrice||0);if(lp>0){console.warn('[Momentec] No Offer/Display price on',e.partNumber||e.name,'— estimating wholesale as listPrice * 0.5 =',(lp*0.5).toFixed(2));return lp*0.5}
-        // Last resort: lowest price in array
-        let min=Infinity;if(prices.length){for(const p of prices){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0&&v<min)min=v}}
-        return min<Infinity?min:0;
-      };
-      // Helper: extract color name from attributes array (handles both Attributes and attributes, HCL Commerce field casing)
-      const getColor=(e)=>{
-        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
-        if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}
-        return '';
-      };
-      // Helper: extract size from SKU attributes
-      const getSize=(e)=>{
-        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
-        if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}
-        return '';
-      };
-      // Collect unique base part numbers from search results (limit to first 10)
-      const baseSkus=[];const seenBase=new Set();
-      for(const e of entries){
-        const fullSku=e.partNumber||'';
-        const isItem=e.catalogEntryTypeCode==='ItemBean';
-        const baseSku=isItem&&fullSku.includes('-')?fullSku.split('-')[0]:fullSku;
-        if(!seenBase.has(baseSku)){seenBase.add(baseSku);baseSkus.push({baseSku,entry:e})}
-      }
-      // Fetch full product details for each base SKU (prices, colors, child SKUs)
-      // Try byPartNumber first, fall back to byId using uniqueID from search result
-      const detailPromises=baseSkus.slice(0,10).map(async({baseSku,entry})=>{
-        try{const d=await momentecGetProductByPartNumber(baseSku);return{baseSku,entry,detail:d?.CatalogEntryView?.[0]||null}}
-        catch(e){
-          // byPartNumber often 404s — try byId using the uniqueID from search
-          const uid=entry.uniqueID;
-          if(uid){try{const d2=await momentecGetProductById(uid);return{baseSku,entry,detail:d2?.CatalogEntryView?.[0]||null}}catch(e2){}}
-          return{baseSku,entry,detail:null}
-        }
-      });
-      const details=await Promise.all(detailPromises);
-      if(gen!==mtSearchGen.current)return;// stale
-      // Momentec dealer discount (15% off wholesale)
-      const mtVendor=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');
-      const mtDiscount=mtVendor?.api_price_discount||0.15;
-      const mtCost=p=>{const v=p*(1-mtDiscount);return Math.round(v*100)/100};
-      // Build style map from detailed results
-      const styleMap={};
-      for(const{baseSku,entry,detail}of details){
-        const src=detail||entry;// prefer detail if available
-        const price=mtCost(getOfferPrice(src));
-        const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
-        // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
-        const colorImgMap={};
-        const topAttrs=src.Attributes||src.attributes||[];
-        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'||(a.name||'').toLowerCase()==='colorfamily'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath)colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
-        styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
-          styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
-          styleBackImage:mtBackImg,
-          colors:{},_mtId:src.uniqueID||entry.uniqueID,_mtPrice:price>0?price:0};
-        const style=styleMap[baseSku];
-        // Process child SKUs from detailed response for colors (HCL Commerce uses both SKUs and sKUs casing)
-        const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
-        if(skus.length){
-          // Sizes considered "base" (no upcharge) — use these to set the color's base price
-          const BASE_SIZES=new Set(['XS','S','SM','M','MD','L','LG','XL']);
-          for(const sk of skus){
-            const skPrice=mtCost(getOfferPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
-            const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||'';
-            const skBackImg=sk.fullImageBack||sk.backImage||'';
-            const isBaseSize=skSize&&BASE_SIZES.has(skSize.toUpperCase());
-            if(!style.colors[skColor]){
-              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
-                colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0,_basePriceFromBaseSize:isBaseSize};
-            }else{const c=style.colors[skColor];
-              // Prefer base-size pricing: if we haven't locked in a base-size price yet, or this is a base size with a lower price, update.
-              // This avoids the bug where a color's "base" price is set to a 2XL+ upcharge because base-size SKUs were missing/late.
-              if(skPrice>0){
-                const shouldUpdate=isBaseSize&&!c._basePriceFromBaseSize
-                  ||isBaseSize&&c._basePriceFromBaseSize&&skPrice<c.customerPrice
-                  ||!isBaseSize&&!c._basePriceFromBaseSize&&(c.customerPrice===0||skPrice<c.customerPrice);
-                if(shouldUpdate){c.customerPrice=skPrice;c.piecePrice=skPrice;if(isBaseSize)c._basePriceFromBaseSize=true}
-              }
-              if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
-            // Add size entry with per-size price (sizes like 3XL+ are more expensive)
-            if(skSize){const c=style.colors[skColor];if(!c.sizes.find(s=>s.sizeName===skSize)){c.sizes.push({sizeName:skSize,qty:0,price:skPrice})}}
-            if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
-          }
-          // Normalize base-size per-size prices to the color's locked base price.
-          // Momentec sometimes omits Offer pricing on individual base-size SKUs, causing
-          // getOfferPrice to fall back to display*0.5 (a guess) — that produces phantom
-          // upcharges on S/M/L/XL that contradict the customerPrice shown in search.
-          // Upcharge sizes (2XL+) keep their per-SKU price.
-          Object.values(style.colors).forEach(c=>{
-            if(c.customerPrice>0){
-              c.sizes.forEach(s=>{
-                if(s.sizeName&&BASE_SIZES.has(s.sizeName.toUpperCase()))s.price=c.customerPrice;
-              });
-            }
-            delete c._basePriceFromBaseSize;
-          });
-        }
-        // If no child SKUs found, add single color from attributes or default
-        if(!Object.keys(style.colors).length){
-          const colorName=getColor(src)||'Default';
-          style.colors[colorName]={colorName,sku:baseSku,piecePrice:price,customerPrice:price,
-            colorFrontImage:colorImgMap[colorName]||style.styleImage,colorBackImage:style.styleBackImage||'',sizes:[],totalQty:0};
-        }
-      }
-      // Convert colors map to array
-      for(const k of Object.keys(styleMap)){styleMap[k].colors=Object.values(styleMap[k].colors)}
-      const results=Object.values(styleMap);
-      mtSearchCache.current[cacheKey]=results;
+      // /v2/Style is keyed by design number, so this resolves a design ("412000") or a
+      // colorway sku ("412000.B005") to the full color/size/price/live-stock set. Free-text
+      // name searches return nothing here — the catalog product search covers those now that
+      // Momentec styles live in the catalog as per-color rows.
+      const style=await momentecStyleV2(query);
+      const results=style?[style]:[];
+      mtSearchCache.current[cacheKey]=results.length?results:{length:0,_ts:Date.now()};
       if(gen===mtSearchGen.current)setMtResults(results);
     }catch(err){
-      console.error('[Momentec] Search failed:',err);
+      console.error('[Momentec] Style search failed:',err);
       if(gen===mtSearchGen.current)setMtResults([]);
     }finally{if(gen===mtSearchGen.current)setMtSearching(false)}
   },[]);
-
   // ─── Live Richardson Product Search (StockInventory feed) ───
   const[rsResults,setRsResults]=useState([]);
   const[rsSearching,setRsSearching]=useState(false);

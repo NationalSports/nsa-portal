@@ -64,6 +64,29 @@ exports.handler = async (event) => {
     }
   }
 
+  // ─── Momentec /v2/Style (catalog read: colors, sizes, images, price, live stock) ───
+  // service=style — public "Basic" variant, no credentials. Body: { productOrDesignNumber }.
+  // Reads from prod by default (real catalog data); ?env=stage to target the sandbox.
+  if (event.queryStringParameters?.service === 'style') {
+    const env = (event.queryStringParameters?.env || 'prod').toLowerCase();
+    const host = V2_HOSTS[env] || V2_HOSTS.prod;
+    let design = '';
+    try { design = String(JSON.parse(event.body || '{}').productOrDesignNumber || '').trim(); } catch {}
+    if (!design) design = String(event.queryStringParameters?.design || '').trim();
+    if (!design) return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'productOrDesignNumber is required.' }) };
+    try {
+      const resp = await fetch(`${host}/v2/Style`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productOrDesignNumber: design }),
+      });
+      const text = await resp.text();
+      return { statusCode: resp.status, headers: { 'Content-Type': 'application/json' }, body: text };
+    } catch (error) {
+      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Momentec /v2/Style call failed: ${error.message}` }) };
+    }
+  }
+
   const apiKey = process.env.MOMENTEC_API_KEY;
   const storeId = process.env.MOMENTEC_STORE_ID || '10251';
   const path = event.queryStringParameters?.path || '/productview/bySearchTerm/*?pageSize=50';

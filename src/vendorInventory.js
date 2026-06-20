@@ -15,7 +15,7 @@ import { normSzName } from './pricing';
 import {
   richardsonGetStockInventory, ssApiCall,
   sanmarGetPromoInventory, sanmarGetInventory, sanmarGetPricing, sanmarGetProduct,
-  momentecApiCall, momentecGetProductById, momentecGetProductByPartNumber, momentecSearchProducts,
+  momentecStyleV2,
 } from './vendorApis';
 
 const TTL = 10 * 60 * 1000;
@@ -230,66 +230,28 @@ async function _sm(sku, item) {
 
 // ─── Momentec: HCL Commerce — child SKUs → binary inventoryavailability ───
 async function _mt(sku, item) {
+  // Real per-size live stock from /v2/Style (replaces storefront child-SKU + binary
+  // inventoryavailability probing, which returned no usable colors/sizes).
   const sizes = {};
-  const getSkSize = (e) => { const attrs = e.Attributes || e.attributes || e.definingAttributes || []; if (Array.isArray(attrs)) for (const a of attrs) { const id = (a.identifier || '').toLowerCase(); const n = (a.name || '').toLowerCase(); if (id === 'asgswatchsize' || n === 'available sizes' || n === 'size') { const vals = a.values || a.Values || []; if (vals.length) return (vals[0].values || vals[0].value || vals[0].identifier || '').trim(); } } return ''; };
-  const getSkColor = (e) => { const attrs = e.Attributes || e.attributes || e.definingAttributes || []; if (Array.isArray(attrs)) for (const a of attrs) { const n = (a.name || a.identifier || '').toLowerCase(); if (n === 'color' || n === 'colour' || n === 'clr' || n === 'asgswatchcolor') { const vals = a.values || a.Values || []; if (vals.length) return vals.map((v) => v.values || v.value || v.Value || v.identifier || v).join('/'); } } return ''; };
   try {
-    let entry = null;
-    if (item?._mtId) { try { const d = await momentecGetProductById(item._mtId); entry = d?.CatalogEntryView?.[0]; } catch {} }
-    if (!entry) { try { const d = await momentecGetProductByPartNumber(sku); entry = d?.CatalogEntryView?.[0]; } catch {} }
-    if (!entry) {
-      try {
-        const sr = await momentecSearchProducts(sku, 5, 1);
-        const entries = sr?.CatalogEntryView || sr?.catalogEntryView || [];
-        const match = entries.find((e) => (e.partNumber || '') === sku) || entries[0];
-        if (match) { const uid = match.uniqueID; if (uid) { try { const d2 = await momentecGetProductById(uid); entry = d2?.CatalogEntryView?.[0]; } catch {} } if (!entry) entry = match; }
-      } catch {}
-    }
-    if (entry) {
-      const skus = entry.SKUs || entry.sKUs || [];
+    const style = await momentecStyleV2(sku);
+    if (style) {
       const itemColor = String(item?.color || '').toLowerCase();
-      const childParts = [];
-      for (const sk of skus) {
-        const skColor = (getSkColor(sk) || '').toLowerCase();
-        if (itemColor && skColor && !skColor.includes(_colorHead(itemColor)) && !itemColor.includes(_colorHead(skColor))) continue;
-        const sz = normSzName(getSkSize(sk)); if (!sz) continue;
-        const qty = parseInt(sk.buyQuantity || sk.inventoryQuantity || sk.quantity || 0) || 0;
-        if (qty > 0) sizes[sz] = (sizes[sz] || 0) + qty;
-        const skuUid = sk.SKUUniqueID || sk.skuUniqueID || sk.uniqueID || '';
-        if (skuUid) childParts.push({ skuUid, sz });
+      let cols = style.colors;
+      if (itemColor) {
+        const m = style.colors.filter((c) => {
+          const cn = (c.colorName || '').toLowerCase();
+          return cn === itemColor || (cn && (cn.includes(_colorHead(itemColor)) || itemColor.includes(_colorHead(cn))));
+        });
+        if (m.length) cols = m;
       }
-      if (!Object.keys(sizes).length && childParts.length) {
-        const ids = childParts.map((x) => x.skuUid).filter(Boolean);
-        if (ids.length) {
-          try {
-            const invData = await momentecApiCall(`/inventoryavailability/${ids.join(',')}`);
-            (invData?.InventoryAvailability || []).forEach((inv) => {
-              const pid = inv.productId || inv.inventoryAvailabilityByProductId || '';
-              const status = String(inv.inventoryStatus || '').toLowerCase();
-              const isAvail = status === 'available' || status === 'instock' || status === 'in stock';
-              const raw = parseFloat(inv.availableQuantity || 0);
-              const qty = (raw > 999999 || isAvail) ? 999 : parseInt(raw) || 0; // binary flag, not a count
-              const m = childParts.find((x) => x.skuUid === pid);
-              if (m) sizes[m.sz] = Math.max(sizes[m.sz] || 0, qty);
-            });
-          } catch {}
+      for (const c of cols) {
+        for (const s of c.sizes) {
+          const sz = normSzName(s.sizeName);
+          if (sz && s.qty > 0) sizes[sz] = Math.max(sizes[sz] || 0, s.qty);
         }
       }
     }
-  } catch {}
-  // Fallback: direct style-level availability flag → mark ordered sizes available.
-  if (!Object.keys(sizes).length) {
-    try {
-      const invData = await momentecApiCall(`/inventoryavailability/${encodeURIComponent(sku)}`);
-      const any = (invData?.InventoryAvailability || []).some((inv) => {
-        const status = String(inv.inventoryStatus || '').toLowerCase();
-        return status === 'available' || status === 'instock' || status === 'in stock' || parseFloat(inv.availableQuantity || 0) > 0;
-      });
-      if (any) {
-        const ds = Object.keys(item?.sizes || {}).filter(Boolean);
-        (ds.length ? ds : (item?.available_sizes || ['S', 'M', 'L', 'XL', '2XL'])).forEach((sz) => { sizes[normSzName(sz)] = 999; });
-      }
-    } catch {}
-  }
+  } catch (e) { /* fall through to empty sizes */ }
   return { sizes, sizeNextAvail: {}, nextAvail: '', source: 'mt' };
 }

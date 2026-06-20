@@ -1188,6 +1188,63 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   return data;
 };
 
+// ─── Momentec /v2/Style — normalized colors/sizes/images/price/stock ───
+// Fetches real catalog data from the /v2 API (via the proxy's public Basic route)
+// and shapes it to match the vendor-search result the Order Editor consumes:
+//   { sku, styleName, brandName, styleImage, styleBackImage, _mtId, _mtPrice,
+//     colors:[{ colorName, sku, colorCode, colorFrontImage, colorBackImage,
+//               piecePrice, customerPrice, totalQty, sizes:[{sizeName,qty,price}] }] }
+// `design` may be a design number ("412000") or a full colorway sku ("412000.B005") —
+// it's reduced to the design. customerPrice = MSRP less the 15% dealer discount.
+// Per-color images follow the static CDN pattern {design}_{color}_{front|back}.jpg.
+// Returns null when the design has no data.
+const MT_IMG_BASE = 'https://static.momentecbrands.com/product';
+const momentecStyleV2 = async (design, env = 'prod') => {
+  const d = String(design || '').split('.')[0].trim();
+  if (!d) return null;
+  let data;
+  try {
+    const resp = await fetch(`/.netlify/functions/momentec-proxy?service=style&env=${encodeURIComponent(env)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productOrDesignNumber: d }),
+    });
+    if (!resp.ok) return null;
+    data = await resp.json();
+  } catch (error) { console.error('[Momentec] /v2/Style failed:', d, error); return null; }
+  const infos = Array.isArray(data?.productInfo) ? data.productInfo : [];
+  if (!infos.length) return null;
+  const DISCOUNT = 0.15;
+  const cost = (v) => { const n = parseFloat(v); return n > 0 ? Math.round(n * (1 - DISCOUNT) * 100) / 100 : 0; };
+  const usd = (Array.isArray(infos[0]?.MSRP) ? infos[0].MSRP : []).find((m) => String(m.currency).toUpperCase() === 'USD');
+  const msrpCost = cost(usd?.value);
+  const colorsMap = new Map();
+  let styleName = '', styleImage = '', styleBackImage = '';
+  for (const pi of infos) {
+    if (!styleName) styleName = String(pi.Name || d);
+    for (const it of (Array.isArray(pi.items) ? pi.items : [])) {
+      const parts = String(it.SKU || '').split('.');
+      if (parts.length < 3) continue;
+      const dz = parts[0], colorCode = parts[1], size = parts.slice(2).join('.') || 'OSFA';
+      const cwSku = `${dz}.${colorCode}`;
+      const front = `${MT_IMG_BASE}/${dz}_${colorCode}_front.jpg`;
+      const back = `${MT_IMG_BASE}/${dz}_${colorCode}_back.jpg`;
+      if (!styleImage) { styleImage = front; styleBackImage = back; }
+      let c = colorsMap.get(cwSku);
+      if (!c) { c = { colorName: String(it.colorName || 'Default'), sku: cwSku, colorCode, colorFrontImage: front, colorBackImage: back, piecePrice: 0, customerPrice: 0, totalQty: 0, sizes: [] }; colorsMap.set(cwSku, c); }
+      const skCost = cost(it.list_price) || msrpCost;
+      const qty = Math.round(parseFloat(it.quantity) || 0);
+      c.sizes.push({ sizeName: size, qty, price: skCost });
+      c.totalQty += qty;
+      if (skCost > 0 && (c.customerPrice === 0 || skCost < c.customerPrice)) { c.customerPrice = skCost; c.piecePrice = skCost; }
+    }
+  }
+  const colors = [...colorsMap.values()];
+  if (!colors.length) return null;
+  const minPrice = colors.reduce((a, c) => (c.customerPrice > 0 && (a === 0 || c.customerPrice < a) ? c.customerPrice : a), 0);
+  return { sku: d, styleName, brandName: 'Momentec', styleImage, styleBackImage, _mtId: d, _mtPrice: minPrice, colors };
+};
+
 const testMomentecConnection = async () => {
   try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
@@ -1354,4 +1411,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
