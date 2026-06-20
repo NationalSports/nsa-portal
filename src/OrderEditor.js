@@ -1695,26 +1695,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const colors=style?.colors||[];
     const label=source==='ss'?'S&S Activewear':source==='sm'?'SanMar':source==='mt'?'Momentec':'Richardson';
     const accent=source==='ss'?'#7c3aed':source==='sm'?'#0891b2':source==='mt'?'#b45309':'#dc2626';
-    const bg=source==='ss'?'#ede9fe':source==='sm'?'#cffafe':source==='mt'?'#fde68a':'#fecaca';
+    const bdr=source==='ss'?'#ddd6fe':source==='sm'?'#a5f3fc':source==='mt'?'#fcd34d':'#fca5a5';
+    const panelBg=source==='ss'?'#faf8ff':source==='sm'?'#f0fdfa':source==='mt'?'#fffbeb':'#fff5f5';
     const q=(colorPickerModal.q||'').toLowerCase().trim();const shown=q?colors.filter(c=>(c.colorName||'').toLowerCase().includes(q)):colors;
-    return<div style={{padding:'8px 18px',borderBottom:'1px solid #f1f5f9',background:'#fafafa'}}>
+    return<div style={{background:panelBg,borderBottom:'2px solid '+bdr,padding:'8px 18px'}}>
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-        <span style={{fontSize:10,fontWeight:800,color:accent,textTransform:'uppercase',letterSpacing:0.5}}>Change Color · {label}</span>
+        <span style={{fontSize:10,fontWeight:800,color:accent,textTransform:'uppercase',letterSpacing:0.5}}>Change color · {label}</span>
         {searching&&colors.length===0&&<span style={{fontSize:11,color:'#94a3b8'}}>Loading…</span>}
         {!searching&&colors.length>0&&<span style={{fontSize:11,color:'#64748b'}}>{q?shown.length+' of '+colors.length+' match':colors.length+' color'+(colors.length!==1?'s':'')+' available'}</span>}
-        <button onClick={()=>setColorPickerModal(null)} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,lineHeight:1}} title="Close">✕</button>
+        {!searching&&colors.length===0&&<span style={{fontSize:11,color:'#94a3b8'}}>No colors available for this SKU.</span>}
+        <button onClick={()=>setColorPickerModal(null)} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:15,lineHeight:1}} title="Close">✕</button>
       </div>
-      {!searching&&colors.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'2px 0 4px'}}>No colors available for this SKU.</div>}
-      {colors.length>6&&<input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8,maxWidth:280}} autoFocus/>}
-      {colors.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:240,overflowY:'auto'}}>
-        {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(idx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
-          {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
-          <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:130}}>{c.colorName||'Default'}</span>
-          {c.customerPrice>0&&<span style={{fontSize:9,color:accent}}>${c.customerPrice.toFixed(2)}</span>}
-          {c.totalQty>0&&<span style={{fontSize:9,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
+      {colors.length>6&&<input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8,maxWidth:300}} autoFocus/>}
+      {colors.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:4,maxHeight:260,overflowY:'auto'}}>
+        {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<div key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(idx,style,c)} style={{padding:'4px 8px',borderRadius:4,border:'1px solid '+(isCurrent?accent:bdr),background:isCurrent?bdr:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0,opacity:isCurrent?0.6:1}} title={c.colorName+' — $'+(c.customerPrice||0).toFixed(2)+(c.totalQty?' ('+c.totalQty.toLocaleString()+' avail)':'')}>
+          {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+          <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
+          {c.customerPrice>0&&<span style={{fontSize:9,color:accent,whiteSpace:'nowrap'}}>${c.customerPrice.toFixed(2)}</span>}
+          {c.totalQty>0&&<span style={{fontSize:8,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
           {isCurrent&&<span style={{fontSize:9,color:accent,fontWeight:700}}>✓</span>}
-        </button>})}
-        {shown.length===0&&<div style={{padding:8,color:'#94a3b8',fontSize:12,width:'100%'}}>No colors match "{colorPickerModal.q}"</div>}
+        </div>})}
+        {shown.length===0&&<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',width:'100%'}}>No colors match "{colorPickerModal.q}"</div>}
       </div>}
     </div>;
   };
