@@ -643,7 +643,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[updateRequestSent,setUpdateRequestSent]=useState(false);
   const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
   const[payLoading,setPayLoading]=useState(false);// loading state for pay button feedback
-  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
+  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices,intentId}
+  const[receiptEmail,setReceiptEmail]=useState('');// email-receipt recipient (prefilled w/ contact)
+  const[receiptStatus,setReceiptStatus]=useState(null);// null|'sending'|'sent'|'error'
   const[invs,setInvs]=useState(initInvs);
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
@@ -711,7 +713,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
     // buyer isn't falsely told the payment failed.
     if(result.status==='processing'){
-      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],processing:true});
+      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,processing:true});
       setShowPay(null);setInvView(null);setPayLoading(false);
       return;
     }
@@ -736,8 +739,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
     // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
     if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
-    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
+    setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
+  };
+
+  // Email a full itemized receipt for the just-completed payment. Content is built server-side from
+  // our own DB + Stripe (see netlify/functions/receipt.js), so the client only passes the intent id
+  // and a recipient address — it can't dictate what the receipt says.
+  const sendReceipt=async()=>{
+    const email=(receiptEmail||'').trim();
+    if(!paySuccess?.intentId)return;
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){setReceiptStatus('error');return;}
+    setReceiptStatus('sending');
+    try{
+      const resp=await fetch('/.netlify/functions/receipt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_intent_id:paySuccess.intentId,email})});
+      setReceiptStatus(resp.ok?'sent':'error');
+    }catch(e){setReceiptStatus('error');}
   };
 
   // Finalize a payment that came back via a Stripe redirect (3-D Secure, wallets, etc.).
@@ -774,10 +792,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           }else{
             // Invoices not loaded into this view — reconcile server-side directly, then confirm.
             fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
-            setPaySuccess({amount:collected,fee:0,invoices:[]});
+            setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+            setPaySuccess({amount:collected,fee:0,invoices:[],intentId:paymentIntent.id});
           }
         }else if(paymentIntent.status==='processing'){
-          setPaySuccess({amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],processing:true});
+          setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+          setPaySuccess({amount:(paymentIntent.amount||0)/100,fee:0,invoices:[],intentId:paymentIntent.id,processing:true});
         }
         // failed / requires_payment_method: the modal already showed an error before the redirect.
       }catch(e){/* best-effort; the webhook is the source of truth */}
@@ -1575,7 +1595,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
           <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'A receipt has been sent to your email. Your account has been updated.'}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
+          {paySuccess.intentId&&<div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+(paySuccess.processing?'#fde68a':'#bbf7d0')}}>
+            <a href={'/.netlify/functions/receipt?payment_intent_id='+encodeURIComponent(paySuccess.intentId)} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700}}>📄 Download receipt</a>
+            <div style={{marginTop:12,fontSize:12,color:'#475569',fontWeight:600}}>Or email a copy:</div>
+            <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:6,flexWrap:'wrap'}}>
+              <input type="email" value={receiptEmail} onChange={e=>{setReceiptEmail(e.target.value);if(receiptStatus)setReceiptStatus(null);}} placeholder="you@example.com" style={{flex:'1 1 200px',maxWidth:280,padding:'9px 12px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14}}/>
+              <button onClick={sendReceipt} disabled={receiptStatus==='sending'} style={{background:receiptStatus==='sending'?'#94a3b8':'#2563eb',color:'white',border:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700,cursor:receiptStatus==='sending'?'default':'pointer'}}>{receiptStatus==='sending'?'Sending…':'✉️ Email receipt'}</button>
+            </div>
+            {receiptStatus==='sent'&&<div style={{fontSize:12,color:'#166534',marginTop:8,fontWeight:600}}>✓ Receipt sent to {receiptEmail}</div>}
+            {receiptStatus==='error'&&<div style={{fontSize:12,color:'#b91c1c',marginTop:8,fontWeight:600}}>Couldn't send — check the email address and try again.</div>}
+          </div>}
         </div>}
 
         {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}

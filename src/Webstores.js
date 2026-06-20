@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
@@ -13,18 +13,6 @@ import QuickMockBuilder from './QuickMockBuilder';
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
-// Order ship weight (lbs): sum per-item weights (catalog override or estimate);
-// fall back to the store's flat weight if nothing resolves.
-function labelWeightLbs(items, store, weightByPid = {}) {
-  let oz = 0, any = false;
-  (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
-    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
-    oz += w * (i.qty || 1); any = true;
-  });
-  if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
-  return Number(store.label_weight_lbs) || 1;
-}
-
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
   const a = order.ship_address || {};
   const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store, imageByPid)) });
@@ -41,7 +29,7 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
 }
 
 // Printable club fundraising payout statement.
@@ -94,10 +82,17 @@ function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
   </body></html>`);
 }
 
-// Render base64 PDF labels into one printable window.
-function printLabels(labels) {
-  const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
-  printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+// Merge the per-order ShipStation base64 PDFs into one document and print it.
+// Chrome doesn't reliably rasterize stacked <embed> PDF plugins, so we hand the
+// browser a single combined PDF (shared with the OMG label flow). Falls back to
+// the stacked-embed window if the merge fails for any reason.
+async function printLabels(labels) {
+  try {
+    await printPdfLabels(labels);
+  } catch (e) {
+    const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
+    printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+  }
 }
 
 // Print an HTML doc via a popup window (packing lists / player reports).
@@ -140,6 +135,110 @@ function buildPackingLists(store, label, groups) {
   </style></head><body>${slips || '<div class="slip">No orders.</div>'}</body></html>`;
 }
 
+// Batch availability ("FAFO") report. For a set of orders, lay out exactly
+// what we can fill, what we can't, and *whose* items fall short. Scarce stock
+// (ours + Adidas) is allocated first-ordered-first-served, so any shortfall
+// lands on the latest orders — the fair, defensible call when we can't cover
+// everyone. Products with no stock record are made-to-order (decorated/custom)
+// and treated as available, matching the batch flow's own inventory check.
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
+  const keyOf = (pid, size) => pid + '|' + (size || 'OS');
+  // Earliest orders claim stock first.
+  const sorted = [...lines].sort((a, b) => {
+    const ta = orderById[a.order_id]?.created_at || '', tb = orderById[b.order_id]?.created_at || '';
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+  const remaining = {};   // product|size -> units left to allocate (Infinity if untracked)
+  const itemAgg = {};     // product|size -> rollup row
+  const orderShort = {};  // order_id -> { order, lines: [...] }
+  let totalUnits = 0, shortUnits = 0, untrackedUnits = 0;
+
+  sorted.forEach((i) => {
+    const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
+    totalUnits += need;
+    if (!pid) { untrackedUnits += need; return; }
+    const k = keyOf(pid, size);
+    const st = stockByPid[pid];
+    const wh = Number((st?.size_stock || {})[size]) || 0;
+    const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
+    const tracked = !!st;
+    if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
+    if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
+    const row = itemAgg[k];
+    row.needed += need;
+    const give = Math.min(need, Math.max(0, remaining[k]));
+    remaining[k] -= give;
+    row.filled += give;
+    if (!tracked) untrackedUnits += need;
+    const short = need - give;
+    if (short > 0) {
+      shortUnits += short;
+      const o = orderById[i.order_id] || {};
+      const bucket = orderShort[i.order_id] || (orderShort[i.order_id] = { order: o, lines: [] });
+      bucket.lines.push({ name: row.name, sku: i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
+    }
+  });
+
+  const rows = Object.values(itemAgg);
+  const shortRows = rows.filter((r) => r.filled < r.needed).sort((a, b) => (b.needed - b.filled) - (a.needed - a.filled));
+  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const shortOrders = Object.values(orderShort).sort((a, b) => (a.order.created_at || '') < (b.order.created_at || '') ? -1 : 1);
+  const ordersTotal = Object.keys(orderById).length;
+  const availUnits = totalUnits - shortUnits;
+
+  const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const itemRow = (r) => {
+    const avail = r.tracked ? r.ours + r.adidas : '—';
+    const sh = r.needed - r.filled;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${r.tracked ? r.ours : '—'}</td><td class="c">${r.tracked ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+  };
+  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
+
+  const orderBlock = (b) => {
+    const o = b.order;
+    const who = [o.buyer_name, o.buyer_email].filter(Boolean).map(esc).join(' · ');
+    const ls = b.lines.map((l) => `<tr><td>${esc(l.name)}${l.sku ? `<div class="sub">${esc(l.sku)}</div>` : ''}</td><td class="c">${esc(l.size)}</td><td class="c">${[l.number ? '#' + esc(l.number) : '', esc(l.player)].filter(Boolean).join(' ') || '—'}</td><td class="c b"><span class="neg">−${l.short}</span></td></tr>`).join('');
+    return `<div class="ord"><div class="oh">${who || 'Order'}${o.created_at ? `<span class="dt">${new Date(o.created_at).toLocaleDateString()}</span>` : ''}</div>
+      <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Player</th><th class="c">Short</th></tr></thead><tbody>${ls}</tbody></table></div>`;
+  };
+
+  printHtml(`<!doctype html><html><head><title>Availability — ${esc(store.name)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:760px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:24px 0 8px;border-bottom:2px solid #0b1220;padding-bottom:5px}
+    h3 .ct{float:right;color:#94a3b8;font-weight:600}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:96px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip.bad{background:#fef2f2;border-color:#fecaca}
+    .chip .n{font-size:22px;font-weight:900}.chip.bad .n{color:#b91c1c}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+    .grid td.c{text-align:center}.grid td.b{font-weight:800}
+    .grid tr.r td{background:#fef2f2}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
+    .ord{border:1px solid #fecaca;border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fff}
+    .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
+    @media print{.chip{-webkit-print-color-adjust:exact;print-color-adjust:exact}.grid tr.r td,.ord,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <h1>Batch Availability Report</h1>
+    <div class="meta">${esc(store.name)} · ${esc(label)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">
+      ${chip(totalUnits, 'Units')}
+      ${chip(availUnits, 'Available')}
+      ${chip(shortUnits, 'Short', shortUnits > 0)}
+      ${chip(ordersTotal - shortOrders.length, 'Orders OK')}
+      ${chip(shortOrders.length, 'Orders short', shortOrders.length > 0)}
+    </div>
+    ${untrackedUnits ? `<div class="meta" style="margin-top:8px">${untrackedUnits} made-to-order unit${untrackedUnits === 1 ? '' : 's'} (no stock record) counted as available.</div>` : ''}
+    ${shortRows.length ? `<h3>Not available <span class="ct">${shortRows.length} item${shortRows.length === 1 ? '' : 's'}</span></h3>${itemTable(shortRows)}` : ''}
+    ${shortOrders.length ? `<h3>Whose items are short <span class="ct">${shortOrders.length} order${shortOrders.length === 1 ? '' : 's'}</span></h3>${shortOrders.map(orderBlock).join('')}` : '<h3>Whose items are short</h3><div class="ok">✓ Every order can be filled in full.</div>'}
+    <h3>Available <span class="ct">${okRows.length} item${okRows.length === 1 ? '' : 's'}</span></h3>${okRows.length ? itemTable(okRows) : '<div class="meta">No fully-available stock items.</div>'}
+  </body></html>`);
+}
+
 // Convert a webstore order to a ShipStation order (ship-to-home label).
 function webstoreToShipStation(order, items, store, imageByPid = {}) {
   const a = order.ship_address || {};
@@ -150,6 +249,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
     billTo: { name: order.buyer_name || a.name || 'Customer' },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
+      lineItemKey: i.id, // echoed back on the shipment so the webhook marks the exact line shipped
       sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
@@ -229,26 +329,6 @@ const slugify = (s) => (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-'
 
 // Rough ship weight (oz) by item type, from the name/sku keywords. Used as a
 // default in the catalog editor and as a fallback when a label is created.
-function estimateWeightOz(text) {
-  const t = (text || '').toLowerCase();
-  const rules = [
-    [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
-    [/tote|sackpack|cinch|drawstring|bag/, 10],
-    [/jacket|coat|parka|fleece|pullover|hoodie|hooded|sweatshirt|quarter ?zip|1\/4 ?zip|half ?zip|1\/2 ?zip/, 18],
-    [/sweatpant|jogger|tearaway|pant|legging|tight/, 12],
-    [/short/, 7],
-    [/jersey|tank|singlet/, 5],
-    [/tee|t-?shirt|shirt|polo|jersey top|top|warmup|warm-?up/, 6],
-    [/beanie|hat|cap|visor/, 3],
-    [/sock|glove|belt|headband|wristband|scrunchie/, 2],
-    [/bottle|tumbler|mug/, 14],
-    [/ball/, 16],
-    [/blanket|towel/, 20],
-  ];
-  for (const [re, oz] of rules) if (re.test(t)) return oz;
-  return 8; // generic garment default
-}
-
 // Map products -> which transfers they consume, then tally usage from order lines.
 // Supports both new array columns (transfer_codes, num_transfer_sets) and old single columns.
 function buildTransferMaps(catalog, bundleItems) {
@@ -373,7 +453,7 @@ function flyerHtml(store) {
   </body></html>`;
 }
 
-function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onCreateSO, onOpenSO }) {
+function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   // Live snapshot of in-memory orders/estimates so the detail loader can aggregate the
   // customer's full art library (their saved art + every art file off their SOs/ests),
@@ -954,6 +1034,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
     flash('Package created'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Gather this store's unbatched orders + their stock picture (shared by the
+  // availability report and the batch flow's inventory check).
+  const gatherBatch = useCallback(() => {
+    const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const openIds = new Set(open.map((o) => o.id));
+    const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const stockByPid = {};
+    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
+    return { open, openIds, lines, stockByPid, orderById };
+  }, [detail]);
+
+  // Open the printable availability ("FAFO") report for the pending batch.
+  const availabilityReport = useCallback(() => {
+    if (!sel || !detail) return;
+    const { open, lines, stockByPid, orderById } = gatherBatch();
+    if (!open.length) { flash('No unbatched orders to report'); return; }
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById);
+  }, [sel, detail, gatherBatch, flash]);
+
   // Batch all not-yet-batched orders into one Sales Order via the app's normal
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
@@ -978,7 +1078,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
       if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
     });
     const head = `Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`;
-    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Create the Sales Order anyway?` : head;
+    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Use "Availability report" to see who's affected.\n\nCreate the Sales Order anyway?` : head;
     if (!window.confirm(msg)) return;
 
     // Which products collect a number / name (from catalog singles + bundle components).
@@ -1089,11 +1189,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], onC
           onCancel={() => setEditing(null)}
           onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
       ) : sel ? (
-        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab}
+        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -1590,7 +1690,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onCreateBundle, onRemove, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1697,7 +1797,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -4385,7 +4485,59 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
+  const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
   const shipHome = store.delivery_mode !== 'deliver_club';
+  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store)
+  // In-house on-hand by product → {size: qty}, for the "In Inv" column.
+  const invProducts = useMemo(() => Object.values(productStock || {}).map((s) => ({ id: s.product_id, _inv: s.size_stock || {} })).filter((p) => p.id), [productStock]);
+  // Per-customer-line incoming tracking, FIFO-allocated WITHIN each batch (SO),
+  // then merged so the overall view can show every batch at once.
+  const trackByLine = useMemo(() => {
+    const merged = {};
+    (sos || []).forEach((o) => {
+      const bOrders = (orders || []).filter((w) => w.so_id === o.id).map((w) => ({ ...w, items: (orderItems || []).filter((i) => i.order_id === w.id) }));
+      Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: o.items }, products: invProducts, includeIF: true }));
+    });
+    return merged;
+  }, [sos, orders, orderItems, invProducts]);
+  const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
+  // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
+  // Need · Status) for a set of webstore orders.
+  const renderTrackTable = (wOrders) => {
+    if (!wOrders.length) return <div style={{ fontSize: 12, color: '#94a3b8', padding: '8px 0' }}>No customer orders here yet.</div>;
+    const ctd = { ...td, textAlign: 'center' };
+    const num = (n, strong) => <span style={{ color: n > 0 ? '#0f172a' : '#cbd5e1', fontWeight: strong ? 700 : 500 }}>{n}</span>;
+    return (
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+          {[['Customer', ''], ['Item', ''], ['SKU', ''], ['Size', ''], ['In Inv', 'c'], ['Ordered', 'c'], ['Billed', 'c'], ['Received', 'c'], ['Need', 'c'], ['Status', 'c']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Ordered' ? 'Customer ordered (· N IF = fulfilled from in-house stock)' : h === 'Billed' ? 'Vendor shipped (from uploaded bills)' : h === 'Received' ? 'Received into the warehouse, earliest orders first' : undefined}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {wOrders.map((w) => {
+            const its = (orderItems || []).filter((i) => i.order_id === w.id && !i.is_bundle_parent);
+            return its.map((i, idx) => {
+              const t = trackByLine[i.id] || { ordered: Number(i.qty) || 0, billed: 0, received: 0, onIf: 0, onHand: 0, need: Number(i.qty) || 0, status: 'awaiting' };
+              const p = TRK[t.status] || TRK.backordered;
+              return (
+                <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={td}>{idx === 0 ? <span style={{ fontWeight: 600 }}>{w.buyer_name || w.buyer_email || '—'}</span> : ''}</td>
+                  <td style={td}>{i.name || i.sku || '—'}</td>
+                  <td style={td}>{t.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }} title="SKU from the linked Sales Order">{t.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                  <td style={td}>{i.size || '—'}</td>
+                  <td style={ctd}>{num(t.onHand)}</td>
+                  <td style={ctd}>{num(t.ordered, true)}{t.onIf > 0 && <span style={{ color: '#0369a1', fontWeight: 700, fontSize: 11 }}> · {t.onIf} IF</span>}</td>
+                  <td style={ctd}>{num(t.billed)}</td>
+                  <td style={ctd}><span style={{ color: t.received >= t.ordered && t.ordered > 0 ? '#166534' : t.received > 0 ? '#0f172a' : '#cbd5e1', fontWeight: t.received > 0 ? 700 : 500 }}>{t.received}</span></td>
+                  <td style={ctd}>{t.need > 0 ? <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: '1px 8px', fontWeight: 800 }}>{t.need}</span> : <span style={{ color: '#16a34a', fontWeight: 800 }} title="Fully covered">✓</span>}</td>
+                  <td style={ctd}><span style={{ background: p.b, color: p.c, borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' }}>{p.l}</span></td>
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
+    );
+  };
   // Webstore orders + items belonging to one batched SO.
   const batchGroups = (soId) => {
     const linked = orders.filter((o) => o.so_id === soId);
@@ -4417,16 +4569,35 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
-    const labels = []; let fail = 0;
+    const labels = []; const errs = []; let held = 0;
     for (const g of groups) {
+      const o = g.order;
+      const who = o.buyer_name || o.buyer_email || o.id;
+      const lines = g.items.filter((i) => !i.is_bundle_parent);
+      // Units still to ship per line = ordered − already shipped − short-now.
+      const plan = lines.map((i) => { const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0); return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) }; }).filter((x) => x.qty > 0);
+      if (!plan.length) { held++; continue; }
+      const addrErr = validateShipAddress(o.ship_address);
+      if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
+      const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store, weightByPid, imageByPid);
+        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
-        if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
-      } catch { fail++; }
+        for (const x of plan) { const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id); } catch {} i.shipped_qty = sq; if (done) i.line_status = 'shipped'; }
+        const allShipped = lines.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
+      } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
-    if (labels.length) printLabels(labels);
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}.` }));
+    // Roll the Sales Order's outbound shipping cost up = sum of its orders' label
+    // costs (the webhook later reconciles these to ShipStation's actual amounts).
+    try {
+      const { data: soOrds } = await supabase.from('webstore_orders').select('label_cost').eq('so_id', soId);
+      const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0);
+      await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
+    } catch {}
+    if (labels.length) await printLabels(labels);
+    setSsErr((m) => ({ ...m, [soId]: errs }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -4451,13 +4622,14 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       if (!ids.length) { setSos([]); return; }
       const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
       const itemIds = (items || []).map((i) => i.id);
-      let picks = [], decos = [], jobs = [];
+      let picks = [], decos = [], jobs = [], pos = [];
       if (itemIds.length) {
-        const [plRes, decoRes] = await Promise.all([
+        const [plRes, decoRes, poRes] = await Promise.all([
           supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
           supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
+          supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
         ]);
-        picks = plRes.data || []; decos = decoRes.data || [];
+        picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
       }
       const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
       jobs = jobRes || [];
@@ -4465,7 +4637,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
       const decosByItem = {};
       decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
-      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
+      // Attach PO + pick lines per item so the per-customer tracking grid can
+      // read Billed/Received (PO lines) and on-IF (pick lines).
+      const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
+      const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
+      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
     })();
   }, [store.id]);
 
@@ -4486,9 +4662,23 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     return short === 0 ? { text: 'Stock OK', color: '#166534' } : { text: `Short on ${short} size${short === 1 ? '' : 's'}`, color: '#b91c1c' };
   };
 
+  const allWOrders = (orders || []).filter((w) => sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {sos.map((o) => {
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
+        {tBtn('batch', '📦 By batch')}
+        {tBtn('all', '🏬 All orders (overall)')}
+      </div>
+      {trackMode === 'all' && (
+        <div className="card"><div style={{ padding: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>All customer orders — {store.name}</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every batch combined. Incoming stock is allocated to the earliest orders first, within each batch.</div>
+          {renderTrackTable(allWOrders)}
+        </div></div>
+      )}
+      {trackMode === 'batch' && sos.map((o) => {
         const totalOrdered = o.items.reduce((a, i) => a + sumSizes(i.sizes), 0);
         const totalPicked = o.items.reduce((a, i) => a + (o.pickedByItem[i.id] || 0), 0);
         const pickPct = totalOrdered ? Math.round((totalPicked / totalOrdered) * 100) : 0;
@@ -4501,10 +4691,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
-                  {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => sendToShipStation(o.id)}>📦 Send to ShipStation</button>}
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
                 </div>
                 {ssMsg[o.id] && <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>{ssMsg[o.id]}</div>}
+                {ssErr[o.id] && ssErr[o.id].length > 0 && <div style={{ marginTop: 4, padding: '6px 8px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 6 }}>
+                  {ssErr[o.id].map((e, i) => <div key={i} style={{ fontSize: 10.5, color: '#7c2d12' }}>⚠️ <b>{e.order}</b> — {e.msg}</div>)}
+                </div>}
               </div>
               <div style={{ display: 'flex', gap: 14, textAlign: 'right' }}>
                 <Stat label="Ordered" value={totalOrdered} />
@@ -4544,6 +4736,10 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 })}
               </tbody>
             </table>
+            <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Customer order tracking</div>
+              {renderTrackTable((orders || []).filter((w) => w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
+            </div>
             {(o.jobs || []).length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Decoration / production</div>
               {o.jobs.map((j, ji) => (
@@ -4596,12 +4792,71 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {}, onSaveOrderEdits, onRefundOrder }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
   const [q, setQ] = useState('');
+  // Per-order customer message threads (same shared `messages` table the OMG
+  // portal and the public order page use).
+  const [msgsByOrder, setMsgsByOrder] = useState({});
+  const [msgDraft, setMsgDraft] = useState({});
+  const [msgBusy, setMsgBusy] = useState(null);
+  const orderIdsKey = orders.map((o) => o.id).join(',');
+  useEffect(() => {
+    const ids = orders.map((o) => String(o.id));
+    if (!ids.length) return;
+    (async () => {
+      const { data } = await supabase.from('messages').select('id,text,ts,created_at,from_customer,read_by_staff,author,entity_id').eq('entity_type', 'webstore_order').in('entity_id', ids);
+      const by = {}; (data || []).forEach((m) => { (by[String(m.entity_id)] = by[String(m.entity_id)] || []).push(m); });
+      setMsgsByOrder(by);
+    })();
+  }, [orderIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sendMsg = async (o) => {
+    const text = (msgDraft[o.id] || '').trim(); if (!text) return;
+    setMsgBusy(o.id);
+    const now = new Date();
+    const row = { id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7), entity_type: 'webstore_order', entity_id: String(o.id), so_id: o.so_id || null, author_id: (cu && cu.id) || null, author: (cu && cu.name) || (store && store.name) || 'NSA Team', text, ts: now.toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true, tagged_members: msgTagIds || [] };
+    const { error } = await supabase.from('messages').insert(row);
+    if (error) { setMsgBusy(null); window.alert('Could not send: ' + error.message); return; }
+    setMsgsByOrder((p) => ({ ...p, [o.id]: [...(p[o.id] || []), row] }));
+    setMsgDraft((d) => ({ ...d, [o.id]: '' }));
+    if (cu && cu.id) { try { await supabase.from('message_reads').upsert([{ message_id: row.id, user_id: cu.id }], { onConflict: 'message_id,user_id' }); } catch {} }
+    try { await authFetch('/.netlify/functions/webstore-message-notify', { method: 'POST', body: JSON.stringify({ orderId: o.id, text }) }); } catch {}
+    setMsgBusy(null);
+  };
   const [fStatus, setFStatus] = useState('all');   // all | pending | in_production | shipped | complete
   const [fPay, setFPay] = useState('all');         // all | paid | unpaid
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
   const [editId, setEditId] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [, setTick] = useState(0);
+  const colCount = 9 + (numbersEnabled ? 1 : 0);
+  // Flag a line short. Mutate the shared item object so the Batches tab's ship
+  // flow (which reads the same orderItems references) holds it back without a
+  // reload, then persist and re-render.
+  const setItemMissing = async (item, v) => {
+    const q = Math.max(0, Math.min(Number(item.qty) || 0, Number(v) || 0));
+    item.missing_qty = q;
+    setTick((t) => t + 1);
+    try { await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', item.id); } catch {}
+  };
+  // Reprint the order's last saved label (no re-buy).
+  const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
+  // Void the order's last label in ShipStation and reopen the shipped lines.
+  const voidLabel = async (o) => {
+    if (!o.shipstation_shipment_id) return;
+    if (!window.confirm(`Void the label for ${o.buyer_name || 'this order'}? This cancels it in ShipStation and reopens the order.`)) return;
+    try {
+      const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
+      if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
+      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
+      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
+      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
+      // Re-roll the Sales Order's shipping cost without this order's label.
+      if (o.so_id) { try { const { data: soOrds } = await supabase.from('webstore_orders').select('label_cost').eq('so_id', o.so_id); const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0); await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', o.so_id); } catch {} }
+      o.label_data = null; o.shipstation_shipment_id = null;
+      (itemsByOrder[o.id] || []).forEach((i) => { if (i.line_status === 'shipped') { i.line_status = 'bagging'; i.shipped_qty = 0; } });
+      setTick((t) => t + 1);
+    } catch (e) { window.alert('Void failed: ' + e.message); }
+  };
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const enrich = (o) => {
@@ -4632,6 +4887,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
         <select style={sel} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>{['all', 'pending', 'in_production', 'shipped', 'complete'].map((s) => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}</option>)}</select>
         <select style={sel} value={fPay} onChange={(e) => setFPay(e.target.value)}><option value="all">All payment</option><option value="paid">Paid</option><option value="unpaid">Team tab</option></select>
         <select style={sel} value={fBatch} onChange={(e) => setFBatch(e.target.value)}><option value="all">All</option><option value="unbatched">Not batched</option><option value="batched">Batched</option></select>
+        {onAvailabilityReport && (
+          <button className="btn btn-secondary" disabled={!unbatchedCount} onClick={onAvailabilityReport} title={unbatchedCount ? 'What can we fill, and whose items fall short?' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+            📋 Availability report
+          </button>
+        )}
         <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
           Create Sales Order ({unbatchedCount})
         </button>
@@ -4640,22 +4900,78 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
+            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {filtered.map(({ o, items, players, numbers, lineStatus }) => (
-              <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+            {filtered.map(({ o, items, players, numbers, lineStatus }) => {
+              const isOpen = expanded === o.id;
+              const lineItems = items.filter((i) => !i.is_bundle_parent);
+              const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
+              const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
+              return (
+              <React.Fragment key={o.id}>
+              <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
-                <td style={td}>{items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0)}</td>
+                <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
                 <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
-                <td style={{ ...td, textAlign: 'right' }}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
+                <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
-            ))}
+              {isOpen && (
+                <tr style={{ background: '#f8fafc' }}>
+                  <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {lineItems.map((i) => (
+                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                            <td style={td}>{i.sku || i.name || '—'}</td>
+                            <td style={td}>{i.size || '—'}</td>
+                            <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
+                            <td style={td}>{i.qty}</td>
+                            <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                            <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
+                    {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}</div>}
+                    {(o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                      {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
+                      {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}
+                    </div>}
+                    {/* Customer message thread — emails the buyer a link to read & reply. */}
+                    <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 12px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#334155' }}>💬 Messages with {o.buyer_name || 'the customer'}</div>
+                      <div style={{ maxHeight: 200, overflowY: 'auto', padding: '8px 12px' }}>
+                        {(msgsByOrder[o.id] || []).length === 0
+                          ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No messages yet. Send one below — the customer gets an email with a link to read &amp; reply.</div>
+                          : (msgsByOrder[o.id] || []).slice().sort((a, b) => String(a.created_at || a.ts).localeCompare(String(b.created_at || b.ts))).map((m) => (
+                            <div key={m.id} style={{ marginBottom: 8, textAlign: m.from_customer ? 'left' : 'right' }}>
+                              <div style={{ display: 'inline-block', maxWidth: '80%', padding: '6px 10px', borderRadius: 10, textAlign: 'left', background: m.from_customer ? '#fff' : '#dbeafe', border: '1px solid ' + (m.from_customer ? '#e2e8f0' : '#bfdbfe'), fontSize: 12.5 }}>
+                                <div style={{ fontWeight: 700, fontSize: 10.5, color: '#64748b', marginBottom: 2 }}>{m.from_customer ? (o.buyer_name || 'Customer') : (m.author || 'NSA')}</div>
+                                {m.text}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, padding: '8px 12px', borderTop: '1px solid #eef1f5' }}>
+                        <input value={msgDraft[o.id] || ''} onChange={(e) => setMsgDraft((d) => ({ ...d, [o.id]: e.target.value }))} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(o); } }} placeholder={o.buyer_email ? 'Message the customer…' : 'No buyer email on file'} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
+                        <button className="btn btn-sm btn-primary" disabled={msgBusy === o.id || !(msgDraft[o.id] || '').trim()} onClick={() => sendMsg(o)}>{msgBusy === o.id ? 'Sending…' : 'Send'}</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div></div>

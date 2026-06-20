@@ -7,7 +7,7 @@ const {
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
   calcQualifyingSpend,
-  itemEditReconciles,
+  itemEditReconciles, itemsWithWipedQty,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -1302,6 +1302,23 @@ describe('Job Readiness (isJobReady)', () => {
     expect(isJobReady(jobs[1], so)).toBe(true);  // slice owns its 90 received units
     expect(isJobReady(jobs[0], so)).toBe(false); // parent's 10 are still on backorder
   });
+
+  test('split_open backorder slice claims receipts last — received units stay ready on the parent', () => {
+    // New "split off backorder" direction: the producible parent keeps the 90 checked-in L's; the -S
+    // backorder owns the 10 not-yet-received L's and (split_open) must claim the pool LAST so it can't
+    // starve the parent. The parent reads ready; the backorder does not.
+    const jobs = [
+      { id: 'JOB-1', art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+      { id: 'JOB-1-S', split_from: 'JOB-1', split_open: true, art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+    ];
+    const so = makeSO({
+      jobs,
+      items: [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(jobs[0], so)).toBe(true);  // parent keeps its 90 received units
+    expect(isJobReady(jobs[1], so)).toBe(false); // backorder's 10 are still on order
+  });
 });
 
 describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
@@ -1461,6 +1478,34 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(split3.fulfilled_units).toBe(85);
     expect(split3.item_status).toBe('partially_received');
     expect(split3.items[0].fulSizes).toEqual({ L: 85 });
+  });
+
+  test('split_open backorder fills only after the producible parent is satisfied', () => {
+    // Mirror of the received-slice test in the NEW direction: parent (received) = 90, -S backorder
+    // (split_open) = 10. All 90 receipts stay on the parent; the backorder reads 0 until its own units
+    // arrive, then it flips to received without ever stealing the parent's.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 90, total_units: 90,
+          items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+        { id: 'JOB-1-S', split_from: 'JOB-1', split_open: true, item_status: 'need_to_order', fulfilled_units: 0, total_units: 10,
+          items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })];
+    const [keep, back] = recalcJobFulfillment(so, items);
+    expect(keep.fulfilled_units).toBe(90);
+    expect(keep.item_status).toBe('items_received');
+    expect(keep.items[0].fulSizes).toEqual({ L: 90 });
+    expect(back.fulfilled_units).toBe(0);            // backorder claims nothing while the parent needs it
+    expect(back.item_status).toBe('need_to_order');
+    // Backorder arrives → the last 10 flow to the -S job, parent untouched
+    const items2 = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 100 } }] })];
+    const [keep2, back2] = recalcJobFulfillment(so, items2);
+    expect(keep2.fulfilled_units).toBe(90);
+    expect(back2.fulfilled_units).toBe(10);
+    expect(back2.item_status).toBe('items_received');
+    expect(back2.items[0].fulSizes).toEqual({ L: 10 });
   });
 
   test('legacy received-split without per-size allocations: slice claims the pool before the parent', () => {
@@ -2459,5 +2504,69 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
     expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
     expect(itemEditReconciles(null, db)).toBe(false);
     expect(itemEditReconciles(undefined, db)).toBe(false);
+  });
+});
+
+describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {
+  // DB row as read by the save path: carries item_index + the persisted sizes.
+  const dbRow = (overrides = {}) => ({ item_index: 0, sku: 'NSF', name: 'Custom Jersey', product_id: null, sizes: { S: 5, M: 20, L: 20, XL: 5, '2XL': 3 }, qty_only: false, est_qty: null, ...overrides });
+
+  // ── MUST flag (silent data loss) ──
+  test('EST-1316 signature: same line, 53 units → sizes:{} is flagged', () => {
+    const db = [dbRow()];
+    const client = [{ sku: 'NSF', name: 'Customer ', sizes: {} }]; // name/price drifted, sku stayed → same line
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0]).toMatchObject({ item_index: 0, sku: 'NSF', prevQty: 53 });
+  });
+
+  test('all sizes typed to 0 (object kept, values zeroed) is still a wipe', () => {
+    const wiped = itemsWithWipedQty([{ sku: 'NSF', sizes: { S: 0, M: 0, L: 0, XL: 0, '2XL': 0 } }], [dbRow()]);
+    expect(wiped).toHaveLength(1);
+  });
+
+  test('matches by product_id when the SKU is blank (custom lines)', () => {
+    const db = [dbRow({ sku: '', product_id: 'p-123' })];
+    const client = [{ sku: '', product_id: 'p-123', sizes: {} }];
+    expect(itemsWithWipedQty(client, db)).toHaveLength(1);
+  });
+
+  // ── MUST NOT flag (deliberate, non-lossy edits) ──
+  test('partial reduction (53 → 20) is a normal edit, not a wipe', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], [dbRow()])).toEqual([]);
+  });
+
+  test('replaced slot (different sku now occupies the index) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'OTHER', sizes: {} }], [dbRow()])).toEqual([]);
+  });
+
+  test('quantity moved into est_qty (qty-only conversion) is allowed', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, est_qty: 53 }], [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {}, qty_only: true }], [dbRow()])).toEqual([]);
+  });
+
+  test('DB line that never had quantities is never flagged', () => {
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], [dbRow({ sizes: {} })])).toEqual([]);
+  });
+
+  test('removed / reindexed slot (no client item at that index) is left to the count guards', () => {
+    expect(itemsWithWipedQty([], [dbRow()])).toEqual([]);
+    // two DB rows, client kept only index 0 with qty — index 1 has no client occupant
+    const db = [dbRow({ item_index: 0 }), dbRow({ item_index: 1, sku: 'B' })];
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: { M: 20 } }], db)).toEqual([]);
+  });
+
+  test('flags only the wiped line in a mixed multi-item save', () => {
+    const db = [dbRow({ item_index: 0, sku: 'A' }), dbRow({ item_index: 1, sku: 'B' })];
+    const client = [{ sku: 'A', sizes: { M: 20 } }, { sku: 'B', sizes: {} }]; // A reduced, B wiped
+    const wiped = itemsWithWipedQty(client, db);
+    expect(wiped).toHaveLength(1);
+    expect(wiped[0].sku).toBe('B');
+  });
+
+  test('malformed inputs never throw and flag nothing', () => {
+    expect(itemsWithWipedQty(null, [dbRow()])).toEqual([]);
+    expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], null)).toEqual([]);
+    expect(itemsWithWipedQty(undefined, undefined)).toEqual([]);
   });
 });

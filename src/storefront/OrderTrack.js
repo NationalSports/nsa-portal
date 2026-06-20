@@ -59,6 +59,9 @@ export default function OrderTrack() {
   const [items, setItems] = useState([]);
   const [shipments, setShipments] = useState([]);
   const [status, setStatus] = useState('loading');
+  const [msgs, setMsgs] = useState([]);
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -73,9 +76,22 @@ export default function OrderTrack() {
       setStore(d.store || { name: 'Your Order' });
       setItems((d.items || []).filter((i) => !i.is_bundle_parent));
       setShipments(d.shipments || []);
+      setMsgs(d.messages || []);
       setStatus('ok');
     })();
   }, [token]);
+
+  const sendReply = async () => {
+    const text = reply.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      const resp = await fetch('/.netlify/functions/webstore-checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'post_message', token, text }) });
+      const d = await resp.json().catch(() => ({}));
+      if (resp.ok && d.ok) { setMsgs(d.messages || []); setReply(''); }
+    } catch (e) { /* leave the text so they can retry */ }
+    setSending(false);
+  };
 
   const theme = useMemo(() => ({
     primary: (store && store.primary_color) || '#0b1f3a',
@@ -195,6 +211,28 @@ export default function OrderTrack() {
             </div>
           </div>
         )}
+
+        {/* Messages — two-way thread with the NSA team, attached to this order */}
+        <div style={{ background: '#fff', borderRadius: 16, padding: '18px 22px 20px', marginTop: 16, border: '1px solid #eef1f5' }}>
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: '#64748b', marginBottom: 4 }}>Messages</div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>Need to fix an address, ask a question, or send a note? Message us here — it stays with your order and we’ll reply on this page.</div>
+          {msgs.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              {msgs.map((m) => (
+                <div key={m.id} style={{ display: 'flex', justifyContent: m.from_customer ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
+                  <div style={{ maxWidth: '82%', padding: '9px 13px', borderRadius: 12, fontSize: 14, background: m.from_customer ? theme.primary : '#f1f5f9', color: m.from_customer ? '#fff' : '#0f172a' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.8, marginBottom: 2 }}>{m.from_customer ? 'You' : (m.author || 'NSA Team')}{m.ts ? ' · ' + new Date(m.ts).toLocaleDateString() : ''}</div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <textarea value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type a message…" rows={2} style={{ flex: 1, resize: 'vertical', minHeight: 44, padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, fontFamily: BODY }} />
+            <button onClick={sendReply} disabled={sending || !reply.trim()} style={{ ...btn(theme.accent), border: 'none', cursor: sending || !reply.trim() ? 'default' : 'pointer', opacity: sending || !reply.trim() ? 0.5 : 1 }}>{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>
 
         <div style={{ textAlign: 'center', marginTop: 26, fontSize: 13, color: '#94a3b8' }}>
           Questions? Email <a href="mailto:stores@nationalsportsapparel.com" style={{ color: theme.accent, fontWeight: 600 }}>stores@nationalsportsapparel.com</a>

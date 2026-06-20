@@ -12,10 +12,10 @@ import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -80,7 +80,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -345,7 +345,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');const[invDate,setInvDate]=useState(()=>new Date().toLocaleDateString('en-CA'));const[invCreating,setInvCreating]=useState(false);
-  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);const[invSendingState,setInvSendingState]=useState(null);
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);const[invSendingState,setInvSendingState]=useState(null);const[invSendReview,setInvSendReview]=useState(false);
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
@@ -366,6 +366,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
+  const[collapsedItems,setCollapsedItems]=useState({});// Track collapsed line items by idx — shows compact sku/qty/total summary
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
@@ -548,7 +549,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const copyItemImage=async(it)=>{
     const url=_itemImg(it);
     if(!url){nf('No image available for this item','error');return}
-    const copyUrl=()=>{navigator.clipboard?.writeText(url).then(()=>nf('📋 Image link copied — paste it to share')).catch(()=>{window.prompt('Copy image link:',url)})};
+    const copyUrl=()=>{(navigator.clipboard?navigator.clipboard.writeText(url):Promise.reject()).then(()=>nf('📋 Image link copied — paste it to share')).catch(()=>{window.prompt('Copy image link:',url)})};
     if(!navigator.clipboard||!window.ClipboardItem){copyUrl();return}
     try{
       const resp=await fetch(url,{mode:'cors'});
@@ -1640,7 +1641,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
-  const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
+  // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
+  // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
+  // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
+  // wrong rows. `remap` maps each item's OLD index to its NEW index (omit unchanged indices).
+  const applyItemOrder=(nextItems,remap)=>{const ri=ii=>remap[ii]!=null?remap[ii]:ii;
+    setO(e=>({...e,items:nextItems,
+      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).map(gi=>({...gi,item_idx:ri(gi.item_idx)}))})),
+      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).map(ri)})),
+      updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];applyItemOrder(next,{[i]:j,[j]:i})};
+  // Stable, human-readable key describing an item's decoration setup. Items sharing the same
+  // decorations sort together; un-decorated items sort last (the ~ prefix sorts after letters).
+  const decoSortKey=(item)=>{const ds=safeDecos(item);if(!ds.length)return '~~no deco';
+    return ds.map(d=>{
+      if(d.kind==='art'){const f=(o.art_files||[]).find(x=>x.id===d.art_file_id);return 'art:'+((f&&f.deco_type)?f.deco_type:'unassigned')+':'+(d.position||'')}
+      if(d.kind==='numbers')return 'numbers:'+(d.position||'');
+      if(d.kind==='names')return 'names:'+(d.position||'');
+      if(d.kind==='outside_deco')return 'outside:'+(d.deco_type||'')+':'+(d.position||'');
+      return String(d.kind||'');
+    }).sort().join(' | ');};
+  // Reorder the line items so items with the same decoration are grouped together.
+  const sortByDeco=()=>{const items=safeItems(o);
+    const entries=items.map((it,i)=>({it,i})).sort((a,b)=>{const ka=decoSortKey(a.it),kb=decoSortKey(b.it);return ka<kb?-1:ka>kb?1:a.i-b.i});
+    if(entries.every((e,i)=>e.i===i)){nf('Already sorted by decoration');return}
+    const remap={};entries.forEach((e,newI)=>{remap[e.i]=newI});
+    applyItemOrder(entries.map(e=>e.it),remap);
+    setCollapsedItems({});nf('Sorted line items by decoration')};
+  // Collapse / expand controls for the compact line-item view.
+  const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
+  const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
+  const expandAllItems=()=>setCollapsedItems({});
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   // Reassign which vendor a line item is ordered from (e.g. OMG parsed an S&S item as
   // Adidas). vendor_id is the key the PO builder groups on (see resolveVendor), so this
@@ -2373,18 +2404,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     newJobs.forEach(nj=>{
       const existing=existingJobMap[nj.key]||(nj.art_file_id?existingByArtId[nj.art_file_id]:null);
       if(!existing||!Array.isArray(existing.items))return;
+      // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
+      // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
+      // at FULL quantity and land on BOTH the parent and its slice (the GM2365-on-both double-count).
+      const sliceOwned=new Set();
+      if(existing.id)safeJobs(o).forEach(sj=>{if(sj.split_from===existing.id&&!sj._merged&&!_isRel(sj))(sj.items||[]).forEach(gi=>sliceOwned.add(gi.item_idx+'-'+gi.sku))});
       let hasOverride=false;
-      nj.items=nj.items.map(gi=>{
-        if(gi._artSplit)return gi;// split-art allocations are re-derived each sync — never restore the prior slice
+      const rebuilt=[];
+      nj.items.forEach(gi=>{
+        if(gi._artSplit){rebuilt.push(gi);return}// split-art allocations are re-derived each sync — never restore the prior slice
         const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
-        if(!ex||!ex.sizes)return gi;
+        if(!ex||!ex.sizes){
+          // Not on the saved parent: a slice owns it → it was split off, so drop it here (don't
+          // re-add at full size). Otherwise it's a genuinely new garment — keep the rebuilt line.
+          if(sliceOwned.has(gi.item_idx+'-'+gi.sku)){hasOverride=true;return}
+          rebuilt.push(gi);return;
+        }
         hasOverride=true;
         const sizes={...ex.sizes};
         const fulSizes=ex.fulSizes?{...ex.fulSizes}:{};
         const u=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0);
         const f=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
-        return{...gi,sizes,fulSizes,units:u,fulfilled:f};
+        rebuilt.push({...gi,sizes,fulSizes,units:u,fulfilled:f});
       });
+      nj.items=rebuilt;
       if(hasOverride){
         const total=nj.items.reduce((a,gi)=>a+safeNum(gi.units),0);
         const ful=nj.items.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
@@ -2722,6 +2765,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
             <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
+          {isSO&&o.omg_store_id&&onNavOmgStore&&<div style={{fontSize:11,color:'#166534'}}>🏪 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">OMG Store</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'/?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
@@ -3222,7 +3266,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {tab==='items'&&(()=>{
       const _invsForSO=isSO?(allInvoices||[]).filter(inv=>inv.so_id===o.id):[];
       const _itemInvoicedMap=isSO?buildInvoicedQtyMap(o,_invsForSO):new Map();
-      return<>{safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+      const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
+      return<>
+      {safeItems(o).length>0&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
+        <div style={{flex:1}}/>
+        <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
+        {_anyCollapsed
+          ?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
+          :<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
+      </div>}
+      {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
       const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
       let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=eq*dp.cost;dR+=dr;dC+=dc;
@@ -3245,9 +3299,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
+      // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
+      if(collapsedItems[idx]){
+        const decoLabels=decoBreak.map(d=>d.label).filter(Boolean);
+        const decoSub=decoLabels.length?decoLabels.join(' · '):(item.no_deco?'No decoration':'No deco assigned');
+        return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
+          <div style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
+            <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
+                <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
+                {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
+              </div>
+              <div style={{fontSize:11,color:decoLabels.length?'#7c3aed':'#94a3b8',fontWeight:600,marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={decoSub}>🎨 {decoSub}</div>
+            </div>
+            <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
+              <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>@ ${safeNum(item.unit_sell).toFixed(2)}/ea</div>
+            </div>
+            <div style={{textAlign:'right',whiteSpace:'nowrap',minWidth:88}}>
+              <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Line Total</div>
+              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${iR.toFixed(2)}</div>
+            </div>
+          </div>
+        </div>);
+      }
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
+            <button title="Collapse item" onClick={()=>toggleItemCollapse(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1,alignSelf:'flex-start',marginTop:2}}>▾</button>
             <div style={{display:'flex',flexDirection:'column',gap:0,marginRight:-4}}>
               <button title="Move up" disabled={idx===0} onClick={()=>mvI(idx,-1)} style={{background:'none',border:'none',cursor:idx===0?'not-allowed':'pointer',color:idx===0?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortUp" size={14}/></button>
               <button title="Move down" disabled={idx===safeItems(o).length-1} onClick={()=>mvI(idx,1)} style={{background:'none',border:'none',cursor:idx===safeItems(o).length-1?'not-allowed':'pointer',color:idx===safeItems(o).length-1?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortDown" size={14}/></button>
@@ -6097,7 +6178,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
             <button className="btn btn-secondary" onClick={downloadInvoice}>📥 Download PDF</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendModal(true)}}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendReview(false);setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -6149,6 +6230,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <label className="form-label">Message to Coach</label>
             <textarea className="form-input" rows={6} value={invSendMsg} onChange={e=>setInvSendMsg(e.target.value)} style={{fontSize:13,lineHeight:1.5}}/>
           </div>
+          <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:12,padding:10,background:invSendReview?'#eff6ff':'#f8fafc',border:'1px solid '+(invSendReview?'#93c5fd':'#e2e8f0'),borderRadius:8}}>
+            <input type="checkbox" checked={invSendReview} onChange={e=>setInvSendReview(e.target.checked)} style={{width:16,height:16,accentColor:'#2563eb'}}/>
+            <span style={{fontSize:13,fontWeight:600,color:invSendReview?'#1e40af':'#475569'}}>★ Include “Leave us a Google review” button</span>
+          </label>
           {/* SMS Toggle — hidden via _smsUiEnabled flag while SMS sending is unreliable */}
           {_smsUiEnabled&&<div style={{marginBottom:12,padding:12,background:invSmsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(invSmsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
             <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:invSmsEnabled?10:0}}>
@@ -6260,7 +6345,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
             const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')
               +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+              +(invSendReview?buildReviewButtonHtml():'')
               +'</div>';
+            const _invReviewText=invSendReview?(invSendMsg+'\n\n'+reviewTextBlock()):undefined;
             const _toEmailsLc=new Set(toList.map(t=>(t.email||'').toLowerCase()));
             const _invCc=getBillingContacts(ic,allCustomers).filter(a=>a.email&&!_toEmailsLc.has(a.email.toLowerCase())).map(a=>({email:a.email,name:a.name||''}));
             const _today=new Date().toLocaleDateString('en-CA');
@@ -6299,6 +6386,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 cc:_invCc,
                 subject:_emailSubject,
                 htmlContent:emailHtml,
+                textContent:_invReviewText,
                 senderName:cu.name||'National Sports Apparel',
                 senderEmail:'noreply@nationalsportsapparel.com',
                 replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
@@ -6446,7 +6534,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-              <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+              <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
               <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
@@ -6703,8 +6791,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>{poItems.filter((_,vi)=>!poExcluded[vi]).length} of {poItems.length} items</span>
           </div>}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-            <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#1e40af',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+            <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#1e40af',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(addrs[0]?.id||'warehouse'):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
@@ -7285,55 +7373,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // the full item quantities (see recalcJobFulfillment).
       const splitByReceived=(jIdx)=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
-        const rcvdItems=[];const keepItems=[];let rcvdTotal=0;let keepTotal=0;
+        // Split off the BACKORDER: the received/pulled units stay on the original job (it keeps its
+        // number and stays producible); the not-yet-received units move to a new -S backorder job.
+        const keepItems=[];const openItems=[];let keepTotal=0;let openTotal=0;
         j.items.forEach(gi=>{
           const curSizes=_giSizes(gi);
           const curFul=_giFulSizes(gi,curSizes);
-          const splitSizes={};const remainSizes={};
-          let sUnits=0,rUnits=0;
+          const rcvdSizes={};const openSizes={};
+          let rUnits=0,oUnits=0;
           Object.entries(curSizes).forEach(([sz,v])=>{
             const f=Math.max(0,Math.min(safeNum(curFul[sz]),safeNum(v)));
-            if(f>0){splitSizes[sz]=f;sUnits+=f}
+            if(f>0){rcvdSizes[sz]=f;rUnits+=f}
             const rem=safeNum(v)-f;
-            if(rem>0){remainSizes[sz]=rem;rUnits+=rem}
+            if(rem>0){openSizes[sz]=rem;oUnits+=rem}
           });
-          // Partition the roster like splitCustom: first N per size go with the received slice.
+          // Partition the roster like splitCustom: the first N per size (the received units) stay on
+          // the original job; the remainder (the backorder) goes to the -S job.
           const _srcIt=safeItems(o)[gi.item_idx];
           const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
           const baseRoster=gi.roster||_srcDeco?.roster||null;
-          let splitRoster=null,remainRoster=null;
+          let rcvdRoster=null,openRoster=null;
           if(baseRoster){
-            splitRoster={};remainRoster={};
+            rcvdRoster={};openRoster={};
             Object.keys(curSizes).forEach(sz=>{
               const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
-              const sCap=safeNum(splitSizes[sz]);
-              const rCap=safeNum(remainSizes[sz]);
-              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
-              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+              const rCap=safeNum(rcvdSizes[sz]);
+              const oCap=safeNum(openSizes[sz]);
+              if(rCap>0){const head=arr.slice(0,rCap);rcvdRoster[sz]=head.concat(Array(Math.max(0,rCap-head.length)).fill(''))}
+              if(oCap>0){const tail=arr.slice(rCap);openRoster[sz]=tail.concat(Array(Math.max(0,oCap-tail.length)).fill(''))}
             });
           }
-          if(sUnits>0){
-            const item={...gi,sizes:splitSizes,fulSizes:{...splitSizes},units:sUnits,fulfilled:sUnits};
-            if(splitRoster)item.roster=splitRoster;
-            rcvdItems.push(item);rcvdTotal+=sUnits;
-          }
           if(rUnits>0){
-            const item={...gi,sizes:remainSizes,fulSizes:{},units:rUnits,fulfilled:0};
-            if(remainRoster)item.roster=remainRoster;
+            const item={...gi,sizes:rcvdSizes,fulSizes:{...rcvdSizes},units:rUnits,fulfilled:rUnits};
+            if(rcvdRoster)item.roster=rcvdRoster;
             keepItems.push(item);keepTotal+=rUnits;
           }
+          if(oUnits>0){
+            const item={...gi,sizes:openSizes,fulSizes:{},units:oUnits,fulfilled:0};
+            if(openRoster)item.roster=openRoster;
+            openItems.push(item);openTotal+=oUnits;
+          }
         });
-        if(rcvdTotal===0){nf('Nothing received to split','error');return}
-        if(keepItems.length===0||keepTotal===0){nf('Everything is already received — nothing left to split off','error');return}
+        if(keepTotal===0){nf('Nothing received yet — nothing producible to keep on this job','error');return}
+        if(openItems.length===0||openTotal===0){nf('Everything is already received — no backorder to split off','error');return}
         const existingS=jobs.filter(jj=>jj.split_from===j.id&&jj.id.startsWith(j.id+'-S')).length;
         const suffix='S'+(existingS>0?existingS+1:'');
         const splitId=j.id+'-'+suffix;
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,item_status:'items_received',items:rcvdItems,
-          fulfilled_units:rcvdTotal,total_units:rcvdTotal,
+        // New -S job = the backorder. split_open marks it so allocateJobFulfillment lets it claim the
+        // item's receipts LAST — the received units stay counted on the original (parent) job.
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,split_open:true,item_status:'need_to_order',items:openItems,
+          fulfilled_units:0,total_units:openTotal,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:0,item_status:'need_to_order'};
-        const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
+        // Original job keeps the received units and stays producible.
+        const keepJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepTotal,item_status:'items_received'};
+        const newJobs2=[...jobs];newJobs2.splice(jIdx,1,keepJob,splitJob2);
+        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id);
       };
 
       // Split job by SKU — separate into one job per garment
@@ -7485,6 +7579,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const s=artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
       };
       const itemLabels={need_to_order:'Need to Order',on_order:'On Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
+      // Family-apportioned receipts for every job, so the live ITEMS STATUS badge counts only a job's
+      // OWN share of shared line receipts — a backorder slice must not read its received sibling's
+      // units (which made a 0-received backorder badge "Partially Received").
+      const _jobAllocs=allocateJobFulfillment(jobs,safeItems(o));
+      const _jobFulById={};jobs.forEach((jj,ix)=>{if(jj&&jj.id)_jobFulById[jj.id]=_jobAllocs[ix];});
       // Effective item status for display. Items that already have IF (item fulfillment)
       // picks waiting to be pulled are in-house, so show "Waiting for Pull" instead of the
       // misleading "Need to Order". Items whose ordered sizes are already committed to POs
@@ -7493,14 +7592,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // item_status is left untouched (warehouse pull / PO receive flows own that); this
       // only relabels what the rep sees.
       const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';
-        // Compute coverage AND receipts live from the job's items, mirroring calcSOStatus —
-        // never trust stored fulfilled_units alone (it's only refreshed by recalcJobFulfillment,
-        // so a job received before this badge was rendered would read stale). coveredSz is what's
-        // committed (PO ordered − cancelled, or already picked); fulfilledSz is what's actually
-        // in-house (pulled picks + PO receipts). Receipts win, so a fully-received job reads
-        // "Items Received" instead of being stuck on "Ordered — Waiting" — including qty_only
-        // items whose units live in est_qty under the 'QTY' bucket.
-        let totalSz=0,coveredSz=0,fulfilledSz=0;
+        // Coverage is summed live (mirroring calcSOStatus): coveredSz is what's committed (PO ordered −
+        // cancelled, or already picked). RECEIPTS, though, come from allocateJobFulfillment (_ap) so a
+        // job counts only its OWN apportioned share of the shared line — a split sibling's receipts
+        // must never count here, else a 0-received backorder reads "Partially Received". Falls back to
+        // a live receipt sum when the job isn't in the apportioned set. qty_only items hold their
+        // count in est_qty under the 'QTY' bucket.
+        const _ap=(j&&j.id)?_jobFulById[j.id]:null;
+        let totalSz=0,coveredSz=0,fulfilledLive=0;
         (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
           let entries=Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
           if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
@@ -7510,10 +7609,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             coveredSz+=Math.min(need,picked+poOrd);
             const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-            fulfilledSz+=Math.min(need,pulledQty+rcvdQty);});
+            fulfilledLive+=Math.min(need,pulledQty+rcvdQty);});
         });
+        const fulfilledSz=_ap?safeNum(_ap.fulfilled):fulfilledLive;
         if(totalSz>0&&fulfilledSz>=totalSz)return'items_received';
-        if(fulfilledSz>0||ful>0)return'partially_received';
+        if(fulfilledSz>0)return'partially_received';
         if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
         if(coveredSz>0)return'on_order';
         return'need_to_order';};
@@ -8645,7 +8745,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div className="form-label" style={{fontSize:11}}>Portal Link</div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <input className="form-input" readOnly value={cam.portalUrl} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(cam.portalUrl).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',cam.portalUrl)})}}>Copy Link</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(cam.portalUrl):Promise.reject()).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',cam.portalUrl)})}}>Copy Link</button>
               </div>
               <div style={{fontSize:10,color:'#64748b',marginTop:4}}>Coach can review and approve artwork directly from this link</div>
             </div>}
@@ -9233,7 +9333,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {!splitModal.mode&&<div style={{display:'flex',gap:12,flexDirection:'column'}}>
               <button className="btn" style={{padding:16,background:'#f0fdf4',border:'2px solid #86efac',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'received'}))}>
                 <div style={{fontWeight:800,fontSize:14,color:'#166534',marginBottom:4}}>📦 Split by Received Inventory</div>
-                <div style={{fontSize:12,color:'#475569'}}>Creates a new job with the <strong>{totalReceived} units</strong> that have been received/pulled. Remaining {j.total_units-totalReceived} units stay on the original job.</div>
+                <div style={{fontSize:12,color:'#475569'}}>Keeps the <strong>{totalReceived} received/pulled units</strong> on {j.id} (ready for production) and moves the {j.total_units-totalReceived} not-yet-received units to a new <strong>backorder</strong> job.</div>
                 {totalReceived===0&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ No units received yet — nothing to split</div>}
               </button>
               <button className="btn" style={{padding:16,background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'sku',selectedSkus:[]}))}>
@@ -9254,10 +9354,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color})</span></div>
                 <div style={{textAlign:'right'}}><span style={{fontWeight:700,color:gi.received>0?'#166534':'#94a3b8'}}>{gi.received}</span><span style={{color:'#94a3b8'}}>/{gi.units}</span> <span style={{fontSize:10,color:'#64748b'}}>received</span></div>
               </div>)}
-              <div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
-                <strong>New job ({j.id}-S):</strong> {totalReceived} units (received) → Ready for Prod<br/>
-                <strong>Remaining ({j.id}):</strong> {j.total_units-totalReceived} units → Waiting for items
-              </div>
+              {totalReceived<j.total_units?<div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
+                <strong>Stays on {j.id}:</strong> {totalReceived} received units → Ready for Prod<br/>
+                <strong>New backorder job ({j.id}-S):</strong> {j.total_units-totalReceived} not-yet-received units → Waiting for items
+              </div>:<div style={{padding:10,background:'#dcfce7',borderRadius:6,marginTop:8,fontSize:12,color:'#166534'}}>
+                Everything on this job is already received — there's no backorder to split off.
+              </div>}
             </div>}
 
             {/* Split by SKU selection */}
@@ -9344,7 +9446,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="modal-footer">
             {splitModal.mode&&<button className="btn btn-secondary" onClick={()=>setSplitModal(m=>({...m,mode:null}))}>← Back</button>}
             <button className="btn btn-secondary" onClick={()=>setSplitModal(null)}>Cancel</button>
-            {splitModal.mode==='received'&&totalReceived>0&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split by Received ({totalReceived} units)</button>}
+            {splitModal.mode==='received'&&totalReceived>0&&totalReceived<j.total_units&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split Off Backorder ({j.total_units-totalReceived} units)</button>}
             {splitModal.mode==='sku'&&(splitModal.selectedIdxs||[]).length>0&&(splitModal.selectedIdxs||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(splitModal.jIdx,splitModal.selectedIdxs)}>✂️ Split Selected SKUs</button>}
             {splitModal.mode==='custom'&&(()=>{
               const cs=splitModal.customSizes||{};const ci=splitModal.customInclude||{};
@@ -9731,7 +9833,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{navigator.clipboard?.writeText(po.po_id||'').then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
+        <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(po.po_id||''):Promise.reject()).then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
             {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
@@ -9767,7 +9869,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
               {relDecos.map(dp=>{const dt=(dp.deco_type||'').replace(/_/g,' ');return<div key={dp.id||dp.po_id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'3px 0'}}>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{dp.po_id}</span>
-                <button className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{navigator.clipboard?.writeText(dp.po_id||'').then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>
+                <button className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(dp.po_id||''):Promise.reject()).then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>
                 <span style={{fontSize:12,color:'#475569'}}>{dp.vendor}</span>
                 {dt&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>{dt}</span>}
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
@@ -10255,7 +10357,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {trackingNums.length>0&&<div style={{color:'#1e40af',marginTop:2}}>Tracking: {trackingNums.join(', ')}</div>}
                 {/* Related deco PO(s) — surface the DPO number inside the label/QR module too (next
                     to the product PO number) with its own copy button. */}
-                {(()=>{const _poIdxs=new Set(allLines.map(ln=>ln.lineIdx));const relDecos=(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).some(ix=>_poIdxs.has(ix)));if(relDecos.length===0)return null;return<div style={{marginTop:4,display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>{relDecos.map(dp=><span key={dp.id||dp.po_id} style={{display:'inline-flex',alignItems:'center',gap:5}}><span style={{fontWeight:800,color:'#7c3aed'}}>Deco: {dp.po_id}</span><button className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>{navigator.clipboard?.writeText(dp.po_id||'').then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button></span>)}</div>})()}
+                {(()=>{const _poIdxs=new Set(allLines.map(ln=>ln.lineIdx));const relDecos=(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).some(ix=>_poIdxs.has(ix)));if(relDecos.length===0)return null;return<div style={{marginTop:4,display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>{relDecos.map(dp=><span key={dp.id||dp.po_id} style={{display:'inline-flex',alignItems:'center',gap:5}}><span style={{fontWeight:800,color:'#7c3aed'}}>Deco: {dp.po_id}</span><button className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(dp.po_id||''):Promise.reject()).then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button></span>)}</div>})()}
               </div>
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{

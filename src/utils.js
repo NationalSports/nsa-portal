@@ -1,6 +1,7 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
 import { supabase as _sbAuthClient } from './lib/supabase';
+import { PDFDocument } from 'pdf-lib';
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
@@ -50,6 +51,41 @@ export const buildBrandedEmailHtml=(innerHtml,companyInfo)=>{
     +innerHtml
     +'</div>';
 };
+
+// ── Google review CTA (email-safe "bulletproof" button) ──
+// Live Google Business Profile review deep-link. Keep this EXACTLY as-is — do not
+// wrap, shorten, or re-encode it, or click tracking/rewriting can break the deep link.
+export const GOOGLE_REVIEW_URL='https://g.page/r/CfcLJB_RwxCREBM/review';
+
+// Builds the optional "Leave us a Google review" button as an HTML string.
+// Bulletproof + Outlook-friendly: the VML <v:roundrect> inside the <!--[if mso]-->
+// block renders a solid button in Outlook (Windows), while the <!--[if !mso]--> <a>
+// renders everywhere else (Gmail, Apple Mail, etc.). Inline styles + table layout
+// only — email clients strip <style> blocks. `color` defaults to the portal blue
+// the other CTA buttons in these emails use. Pass leadIn:false to drop the lead-in.
+export const buildReviewButtonHtml=({color='#2563eb',leadIn=true}={})=>{
+  const lead=leadIn?'<p style="margin:0 0 8px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#475569;text-align:center;">Happy with how we did? A quick Google review means a lot to our team.</p>':'';
+  return lead
+    +'<!-- Google review button — email-safe (bulletproof, Outlook-friendly). -->'
+    +'<table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:16px auto;">'
+    +'<tr>'
+    +'<td align="center" style="border-radius:6px;background:'+color+';">'
+    +'<!--[if mso]>'
+    +'<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="'+GOOGLE_REVIEW_URL+'" style="height:48px;v-text-anchor:middle;width:280px;" arcsize="13%" strokecolor="'+color+'" fillcolor="'+color+'">'
+    +'<w:anchorlock/>'
+    +'<center style="color:#ffffff;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">&#9733; Leave us a Google review</center>'
+    +'</v:roundrect>'
+    +'<![endif]-->'
+    +'<!--[if !mso]><!-- -->'
+    +'<a href="'+GOOGLE_REVIEW_URL+'" target="_blank" style="display:inline-block;padding:14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:6px;background:'+color+';">&#9733; Leave us a Google review</a>'
+    +'<!--<![endif]-->'
+    +'</td>'
+    +'</tr>'
+    +'</table>';
+};
+
+// Plain-text version of the review CTA, for the text/plain alternative.
+export const reviewTextBlock=()=>'Happy with how we did? A quick Google review means a lot to our team:\n'+GOOGLE_REVIEW_URL;
 
 // Toggles the "Also Text Coach" SMS UI in send modals. Disabled while SMS sending
 // is unreliable; flip to true (or wire to env) to re-enable. Send code paths
@@ -251,6 +287,229 @@ export const printDoc=opts=>{
 // from api.qrserver.com; we wait for it to finish loading (with a safety
 // timeout) before triggering print, otherwise the browser prints an empty
 // box where the QR should be.
+// Merge an array of base64 PDF labels into one multi-page document and print it
+// via a hidden iframe. Chrome doesn't reliably rasterize stacked <embed> PDF
+// plugins, so a single combined PDF is the dependable path on the PC where bulk
+// printing happens. Falls back to opening the merged PDF in a new tab.
+export const printPdfLabels=async(base64List)=>{
+  const list=(base64List||[]).filter(Boolean);
+  if(!list.length)return 0;
+  const out=await PDFDocument.create();
+  let added=0,failed=0;
+  for(const b64 of list){
+    // Merge each label independently so one corrupt/unreadable PDF can't take
+    // down the whole batch (that's how "3 labels, only 2 print" happens).
+    try{
+      const bytes=Uint8Array.from(atob(String(b64).replace(/\s/g,'')),(c)=>c.charCodeAt(0));
+      const src=await PDFDocument.load(bytes);
+      const pages=await out.copyPages(src,src.getPageIndices());
+      pages.forEach((p)=>{
+        // ShipStation/FedEx commonly return the 4x6 label printed in the top-left
+        // of a full Letter page. Crop each oversized page down to a 4x6 so it
+        // prints clean on a thermal/label printer — and so a multi-label batch
+        // comes out as one 4x6 page per label instead of full sheets.
+        const W=288,H=432; // 4in x 6in at 72dpi
+        const sz=p.getSize();
+        if(sz.width>W+20&&sz.height>H+20){
+          const y=sz.height-H; // top-left region (PDF origin is bottom-left)
+          p.setCropBox(0,y,W,H);
+          p.setMediaBox(0,y,W,H);
+        }
+        out.addPage(p);
+        added++;
+      });
+    }catch(e){failed++;}
+  }
+  if(!added)return 0;
+  const url=URL.createObjectURL(new Blob([await out.save()],{type:'application/pdf'}));
+  const iframe=document.createElement('iframe');
+  iframe.style.display='none';
+  iframe.src=url;
+  iframe.onload=()=>{
+    try{iframe.contentWindow.focus();iframe.contentWindow.print();}
+    catch(e){window.open(url,'_blank');}
+    setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(url);}catch{}},60000);
+  };
+  document.body.appendChild(iframe);
+  return added;
+};
+
+// ── Per-item incoming-stock tracking + FIFO allocation ──
+// Given a store's webstore orders and its linked Sales Order, work out — per
+// order line — how many units are Billed (vendor shipped, from the bill-PDF
+// parse → so_item_po_lines.billed), Received (so_item_po_lines.received), on IF
+// (item-fulfilled from in-house stock → so_item_pick_lines.sizes) and what's
+// still needed. Incoming units are allocated to the EARLIEST orders first
+// (FIFO by order number) per (product/sku + size) bucket, so the front of the
+// line fills before later orders. Pure function — safe to call on every render.
+//
+//   orders   : [{ id, omg_order_number, items:[{id, product_id, sku, size, qty,
+//                 shipped_qty, line_status }] }]
+//   so       : the linked Sales Order { items:[{ product_id, sku, po_lines:[{
+//                 billed:{size:qty}, received:{size:qty} }], pick_lines:[{
+//                 sizes:{size:qty} }] }] } — or null if not batched yet
+//   products : catalog rows carrying on-hand inventory as p._inv = {size:qty}
+//   includeIF: webstores fulfill from stock, so count on-IF toward coverage
+// Returns { [lineId]: { ordered, billed, received, onIf, onHand, need, status } }.
+// Non-size metadata keys that live alongside the spread size quantities on a
+// loaded pick line — everything else with a numeric value is a size→qty.
+const PICK_META = new Set(['pick_id', 'status', 'ship_dest', 'created_at', 'updated_at', 'memo', 'expected_date', 'po_id', 'vendor', 'tracking', 'tracking_numbers', 'billed', 'received', 'cancelled', 'shipments', '_billed', '_tracking_numbers', 'id', 'so_item_id', 'line_status', 'color', 'sku', 'name', 'notes', 'item_index']);
+// Non-size keys that can appear inside a sizes JSONB (drop-ship flag, unit cost).
+const SIZE_SKIP = new Set(['drop_ship', 'unit_cost', '_billed', '_tracking_numbers']);
+export function computeOrderTracking({ orders = [], so = null, products = [], includeIF = false }) {
+  const norm = (s) => String(s == null ? '' : s).trim().toUpperCase();
+  // Size key for matching. OMG short lines carry an inseam ("M 7\"") while the SO
+  // aggregates them under the base size ("M"), so strip a trailing inseam/length
+  // before comparing. Leaves plain (S/M/L) and numeric (32) sizes untouched.
+  const sizeKey = (s) => { const u = norm(s); const stripped = u.replace(/\s*\d+\s*("|''|IN|INCH|INCHES)?$/, '').trim(); return stripped || u; };
+  const isSizeQty = (k, v) => !SIZE_SKIP.has(k) && !PICK_META.has(k) && typeof v !== 'boolean' && Number(v) > 0;
+
+  // On-hand inventory lookup by product_id → {size: qty}.
+  const invByPid = {};
+  (products || []).forEach((p) => { if (p && p.id) invByPid[p.id] = p._inv || {}; });
+
+  // Build one supply bucket per SO product, carrying its curated sku/name and
+  // per-size billed/received/on-IF. SO items merge into the same bucket when
+  // they share a sku, product_id, or name.
+  const prods = []; // { names:[norm], sku, pid, sizes:{normSize:{billed,received,onIf}} }
+  const findOrCreate = (sku, pid, name) => {
+    const sk = norm(sku), ns = norm(name);
+    let b = prods.find((p) => (sk && norm(p.sku) === sk) || (pid && p.pid === pid) || (ns && p.names.includes(ns)));
+    if (!b) { b = { names: [], sku: sku || '', pid: pid || null, sizes: {} }; prods.push(b); }
+    if (ns && !b.names.includes(ns)) b.names.push(ns);
+    if (!b.sku && sku) b.sku = sku;
+    if (!b.pid && pid) b.pid = pid;
+    return b;
+  };
+  (so && so.items ? so.items : []).forEach((it) => {
+    const b = findOrCreate(it.sku, it.product_id, it.name);
+    const addSize = (size, field, n) => { if (!n) return; const k = sizeKey(size); (b.sizes[k] = b.sizes[k] || { billed: 0, received: 0, onIf: 0 })[field] += n; };
+    (it.po_lines || []).forEach((po) => {
+      const bi = po.billed || {}, r = po.received || {};
+      new Set([...Object.keys(bi), ...Object.keys(r)]).forEach((sz) => {
+        if (SIZE_SKIP.has(sz)) return;
+        addSize(sz, 'billed', Number(bi[sz]) || 0);
+        addSize(sz, 'received', Number(r[sz]) || 0);
+      });
+    });
+    // Pick lines come in two shapes: raw from Supabase (sizes nested under
+    // `.sizes`) or hydrated by App load (sizes spread to top-level). Handle both.
+    (it.pick_lines || []).forEach((pk) => {
+      const szObj = pk && pk.sizes && typeof pk.sizes === 'object' ? pk.sizes : pk;
+      Object.keys(szObj || {}).forEach((kk) => { if (isSizeQty(kk, szObj[kk])) addSize(kk, 'onIf', Number(szObj[kk]) || 0); });
+    });
+  });
+
+  // Resolve an order line to its SO product: exact sku → product_id → name
+  // (the SO's clean name is a substring of the order's longer name, which has
+  // extra vendor codes; the longest such match wins).
+  const resolve = (sku, pid, name) => {
+    const sk = norm(sku), ns = norm(name);
+    if (sk) { const b = prods.find((p) => norm(p.sku) === sk); if (b) return b; }
+    if (pid) { const b = prods.find((p) => p.pid === pid); if (b) return b; }
+    if (ns) {
+      let best = null, bestLen = 0;
+      prods.forEach((p) => p.names.forEach((pn) => { if (pn.length >= 4 && ns.includes(pn) && pn.length > bestLen) { best = p; bestLen = pn.length; } }));
+      if (best) return best;
+    }
+    return null;
+  };
+
+  // Demand lines, oldest order first (FIFO front-of-line gets stock first).
+  // OMG orders sort by order number; webstore orders by creation time.
+  const fifoKey = (o) => String(o.omg_order_number || o.created_at || o.id || '');
+  const sorted = [...orders].sort((a, b) => fifoKey(a).localeCompare(fifoKey(b), undefined, { numeric: true }));
+  // Clone each bucket's per-size supply into a drawable pool.
+  const pools = prods.map((p) => { const s = {}; Object.keys(p.sizes).forEach((k) => { s[k] = { ...p.sizes[k] }; }); return s; });
+  const idxOf = new Map(prods.map((p, i) => [p, i]));
+  const out = {};
+  sorted.forEach((o) => {
+    (o.items || []).forEach((i) => {
+      if (i.is_bundle_parent) return;
+      const qty = Number(i.qty) || 0;
+      const b = resolve(i.sku, i.product_id, i.name);
+      const pool = b ? pools[idxOf.get(b)][sizeKey(i.size)] : null;
+      const take = (field) => { if (!pool) return 0; const n = Math.max(0, Math.min(pool[field] || 0, qty)); pool[field] -= n; return n; };
+      const onIf = take('onIf');
+      const received = take('received');
+      const billed = take('billed');
+      const inv = invByPid[i.product_id] || {};
+      const onHand = Number(inv[i.size] || inv[norm(i.size)] || inv[sizeKey(i.size)] || 0) || 0;
+      const covered = received + (includeIF ? onIf : 0);
+      const shipped = i.line_status === 'shipped' || (Number(i.shipped_qty) || 0) >= qty;
+      // "Backordered" only when the line is actually flagged; the normal
+      // not-yet-received state is the neutral "awaiting".
+      const status = shipped ? 'shipped'
+        : covered >= qty && qty > 0 ? 'ready'
+        : covered > 0 ? 'partial'
+        : billed > 0 ? 'incoming'
+        : i.backordered ? 'backordered'
+        : 'awaiting';
+      // sku/soName carry the matched SO line down so the order grid can show
+      // the same (possibly re-mapped) SKU that's on the SO.
+      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status, sku: (b && b.sku) || i.sku || '', soName: (b && b.names[0]) || '' };
+    });
+  });
+  return out;
+}
+
+// Light pre-flight validation of a ship-to address before buying a label —
+// catches the common, label-wasting mistakes (missing fields, a state that
+// isn't a 2-letter code, a ZIP that isn't 5 or 9 digits). Returns an error
+// string, or null when it looks shippable. Note: this is format validation, not
+// full USPS/CASS deliverability verification.
+export const validateShipAddress = (a = {}) => {
+  const miss = [];
+  if (!a.street1 || !String(a.street1).trim()) miss.push('street');
+  if (!a.city || !String(a.city).trim()) miss.push('city');
+  if (!a.state || !String(a.state).trim()) miss.push('state');
+  if (!a.zip || !String(a.zip).trim()) miss.push('ZIP');
+  if (miss.length) return 'Missing ' + miss.join(', ');
+  const country = String(a.country || 'US').toUpperCase();
+  if (country === 'US' || country === 'USA') {
+    if (!/^[A-Za-z]{2}$/.test(String(a.state).trim())) return 'State must be a 2-letter code (e.g. CA)';
+    if (!/^\d{5}(-\d{4})?$/.test(String(a.zip).trim())) return 'ZIP must be 5 digits (or ZIP+4)';
+  }
+  return null;
+};
+
+// Estimate a garment's shipping weight (oz) from its name/SKU — a local,
+// rule-based lookup (no network or AI needed, so it's instant, free and
+// deterministic): hoodie ≈ 18oz, tee ≈ 6oz, shorts ≈ 7oz, etc. Used to weigh
+// shipping labels when a catalog weight isn't set on the product.
+export function estimateWeightOz(text) {
+  const t = (text || '').toLowerCase();
+  const rules = [
+    [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
+    [/tote|sackpack|cinch|drawstring|bag/, 10],
+    [/jacket|coat|parka|fleece|pullover|hoodie|hooded|sweatshirt|quarter ?zip|1\/4 ?zip|half ?zip|1\/2 ?zip/, 18],
+    [/sweatpant|jogger|tearaway|pant|legging|tight/, 12],
+    [/short/, 7],
+    [/jersey|tank|singlet/, 5],
+    [/tee|t-?shirt|shirt|polo|jersey top|top|warmup|warm-?up/, 6],
+    [/beanie|hat|cap|visor/, 3],
+    [/sock|glove|belt|headband|wristband|scrunchie/, 2],
+    [/bottle|tumbler|mug/, 14],
+    [/ball/, 16],
+    [/blanket|towel/, 20],
+  ];
+  for (const [re, oz] of rules) if (re.test(t)) return oz;
+  return 8; // generic garment default
+}
+
+// Order ship weight (lbs): sum each line's weight (catalog override by
+// product_id, else the name/SKU estimate) × qty; fall back to the store's flat
+// label weight if nothing resolves. Bundle parents are excluded.
+export function labelWeightLbs(items, store = {}, weightByPid = {}) {
+  let oz = 0, any = false;
+  (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
+    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
+    oz += w * (i.qty || 1); any = true;
+  });
+  if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
+  return Number(store && store.label_weight_lbs) || 1;
+}
+
 export const printQrLabel=({id,qrData,lines,shipBadge})=>{
   const w=window.open('','_blank','width=420,height=620');if(!w)return;
   const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');
