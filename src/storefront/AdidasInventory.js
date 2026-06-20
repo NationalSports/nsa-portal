@@ -395,7 +395,9 @@ function buildStyles(prods, inv, inHouseRows) {
     if (p.is_featured) st.isFeatured = true;
     st.colorways.push(cw);
   }
-  const grouped = [...styleMap.values()];
+  // Drop styles where no colorway has an image — imageless cards look broken in
+  // the catalog. When a sync populates images those styles return automatically.
+  const grouped = [...styleMap.values()].filter((st) => st.colorways.some((c) => c.img));
   for (const st of grouped) {
     st.colorways.sort((a, b) => b.units - a.units);
     st.inHouseUnits = st.colorways.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
@@ -1263,12 +1265,12 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
 // ── Page ─────────────────────────────────────────────────────────────
 export default function AdidasInventory() {
   const [loading, setLoading] = useState(true);
-  const [loadingAll, setLoadingAll] = useState(false);
   const [error, setError] = useState('');
   const [styles, setStyles] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
   const [search, setSearch] = useState('');
   const [brand, setBrand] = useState('All');
+  const [subBrand, setSubBrand] = useState('All');
   const [category, setCategory] = useState('All');
   const [gender, setGender] = useState('All');
   const [sport, setSport] = useState('All');
@@ -1388,6 +1390,7 @@ export default function AdidasInventory() {
   useEffect(() => {
     if (brand !== 'All' && !availBrandGroups.includes(brand)) setBrand('All');
   }, [availBrandGroups, brand]);
+  useEffect(() => { setSubBrand('All'); }, [brand]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -1582,66 +1585,40 @@ export default function AdidasInventory() {
     };
     (async () => {
       try {
-        // Phase 1: quick load — featured styles (all) + first 150 non-featured (images first).
-        // Fetches inventory only for these SKUs so first paint is fast.
+        // Load featured styles (all) + first 500 non-featured sorted by image quality.
+        // Inventory is scoped to just these SKUs so the query stays fast.
         const [featRes, quickRes] = await Promise.all([
           baseQ().eq('is_featured', true).order('name'),
           baseQ().or('is_featured.is.null,is_featured.eq.false')
             .order('image_front_url', { ascending: false, nullsFirst: false })
-            .order('name').limit(150),
+            .order('name').limit(500),
         ]);
         if (!alive) return;
         if (featRes.error) throw featRes.error;
         if (quickRes.error) throw quickRes.error;
-        const quickProds = [...(featRes.data || []), ...(quickRes.data || [])];
-        const quickSkus = [...new Set(quickProds.map((p) => p.sku))];
-        const quickIds  = [...new Set(quickProds.map((p) => p.id))];
+        const prods = [...(featRes.data || []), ...(quickRes.data || [])];
+        const skus  = [...new Set(prods.map((p) => p.sku))];
+        const ids   = [...new Set(prods.map((p) => p.id))];
         const [invRes, ihRes] = await Promise.all([
           supabase.from('inventory_unified')
             .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', quickSkus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(10000),
+            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(20000),
           supabase.from('product_inventory')
             .select('product_id,size,quantity')
-            .in('product_id', quickIds).gt('quantity', 0).limit(5000),
+            .in('product_id', ids).gt('quantity', 0).limit(5000),
         ]);
         if (!alive) return;
         if (invRes.error) throw invRes.error;
         if (ihRes.error) throw ihRes.error;
-        const { grouped: quickStyles, synced: quickSynced } = buildStyles(quickProds, invRes.data || [], ihRes.data || []);
+        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || []);
         if (!alive) return;
-        setStyles(quickStyles);
-        setLastSynced(quickSynced);
+        setStyles(grouped);
+        setLastSynced(synced);
         setLoading(false);
-        setLoadingAll(true);
-
-        // Phase 2: full load in background — replaces the quick set once ready.
-        const [allProds, allInv, allIh] = await Promise.all([
-          fetchAllPages(() => baseQ().order('sku')),
-          // Live per-size stock. Reads inventory_unified (adidas CLICK + Agron),
-          // so Agron accessories (socks/bags/hats/…, brand=Adidas) render the same
-          // as CLICK. CLICK & Agron SKUs are disjoint, so the union is a clean
-          // by-SKU join and `id` stays globally unique for range pagination.
-          fetchAllPages(() => supabase
-            .from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .or('stock_qty.gt.0,future_delivery_qty.gt.0').order('id')),
-          // NSA's own warehouse stock — these ship immediately and rank first,
-          // even when adidas no longer carries the SKU (e.g. HI0707).
-          fetchAllPages(() => supabase
-            .from('product_inventory')
-            .select('product_id,size,quantity').gt('quantity', 0).order('id')),
-        ]);
-        if (!alive) return;
-        const { grouped: fullStyles, synced: fullSynced } = buildStyles(allProds, allInv, allIh);
-        if (!alive) return;
-        setStyles(fullStyles);
-        if (fullSynced) setLastSynced(fullSynced);
-        setLoadingAll(false);
       } catch (e) {
         if (!alive) return;
         setError(e.message || String(e));
         setLoading(false);
-        setLoadingAll(false);
       }
     })();
     return () => { alive = false; };
@@ -1670,6 +1647,7 @@ export default function AdidasInventory() {
     const out = [];
     for (const st of styles) {
       if (brand !== 'All' && brandGroup(st.brand) !== brand) continue;
+      if (brand === NON_BRANDED && subBrand !== 'All' && st.brand !== subBrand) continue;
       if (category !== 'All' && st.category !== category) continue;
       if (gender !== 'All' && st.gender !== gender) continue;
       if (sport !== 'All' && st.sport !== sport) continue;
@@ -1721,7 +1699,7 @@ export default function AdidasInventory() {
       }
     }
     return mixed;
-  }, [styles, search, brand, category, gender, sport, cwMatcher, colorSel]);
+  }, [styles, search, brand, subBrand, category, gender, sport, cwMatcher, colorSel]);
 
   // Facet options (with counts under everything-but-this-facet filtering kept
   // simple: counts reflect the full availability mode, not cross-facets)
@@ -1748,7 +1726,19 @@ export default function AdidasInventory() {
     };
   }, [styles, includeIncoming]);
 
-  useEffect(() => { setShown(PAGE_SIZE); }, [search, brand, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming, needBy]);
+  const subBrandOptions = useMemo(() => {
+    if (brand !== NON_BRANDED) return [];
+    const counts = {};
+    for (const st of styles) {
+      if (brandGroup(st.brand) !== NON_BRANDED) continue;
+      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      if (!anyAvail) continue;
+      counts[st.brand] = (counts[st.brand] || 0) + 1;
+    }
+    return Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)).map(([v, n]) => ({ v, n }));
+  }, [styles, brand, includeIncoming]);
+
+  useEffect(() => { setShown(PAGE_SIZE); }, [search, brand, subBrand, category, gender, sport, colorSel, sizeSel, strongOnly, includeIncoming, needBy]);
 
   // Deep link: /adidas?style=<sku> opens that style's detail view (Share button)
   useEffect(() => {
@@ -1765,13 +1755,15 @@ export default function AdidasInventory() {
     saveJson('nsa_adidas_team_colors', next);
     return next;
   });
-  const clearFilters = () => { setSearch(''); setBrand('All'); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); setNeedBy(''); };
-  const hasFilters = search || brand !== 'All' || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly || needBy;
+  const clearFilters = () => { setSearch(''); setBrand('All'); setSubBrand('All'); setCategory('All'); setGender('All'); setSport('All'); setColorSel([]); saveJson('nsa_adidas_team_colors', []); setSizeSel([]); setStrongOnly(false); setNeedBy(''); };
+  const hasFilters = search || brand !== 'All' || subBrand !== 'All' || category !== 'All' || gender !== 'All' || sport !== 'All' || colorSel.length || sizeSel.length || strongOnly || needBy;
 
   const openData = openStyle && visible.find((v) => v.st.key === openStyle);
   const openFallback = openStyle && !openData && styles.find((s) => s.key === openStyle);
 
   const embedded = isEmbedded();
+  const REQUEST_ACCT_HREF = 'mailto:steve@nationalsportsapparel.com?subject=LiveLook+Access+Request&body=Hi+NSA+team%2C%0A%0AI%27d+like+a+LiveLook+account+so+I+can+see+team+pricing+and+save+orders.%0A%0AName%3A+%0ASchool+%2F+Team%3A+%0AEmail%3A+';
+
   // Coach magic-link sign-in controls — shared by the full dark header (standalone
   // page) and the compact bar shown when embedded on nationalsportsapparel.com/livelook.
   const signInControls = coach ? (
@@ -1801,13 +1793,22 @@ export default function AdidasInventory() {
         </button>
         <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
         {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
+        <a href={REQUEST_ACCT_HREF} style={{ fontSize: 11.5, color: '#9AA1AC', textDecoration: 'underline', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+          No account? Request one →
+        </a>
       </>
     )
   ) : (
-    <button onClick={() => setSignInOpen(true)}
-      style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-      Coach sign in — see your team pricing
-    </button>
+    <>
+      <button onClick={() => setSignInOpen(true)}
+        style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+        Coach sign in — see your team pricing
+      </button>
+      <a href={REQUEST_ACCT_HREF}
+        style={{ fontSize: 13, color: '#9AA1AC', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+        Request an account
+      </a>
+    </>
   );
   return (
     <div className="ai-root" style={{ fontFamily: BODY }}>
@@ -1842,7 +1843,12 @@ export default function AdidasInventory() {
         <div style={{ background: '#191919', color: '#fff' }}>
           <div style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 20px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {!coach && !signInOpen && (
-              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>Coaches — sign in for your team pricing &amp; saved orders</span>
+              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>
+                Coaches —{' '}
+                <button onClick={() => setSignInOpen(true)} style={{ background: 'none', border: 'none', color: '#C3C8D0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit', padding: 0, textDecoration: 'underline' }}>sign in</button>
+                {' '}for team pricing &amp; saved orders, or{' '}
+                <a href={REQUEST_ACCT_HREF} style={{ color: '#C3C8D0', textDecoration: 'underline' }}>request an account</a>
+              </span>
             )}
             {signInControls}
           </div>
@@ -1860,6 +1866,12 @@ export default function AdidasInventory() {
             <select className="ai-select" value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
               <option value="All">All brands</option>
               {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+            </select>
+            )}
+            {brand === NON_BRANDED && subBrandOptions.length > 1 && (
+            <select className="ai-select" value={subBrand} onChange={(e) => setSubBrand(e.target.value)} aria-label="Brand name">
+              <option value="All">All brands</option>
+              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
             </select>
             )}
             <select className="ai-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Item type">
@@ -1968,11 +1980,6 @@ export default function AdidasInventory() {
               <button className="ai-more" onClick={() => setShown(s => s + PAGE_SIZE * 2)}>
                 Show more ({visible.length - shown} remaining)
               </button>
-            )}
-            {loadingAll && (
-              <div style={{ textAlign: 'center', padding: '12px 0 4px', color: '#94a3b8', fontSize: 12 }}>
-                Loading full catalog…
-              </div>
             )}
           </>
         )}
