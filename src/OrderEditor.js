@@ -2487,7 +2487,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     },300);
     return()=>{if(serverSearchTimer.current)clearTimeout(serverSearchTimer.current)};
   },[pS,showAdd,fp.length]);
-  const allFp=fp.length>0?fp:serverProducts;
+  // Momentec items are added through the live Momentec search below (one row per
+  // style, real per-color dealer cost), so keep their per-colorway catalog rows
+  // (one per color, MSRP-based cost) out of this local list to avoid duplicates.
+  const allFp=(fp.length>0?fp:serverProducts).filter(p=>!(p.inventory_source==='momentec'||(p.brand||'').toLowerCase()==='momentec'));
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>

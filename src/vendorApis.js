@@ -1218,6 +1218,14 @@ const momentecStyleV2 = async (design, env = 'prod') => {
   const cost = (v) => { const n = parseFloat(v); return n > 0 ? Math.round(n * (1 - DISCOUNT) * 100) / 100 : 0; };
   const usd = (Array.isArray(infos[0]?.MSRP) ? infos[0].MSRP : []).find((m) => String(m.currency).toUpperCase() === 'USD');
   const msrpCost = cost(usd?.value);
+  // Lowest real dealer cost (per-SKU list_price × discount) across the whole style.
+  // Some colors/sizes don't return a list_price; fall back to this style cost rather
+  // than MSRP×0.85 (≈ retail), so those colors don't show an inflated cost.
+  let styleDealerCost = 0;
+  for (const pi of infos) for (const it of (Array.isArray(pi.items) ? pi.items : [])) {
+    const c2 = cost(it.list_price);
+    if (c2 > 0 && (styleDealerCost === 0 || c2 < styleDealerCost)) styleDealerCost = c2;
+  }
   const colorsMap = new Map();
   let styleName = '', styleImage = '', styleBackImage = '';
   for (const pi of infos) {
@@ -1232,7 +1240,7 @@ const momentecStyleV2 = async (design, env = 'prod') => {
       if (!styleImage) { styleImage = front; styleBackImage = back; }
       let c = colorsMap.get(cwSku);
       if (!c) { c = { colorName: String(it.colorName || 'Default'), sku: cwSku, colorCode, colorFrontImage: front, colorBackImage: back, piecePrice: 0, customerPrice: 0, totalQty: 0, sizes: [] }; colorsMap.set(cwSku, c); }
-      const skCost = cost(it.list_price) || msrpCost;
+      const skCost = cost(it.list_price) || styleDealerCost || msrpCost;
       const qty = Math.round(parseFloat(it.quantity) || 0);
       c.sizes.push({ sizeName: size, qty, price: skCost });
       c.totalQty += qty;
