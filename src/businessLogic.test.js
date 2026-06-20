@@ -679,14 +679,12 @@ describe('Totals Calculation', () => {
 
   test('outside deco PO cost included in cost', () => {
     const so = makeSO({
-      items: [makeSOItem({
-        sizes: { M: 10 }, nsa_cost: 10, unit_sell: 20,
-        po_lines: [{ po_type: 'outside_deco', unit_cost: 5, M: 10 }],
-      })],
+      items: [makeSOItem({ sizes: { M: 10 }, nsa_cost: 10, unit_sell: 20 })],
+      deco_pos: [{ qty: 10, unit_cost: 5 }], // outside-deco POs live on so.deco_pos
       shipping_type: 'flat', shipping_value: 0,
     });
     const totals = calcTotals(so, {});
-    // cost = 10*10 (item) + 10*5 (outside deco PO) = 150
+    // cost = 10*10 (item) + 10*5 (outside-deco PO) = 150
     expect(totals.cost).toBe(150);
   });
 });
@@ -958,7 +956,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('number decorations generate jobs, name decorations do not', () => {
+  test('number and name decorations each generate a job (distinct heat methods)', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -970,8 +968,11 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].art_name).toContain('Numbers');
+    // numbers (heat_transfer) and names (heat_press) are distinct production methods, so each
+    // becomes its own job.
+    expect(jobs).toHaveLength(2);
+    expect(jobs.some(j => (j.art_name || '').includes('Numbers'))).toBe(true);
+    expect(jobs.some(j => (j.art_name || '').includes('Names'))).toBe(true);
   });
 
   test('art status from art file propagates to job', () => {
