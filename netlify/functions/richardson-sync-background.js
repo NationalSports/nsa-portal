@@ -176,7 +176,7 @@ exports.handler = async () => {
         const cost = getLevel4Price(style);
         const retail = cost ? Math.round(cost * 2 * 100) / 100 : null;
         for (const [color, grp] of Object.entries(byStyle[style])) {
-          const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 20) || 'NA';
+          const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 40) || 'NA';
           const productSku = style + '-' + colorSlug;
           const productId = 'rich-' + productSku;
           const category = mapCategory(style, color);

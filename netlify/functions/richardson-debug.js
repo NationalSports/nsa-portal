@@ -81,7 +81,7 @@ exports.handler = async () => {
         const seenIds = new Set();
         for (const [style, byColor] of Object.entries(byStyle)) {
           for (const color of Object.keys(byColor)) {
-            const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 20) || 'NA';
+            const colorSlug = color.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 40) || 'NA';
             const productId = 'rich-' + style + '-' + colorSlug;
             if (seenIds.has(productId)) dupIds.push({ productId, color });
             else seenIds.add(productId);
