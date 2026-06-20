@@ -3304,11 +3304,15 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   // Favorites — each rep stars products (rep_email = me); a shared/curated list (rep_email
   // = 'TEAM') shows for everyone. Favorites sort first in every category and can be filtered to.
   const [myEmail, setMyEmail] = useState('');
-  const [favMine, setFavMine] = useState(() => new Set());
-  const [favTeam, setFavTeam] = useState(() => new Set());
+  // Favorites are STYLE-level: keyed by product name so starring one color stars the style
+  // (all colorways). Maps are lower(name) -> original name (original kept for the fetch).
+  const [favMine, setFavMine] = useState(() => new Map());
+  const [favTeam, setFavTeam] = useState(() => new Map());
   const [favOnly, setFavOnly] = useState(false);   // show only favorites
   const [curate, setCurate] = useState(false);     // star toggles the shared TEAM list
-  const favUnion = useMemo(() => new Set([...favMine, ...favTeam]), [favMine, favTeam]);
+  const favUnion = useMemo(() => new Set([...favMine.keys(), ...favTeam.keys()]), [favMine, favTeam]); // lower style keys
+  const favNames = useMemo(() => [...new Set([...favMine.values(), ...favTeam.values()])], [favMine, favTeam]); // original names, for fetch
+  const favStyleKey = (p) => String(p?.name || p?.sku || '').trim().toLowerCase();
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -3316,23 +3320,24 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       try { const { data } = await supabase.auth.getUser(); email = data?.user?.email || ''; } catch (e) { /* not signed in */ }
       if (cancelled) return;
       setMyEmail(email);
-      const { data: favs } = await supabase.from('rep_product_favorites').select('rep_email,product_id').in('rep_email', [email || '__none__', 'TEAM']);
+      const { data: favs } = await supabase.from('rep_product_favorites').select('rep_email,style_key').in('rep_email', [email || '__none__', 'TEAM']);
       if (cancelled) return;
-      const mine = new Set(), team = new Set();
-      (favs || []).forEach((f) => { if (f.rep_email === 'TEAM') team.add(f.product_id); else mine.add(f.product_id); });
+      const mine = new Map(), team = new Map();
+      (favs || []).forEach((f) => { const name = f.style_key; if (!name) return; (f.rep_email === 'TEAM' ? team : mine).set(name.trim().toLowerCase(), name); });
       setFavMine(mine); setFavTeam(team);
     })();
     return () => { cancelled = true; };
   }, []);
-  const toggleFav = async (pid) => {
+  const toggleFav = async (p) => {
     const owner = curate ? 'TEAM' : myEmail;
-    if (!owner) return;
-    const set = curate ? favTeam : favMine;
+    const name = p?.name || p?.sku; if (!owner || !name) return;
+    const key = name.trim().toLowerCase();
+    const map = curate ? favTeam : favMine;
     const setter = curate ? setFavTeam : setFavMine;
-    const has = set.has(pid);
-    const next = new Set(set); has ? next.delete(pid) : next.add(pid); setter(next); // optimistic
-    if (has) await supabase.from('rep_product_favorites').delete().eq('rep_email', owner).eq('product_id', pid);
-    else await supabase.from('rep_product_favorites').insert({ rep_email: owner, product_id: pid });
+    const has = map.has(key);
+    const next = new Map(map); has ? next.delete(key) : next.set(key, name); setter(next); // optimistic
+    if (has) await supabase.from('rep_product_favorites').delete().eq('rep_email', owner).eq('style_key', name);
+    else await supabase.from('rep_product_favorites').insert({ rep_email: owner, style_key: name, product_id: p.id || null });
   };
   const BROWSE_CATS = ['Tees', '1/4 Zips', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'];
   // A pill maps to one or more real DB category values (the catalog has singular/plural
@@ -3349,11 +3354,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     const t = setTimeout(async () => {
       let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
       if (favOnly) {
-        // Favorites view — load the starred products directly (across every category) so
-        // the rep's + team's picks always show, regardless of color/stock filters.
-        const ids = [...favUnion];
-        if (!ids.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
-        query = query.in('id', ids);
+        // Favorites view — load every colorway of each starred STYLE (across all categories)
+        // so the rep's + team's picks always show, regardless of color/stock filters.
+        if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+        query = query.in('name', favNames);
         if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
         if (brandSel) query = query.eq('brand', brandSel);
         if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
@@ -3398,14 +3402,14 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const dedupeByStyle = (rows) => {
     const map = new Map();
     // A favorited colorway wins the card so the star shows on the rep; then image, then stock.
-    const score = (x) => (favUnion.has(x.id) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
+    const score = (x) => (favUnion.has(favStyleKey(x)) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
     for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || score(r) > score(cur)) map.set(k, r); }
     return [...map.values()];
   };
   let styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
-  if (favOnly) styles = styles.filter((p) => favUnion.has(p.id));
+  if (favOnly) styles = styles.filter((p) => favUnion.has(favStyleKey(p)));
   // Favorites first (stable within each group), then everything else.
-  styles = [...styles.filter((p) => favUnion.has(p.id)), ...styles.filter((p) => !favUnion.has(p.id))];
+  styles = [...styles.filter((p) => favUnion.has(favStyleKey(p))), ...styles.filter((p) => !favUnion.has(favStyleKey(p)))];
   const allStyleN = new Set(matched.map(styleKey)).size;
   const inStockStyleN = new Set(matched.filter(wellStocked).map(styleKey)).size;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -3472,7 +3476,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} fav={favUnion.has(p.id)} team={favTeam.has(p.id)} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p.id)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
