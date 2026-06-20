@@ -2188,12 +2188,19 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   };
   const uploadLogos = async (files) => { for (const f of [...(files || [])]) await uploadLogo(f); };
   const onPtrMove = (e) => {
-    if (drag.current == null || !boxRef.current) return;
+    const d = drag.current; if (d == null || !boxRef.current) return;
     const r = boxRef.current.getBoundingClientRect();
-    update(drag.current, {
-      x: Math.max(0, Math.min(100, Math.round(((e.clientX - r.left) / r.width) * 100))),
-      y: Math.max(0, Math.min(100, Math.round(((e.clientY - r.top) / r.height) * 100))),
-    });
+    if (d.mode === 'resize') {
+      // Width = twice the horizontal distance from the (centered) logo to the cursor.
+      const cx = (coord(decos[d.i], 'x') / 100) * r.width;
+      const halfW = Math.abs((e.clientX - r.left) - cx);
+      update(d.i, { w: Math.max(4, Math.min(100, Math.round((halfW * 2 / r.width) * 100))) });
+    } else {
+      update(d.i, {
+        x: Math.max(0, Math.min(100, Math.round(((e.clientX - r.left) / r.width) * 100))),
+        y: Math.max(0, Math.min(100, Math.round(((e.clientY - r.top) / r.height) * 100))),
+      });
+    }
   };
   const endDrag = () => { drag.current = null; };
   const current = decos[sel];
@@ -2219,9 +2226,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
           {decos.map((d, i) => (sideOf(d) === side ? (
-            <img key={i} src={d.art_url} alt="" draggable={false}
-              onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = i; }}
-              style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+            <div key={i}
+              onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = { i, mode: 'move' }; }}
+              style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, touchAction: 'none' }}>
+              <img src={d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+              {i === sel && <div onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setSel(i); drag.current = { i, mode: 'resize' }; }} title="Drag to resize" style={{ position: 'absolute', right: -8, bottom: -8, width: 16, height: 16, borderRadius: 4, background: '#2563eb', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />}
+            </div>
           ) : null))}
         </div>
         {side === 'back' && onBackImageChange && stageUrl && <div style={{ textAlign: 'center', marginTop: 8 }}><button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : 'Replace back image'}</button></div>}
@@ -2370,7 +2380,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
   const [name, setName] = useState(item.display_name || '');
   const [price, setPrice] = useState(item.retail_price || 0);
-  const [fundraise, setFundraise] = useState(item.fundraise_amount || 0);
+  const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
   const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
@@ -2516,7 +2526,7 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
         <ItemSection title="Pricing & margin">
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? String(storeFundAmt) : '0'} /></Row>
+            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? storeFundAmt.toFixed(2) + ' (auto)' : '0'} /></Row>
             <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
             <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
           </div>
