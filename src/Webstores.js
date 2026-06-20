@@ -2101,6 +2101,10 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const [recoloring, setRecoloring] = useState('');
   const [swapFrom, setSwapFrom] = useState(null);   // a logo color the rep wants to change
   const [imgPalette, setImgPalette] = useState([]); // the selected logo's own colors
+  const [dragOver, setDragOver] = useState(false);
+  const drag = useRef(null);
+  const decos = Array.isArray(decorations) ? decorations : [];
+  const sideOf = (d) => d.side || 'front';
   // Detect the selected logo's colors so the rep can recolor just one of them.
   useEffect(() => {
     let cancelled = false;
@@ -2111,10 +2115,6 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel, decos[sel] && decos[sel].art_url, side]);
-  const [dragOver, setDragOver] = useState(false);
-  const drag = useRef(null);
-  const decos = Array.isArray(decorations) ? decorations : [];
-  const sideOf = (d) => d.side || 'front';
   // Team palette for recolor swatches — the customer's PMS colors (e.g. Red, Royal),
   // deduped, so a single-color logo can be stamped in each team color per garment.
   const palette = [];
