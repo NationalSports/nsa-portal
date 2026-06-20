@@ -20,6 +20,7 @@ export function buildSSOrderLines(batchPOs) {
   const warnings = [];
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
+      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._ss_style || it.sku || '';
       const color = it._ss_color || it.color || '';
       const skuBySize = it._ss_skus || it._ssSkus || {};

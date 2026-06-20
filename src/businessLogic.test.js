@@ -956,7 +956,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('number and name decorations each generate a job (distinct heat methods)', () => {
+  test('numbers and names decorations each generate their own production job', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -968,11 +968,11 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
-    // numbers (heat_transfer) and names (heat_press) are distinct production methods, so each
-    // becomes its own job.
+    // Numbers (heat transfer) and names (heat press) are distinct production
+    // applications, so each gets its own job.
     expect(jobs).toHaveLength(2);
-    expect(jobs.some(j => (j.art_name || '').includes('Numbers'))).toBe(true);
-    expect(jobs.some(j => (j.art_name || '').includes('Names'))).toBe(true);
+    expect(jobs.some(j => j.art_name.includes('Numbers'))).toBe(true);
+    expect(jobs.some(j => j.art_name.includes('Names'))).toBe(true);
   });
 
   test('art status from art file propagates to job', () => {

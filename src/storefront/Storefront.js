@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+import { placementById } from '../lib/artPlacements';
 
 const STRIPE_PK = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
 let _stripePromise = null;
@@ -214,16 +215,16 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 480 }}>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 380 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
-        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 24, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
+        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 18, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 40, height: 80, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
+            <div key={i} style={{ width: 32, height: 60, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
           ))}
         </div>
-        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(60px,8vw,110px) 20px clamp(96px,10vw,140px)' }}>
+        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,72px) 20px clamp(72px,7vw,100px)' }}>
           <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 2, textTransform: 'uppercase', padding: '8px 20px', marginBottom: 22, transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>Official Team Store</span>
           </div>
@@ -305,6 +306,18 @@ function bundleBadge(count) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
+// Applied logo art (from webstore_products.decorations) composited on the
+// garment image at its placement — the on-screen mock shoppers see.
+function DecoOverlay({ decorations, side = 'front' }) {
+  if (!Array.isArray(decorations)) return null;
+  return <>{decorations.filter((d) => d && d.art_url && (d.side || 'front') === side).map((d, i) => {
+    const pl = placementById(d.placement);
+    // A decoration may carry its own x/y/w (editable placement) overriding the preset.
+    const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
+    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
+  })}</>;
+}
+
 function BundleCollage({ comps, theme }) {
   const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
   if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
@@ -351,6 +364,7 @@ function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
           : p.image_front_url
             ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <Placeholder theme={theme} label={p.name || store.name} />}
+        {!isBundle && <DecoOverlay decorations={p.decorations} />}
       </div>
       {/* Count chip for packages — reinforces "this is multiple items" */}
       {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
@@ -386,7 +400,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   if (!p) return <Splash>Product not found.</Splash>;
-  const sizesArr = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  // Honor the store's per-product size selection (sizes_offered); null = all.
+  const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
+  const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
   const nameUp = Number(p.name_upcharge) || 0;
   const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = sizesArr.length > 0;
@@ -405,20 +421,25 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
     });
     setAdded(true); setTimeout(() => setAdded(false), 1500);
   };
-  const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
+  const sizes = sizesArr;
   const onHand = effOnHand(p);
   const incoming = isIncoming(p);
-  const imgUrl = img === 'back' && p.image_back_url ? p.image_back_url : p.image_front_url;
+  // Only surface the back when it actually carries artwork (per the store builder's
+  // "show back only if it's got artwork" rule). The back image falls back to the front
+  // so the back logos always have a garment to sit on.
+  const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
+  const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
     <div style={{ paddingTop: 26 }}>
       <BackLink store={store} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 44, alignItems: 'start' }}>
         <div>
-          <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
+            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} />
           </div>
-          {p.image_back_url && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          {hasBackDeco && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
           </div>}
         </div>
