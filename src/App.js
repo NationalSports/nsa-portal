@@ -26,12 +26,15 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from '
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
 // out of the critical initial bundle. Pure prefetch; safe no-op where the idle API is missing.
 const _warmHeavyLibs = () => {
+  // Prefetch is best-effort: a failed idle fetch must never surface as an unhandled
+  // promise rejection, so each import swallows its own error.
+  const warm = (p) => { p.catch(() => {}); };
   // Feature libraries used only by point-of-use actions (Excel import, PDF/SVG export, OCR).
-  import('xlsx'); import('jspdf'); import('svg2pdf.js');
-  import('html2pdf.js'); import('imagetracerjs'); import('pdf-lib');
+  warm(import('xlsx')); warm(import('jspdf')); warm(import('svg2pdf.js'));
+  warm(import('html2pdf.js')); warm(import('imagetracerjs')); warm(import('pdf-lib'));
   // High-probability next screens — prefetch their lazy chunks during idle so the first
   // navigation into an order or customer is instant instead of waiting on a chunk download.
-  import('./OrderEditor'); import('./CustDetail');
+  warm(import('./OrderEditor')); warm(import('./CustDetail'));
 };
 if (typeof window !== 'undefined') {
   if ('requestIdleCallback' in window) window.requestIdleCallback(_warmHeavyLibs, { timeout: 10000 });
