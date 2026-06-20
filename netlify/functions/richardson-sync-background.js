@@ -59,6 +59,29 @@ function getLevel4Price(style) {
   return best;
 }
 
+// Style → Google Drive file ID for blank cap images.
+// Image URL: https://drive.google.com/uc?export=view&id={FILE_ID}
+// Source: Drive folder 1GM5dqdSoTpvbqQismVxHV9L8LkIVLadm / BLANK CAP IMAGES
+const DRIVE_IMAGES = {
+  '145':    '1gHS9gVObckhMqq1BIFDMz3Q7MHFDM0BG',
+  '147':    '1bVbAyHIWDuFa50Tl40_t5TkJe8Pk7iuz',
+  '173':    '1blmdK21bf0ZPrG-LW-rkFIh9qMITUqRG',
+  '217':    '1lSowgQnEMylzMy0xsO1fVbeMzbL__4o8',
+  '228':    '1fRtwXk-r-_nNrYDVg9eJk62KpXwGoTFi',
+  '252L':   '19zBWU6G8LHQyA6kHq-iQmcenXvhi2-MZ',
+  '495':    '17S0neQRxU6kcMvD2-FnG-FkUszgn01QC',
+  '520':    '1oZ7KcD5SapU4u7qs61EPy55hFGDjc3iU',
+  '540':    '1UUwRu2NnSpv3HiMlJpl3W11LoobB4qY-',
+  '633':    '1CMHnf3IQtRIQzqhYr3ugzXHMNxytiq_2',
+  '828':    '1xLUjL2iZ6vEeP6YuomogYEFk0lObHO5p',
+  '884':    '19UvDcMAlr-f95sV-p7Msez7C3GJj29Qw',
+  '112LN':  '1Nqd0ikjScTy0PxolLKYZ0Z_OtsQZCemp',
+  'C52-WM': '1eRNhuO3ArrfL0QhFUf4CWlqO6vRBN7Mr',
+  'R18':    '12y8mXRlrOUGMXAlDNNCRtg8AxwBwHJp0',
+  'R45':    '1IpwGcV7Azh5mcDSdMs2_4Mp9Y0NsNeZS',
+};
+const DRIVE_IMAGE_BASE = 'https://drive.google.com/uc?export=view&id=';
+
 const CATEGORY_RULES = [
   ['Beanies', /BEANIE|KNIT|TOQUE/i],
   ['Visors', /VISOR/i],
@@ -181,6 +204,7 @@ exports.handler = async () => {
           const productId = 'rich-' + productSku;
           const category = mapCategory(style, color);
           const sizes = [...new Set(grp.variants.map((v) => v.size))];
+          const driveId = DRIVE_IMAGES[style];
           prodRows.push({
             id: productId,
             vendor_id: vendorId,
@@ -195,6 +219,7 @@ exports.handler = async () => {
             is_active: true,
             available_sizes: sizes,
             inventory_source: 'richardson',
+            ...(driveId ? { image_front_url: DRIVE_IMAGE_BASE + driveId } : {}),
           });
           for (const v of grp.variants) {
             const invId = productSku + '-' + v.size;
