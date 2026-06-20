@@ -2027,7 +2027,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                     </td>
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
-                    <div onClick={() => setEditId(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+                    <div onClick={() => setEditId(null)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
                       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 1 }}>
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
@@ -2507,8 +2507,9 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
       )}
 
       {(page === 'details' || isBundle) && <React.Fragment>
-        <ItemSection title="Basics" hint="· photo & name shown in the catalog">
-          {!isBundle && <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
+        <div>
+        <ItemSection title="Basics" hint="· name shown in the catalog">
           <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
         </ItemSection>
 
@@ -2548,7 +2549,8 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
             {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
           </ItemSection>
         )}
-
+        </div>
+        <div>
         {!isBundle && (
           <ItemSection title="Personalization" hint="· numbers & names">
             <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2581,11 +2583,16 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
             <OptionsEditor value={options} onChange={setOptions} />
           </ItemSection>
         )}
+        </div>
+      </div>
 
         {isBundle && <div style={{ fontSize: 12, color: '#94a3b8' }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
+        <ItemSection title="Product photo" hint="· the catalog image — and the garment you place art on">
+          <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />
+        </ItemSection>
         <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
           <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />
         </ItemSection>
