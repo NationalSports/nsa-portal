@@ -395,9 +395,7 @@ function buildStyles(prods, inv, inHouseRows) {
     if (p.is_featured) st.isFeatured = true;
     st.colorways.push(cw);
   }
-  // Drop styles where no colorway has an image — imageless cards look broken in
-  // the catalog. When a sync populates images those styles return automatically.
-  const grouped = [...styleMap.values()].filter((st) => st.colorways.some((c) => c.img));
+  const grouped = [...styleMap.values()];
   for (const st of grouped) {
     st.colorways.sort((a, b) => b.units - a.units);
     st.inHouseUnits = st.colorways.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
