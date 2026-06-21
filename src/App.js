@@ -3611,7 +3611,7 @@ const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(p
 // 'dashboard' is the default and is represented by a clean URL (no ?pg=). Query-param based
 // (not a path) so it never touches Netlify's routing/redirects. Page-level only — opening a
 // specific record is not a separate history entry.
-const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
+const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','webstores','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
 const _pgFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('pg');return v&&_PG_IDS.has(v)?v:null}catch{return null}};
 // RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
 // right-click "Open in New Tab" all work natively in the browser. Plain

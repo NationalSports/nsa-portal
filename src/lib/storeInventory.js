@@ -21,6 +21,45 @@ export const sizeRank = (s) => {
   return Number.isFinite(n) ? 500 + n : 999; // footwear numbers after lettered sizes
 };
 
+// ── Tall-size substitution (team stores) ─────────────────────────────
+// For a team store a tall size fulfills its regular twin: a coach orders "L" and we
+// ship "LT" if that's what's in stock ("if only LT is available it can sub for L"). So
+// stores OFFER regular sizes only, never list a tall as its own option, and a regular
+// size counts its tall twin's stock/ETA toward availability. Big-&-tall apparel tops
+// out at 5XLT; the adidas feed's stray 6XL/7XL are a separate per-brand data mislabel,
+// handled in the catalog data — not here (Port Authority/Sport-Tek/Port&Co carry real 6XL).
+export const TALL_TO_REGULAR = { XST: 'XS', ST: 'S', MT: 'M', LT: 'L', XLT: 'XL', '2XLT': '2XL', '3XLT': '3XL', '4XLT': '4XL', '5XLT': '5XL' };
+const _su = (s) => String(s == null ? '' : s).trim().toUpperCase();
+// The regular size a label maps to (returns the label unchanged when it isn't a tall).
+export const regularSize = (s) => TALL_TO_REGULAR[_su(s)] || s;
+export const isTallSize = (s) => Object.prototype.hasOwnProperty.call(TALL_TO_REGULAR, _su(s));
+
+// Collapse a product's size scale to the regular sizes a store offers: fold each tall
+// into its regular twin, drop duplicates, keep the original order. Returns regular labels.
+export const foldScale = (sizes) => {
+  const out = [];
+  for (const s of (Array.isArray(sizes) ? sizes : [])) {
+    const r = regularSize(s);
+    if (!out.some((x) => _su(x) === _su(r))) out.push(r);
+  }
+  return out;
+};
+
+// Stock for a regular size = the size itself + its tall twin(s). stockOf(rawLabel) supplies
+// the per-raw-size quantity (warehouse + vendor) from the caller's stock maps.
+export const foldedQty = (regSize, stockOf) => {
+  let q = Number(stockOf(regSize)) || 0;
+  for (const [tall, reg] of Object.entries(TALL_TO_REGULAR)) if (_su(reg) === _su(regSize)) q += Number(stockOf(tall)) || 0;
+  return q;
+};
+// Restocking-soon for a regular size = the size itself OR its tall twin arriving soon.
+// soonOf(rawLabel) → boolean (the caller's ~2-week ETA test).
+export const foldedSoon = (regSize, soonOf) => {
+  if (soonOf(regSize)) return true;
+  for (const [tall, reg] of Object.entries(TALL_TO_REGULAR)) if (_su(reg) === _su(regSize) && soonOf(tall)) return true;
+  return false;
+};
+
 // Annotate a set of catalog rows ({ id, sku }) with live availability.
 // Returns a Map keyed by product id → { units, sizes[], sizeStock{}, incoming }.
 export async function fetchStockMap(rows) {

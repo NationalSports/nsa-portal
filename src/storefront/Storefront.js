@@ -4,6 +4,7 @@ import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { placementById } from '../lib/artPlacements';
+import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
 
 const STRIPE_PK = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
 let _stripePromise = null;
@@ -77,12 +78,16 @@ function groupProducts(list) {
 }
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
-const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
+const _rawSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
 // A size is "available soon" when its vendor restock date is within ~2 weeks, so we
 // surface sizes a shopper can actually get shortly (in stock now or arriving) and
 // hide ones whose next delivery is months out.
 const SIZE_SOON_MS = 14 * 24 * 60 * 60 * 1000;
-const sizeSoon = (p, sz) => { const d = (p.vendor_size_eta || {})[sz]; if (!d) return false; const t = Date.parse(d); return !isNaN(t) && t <= Date.now() + SIZE_SOON_MS; };
+const _rawSizeSoon = (p, sz) => { const d = (p.vendor_size_eta || {})[sz]; if (!d) return false; const t = Date.parse(d); return !isNaN(t) && t <= Date.now() + SIZE_SOON_MS; };
+// A tall size fulfills its regular twin (a shopper picks "L"; we ship "LT" if that's the
+// stock), so the store shows regular sizes only and a size counts its tall twin's stock/ETA.
+const effSizeQty = (p, sz) => foldedQty(sz, (s) => _rawSizeQty(p, s));
+const sizeSoon = (p, sz) => foldedSoon(sz, (s) => _rawSizeSoon(p, s));
 const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
@@ -493,9 +498,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
-  // Honor the store's per-product size selection (sizes_offered); null = all.
-  const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
-  const _scale = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
+  // Honor the store's per-product size selection (sizes_offered); null = all. Talls fold
+  // into their regular twin (LT → L), so we compare on the folded label — a legacy
+  // sizes_offered that still lists "LT" keeps matching the offered "L".
+  const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered.map(regularSize) : null;
+  const _scale = foldScale(p.available_sizes).filter((s) => !_offered || _offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
   // Only surface sizes a shopper can actually get: in stock now (warehouse or
   // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g.
   // 3XL–6XL) for some styles but carries zero with the next delivery months out, so
@@ -576,7 +583,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {sizes.map((sz) => {
-                const q = effSizeQty(p, sz); const soon = sizeSoon(p, sz); const etaD = (p.vendor_size_eta || {})[sz]; const sel = size === sz; const out = q <= 0 && !soon && !incoming; const up = sizeUp(p, sz);
+                const q = effSizeQty(p, sz); const soon = sizeSoon(p, sz); const etaD = (p.vendor_size_eta || {})[sz] || Object.entries(p.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const sel = size === sz; const out = q <= 0 && !soon && !incoming; const up = sizeUp(p, sz);
                 return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
                   style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
               })}
@@ -629,7 +636,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
   const [names, setNames] = useState({}); // component id -> custom name
   const [added, setAdded] = useState(false);
   if (!p) return <Splash>Package not found.</Splash>;
-  const compSizesArr = (c) => { const s = compInfo[c.product_id]?.available_sizes; return Array.isArray(s) ? s : []; };
+  const compSizesArr = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
   const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
@@ -652,7 +659,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
   const compImg = (c) => compInfo[c.product_id]?.image_front_url;
-  const compSizes = (c) => { const s = compInfo[c.product_id]?.available_sizes; return Array.isArray(s) ? s : []; };
+  const compSizes = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
   // When the rep hasn't uploaded a custom package photo, show all the items.
   const galleryImgs = components.map(compImg).filter(Boolean);
   return (

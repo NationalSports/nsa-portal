@@ -6,7 +6,7 @@ import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, e
 import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -507,8 +507,14 @@ function isMissingTable(err) {
 
 // ── Coach launch email + printable flyer ─────────────────────────────
 const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
-const _storefrontUrl = (store) => `${(typeof window !== 'undefined' ? window.location.origin : '')}/shop/${store.slug}`;
-const _qrImg = (data, size = 300) => `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&data=${encodeURIComponent(data)}`;
+// Families get the BRANDED marketing URL (nationalsportsapparel.com/shop/<slug>), which the
+// marketing site 200-proxies to this storefront — never the raw portal origin staff happen
+// to trigger the email from.
+const PUBLIC_SITE = 'https://nationalsportsapparel.com';
+const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
+// QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
+// goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
+const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&margin=2&ecLevel=M&text=${encodeURIComponent(data)}`;
 const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
 const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
@@ -763,6 +769,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setSel(store); setTab('catalog'); setDetail(null);
     await loadDetail(store);
   }, [loadDetail]);
+
+  // Deep-link: the store-closed email's "Process the store" button (and any
+  // ?pg=webstores&store=<id> link) lands here. Once the store list is loaded, open that
+  // store's page, then strip the param so a refresh / back-nav doesn't re-trigger it.
+  const _deepLinked = useRef(false);
+  useEffect(() => {
+    if (_deepLinked.current || loading || !stores.length) return;
+    let id = null;
+    try { id = new URLSearchParams(window.location.search).get('store'); } catch { /* */ }
+    if (!id) return;
+    _deepLinked.current = true;
+    const store = stores.find((s) => s.id === id);
+    if (store) openStore(store);
+    try { const u = new URL(window.location); u.searchParams.delete('store'); window.history.replaceState({}, '', u); } catch { /* */ }
+  }, [stores, loading, openStore]);
 
   // ── writes ──────────────────────────────────────────────────────────
   // When a store is launched, email the coach/director the polished launch email
@@ -3305,11 +3326,15 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g. 3XL–6XL)
   // for some styles but carries zero with the next delivery months out, so those
   // shouldn't show as toggles. Falls back to the full scale if nothing qualifies yet
-  // (e.g. a brand-new style still on the way).
+  // (e.g. a brand-new style still on the way). Tall sizes fulfill their regular twin
+  // (a coach orders "L", we ship "LT"), so the store offers regular sizes only and a
+  // size counts its tall twin's stock/ETA toward availability.
   const _stk = stockByWp[item.id] || {};
-  const _sizeQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
-  const _scaleSizes = Array.isArray(availableSizes) ? availableSizes : [];
-  const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || sizeEtaSoon(_stk.vendor_size_eta, sz));
+  const _rawQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
+  const _rawSoon = (sz) => sizeEtaSoon(_stk.vendor_size_eta, sz);
+  const _scaleSizes = foldScale(availableSizes);
+  const _sizeQty = (sz) => foldedQty(sz, _rawQty);
+  const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || foldedSoon(sz, _rawSoon));
   const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes

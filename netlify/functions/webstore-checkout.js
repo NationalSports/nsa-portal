@@ -123,8 +123,19 @@ async function priceCart(sb, store, cart) {
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise) };
 }
 
-// Mirrors the storefront's verifyStock(): on-hand + vendor stock per size, with
-// incoming/ETA items allowed as backorders. Read through the storefront view.
+// Tall sizes fulfill their regular twin (a shopper picks "L"; we ship "LT" if that's the
+// stock), so a regular size's availability counts its tall twin too — mirrors the
+// storefront's fold (src/lib/storeInventory.js).
+const TALL_OF = { XS: 'XST', S: 'ST', M: 'MT', L: 'LT', XL: 'XLT', '2XL': '2XLT', '3XL': '3XLT', '4XL': '4XLT', '5XL': '5XLT' };
+const _qOf = (m, k) => Number((m || {})[k]) || 0;
+const _availForSize = (p, size) => {
+  const tall = TALL_OF[String(size).toUpperCase()];
+  return _qOf(p.size_stock, size) + _qOf(p.vendor_size_stock, size)
+    + (tall ? _qOf(p.size_stock, tall) + _qOf(p.vendor_size_stock, tall) : 0);
+};
+
+// Mirrors the storefront's verifyStock(): on-hand + vendor stock per size (incl. tall
+// twin), with incoming/ETA items allowed as backorders. Read through the storefront view.
 async function checkStock(sb, store, lines) {
   const singles = lines.filter((l) => l.kind === 'single' && l.size);
   if (!singles.length) return null;
@@ -140,7 +151,7 @@ async function checkStock(sb, store, lines) {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
-    const avail = (Number((p.size_stock || {})[size]) || 0) + (Number((p.vendor_size_stock || {})[size]) || 0);
+    const avail = _availForSize(p, size);
     if (avail < q) short.push(`${p.name || 'item'} (size ${size})`);
   });
   if (short.length) return `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`;
