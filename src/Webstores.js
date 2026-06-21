@@ -919,9 +919,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const item = cat.find((c) => c.id === id);
       if (!item) continue;
       const existing = Array.isArray(item.decorations) ? item.decorations : [];
-      // Replace any decoration at the SAME placement AND side (so a back logo never
-      // clobbers a front one), otherwise append.
-      const next = existing.filter((d) => !(d.placement === decoration.placement && (d.side || 'front') === (decoration.side || 'front'))).concat([decoration]);
+      // Replace every decoration on the SAME side, so re-applying a logo swaps it out
+      // instead of leaving the old art stacked underneath (a back logo still leaves the
+      // front intact, since it only clears its own side).
+      const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
       await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
@@ -2917,10 +2918,6 @@ function CatalogItemEditor({ item, groupColors = [], defaultName, stockImg, stoc
         </ItemSection>
         </div>
         <div>
-        <ItemSection title="Product photo" hint="· the catalog image you decorate">
-          <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />
-        </ItemSection>
-
         {groupColors && groupColors.length > 0 && (
           <ItemSection title="Colors in this item" hint={`· ${groupColors.length} color${groupColors.length === 1 ? '' : 's'} shown as options on one card`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>

@@ -379,12 +379,16 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'block', aspectRatio: '1 / 1.18', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
       <div style={{ position: 'absolute', inset: 0, background: '#F7F8FB' }}>
-        {hasCollage
-          ? <BundleCollage comps={comps} theme={theme} />
-          : p.image_front_url
-            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            : <Placeholder theme={theme} label={p.name || store.name} />}
-        {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        {/* Inset the garment + its art a touch so items don't fill the card edge-to-edge,
+            and show the whole garment (contain). Logo overlay shares this box so it stays aligned. */}
+        <div style={{ position: 'absolute', inset: 0, padding: hasCollage ? 0 : '6% 9% 2%' }}>
+          {hasCollage
+            ? <BundleCollage comps={comps} theme={theme} />
+            : p.image_front_url
+              ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              : <Placeholder theme={theme} label={p.name || store.name} />}
+          {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        </div>
       </div>
       {/* Count chip for packages — reinforces "this is multiple items" */}
       {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
