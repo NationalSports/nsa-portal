@@ -1,23 +1,25 @@
 /* eslint-disable */
-// Public, login-free team-store builder — opened from the /team-stores "Build"
-// button by coaches whose team isn't in the system yet ("Don't see your store?").
-//
-// It mirrors the logged-in coach builder (src/CoachPortal.js → CoachStoreBuilder)
-// but stands alone in the lightweight storefront chunk: no portal/App imports, no
-// session. Because there's no customer/rep to anchor to, the coach first types in
-// their CONTACT INFO; the rest of the flow is the same guided picker — choose
-// in-stock items from the pre-approved allow-list pool (optionally narrowed by
-// AI), brand it, review, submit. The coach-store-submit edge function re-validates
-// the pool, locks prices, drops dead stock, and files it as a draft for staff to
-// review (created_via='coach', customer_id=null) — see supabase/functions/.
+// Team-store builder — ONE component for both entry points:
+//   • mode="public"  → the login-free /team-stores "Build" flow (coach types
+//     their CONTACT INFO first; allow-list catalog only, anon RLS).
+//   • mode="coach"   → the in-portal builder opened from CoachPortal (the coach
+//     is already known, so it adds a staff-template "start" step and submits
+//     against the customer's alpha_tag).
+// Both share the exact same item picker, faceted selectors, branding, review and
+// submit — so the two builders can never drift again. Item selection is driven
+// by SELECTOR CHIPS built from the actual pool (see ../ui/storeBuilderFilters):
+// every chip is guaranteed to return results. The AI brief is now just a helper
+// that pre-selects those chips. coach-store-submit re-validates the pool, locks
+// prices, drops dead stock, and files a draft for staff (see supabase/functions).
 //
 // Anon RLS reality (migration 00116): the public can read `products`,
 // `coach_store_config`, and the inventory views directly, but NOT `webstores` —
-// so this builder uses the allow-list catalog pool only (no staff templates).
+// so the public mode uses the allow-list catalog pool only (no staff templates).
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { fetchStockMap } from '../lib/storeInventory';
 import { CatalogKitStyles, KitScope, DISPLAY } from '../ui/catalogKit';
+import { computeFacets, filterPool, mapSpecToFacets, FacetBar } from '../ui/storeBuilderFilters';
 
 // ── Tiny self-contained helpers (kept local so the public chunk stays lean and
 //    doesn't pull in the heavy utils.js / portal graph). ──
@@ -57,22 +59,22 @@ function shade(hex, pct) {
 }
 const slugify = (s) => String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
-// Color-word → swatch hex (verbatim from the coach builder so swatches match).
+// Color-word → swatch hex for the per-colorway swatches on a style card. (The
+// faceted color FILTER uses families from storeBuilderFilters; this is the exact
+// swatch fill.)
 const COLOR_HEX = { black: '#191919', white: '#ffffff', royal: '#1e40af', navy: '#1e293b', red: '#dc2626', scarlet: '#dc2626', cardinal: '#9b1c31', maroon: '#7f1d1d', burgundy: '#7f1d1d', gold: '#d4af37', vegas: '#d4af37', yellow: '#facc15', kelly: '#15803d', forest: '#14532d', green: '#16a34a', orange: '#ea580c', purple: '#7c3aed', pink: '#ec4899', charcoal: '#374151', graphite: '#374151', grey: '#9ca3af', gray: '#9ca3af', silver: '#cbd5e1', brown: '#92400e', teal: '#0d9488', carolina: '#7dd3fc', columbia: '#60a5fa', 'light blue': '#7dd3fc', 'team royal': '#1e40af', cream: '#f5f0e1', natural: '#f5f0e1' };
 const colorHex = (name) => { const s = (name || '').toLowerCase(); for (const k of Object.keys(COLOR_HEX)) { if (s.includes(k)) return COLOR_HEX[k]; } return null; };
 const isLight = (hex) => { const h = (hex || '').replace('#', ''); if (h.length < 6) return true; const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16); return (0.299 * r + 0.587 * g + 0.114 * b) > 160; };
 
 // One STYLE with its colorways as pickable swatches (a coach can carry the same
-// item in several colors). Each swatch toggles a specific colorway product_id.
+// item in several colors). Tapping the photo is the big, obvious target; the
+// per-color swatches fine-tune which colorways to carry.
 function StyleCard({ g, sel, onToggle }) {
   const [imgErr, setImgErr] = useState(false);
   const selected = g.colorways.filter((c) => sel.has(c.product_id));
   const lead = selected[0] || g.colorways[0];
   const priceMin = Math.min(...g.colorways.map((c) => (c.price || 0) + (c.fundraise || 0)));
   const anyOn = selected.length > 0;
-  // Tapping the photo is the big, obvious target: add the default color (or, if
-  // some are already on, clear them all). The per-color swatches below still let
-  // a coach fine-tune which colorways to carry.
   const toggleStyle = () => {
     if (selected.length) selected.forEach((c) => onToggle(c.product_id));
     else if (g.colorways[0]) onToggle(g.colorways[0].product_id);
@@ -137,9 +139,7 @@ function PickTile({ p }) {
   );
 }
 
-// ── Live store preview (contact step) ─────────────────────────────────────────
-// A stylized mock of the storefront we'll build, so a coach sees their store
-// take shape — title + URL update live from the org field they're typing.
+// ── Live store preview (public contact step) ──────────────────────────────────
 function Garment({ kind, fill }) {
   const svg = { viewBox: '0 0 100 100', width: '100%', height: '100%', preserveAspectRatio: 'xMidYMid meet' };
   if (kind === 'cap') {
@@ -221,29 +221,37 @@ function StorePreview({ org, primary, accent }) {
 
 const LABEL = { display: 'block', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', marginBottom: 6 };
 
-export default function BuildStore({ onClose }) {
-  const [step, setStep] = useState('contact'); // contact | items | brand | review | done
-  const [loading, setLoading] = useState(false);
+export default function StoreBuilder({ mode = 'public', customer = null, rep = null, onClose }) {
+  const isCoach = mode === 'coach';
+  const [step, setStep] = useState(isCoach ? 'start' : 'contact'); // start(coach) | contact(public) | items | brand | review | done
+  const [loading, setLoading] = useState(isCoach); // coach loads templates first
 
-  // Contact (replaces the logged-in customer/rep identity).
+  // Contact (public only — replaces the logged-in customer/rep identity).
   const [cName, setCName] = useState('');
   const [cEmail, setCEmail] = useState('');
   const [cPhone, setCPhone] = useState('');
   const [org, setOrg] = useState('');
+
+  // Templates (coach only — staff-curated starting points).
+  const [templates, setTemplates] = useState([]);
+  const [templateId, setTemplateId] = useState(null);
 
   // Pool + selection.
   const [pool, setPool] = useState([]);
   const [poolErr, setPoolErr] = useState('');
   const [search, setSearch] = useState('');
   const [brief, setBrief] = useState('');
-  const [aiSpec, setAiSpec] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [sel, setSel] = useState(() => new Set());
+  // Faceted selectors — built from the pool, so every chip returns results.
+  const [cats, setCats] = useState(() => new Set());
+  const [colors, setColors] = useState(() => new Set());
+  const [brands, setBrands] = useState(() => new Set());
 
   // Branding.
-  const [name, setName] = useState('');
+  const [name, setName] = useState(isCoach && customer?.name ? `${customer.name} Team Store` : '');
   const [primary, setPrimary] = useState('#1e3a5f');
-  const [accent, setAccent] = useState('#962C32');
+  const [accent, setAccent] = useState(isCoach ? '#2563eb' : '#962C32');
   const [logoUrl, setLogoUrl] = useState('');
   const [logoBusy, setLogoBusy] = useState(false);
   const [blurb, setBlurb] = useState('');
@@ -254,69 +262,105 @@ export default function BuildStore({ onClose }) {
   const [result, setResult] = useState(null);
   const [submitErr, setSubmitErr] = useState('');
 
-  useEffect(() => { document.title = 'Build your Team Store · National Sports Apparel'; }, []);
+  // Coach: load staff templates + fundraise cap, and jump straight to the
+  // catalog when there are none. Public: just set the tab title (the allow-list
+  // pool loads when they finish the contact step).
+  useEffect(() => {
+    if (!isCoach) { document.title = 'Build your Team Store · National Sports Apparel'; return; }
+    let cancel = false;
+    (async () => {
+      const [tplRes, cfgRes] = await Promise.all([
+        supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+        supabase.from('coach_store_config').select('max_fundraise').eq('id', 1).maybeSingle(),
+      ]);
+      if (cancel) return;
+      const t = tplRes.data || []; setTemplates(t);
+      const mf = Number(cfgRes.data?.max_fundraise); setMaxFund(Number.isFinite(mf) ? mf : 25);
+      if (!t.length) { setTemplateId(null); setStep('items'); loadPool(null); } // no templates → straight to catalog
+      else setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build the in-stock, price-locked allow-list pool (anon-readable tables only).
-  const loadPool = async () => {
-    setLoading(true); setPoolErr(''); setPool([]); setSel(new Set());
+  // Build the in-stock, price-locked pool. Coach + a template id → that
+  // template's items (default all selected); otherwise the allow-list catalog.
+  const loadPool = async (tid) => {
+    setLoading(true); setPoolErr(''); setPool([]); setSel(new Set()); setCats(new Set()); setColors(new Set()); setBrands(new Set());
     try {
-      const { data: cfg } = await supabase.from('coach_store_config').select('*').eq('id', 1).maybeSingle();
-      const brands = cfg?.allowed_brands || []; const cats = cfg?.allowed_categories || []; const dFund = Number(cfg?.default_fundraise) || 0;
-      const mf = Number(cfg?.max_fundraise); setMaxFund(Number.isFinite(mf) ? mf : 25);
-      let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,catalog_sell_price,image_front_url').eq('is_active', true).or('is_archived.is.null,is_archived.eq.false').limit(400);
-      if (brands.length) q = q.in('brand', brands);
-      if (cats.length) q = q.in('category', cats);
-      const { data: pr, error } = await q;
-      if (error) throw error;
-      const items = (pr || []).map((p) => ({
-        product_id: p.id, sku: p.sku, name: p.name || p.sku, brand: p.brand || '', color: p.color || '', category: p.category || '',
-        image_url: p.image_front_url || '',
-        price: p.catalog_sell_price != null ? Number(p.catalog_sell_price) : Number(p.retail_price) || 0,
-        fundraise: dFund,
-      }));
-      // Hard in-stock filter (vendor + in-house) and hide photoless items — coaches
-      // are building a storefront, so a "No image" product is never a good pick.
+      let items = [];
+      if (isCoach && tid) {
+        const { data: tItems } = await supabase.from('webstore_products')
+          .select('product_id,sku,display_name,image_url,retail_price,fundraise_amount')
+          .eq('store_id', tid).eq('active', true).eq('kind', 'single');
+        const rows = (tItems || []).filter((r) => r.product_id);
+        const ids = rows.map((r) => r.product_id);
+        const meta = {};
+        if (ids.length) {
+          const { data: pr } = await supabase.from('products').select('id,sku,name,brand,color,category,image_front_url').in('id', ids);
+          for (const p of pr || []) meta[p.id] = p;
+        }
+        items = rows.map((r) => { const m = meta[r.product_id] || {}; return {
+          product_id: r.product_id, sku: r.sku || m.sku, name: r.display_name || m.name || r.sku,
+          brand: m.brand || '', color: m.color || '', category: m.category || '',
+          image_url: r.image_url || m.image_front_url || '',
+          price: Number(r.retail_price) || 0, fundraise: Number(r.fundraise_amount) || 0,
+        }; });
+      } else {
+        const { data: cfg } = await supabase.from('coach_store_config').select('*').eq('id', 1).maybeSingle();
+        const abrands = cfg?.allowed_brands || []; const acats = cfg?.allowed_categories || []; const dFund = Number(cfg?.default_fundraise) || 0;
+        const mf = Number(cfg?.max_fundraise); setMaxFund(Number.isFinite(mf) ? mf : 25);
+        let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,catalog_sell_price,image_front_url').eq('is_active', true).or('is_archived.is.null,is_archived.eq.false').limit(400);
+        if (abrands.length) q = q.in('brand', abrands);
+        if (acats.length) q = q.in('category', acats);
+        const { data: pr, error } = await q;
+        if (error) throw error;
+        items = (pr || []).map((p) => ({
+          product_id: p.id, sku: p.sku, name: p.name || p.sku, brand: p.brand || '', color: p.color || '', category: p.category || '',
+          image_url: p.image_front_url || '',
+          price: p.catalog_sell_price != null ? Number(p.catalog_sell_price) : Number(p.retail_price) || 0,
+          fundraise: dFund,
+        }));
+      }
+      // Hard in-stock filter (vendor + in-house) and hide photoless catalog items
+      // — coaches are building a storefront, so a "No image" product is never a
+      // good pick; templates are pre-curated, so keep whatever the curator chose.
       const stock = await fetchStockMap(items.map((i) => ({ id: i.product_id, sku: i.sku })));
       const inStock = items
         .map((i) => ({ ...i, _stock: stock.get(i.product_id) || { units: 0, sizes: [] } }))
-        .filter((i) => (i._stock.units || 0) > 0 && i.image_url);
+        .filter((i) => (i._stock.units || 0) > 0 && (tid || i.image_url));
       setPool(inStock);
+      if (isCoach && tid) setSel(new Set(inStock.map((i) => i.product_id))); // template → all pre-selected
     } catch (e) { setPoolErr(e.message || String(e)); }
     setLoading(false);
   };
 
   const startBuilding = async () => {
-    if (!cName.trim()) return;
-    if (!isEmail(cEmail)) return;
+    if (!cName.trim() || !isEmail(cEmail)) return;
     if (!name.trim()) setName(org.trim() ? `${org.trim()} Team Store` : 'Team Store');
     setStep('items');
-    loadPool();
+    loadPool(null);
   };
 
+  // The AI brief just pre-selects the real facet chips (visible + adjustable),
+  // so it can never narrow the grid down to nothing. Leftover style cues go to
+  // the search box.
   const runBrief = async () => {
-    if (!brief.trim()) { setAiSpec(null); return; }
+    if (!brief.trim()) return;
     setAiBusy(true);
-    try { const d = await invokeEdgeFn('ai-store-builder', { brief: brief.trim() }); setAiSpec(d?.ok ? d.spec : null); }
-    catch { setAiSpec(null); }
+    try {
+      const d = await invokeEdgeFn('ai-store-builder', { brief: brief.trim() });
+      if (d?.ok && d.spec) {
+        const m = mapSpecToFacets(d.spec, computeFacets(pool));
+        setCats(m.cats); setColors(m.colors); setBrands(m.brands);
+        if (m.keywords) setSearch(m.keywords);
+      }
+    } catch { /* leave the chips as-is */ }
     setAiBusy(false);
   };
 
-  // Filtered = approved pool narrowed by search + the AI brief (never widened).
-  const qstr = search.trim().toLowerCase();
-  let filtered = pool;
-  if (qstr) filtered = filtered.filter((r) => (r.name + ' ' + (r.sku || '') + ' ' + r.color + ' ' + r.brand).toLowerCase().includes(qstr));
-  if (aiSpec) {
-    const sb = (aiSpec.brands || []).map((b) => b.toLowerCase());
-    const sc = (aiSpec.categories || []).map((c) => c.toLowerCase());
-    const scol = (aiSpec.colors || []).map((c) => c.toLowerCase());
-    const skw = (aiSpec.keywords || []).map((k) => k.toLowerCase());
-    filtered = filtered.filter((r) => {
-      if (sb.length && !sb.includes((r.brand || '').toLowerCase())) return false;
-      if (sc.length && !sc.includes((r.category || '').toLowerCase())) return false;
-      if ((scol.length || skw.length) && !(scol.some((c) => (r.color || '').toLowerCase().includes(c)) || skw.some((k) => (r.name || '').toLowerCase().includes(k)))) return false;
-      return true;
-    });
-  }
+  const facets = computeFacets(pool);
+  const filtered = filterPool(pool, { q: search, cats, colors, brands });
+  // Group colorways into styles so coaches pick a product then its colors.
   const groupMap = new Map();
   for (const it of filtered) {
     const key = (it.name || it.sku || '').toUpperCase();
@@ -328,6 +372,8 @@ export default function BuildStore({ onClose }) {
 
   const chosen = pool.filter((p) => sel.has(p.product_id));
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleIn = (setter) => (v) => setter((s) => { const n = new Set(s); n.has(v) ? n.delete(v) : n.add(v); return n; });
+  const clearFilters = () => { setCats(new Set()); setColors(new Set()); setBrands(new Set()); setSearch(''); };
 
   const onLogo = async (e) => {
     const f = e.target.files?.[0]; if (!f) return;
@@ -339,14 +385,11 @@ export default function BuildStore({ onClose }) {
   const submit = async () => {
     setSubmitting(true); setSubmitErr('');
     try {
-      const d = await invokeEdgeFn('coach-store-submit', {
-        public: true,
-        name: name.trim(),
-        item_product_ids: chosen.map((c) => c.product_id),
-        fundraise,
-        contact: { name: cName.trim(), email: cEmail.trim(), phone: cPhone.trim(), org: org.trim() },
-        branding: { primary_color: primary, accent_color: accent, logo_url: logoUrl, hero_blurb: blurb.trim(), coach_contact_email: cEmail.trim() },
-      });
+      const branding = { primary_color: primary, accent_color: accent, logo_url: logoUrl, hero_blurb: blurb.trim(), coach_contact_email: isCoach ? ((customer?.contacts || [])[0]?.email || '') : cEmail.trim() };
+      const payload = isCoach
+        ? { alpha_tag: customer?.alpha_tag, customer_id: customer?.id, name: name.trim(), template_id: templateId, item_product_ids: chosen.map((c) => c.product_id), fundraise, notify_to: rep?.email ? [rep.email] : [], branding }
+        : { public: true, name: name.trim(), item_product_ids: chosen.map((c) => c.product_id), fundraise, contact: { name: cName.trim(), email: cEmail.trim(), phone: cPhone.trim(), org: org.trim() }, branding };
+      const d = await invokeEdgeFn('coach-store-submit', payload);
       if (!d?.ok) throw new Error(d?.error || 'Submission failed.');
       setResult(d); setStep('done');
     } catch (e) { setSubmitErr(e.message || String(e)); }
@@ -354,9 +397,12 @@ export default function BuildStore({ onClose }) {
   };
 
   const ink = '#191919';
-  const stepIdx = { contact: 1, items: 2, brand: 3, review: 4 }[step] || 0;
+  const totalSteps = isCoach ? 3 : 4;
+  const stepIdx = isCoach ? ({ items: 1, brand: 2, review: 3 }[step] || 0) : ({ contact: 1, items: 2, brand: 3, review: 4 }[step] || 0);
   const headBtn = { background: 'rgba(255,255,255,.16)', color: '#fff', border: '1px solid rgba(255,255,255,.3)', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
+  const headerBg = isCoach ? 'linear-gradient(135deg,#1e3a5f,#2563eb)' : 'linear-gradient(135deg,#192853,#962C32)';
   const contactValid = cName.trim() && isEmail(cEmail);
+  const notifyEmail = isCoach ? ((customer?.contacts || [])[0]?.email || rep?.email || '') : cEmail;
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, overflowY: 'auto', background: '#f1f5f9' }}>
@@ -365,14 +411,36 @@ export default function BuildStore({ onClose }) {
         .bs-contact { display: grid; grid-template-columns: minmax(0,1.05fr) minmax(0,1fr); gap: 44px; align-items: start; }
         @media (max-width: 860px) { .bs-contact { grid-template-columns: 1fr; gap: 30px; } .bs-contact-preview { max-width: 460px; } }
       `}</style>
-      <div style={{ background: 'linear-gradient(135deg,#192853,#962C32)', color: '#fff', padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, position: 'sticky', top: 0, zIndex: 20 }}>
-        <button onClick={onClose} style={headBtn}>← Back</button>
+      <div style={{ background: headerBg, color: '#fff', padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, position: 'sticky', top: 0, zIndex: 20 }}>
+        <button onClick={onClose} style={headBtn}>{isCoach ? '← Back to portal' : '← Back'}</button>
         <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: '.02em' }}>Build Your Team Store</div>
-        <div style={{ width: 90, textAlign: 'right', fontSize: 11.5, opacity: 0.9, fontWeight: 700 }}>{stepIdx ? `Step ${stepIdx} of 4` : ''}</div>
+        <div style={{ width: 110, textAlign: 'right', fontSize: 11.5, opacity: 0.9, fontWeight: 700 }}>{stepIdx ? `Step ${stepIdx} of ${totalSteps}` : ''}</div>
       </div>
 
       <KitScope style={{ maxWidth: 1120, margin: '0 auto', padding: '22px 16px 130px' }}>
-        {step === 'contact' ? (
+        {loading ? (
+          <div style={{ textAlign: 'center', color: '#94a3b8', padding: '60px 10px', fontWeight: 600 }}>Loading the catalog…</div>
+        ) : step === 'start' ? (
+          <div>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, textTransform: 'uppercase', letterSpacing: '.01em' }}>Pick a starting point</div>
+            <div style={{ color: '#5A616E', fontSize: 14, marginTop: 4, marginBottom: 18 }}>Start from one of our ready-made store templates — we'll pre-fill the items and pricing, and you just tweak it. Or browse the catalog yourself.</div>
+            <div className="ai-grid">
+              {templates.map((t) => (
+                <button key={t.id} type="button" className="ai-card" onClick={() => { setTemplateId(t.id); setStep('items'); loadPool(t.id); }} style={{ padding: 0 }}>
+                  <div style={{ padding: '26px 16px', width: '100%', textAlign: 'left' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#2563eb' }}>Template</div>
+                    <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', lineHeight: 1.1, marginTop: 4 }}>{t.name}</div>
+                    <div style={{ fontSize: 12.5, color: '#6A7180', marginTop: 10, fontWeight: 700 }}>Use this template →</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => { setTemplateId(null); setStep('items'); loadPool(null); }}
+              style={{ marginTop: 18, background: 'none', border: 'none', color: '#2563eb', fontWeight: 800, fontSize: 13.5, cursor: 'pointer', padding: 0 }}>
+              {templates.length ? 'Or browse the full catalog instead →' : 'Browse the full catalog →'}
+            </button>
+          </div>
+        ) : step === 'contact' ? (
           <div className="bs-contact">
             {/* LEFT — who you are */}
             <div>
@@ -418,30 +486,40 @@ export default function BuildStore({ onClose }) {
               <div style={{ fontSize: 12, color: '#9AA1AC', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>A sample of what we'll build — your real store uses your gear, colors &amp; logo, which you'll choose next.</div>
             </div>
           </div>
-        ) : loading ? (
-          <div style={{ textAlign: 'center', color: '#94a3b8', padding: '60px 10px', fontWeight: 600 }}>Loading the catalog…</div>
         ) : step === 'items' ? (
           <div>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, textTransform: 'uppercase', letterSpacing: '.01em' }}>Choose your items</div>
-            <div style={{ color: '#5A616E', fontSize: 14, marginTop: 4, marginBottom: 14 }}>Tap items to add them to your store. Only items in stock right now are shown, and prices are set for you.</div>
-            <textarea className="ai-search" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runBrief(); }}
-              placeholder={'Optional — describe what you want and we\'ll narrow it down (e.g. "black and white tees and hoodies")'}
-              style={{ resize: 'vertical', minHeight: 52, lineHeight: 1.4 }} aria-label="Describe your store" />
-            <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button type="button" className="ai-more" style={{ margin: 0 }} onClick={runBrief} disabled={aiBusy || !brief.trim()}>{aiBusy ? 'Thinking…' : 'Narrow with AI'}</button>
-              {aiSpec && <button type="button" className="ai-iconbtn" onClick={() => { setAiSpec(null); setBrief(''); }}>Clear</button>}
+            <div style={{ color: '#5A616E', fontSize: 14, marginTop: 4, marginBottom: 8 }}>
+              {isCoach && templateId ? 'Your template items are pre-selected — tap to add or remove. ' : 'Tap a photo to add it to your store. '}
+              Use the filters to narrow by type and color — only in-stock items are shown, and prices are set for you.
+            </div>
+            {/* Selector chips — built from what's actually in the catalog, so every option returns items */}
+            <FacetBar facets={facets} cats={cats} colors={colors} brands={brands}
+              onToggleCat={toggleIn(setCats)} onToggleColor={toggleIn(setColors)} onToggleBrand={toggleIn(setBrands)} onClear={clearFilters} />
+            <div style={{ display: 'flex', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               <input className="ai-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search items…" style={{ flex: 1, minWidth: 160 }} aria-label="Search items" />
             </div>
-            {aiSpec?.interpretation && <div style={{ fontSize: 12.5, color: '#475569', marginTop: 10, fontStyle: 'italic' }}>{aiSpec.interpretation}</div>}
+            {/* Optional: describe it and let AI pre-select the chips above */}
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ fontSize: 12.5, color: '#2563eb', fontWeight: 700, cursor: 'pointer' }}>✨ Or describe it and we'll pick the filters</summary>
+              <div style={{ display: 'flex', gap: 10, marginTop: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <textarea className="ai-search" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runBrief(); }}
+                  placeholder={'e.g. "black and white tees and hoodies"'}
+                  style={{ flex: 1, minWidth: 220, resize: 'vertical', minHeight: 44, lineHeight: 1.4 }} aria-label="Describe your store" />
+                <button type="button" className="ai-more" style={{ margin: 0 }} onClick={runBrief} disabled={aiBusy || !brief.trim()}>{aiBusy ? 'Thinking…' : 'Pick filters'}</button>
+              </div>
+            </details>
             {poolErr && <div style={{ color: '#b91c1c', fontSize: 13, fontWeight: 600, marginTop: 12 }}>{poolErr}</div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 10px' }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} selected · {groups.length} style{groups.length === 1 ? '' : 's'} shown</div>
-              {chosen.length > 0 && <button type="button" className="ai-iconbtn" onClick={() => setSel(new Set())}>Clear all</button>}
+              {chosen.length > 0 && <button type="button" className="ai-iconbtn" onClick={() => setSel(new Set())}>Clear selected</button>}
             </div>
             {groups.length === 0 ? (
               <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>
-                {pool.length === 0 ? 'No in-stock items are available to build from right now — submit your contact info above and our team will reach out.' : 'Nothing matches that — clear the search or AI filter to see all available items.'}
+                {pool.length === 0
+                  ? (isCoach ? 'No in-stock items are available to build from right now — please check with your rep.' : 'No in-stock items are available to build from right now — submit your contact info above and our team will reach out.')
+                  : 'Nothing matches those filters — clear a filter to see more.'}
               </div>
             ) : (
               <div className="ai-grid">
@@ -513,7 +591,7 @@ export default function BuildStore({ onClose }) {
         ) : step === 'review' ? (
           <div style={{ maxWidth: 720 }}>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, textTransform: 'uppercase', letterSpacing: '.01em' }}>Review &amp; submit</div>
-            <div style={{ color: '#5A616E', fontSize: 14, marginTop: 4, marginBottom: 18 }}>Here's your store. When you submit, our team reviews it, sets up shipping &amp; checkout, and publishes it — we'll email you at <b>{cEmail}</b> when it's live.</div>
+            <div style={{ color: '#5A616E', fontSize: 14, marginTop: 4, marginBottom: 18 }}>Here's your store. When you submit, our team reviews it, sets up shipping &amp; checkout, and publishes it{notifyEmail ? <> — we'll email you at <b>{notifyEmail}</b> when it's live</> : ''}.</div>
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', padding: 16, background: '#fff', borderRadius: 12, border: '1px solid #eef0f3' }}>
               <div style={{ width: 64, height: 64, borderRadius: 10, background: primary, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
                 {logoUrl ? <img src={logoUrl} alt="" style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain' }} /> : <span style={{ color: '#fff', fontWeight: 800, fontSize: 20 }}>{(name || '?').slice(0, 1)}</span>}
@@ -539,7 +617,7 @@ export default function BuildStore({ onClose }) {
             <div style={{ fontSize: 46 }}>🎉</div>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 28, textTransform: 'uppercase', letterSpacing: '.01em', marginTop: 6 }}>Store submitted!</div>
             <div style={{ color: '#5A616E', fontSize: 15, marginTop: 8 }}>
-              Thanks, {cName.split(' ')[0] || 'coach'}! <b>{name}</b> was sent to our team with {result?.count || chosen.length} item{(result?.count || chosen.length) === 1 ? '' : 's'}. We'll review it, set up shipping &amp; checkout, and publish it — you'll get an email at <b>{cEmail}</b> when it's live.
+              Thanks{isCoach ? '' : `, ${cName.split(' ')[0] || 'coach'}`}! <b>{name}</b> was sent to our team with {result?.count || chosen.length} item{(result?.count || chosen.length) === 1 ? '' : 's'}. We'll review it, set up shipping &amp; checkout, and publish it{notifyEmail ? <> — you'll get an email at <b>{notifyEmail}</b> when it's live</> : ''}.
             </div>
             <button type="button" onClick={onClose} className="ai-more" style={{ marginTop: 22 }}>Done</button>
           </div>
@@ -547,9 +625,9 @@ export default function BuildStore({ onClose }) {
       </KitScope>
 
       {/* Sticky action bar — the primary next step for each screen. */}
-      {step !== 'done' && step !== 'contact' && (
+      {step !== 'done' && step !== 'contact' && step !== 'start' && !loading && (
         <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, zIndex: 20, boxShadow: '0 -4px 16px rgba(0,0,0,.05)' }}>
-          <button type="button" onClick={() => setStep(step === 'items' ? 'contact' : step === 'brand' ? 'items' : 'brand')}
+          <button type="button" onClick={() => setStep(step === 'items' ? (isCoach ? 'start' : 'contact') : step === 'brand' ? 'items' : 'brand')}
             style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: 9, padding: '10px 16px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>← Back</button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <span style={{ fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} selected</span>
