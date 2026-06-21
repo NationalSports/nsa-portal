@@ -4898,7 +4898,8 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
-  const [excluded, setExcluded] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set()); // items chosen for bulk apply — none by default
+  const [bulkOpen, setBulkOpen] = useState(false); // bulk apply is an opt-in next step, not the default view
   const [colorByItem, setColorByItem] = useState({}); // item id -> 'original' | 'white' | 'black'
   const [applying, setApplying] = useState(false);
   const [done, setDone] = useState('');
@@ -4935,8 +4936,10 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
   }
   const choiceOf = (item) => colorByItem[item.id] || (guessDark(item.color) ? 'white' : 'original');
   const setChoice = (id, c) => setColorByItem((m) => ({ ...m, [id]: c }));
-  const toggleItem = (id) => setExcluded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const includedItems = singles.filter((it) => !excluded.has(it.id));
+  const toggleItem = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const includedItems = singles.filter((it) => selected.has(it.id));
+  const selectAll = () => setSelected(new Set(singles.map((it) => it.id)));
+  const clearSel = () => setSelected(new Set());
 
   const apply = async () => {
     if (!activeArt || !activeUrl) return;
@@ -5025,51 +5028,75 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
             ); })}
           </div>
         </div>}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Placement</span>
-          {ART_PLACEMENTS.map((p) => (
-            <button key={p.id} onClick={() => setPlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
-          ))}
-        </div>
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} /></div>}
         </>)}
       </div></div>
 
-      {/* Colorway boards */}
-      <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5, margin: '4px 2px 10px' }}>3 · Place on every colorway — recolor the logo per garment, then apply</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(250px,1fr))', gap: 12, alignItems: 'start' }}>
-      {groups.map((g) => (
-        <div key={g.key} className="card" style={{ marginBottom: 0 }}><div style={{ padding: 12 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 9 }}>{g.name} <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>· {g.items.length} color{g.items.length === 1 ? '' : 's'}</span></div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(108px,1fr))', gap: 10 }}>
-            {g.items.map((item) => { const ch = choiceOf(item); const inc = !excluded.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
-              <div key={item.id} style={{ border: inc ? '1px solid #e2e8f0' : '1px dashed #cbd5e1', borderRadius: 10, padding: 8, opacity: inc ? 1 : 0.5, background: '#fff' }}>
-                <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
-                  {item.img ? <img src={item.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
-                  {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front').map((d, di) => { const pl = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : pl.x; const dy = d.y != null ? d.y : pl.y; const dw = d.w != null ? d.w : pl.w; return <img key={'ad' + di} src={d.art_url} alt="" style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
-                  {activeUrl && inc && <img src={activeUrl} alt="" style={{ position: 'absolute', left: `${place.x}%`, top: `${place.y}%`, width: `${place.w}%`, transform: 'translate(-50%,-50%)', filter: cssTint(ch), pointerEvents: 'none', opacity: 0.95 }} />}
-                  <button onClick={() => toggleItem(item.id)} title={inc ? 'Exclude' : 'Include'} style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: 6, border: 'none', cursor: 'pointer', background: inc ? '#191919' : 'rgba(255,255,255,.9)', color: '#fff', fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }}>{inc ? '✓' : ''}</button>
-                  {has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
-                </div>
-                <div style={{ fontSize: 11.5, fontWeight: 700, marginTop: 6 }}>{item.color || '—'}</div>
-                <div style={{ display: 'flex', gap: 4, marginTop: 5 }}>
-                  {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => (
-                    <button key={c} onClick={() => setChoice(item.id, c)} style={{ flex: 1, fontSize: 10.5, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: ch === c ? '1px solid #191919' : '1px solid #d1d5db', background: ch === c ? '#191919' : '#fff', color: ch === c ? '#fff' : '#475569' }}>{lbl}</button>
-                  ))}
-                </div>
+      {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
+          a logo: pick placement, select which items, then apply & review them together. */}
+      {activeArt && (!bulkOpen ? (
+        <button onClick={() => activeUrl && setBulkOpen(true)} disabled={!activeUrl}
+          style={{ width: '100%', textAlign: 'left', cursor: activeUrl ? 'pointer' : 'not-allowed', border: '1px solid #c7d2fe', background: activeUrl ? '#eef2ff' : '#f1f5f9', color: '#3730a3', borderRadius: 12, padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span><span style={{ fontSize: 15, fontWeight: 800 }}>Bulk-apply “{activeArt.name || 'this logo'}” to items →</span><br /><span style={{ fontSize: 12.5, color: activeUrl ? '#4f46e5' : '#94a3b8' }}>{activeUrl ? 'Optional next step — pick the items to put this logo on, recolor per garment, then apply.' : 'Attach a web logo above first.'}</span></span>
+        </button>
+      ) : (
+        <div className="card"><div style={{ padding: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Bulk-apply <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span></div>
+            <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
+          </div>
+
+          {/* Placement */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Placement</span>
+            {ART_PLACEMENTS.map((p) => (
+              <button key={p.id} onClick={() => setPlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
+            ))}
+          </div>
+
+          {/* Select items — none chosen by default; tap to pick, then review them together */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select items <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the garments to apply this logo to ({includedItems.length} selected)</span></div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={selectAll} className="btn btn-sm btn-secondary">Select all</button>
+              <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!includedItems.length}>Clear</button>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(124px,1fr))', gap: 14, alignItems: 'start' }}>
+          {groups.map((g) => (
+            <div key={g.key}>
+              <div style={{ fontSize: 11.5, fontWeight: 800, color: '#334155', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {g.items.map((item) => { const ch = choiceOf(item); const sel3 = selected.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
+                  <div key={item.id} onClick={() => toggleItem(item.id)} title={sel3 ? 'Tap to deselect' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: 'pointer' }}>
+                    <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
+                      {item.img ? <img src={item.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
+                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front').map((d, di) => { const pl = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : pl.x; const dy = d.y != null ? d.y : pl.y; const dw = d.w != null ? d.w : pl.w; return <img key={'ad' + di} src={d.art_url} alt="" style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
+                      {activeUrl && sel3 && <img src={activeUrl} alt="" style={{ position: 'absolute', left: `${place.x}%`, top: `${place.y}%`, width: `${place.w}%`, transform: 'translate(-50%,-50%)', filter: cssTint(ch), pointerEvents: 'none', opacity: 0.95 }} />}
+                      <span style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)' }}>{sel3 ? '✓' : ''}</span>
+                      {has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}</div>
+                    {sel3 && <div style={{ display: 'flex', gap: 4, marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
+                      {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => (
+                        <button key={c} onClick={() => setChoice(item.id, c)} title={`Recolor: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: ch === c ? '1px solid #191919' : '1px solid #d1d5db', background: ch === c ? '#191919' : '#fff', color: ch === c ? '#fff' : '#475569' }}>{lbl}</button>
+                      ))}
+                    </div>}
+                  </div>
+                ); })}
               </div>
-            ); })}
+            </div>
+          ))}
+          </div>
+
+          {/* Sticky apply bar */}
+          <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
+            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'} · {place.label}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+            <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : includedItems.length ? `Apply to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}` : 'Select items to apply'}</button>
           </div>
         </div></div>
       ))}
-      </div>
-
-      {/* Sticky apply bar */}
-      <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12 }}>
-        {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
-        <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'} · {place.label}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-        <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : `Apply logo to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}`}</button>
-      </div>
     </div>
   );
 }
