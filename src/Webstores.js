@@ -931,9 +931,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return { added: payload.length };
   }, [sel, detail, flash, loadDetail]);
 
-  // Apply a saved store template — resolve its SKUs to live products and add the ones not
-  // already in this store (carrying the template's category / price / fundraising / kit).
+  // Apply a saved template — resolve its SKUs to live products and add the ones not already
+  // in this store (carrying the template's category / price / fundraising / kit). A SECTION
+  // template (kind='section') drops every item into one named section/category instead.
   const applyTemplate = useCallback(async (tpl) => {
+    const sectionCat = (tpl && tpl.kind === 'section') ? (tpl.section || tpl.name || null) : null;
     const items = Array.isArray(tpl?.items) ? tpl.items : [];
     const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
     if (!skus.length) { flash('That template has no items'); return { added: 0 }; }
@@ -950,7 +952,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const product = byKey.get(String(it.sku || '').trim().toUpperCase());
       if (!product || existing.has(product.id) || seen.has(product.id)) return null;
       seen.add(product.id);
-      return { product, price: (it.price != null && it.price !== '') ? it.price : product.retail_price, fundraise: it.fundraise || 0, category: it.category || null, kit_name: it.kit || null, required: !!it.required };
+      return { product, price: (it.price != null && it.price !== '') ? it.price : product.retail_price, fundraise: it.fundraise || 0, category: sectionCat || it.category || null, kit_name: it.kit || null, required: !!it.required };
     }).filter(Boolean);
     if (!rows.length) { flash('All of this template’s items are already in the store'); return { added: 0 }; }
     return addManyFromList(rows);
@@ -2449,7 +2451,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           { label: 'New custom product', icon: '＋', onClick: () => { setMode('custom'); setPending(null); } },
           { label: 'Import list (Excel / Sheets)', icon: '⬆', onClick: () => { setMode('import'); setPending(null); } },
           { divider: true },
-          { label: 'Start from a template', icon: '🎯', onClick: () => { setMode('template'); setPending(null); } },
+          { label: 'Add template', icon: '🎯', onClick: () => { setMode('template'); setPending(null); } },
           { label: 'Create a package', icon: '📦', onClick: () => { setMode('bundle'); setPending(null); } },
           { label: 'Build with AI', icon: '✨', onClick: () => { setMode('ai'); setPending(null); } },
         ]} />
@@ -3760,7 +3762,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
   const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form' | 'edit'
   const [editingTpl, setEditingTpl] = useState(null);
   const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
-  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
+  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' });
   const [saving, setSaving] = useState(false);
   const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
 
@@ -3775,17 +3777,23 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
   const shown = sportSel ? templates.filter((t) => t.sport === sportSel) : templates;
   const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
 
-  const startFromStore = () => {
-    const items = (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
-    setPendingItems(items); setMeta((m) => ({ ...m, name: '' })); setView('form');
-  };
+  const captureItems = () => (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
+  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'store', sourceCat: '', section: '' })); setView('form'); };
+  // Save just one section/category of the current store as a bolt-on section template.
+  const startSection = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'section', sourceCat: '', section: '' })); setView('form'); };
   const del = async (id) => { await supabase.from('store_templates').delete().eq('id', id); load(); };
+  // Section templates can be limited to one captured category; full-store templates keep all.
+  const pendingCats = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
+  const sectionItems = (meta.kind === 'section' && meta.sourceCat) ? pendingItems.filter((i) => (i.category || '').trim() === meta.sourceCat) : pendingItems;
   const saveTemplate = async () => {
-    if (!meta.name.trim() || !pendingItems.length) return;
+    const isSection = meta.kind === 'section';
+    const secName = isSection ? (meta.section || meta.sourceCat || '').trim() : null;
+    const itemsToSave = sectionItems;
+    if (!meta.name.trim() || !itemsToSave.length || (isSection && !secName)) return;
     setSaving(true);
-    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: pendingItems, created_by: myEmail || null });
+    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: itemsToSave, kind: isSection ? 'section' : 'store', section: secName, created_by: myEmail || null });
     setSaving(false);
-    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' }); load(); }
+    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' }); load(); }
   };
 
   const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
@@ -3794,7 +3802,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div style={{ fontWeight: 800, fontSize: 16 }}>{view === 'form' ? 'Save as a template' : view === 'ai' ? 'Draft a template with AI' : view === 'edit' ? 'Edit template' : '🎯 Start from a template'}</div>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{view === 'form' ? 'Save as a template' : view === 'ai' ? 'Draft a template with AI' : view === 'edit' ? 'Edit template' : '🎯 Add template'}</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         <div style={{ padding: 16 }}>
@@ -3809,15 +3817,29 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
 
           {view === 'form' && (
             <div>
-              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{pendingItems.length} item{pendingItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{sectionItems.length} item{sectionItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                {[['store', 'Full store', 'Bolt every item onto a store'], ['section', 'Section', 'A bolt-on section, e.g. Football Cleats']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
+                  <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
+                    <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
+                  </button>
+                ); })}
+              </div>
+              {meta.kind === 'section' && (
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
+                  <Row label="Limit to section (optional)"><select className="form-input" value={meta.sourceCat} onChange={(e) => setMeta((m) => ({ ...m, sourceCat: e.target.value, section: m.section || e.target.value }))}><option value="">All captured items</option>{pendingCats.map((c) => <option key={c} value={c}>{c}</option>)}</select></Row>
+                  <Row label="Section name (lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
+                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={meta.kind === 'section' ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
                 <Row label="Sport"><input className="form-input" list="tpl-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tpl-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
                 <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
                 <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
               </div>
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!meta.name.trim() || !pendingItems.length || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
+                <button className="btn btn-primary" disabled={!meta.name.trim() || !sectionItems.length || (meta.kind === 'section' && !(meta.section || meta.sourceCat).trim()) || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
                 <button className="btn btn-secondary" onClick={() => setView('gallery')}>Cancel</button>
               </div>
             </div>
@@ -3828,7 +3850,8 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
               {isCurator && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', alignSelf: 'center' }}>Curator:</span>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save current store as template</button>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save full store as template</button>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startSection}>＋ Save a section as template</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => setView('ai')}>✨ Draft with AI</button>
                 </div>
               )}
@@ -3851,13 +3874,14 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          {t.kind === 'section' ? chip('Section', '#ecfdf5', '#047857') : chip('Full store', '#eff6ff', '#1d4ed8')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}</div>
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{t.kind === 'section' && t.section ? ` · → ${t.section}` : ''}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" disabled={applying === t.id} onClick={async () => { setApplying(t.id); await onApply(t); setApplying(''); }} style={{ flex: 1 }}>{applying === t.id ? 'Adding…' : 'Use this →'}</button>
+                          <button className="btn btn-sm btn-primary" disabled={applying === t.id} onClick={async () => { setApplying(t.id); await onApply(t); setApplying(''); }} style={{ flex: 1 }}>{applying === t.id ? 'Adding…' : (t.kind === 'section' ? 'Add section →' : 'Add to store →')}</button>
                           {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
                           {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
