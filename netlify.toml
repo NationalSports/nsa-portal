@@ -1,7 +1,16 @@
 [build]
   command = "GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
-  environment = { NODE_VERSION = "18", PUBLIC_URL = "https://nsa-portal.netlify.app" }
+  environment = { NODE_VERSION = "18" }
+
+# PUBLIC_URL pins assets to the production domain so the marketing site's /shop/*
+# 200-proxy (which serves the portal's index.html at nationalsportsapparel.com) loads
+# JS/CSS from nsa-portal.netlify.app instead of 404ing on the marketing domain.
+# PRODUCTION ONLY — deploy previews & branch deploys must use relative paths so each
+# preview loads its OWN hashed assets (an absolute production URL points previews at
+# chunks that don't exist there, blanking the page).
+[context.production.environment]
+  PUBLIC_URL = "https://nsa-portal.netlify.app"
 
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
