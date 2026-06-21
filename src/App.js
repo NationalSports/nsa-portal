@@ -15,7 +15,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
@@ -28077,17 +28077,46 @@ export default function App(){
   const[featLoading,setFeatLoading]=useState(false);
   const[featShowHidden,setFeatShowHidden]=useState(false);
   const[featShowNoImg,setFeatShowNoImg]=useState(false);
+  const[plBrand,setPlBrand]=useState('');
+  const[plStyles,setPlStyles]=useState([]);
+  const[plGroups,setPlGroups]=useState([]);
+  const[plLoading,setPlLoading]=useState(false);
+  const[plSkipped,setPlSkipped]=useState(new Set());
+  const[plManualSel,setPlManualSel]=useState([]);
+  const[plManualSearch,setPlManualSearch]=useState('');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud'],['featured','Featured Styles']];
+    const tabs=[['company','Company Info'],['pricing','Decoration'],['payments','Financial'],['tiers','Customer Tiers'],['lists','Lists & Options'],['labor','Labor Rates'],['portal','Coach Portal'],['featured','Webstores']];
+    const TAB_GROUP={pricing:['pricing','deco_vendors'],payments:['payments','taxcloud'],featured:['featured','product_links']};
+    const isActiveTab=(k)=>(TAB_GROUP[k]||[k]).includes(settingsTab);
+    const handleTab=(k)=>{
+      if(k==='pricing'&&(settingsTab==='pricing'||settingsTab==='deco_vendors'))return;
+      if(k==='payments'&&(settingsTab==='payments'||settingsTab==='taxcloud'))return;
+      if(k==='featured'&&(settingsTab==='featured'||settingsTab==='product_links'))return;
+      setSettingsTab(k);
+    };
     return(<>
-      <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
+      <div style={{display:'flex',gap:4,marginBottom:8,flexWrap:'wrap'}}>
+        {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${isActiveTab(k)?'btn-primary':'btn-secondary'}`} onClick={()=>handleTab(k)}>{label}</button>)}
       </div>
+      {/* Sub-nav for grouped tabs */}
+      {(settingsTab==='pricing'||settingsTab==='deco_vendors')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='pricing'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('pricing')}>Pricing</button>
+        <button className={`btn btn-xs ${settingsTab==='deco_vendors'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('deco_vendors')}>Deco Vendors</button>
+      </div>}
+      {(settingsTab==='payments'||settingsTab==='taxcloud')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='payments'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('payments')}>Payments</button>
+        <button className={`btn btn-xs ${settingsTab==='taxcloud'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('taxcloud')}>TaxCloud</button>
+      </div>}
+      {(settingsTab==='featured'||settingsTab==='product_links')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='featured'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('featured')}>Featured Styles</button>
+        <button className={`btn btn-xs ${settingsTab==='product_links'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('product_links')}>Product Links</button>
+      </div>}
+      {!(settingsTab==='pricing'||settingsTab==='deco_vendors'||settingsTab==='payments'||settingsTab==='taxcloud'||settingsTab==='featured'||settingsTab==='product_links')&&<div style={{marginBottom:16}}/>}
 
       {/* COMPANY INFO */}
       {settingsTab==='company'&&<>
@@ -28136,6 +28165,18 @@ export default function App(){
           </div>
         </div>
         <button className="btn btn-secondary btn-sm" onClick={()=>{if(window.confirm('Reset all company info to defaults?')){setCompanyInfo({...NSA_DEFAULTS});nf('Company info reset to defaults')}}}>Reset to Defaults</button>
+        <div className="card" style={{marginTop:16}}><div className="card-header"><h3>Batch PO Free Shipping Thresholds</h3></div><div className="card-body">
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
+            </tbody>
+          </table>
+        </div></div>
       </>}
 
       {/* DECORATION PRICING */}
@@ -28415,35 +28456,6 @@ export default function App(){
           </div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{save([...val,'New'])}}>+ Add</button>
         </div></div>)}
-      </>}
-
-      {/* TERMS & POLICIES */}
-      {settingsTab==='terms'&&<>
-        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Invoice & Estimate Terms</h3></div><div className="card-body">
-          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>These terms appear on printed estimates and invoices.</div>
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Standard Terms</label>
-            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="Net 30 from invoice date unless otherwise agreed." readOnly/>
-          </div>
-          <div>
-            <label className="form-label">Deposit Terms</label>
-            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="50% deposit required to begin production. Balance due upon completion." readOnly/>
-          </div>
-          <div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Contact admin to update these terms.</div>
-        </div></div>
-
-        <div className="card"><div className="card-header"><h3>Batch PO Free Shipping Thresholds</h3></div><div className="card-body">
-          <table style={{fontSize:13}}>
-            <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
-            <tbody>
-              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
-            </tbody>
-          </table>
-        </div></div>
       </>}
 
       {/* COACH PORTAL SETTINGS */}
@@ -28751,6 +28763,184 @@ export default function App(){
               </>}
             </div>
           </div>
+        </>);
+      })()}
+
+      {settingsTab==='product_links'&&(()=>{
+        const PL_BRANDS=['Adidas','Under Armour','Nike'];
+        const vendName=(vid)=>{const v=vend.find(x=>x.id===vid);if(v)return v.name;if(vid==='v1')return 'Adidas Direct';if(vid==='v4')return 'S&S Activewear';if(vid==='v1777312659133')return 'Agron';return vid;};
+        // Normalize style name for cross-vendor comparison:
+        // strip "Adidas " prefix, strip " (MODEL)" suffix, strip trailing " Bag/Bags", uppercase.
+        const normStyleName=(name)=>(name||'').replace(/^adidas\s+/i,'').replace(/\s*\([^)]+\)\s*$/,'').replace(/\s+bags?\s*$/i,'').trim().toUpperCase();
+        // Extract model number from S&S or CLICK name (for display in the suggestion card).
+        const extractModel=(name)=>{const m=(name||'').match(/\(([A-Z]{1,2}\d{3,4}[A-Z]?)\)/);return m?m[1]:null;};
+        const loadPl=async(brand)=>{
+          setPlBrand(brand);setPlLoading(true);setPlStyles([]);setPlGroups([]);setPlSkipped(new Set());setPlManualSel([]);
+          const PAGE=1000;let all=[],from=0;
+          for(;;){
+            const{data,error}=await supabase.from('products')
+              .select('id,sku,name,vendor_id,color,image_front_url,nsa_cost,catalog_sell_price')
+              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+            if(error||!data?.length)break;all=all.concat(data);if(data.length<PAGE)break;from+=PAGE;
+          }
+          const sm={};
+          for(const p of all){
+            const k=`${p.vendor_id}::${(p.name||'').trim().toUpperCase()}`;
+            if(!sm[k])sm[k]={vendor_id:p.vendor_id,style_key:(p.name||'').trim().toUpperCase(),name:p.name,sku_sample:p.sku,image_url:null,price:p.nsa_cost||p.catalog_sell_price,color_count:0};
+            if(!sm[k].image_url&&p.image_front_url)sm[k].image_url=p.image_front_url;
+            sm[k].color_count++;
+          }
+          setPlStyles(Object.values(sm));
+          const{data:grps}=await supabase.from('product_groups').select('*,product_group_members(*)').eq('brand',brand);
+          setPlGroups(grps||[]);
+          setPlLoading(false);
+        };
+        const linkedKeys=new Set(plGroups.flatMap(g=>(g.product_group_members||[]).map(m=>`${m.vendor_id}::${m.style_key}`)));
+        const byNorm={};
+        for(const st of plStyles){
+          if(linkedKeys.has(`${st.vendor_id}::${st.style_key}`))continue;
+          const norm=normStyleName(st.name);if(!norm)continue;
+          if(!byNorm[norm])byNorm[norm]=[];byNorm[norm].push(st);
+        }
+        const suggestions=Object.entries(byNorm)
+          .filter(([norm,members])=>{if(plSkipped.has(norm))return false;return new Set(members.map(m=>m.vendor_id)).size>=2;})
+          .map(([norm,members])=>{
+            const dispSrc=members.find(m=>m.vendor_id!=='v4')?.name||members[0].name;
+            const display_name=normStyleName(dispSrc).split(' ').map(w=>w.charAt(0)+w.slice(1).toLowerCase()).join(' ');
+            const model=extractModel(members.find(m=>extractModel(m.name))?.name||'');
+            return{norm,model,display_name,members};
+          })
+          .sort((a,b)=>a.display_name.localeCompare(b.display_name));
+        const confirmGroup=async(sugg)=>{
+          if(!supabase)return;
+          const grp={id:crypto.randomUUID(),display_name:sugg.display_name,brand:plBrand,created_by:cu.email||cu.id};
+          const{error}=await supabase.from('product_groups').insert(grp);
+          if(error){nf('Error: '+error.message,'error');return;}
+          const mems=sugg.members.map(m=>({group_id:grp.id,vendor_id:m.vendor_id,style_key:m.style_key}));
+          await supabase.from('product_group_members').insert(mems);
+          setPlGroups(prev=>[...prev,{...grp,product_group_members:mems}]);
+          if(sugg.norm)setPlSkipped(prev=>new Set([...prev,sugg.norm]));
+          nf('Link confirmed: '+sugg.display_name);
+        };
+        const deleteGroup=async(gid)=>{
+          if(!supabase||!window.confirm('Remove this product link?'))return;
+          await supabase.from('product_groups').delete().eq('id',gid);
+          setPlGroups(prev=>prev.filter(g=>g.id!==gid));
+          nf('Link removed');
+        };
+        const manualStyleList=plStyles
+          .filter(st=>!plManualSearch||(st.name||'').toLowerCase().includes(plManualSearch.toLowerCase())||(st.sku_sample||'').toLowerCase().includes(plManualSearch.toLowerCase()))
+          .slice(0,50);
+        const toggleManual=(st)=>{const k=`${st.vendor_id}::${st.style_key}`;setPlManualSel(prev=>prev.some(x=>`${x.vendor_id}::${x.style_key}`===k)?prev.filter(x=>`${x.vendor_id}::${x.style_key}`!==k):[...prev,st]);};
+        const createManualGroup=async()=>{
+          if(plManualSel.length<2)return;
+          const name=(plManualSel.find(s=>s.vendor_id!=='v4')?.name||plManualSel[0].name).replace(/\s*\([^)]+\)\s*$/,'').trim();
+          await confirmGroup({display_name:name,members:plManualSel,norm:null});
+          setPlManualSel([]);setPlManualSearch('');
+        };
+        return(<>
+          <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+            {PL_BRANDS.map(b=><button key={b} className={`btn btn-sm ${plBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>plBrand!==b&&loadPl(b)}>{b}</button>)}
+            {!plBrand&&<div style={{fontSize:12,color:'#94a3b8',padding:'6px 0'}}>Select a brand to see multi-source linking suggestions.</div>}
+          </div>
+          {plLoading&&<div style={{padding:32,textAlign:'center',color:'#94a3b8'}}>Loading…</div>}
+          {!plLoading&&plBrand&&<>
+            <div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h3>Confirmed Links ({plGroups.length})</h3></div>
+              <div className="card-body">
+                {plGroups.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'8px 0'}}>No confirmed links yet. Confirm suggestions below or use Manual Link.</div>}
+                {plGroups.map(g=>(
+                  <div key={g.id} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:13,marginBottom:4}}>{g.display_name}</div>
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        {(g.product_group_members||[]).map(m=>{
+                          const st=plStyles.find(s=>s.vendor_id===m.vendor_id&&s.style_key===m.style_key);
+                          return(
+                            <span key={m.vendor_id+'::'+m.style_key} style={{background:'#f1f5f9',borderRadius:6,padding:'3px 8px',fontSize:11,display:'inline-flex',gap:4,alignItems:'center'}}>
+                              <span style={{color:'#475569',fontWeight:600}}>{vendName(m.vendor_id)}</span>
+                              {st&&<><span style={{color:'#cbd5e1'}}>·</span><span style={{fontFamily:'monospace',color:'#64748b'}}>{(st.sku_sample||'').split('.')[0]||st.sku_sample}</span><span style={{color:'#cbd5e1'}}>·</span><span>{st.color_count} color{st.color_count!==1?'s':''}</span></>}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <button className="btn btn-sm btn-secondary" style={{flexShrink:0,fontSize:11}} onClick={()=>deleteGroup(g.id)}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {suggestions.length>0&&<div className="card" style={{marginBottom:16}}>
+              <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h3>Suggested Links ({suggestions.length})</h3>
+                <span style={{fontSize:12,color:'#64748b'}}>Auto-matched by Adidas model number</span>
+              </div>
+              <div className="card-body">
+                {suggestions.map(sugg=>(
+                  <div key={sugg.model} style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,padding:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                      <div>
+                        <div style={{fontWeight:600,fontSize:13}}>{sugg.display_name}</div>
+                        <div style={{fontSize:11,color:'#64748b',fontFamily:'monospace',marginTop:2}}>Model #{sugg.model}</div>
+                      </div>
+                      <div style={{display:'flex',gap:8,flexShrink:0}}>
+                        <button className="btn btn-sm btn-primary" onClick={()=>confirmGroup(sugg)}>Confirm</button>
+                        <button className="btn btn-sm btn-secondary" onClick={()=>setPlSkipped(prev=>new Set([...prev,sugg.model]))}>Skip</button>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                      {sugg.members.map(m=>(
+                        <div key={m.vendor_id} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:10,flex:'1 1 180px',minWidth:180,maxWidth:260}}>
+                          {m.image_url?<img src={m.image_url} alt="" style={{width:'100%',height:80,objectFit:'contain',borderRadius:4,marginBottom:6}} onError={e=>e.currentTarget.style.display='none'}/>:<div style={{width:'100%',height:80,background:'#f1f5f9',borderRadius:4,marginBottom:6,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>📦</div>}
+                          <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:2}}>{vendName(m.vendor_id)}</div>
+                          <div style={{fontSize:12,fontWeight:500,marginBottom:2,lineHeight:1.3}}>{m.name}</div>
+                          <div style={{fontSize:11,color:'#94a3b8',fontFamily:'monospace'}}>{(m.sku_sample||'').split('.')[0]||m.sku_sample}</div>
+                          <div style={{fontSize:11,color:'#94a3b8'}}>{m.color_count} color{m.color_count!==1?'s':''}{m.price?` · $${Number(m.price).toFixed(2)}`:''}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+            <div className="card">
+              <div className="card-header"><h3>Manual Link</h3></div>
+              <div className="card-body">
+                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Select two or more styles to link them as the same garment from different sources.</div>
+                <input className="form-input" placeholder="Search by name or SKU…" value={plManualSearch} onChange={e=>setPlManualSearch(e.target.value)} style={{marginBottom:12,maxWidth:400}}/>
+                {plManualSel.length>0&&(
+                  <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,padding:10,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{fontSize:12,fontWeight:600,color:'#1d4ed8',flexShrink:0}}>Selected ({plManualSel.length}):</span>
+                    {plManualSel.map(st=>(
+                      <span key={st.vendor_id+'::'+st.style_key} style={{fontSize:11,background:'#fff',border:'1px solid #93c5fd',borderRadius:4,padding:'2px 8px',display:'inline-flex',alignItems:'center',gap:6}}>
+                        <span style={{color:'#64748b'}}>{vendName(st.vendor_id)}</span>
+                        <span>{(st.name||'').slice(0,28)}</span>
+                        <button style={{border:'none',background:'none',cursor:'pointer',color:'#94a3b8',padding:0,lineHeight:1,fontSize:14}} onClick={()=>toggleManual(st)}>×</button>
+                      </span>
+                    ))}
+                    {plManualSel.length>=2&&<button className="btn btn-sm btn-primary" style={{marginLeft:'auto'}} onClick={createManualGroup}>Create Link</button>}
+                  </div>
+                )}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:8}}>
+                  {manualStyleList.map(st=>{
+                    const selKey=`${st.vendor_id}::${st.style_key}`;
+                    const isSel=plManualSel.some(x=>`${x.vendor_id}::${x.style_key}`===selKey);
+                    return(
+                      <div key={selKey} onClick={()=>toggleManual(st)} style={{border:`1.5px solid ${isSel?'#3b82f6':'#e2e8f0'}`,background:isSel?'#eff6ff':'#fafafa',borderRadius:8,padding:10,cursor:'pointer',display:'flex',gap:8,alignItems:'center',userSelect:'none'}}>
+                        {st.image_url?<img src={st.image_url} alt="" style={{width:40,height:40,objectFit:'contain',borderRadius:4,flexShrink:0}} onError={e=>e.currentTarget.style.display='none'}/>:<div style={{width:40,height:40,background:'#e2e8f0',borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>📦</div>}
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:11,color:'#64748b'}}>{vendName(st.vendor_id)}</div>
+                          <div style={{fontSize:12,fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{st.name}</div>
+                          <div style={{fontSize:10,color:'#94a3b8',fontFamily:'monospace'}}>{(st.sku_sample||'').split('.')[0]||st.sku_sample}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {plStyles.length>50&&!plManualSearch&&<div style={{fontSize:11,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Showing 50 of {plStyles.length} styles — search to narrow</div>}
+              </div>
+            </div>
+          </>}
         </>);
       })()}
     </>)};
