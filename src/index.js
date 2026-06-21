@@ -28,6 +28,10 @@ const OrderTrack = React.lazy(() => import('./storefront/OrderTrack'));
 // Public coach-facing adidas inventory reference at /adidas — login-free like
 // the storefront; joins the adidas catalog with live Cowork availability.
 const AdidasInventory = React.lazy(() => import('./storefront/AdidasInventory'));
+// Public Team Stores directory at /team-stores — a login-free portal listing the
+// open, publicly-listed club stores. Surfaced at nationalsportsapparel.com/team-stores
+// via the same marketing-site proxy rewrite used for /livelook.
+const TeamStores = React.lazy(() => import('./storefront/TeamStores'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
@@ -36,6 +40,8 @@ const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 // marketing site — the proxy keeps the browser URL at /livelook, so the
 // client-side router must recognize it here too.
 const isAdidasInventory = _path === '/adidas' || _path === '/adidas/' || _path === '/livelook' || _path === '/livelook/';
+// Public Team Stores directory — proxied to nationalsportsapparel.com/team-stores.
+const isTeamStores = _path === '/team-stores' || _path === '/team-stores/';
 // /auth/setup and /auth/reset complete the magic-link / password-reset flow.
 // App short-circuits these to its own landing page BEFORE any login gate, so
 // they must load App directly rather than the pre-auth gate below.
@@ -150,6 +156,8 @@ root.render(
     <ErrorBoundary>
       {isAdidasInventory
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading inventory…</div>}><AdidasInventory /></React.Suspense>
+        : isTeamStores
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading team stores…</div>}><TeamStores /></React.Suspense>
         : isOrderTrack
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
