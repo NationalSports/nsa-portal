@@ -2502,7 +2502,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         </div>
       </div>
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
@@ -4442,7 +4442,9 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], onSaveLogo, initialFilter = {} }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], onSaveLogo, initialFilter = {} }) {
+  // The store's existing sections, for the bulk-add category dropdown (default = first).
+  const storeSections = useMemo(() => [...new Set((catalog || []).map((c) => c.category).filter(Boolean))].sort(), [catalog]);
   const [q, setQ] = useState(initialFilter.q || '');
   const [brandSel, setBrandSel] = useState(initialFilter.brand || null);
   const [catSel, setCatSel] = useState(initialFilter.category || null);
@@ -4464,6 +4466,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [bName, setBName] = useState(false);
   const [bNameUp, setBNameUp] = useState('');
   const [bCategory, setBCategory] = useState('');
+  const [bCatNew, setBCatNew] = useState(false); // typing a brand-new section vs picking one
   const [bKit, setBKit] = useState('');
   const [bRequired, setBRequired] = useState(false);
   const [bOptions, setBOptions] = useState([]);
@@ -4520,7 +4523,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     const t = setTimeout(async () => {
       // Hide retired products (archived) so the store builder can't add what the catalog
       // live-look already hides, while still including legacy rows whose is_active is null.
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
+      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
         .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
       if (favOnly) {
         // Favorites view — load every colorway of each starred STYLE (across all categories)
@@ -4659,7 +4662,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       {selProducts.length > 0 && (
         <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
+          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
           <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
         </div>
@@ -4688,13 +4691,42 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                   {storeFund?.enabled && Number(bFund) <= 0 && (
                     <div style={{ fontSize: 11.5, color: '#166534', marginTop: -4, marginBottom: 12 }}>Leave fundraising blank and the store rule applies — adds {Number(storeFund.flat) > 0 ? money(storeFund.flat) : (storeFund.pct || 0) + '%'}{storeFund.round ? ', rounded up' : ''} per item.</div>
                   )}
+                  {/* Live cost / margin readout when a single item is being added. */}
+                  {selProducts.length === 1 && (() => {
+                    const sp = selProducts[0];
+                    const list = Number(sp.retail_price) || 0;
+                    const cost = Number(sp.nsa_cost) || 0;
+                    const price = (bPrice !== '' && bPrice != null) ? Number(bPrice) : list;
+                    const fund = (bFund !== '' && bFund != null && Number(bFund) > 0) ? Number(bFund) : storeFundAmount(price, storeFund);
+                    const decoCost = bulkDecos.length ? 5 : 0;
+                    const margin = price > 0 && cost > 0 ? Math.round((1 - (cost + decoCost) / price) * 100) : null;
+                    return (
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
+                        <span style={{ color: '#64748b' }}>List <b style={{ color: '#191919' }}>{money(list)}</b></span>
+                        {cost > 0 && <span style={{ color: '#64748b' }}>Cost <b style={{ color: '#191919' }}>{money(cost)}</b></span>}
+                        {decoCost > 0 && <span style={{ color: '#64748b' }}>Deco <b style={{ color: '#191919' }}>~{money(decoCost)}</b></span>}
+                        <span style={{ color: '#64748b' }}>Shopper pays <b style={{ color: '#191919' }}>{money(price + fund)}</b>{fund > 0 ? <span style={{ color: '#94a3b8' }}> ({money(price)} + {money(fund)})</span> : null}</span>
+                        {margin != null && <span style={{ color: margin >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>Margin {margin}%{decoCost ? ' after deco' : ''}</span>}
+                      </div>
+                    );
+                  })()}
                   <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
                     <Toggle label="Player adds a number" checked={bNumber} onChange={setBNumber} />
                     <Toggle label="Player adds a name" checked={bName} onChange={setBName} />
                     {bName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={bNameUp} onChange={(e) => setBNameUp(e.target.value)} /></label>}
                   </div>
                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
-                    <Row label="Category / section"><input className="form-input" value={bCategory} onChange={(e) => setBCategory(e.target.value)} placeholder="e.g. Spirit Wear" /></Row>
+                    <Row label="Category / section">
+                      {bCatNew || storeSections.length === 0
+                        ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <input className="form-input" autoFocus value={bCategory} onChange={(e) => setBCategory(e.target.value)} placeholder="New section name" style={{ width: 180 }} />
+                            {storeSections.length > 0 && <button type="button" onClick={() => { setBCatNew(false); setBCategory(storeSections[0] || ''); }} style={{ fontSize: 11, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>cancel</button>}
+                          </div>
+                        : <select className="form-input" value={bCategory} onChange={(e) => { if (e.target.value === '__new') { setBCatNew(true); setBCategory(''); } else setBCategory(e.target.value); }} style={{ width: 200 }}>
+                            {storeSections.map((s) => <option key={s} value={s}>{s}</option>)}
+                            <option value="__new">＋ New section…</option>
+                          </select>}
+                    </Row>
                     <Row label="Part of a kit / package"><input className="form-input" value={bKit} onChange={(e) => setBKit(e.target.value)} placeholder="e.g. Player Kit" /></Row>
                     <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory" checked={bRequired} onChange={setBRequired} /></div>
                   </div>
