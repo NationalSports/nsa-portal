@@ -337,6 +337,14 @@ function buildStyles(prods, inv, inHouseRows, opts = {}) {
   }
   const seen = new Set();
   const styleMap = new Map();
+  // When two vendors' products are confirmed-linked in a product_group, merge them
+  // onto one style card by overriding the grouping key with the group's display_name.
+  const groupByMember = {};
+  for (const g of (opts.groups || [])) {
+    for (const m of (g.product_group_members || [])) {
+      groupByMember[m.vendor_id + '::' + m.style_key] = g;
+    }
+  }
   for (const p of prods) {
     if (!p.sku || seen.has(p.sku)) continue; // catalog can carry the same SKU twice (e.g. re-imports)
     // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
@@ -386,7 +394,9 @@ function buildStyles(prods, inv, inHouseRows, opts = {}) {
         ? [...inStock].length >= 8
         : STRONG_SIZES.every((sz) => sizes.some((s) => s.size === sz && availNow(s) >= STRONG_MIN)),
     };
-    const displayName = p.name.replace(/^adidas\s+/i, '');
+    const memberKey = p.vendor_id + '::' + p.name.trim().toUpperCase();
+    const grp = groupByMember[memberKey];
+    const displayName = grp ? grp.display_name : p.name.replace(/^adidas\s+/i, '');
     const key = displayName.toUpperCase() + '|' + cat;
     let st = styleMap.get(key);
     if (!st) {
@@ -1305,6 +1315,7 @@ export default function AdidasInventory() {
   const [loadingAll, setLoadingAll] = useState(true); // Phase-2 full-catalog load still running
   const [error, setError] = useState('');
   const [styles, setStyles] = useState([]);
+  const [productGroups, setProductGroups] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
   const [search, setSearch] = useState('');
   // Styles pulled in by the on-demand DB search — items NOT in the browse set
@@ -1639,8 +1650,9 @@ export default function AdidasInventory() {
             .eq('brand', brand).or('is_featured.is.null,is_featured.eq.false')
             .order('image_front_url', { ascending: false, nullsFirst: false }).order('name');
 
-        const [featRes, ...quickResults] = await Promise.all([
+        const [featRes, groupsRes, ...quickResults] = await Promise.all([
           baseQ().eq('is_featured', true).order('name'),
+          supabase.from('product_groups').select('id,display_name,product_group_members(vendor_id,style_key)'),
           ...(unrestricted
             ? [
                 // SanMar-sourced items (Port Authority, Sport-Tek, District, Bella+Canvas, …)
@@ -1665,6 +1677,8 @@ export default function AdidasInventory() {
         if (!alive) return;
         if (featRes.error) throw featRes.error;
         for (const r of quickResults) if (r.error) throw r.error;
+        const groupsData = (groupsRes && !groupsRes.error && groupsRes.data) || [];
+        setProductGroups(groupsData);
         const prods = [...(featRes.data || []), ...quickResults.flatMap((r) => r.data || [])];
         const skus  = [...new Set(prods.map((p) => p.sku))];
         const ids   = [...new Set(prods.map((p) => p.id))];
@@ -1679,7 +1693,7 @@ export default function AdidasInventory() {
         if (!alive) return;
         if (invRes.error) throw invRes.error;
         if (ihRes.error) throw ihRes.error;
-        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || []);
+        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || [], { groups: groupsData });
         if (!alive) return;
         setStyles(grouped);
         setLastSynced(synced);
@@ -1735,7 +1749,7 @@ export default function AdidasInventory() {
           ]);
           if (!alive) return;
 
-          const full = buildStyles(allProds, allInv, allIh);
+          const full = buildStyles(allProds, allInv, allIh, { groups: groupsData });
           if (!alive) return;
           setStyles(full.grouped);
           if (full.synced) setLastSynced(full.synced);
@@ -1792,14 +1806,14 @@ export default function AdidasInventory() {
         ]);
         if (!alive) return;
         // keepAllMomentec: don't drop non-featured Momentec from search results.
-        const { grouped } = buildStyles(prods, invRes.data || [], ihRes.data || [], { keepAllMomentec: true });
+        const { grouped } = buildStyles(prods, invRes.data || [], ihRes.data || [], { keepAllMomentec: true, groups: productGroups });
         setSearchExtra(grouped);
       } catch (e) {
         if (alive) { console.warn('[livelook] search failed:', (e && e.message) || e); setSearchExtra([]); }
       }
     }, 350);
     return () => { alive = false; clearTimeout(timer); };
-  }, [search, effectiveBrands]);
+  }, [search, effectiveBrands, productGroups]);
 
   // Colorway-level filters: a style shows if ANY colorway passes all of them.
   // Team colors: a colorway matches when it features ANY selected color —
