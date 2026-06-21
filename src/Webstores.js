@@ -794,14 +794,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
-  const setStoreStatus = useCallback(async (store, status) => {
-    const { data, error } = await supabase.from('webstores').update({ status, updated_at: new Date().toISOString() }).eq('id', store.id).select().single();
+  const setStoreStatus = useCallback(async (store, status, opts = {}) => {
+    const patch = { status, updated_at: new Date().toISOString() };
+    // A coach email typed in the launch dialog is saved to the store so it's on file.
+    const coachEmail = (opts.coachEmail || '').trim();
+    if (status === 'open' && opts.emailCoach && coachEmail && coachEmail !== (store.coach_contact_email || '')) patch.coach_contact_email = coachEmail;
+    const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
     if (error) { flash('Could not update status: ' + error.message); return; }
     setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
     if (sel?.id === store.id) setSel(data);
-    // On launch, email the coach/director the store link + flyer QR (any store with a
-    // recipient on file — not just coach-built ones).
-    if (store.status !== 'open' && status === 'open' && (data.coach_contact_email || data.director_email)) notifyCoachPublished(data);
+    // Email the coach only when the launch dialog opted in (with a recipient).
+    if (status === 'open' && opts.emailCoach && coachEmail) notifyCoachPublished({ ...data, coach_contact_email: coachEmail });
     else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished]);
 
@@ -2204,9 +2207,50 @@ function MenuButton({ label, items = [], primary = false, align = 'left', icon }
   );
 }
 
+// Launch confirmation — going live, with an explicit option to email the coach/director
+// the store link + QR (prefilled from the email on file; a newly typed one is saved).
+function LaunchStoreModal({ store, onClose, onLaunch }) {
+  const onFile = (store.coach_contact_email || store.director_email || '').trim();
+  const [emailCoach, setEmailCoach] = useState(!!onFile);
+  const [coachEmail, setCoachEmail] = useState(onFile);
+  const [busy, setBusy] = useState(false);
+  const valid = !emailCoach || /.+@.+\..+/.test(coachEmail.trim());
+  const go = async () => { if (!valid) return; setBusy(true); await onLaunch({ emailCoach, coachEmail: coachEmail.trim() }); setBusy(false); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 460, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>🚀 Launch store</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, color: '#334155', marginBottom: 14 }}>Make <b>{store.name}</b> live for shoppers.</div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+            <input type="checkbox" checked={emailCoach} onChange={(e) => setEmailCoach(e.target.checked)} />
+            Email the coach the store link + QR
+          </label>
+          {emailCoach && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Coach / director email</div>
+              <input className="form-input" type="email" value={coachEmail} onChange={(e) => setCoachEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} />
+              {!onFile && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>No email on file — what you enter is saved to the store.</div>}
+              {!valid && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email, or uncheck to launch without notifying.</div>}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={busy || !valid} style={{ background: '#166534' }} onClick={go}>{busy ? 'Launching…' : (emailCoach ? 'Launch & email coach' : 'Launch store')}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
+  const [launchOpen, setLaunchOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -2285,11 +2329,12 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
               : { label: 'Email store link', icon: '✉️', title: 'Add a coach/director email in Settings first', disabled: true },
           ]} />
           {onSetStatus && (s.status !== 'open'
-            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => onSetStatus(s, 'open')} title="Make this store live for shoppers">🚀 Launch store</button>
+            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
+      {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
 
       {(() => {
         const primary = s.primary_color || '#192853';
