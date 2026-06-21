@@ -395,28 +395,13 @@ function buildStyles(prods, inv, inHouseRows) {
     if (p.is_featured) st.isFeatured = true;
     st.colorways.push(cw);
   }
-  // Momentec's catalog runs to 1,600+ in-stock styles — far too many for the
-  // grid. Curate down to MAX_MOMENTEC: only styles with a product image are
-  // eligible (imageless Momentec items are dropped entirely), featured styles
-  // are always kept, then the rest fill by in-stock units. Drop any Momentec
-  // style with no image and not featured outright.
-  const MAX_MOMENTEC = 100;
-  const isMomentec = (st) => st.brand === 'Momentec';
-  const hasImg = (st) => st.colorways.some((c) => c.img);
+  // Momentec's catalog is 30K+ styles — far too many to browse. Show ONLY
+  // featured (hand-picked in Settings → Featured Styles) Momentec styles in the
+  // grid; every other Momentec item is reachable via search, which queries the
+  // full catalog on demand. The Phase 1/2 queries already load only featured
+  // Momentec, so this is a defensive guard for any that slip through.
   for (const [k, st] of [...styleMap]) {
-    if (isMomentec(st) && !st.isFeatured && !hasImg(st)) styleMap.delete(k);
-  }
-  const momentecKeys = [...styleMap.keys()].filter((k) => isMomentec(styleMap.get(k)));
-  if (momentecKeys.length > MAX_MOMENTEC) {
-    const unitTotal = (st) => st.colorways.reduce((s, c) => s + c.units, 0);
-    // Featured first (always kept), then by in-stock units.
-    momentecKeys.sort((a, b) => {
-      const sa = styleMap.get(a), sb = styleMap.get(b);
-      return (sb.isFeatured - sa.isFeatured) || (unitTotal(sb) - unitTotal(sa));
-    });
-    for (const k of momentecKeys.slice(MAX_MOMENTEC)) {
-      if (!styleMap.get(k).isFeatured) styleMap.delete(k);
-    }
+    if (st.brand === 'Momentec' && !st.isFeatured) styleMap.delete(k);
   }
   const grouped = [...styleMap.values()];
   for (const st of grouped) {
@@ -1633,7 +1618,6 @@ export default function AdidasInventory() {
                 mkBrandQ('Under Armour').limit(80),
                 mkBrandQ('Nike').limit(50),
                 mkBrandQ('Richardson').limit(50),
-                mkBrandQ('Momentec').limit(40),
                 mkBrandQ('Gildan').limit(30),
                 mkBrandQ('Boxercraft').limit(30),
               ]
@@ -1675,7 +1659,12 @@ export default function AdidasInventory() {
         // parallel waves — avoids a slow offset-pagination scan of the full
         // 136K-row inventory_unified view.
         try {
-          const allProds = await fetchAllPages(() => baseQ().order('name'));
+          // Skip non-featured Momentec in the full load — it's 30K+ rows and
+          // only featured Momentec shows in the grid (the rest is search-only).
+          // (brand != Momentec) OR (is_featured = true) keeps everything else
+          // plus the hand-picked Momentec styles.
+          const allProds = await fetchAllPages(
+            () => baseQ().or('brand.neq.Momentec,is_featured.eq.true').order('name'));
           if (!alive) return;
 
           const allSkus = [...new Set(allProds.map((p) => p.sku))];
