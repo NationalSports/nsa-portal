@@ -15,7 +15,7 @@ import { normSzName } from './pricing';
 import {
   richardsonGetStockInventory, ssApiCall,
   sanmarGetPromoInventory, sanmarGetInventory, sanmarGetPricing, sanmarGetProduct,
-  momentecStyleV2,
+  momentecStyleV2, champroGetProductInfo, champroGetInventory,
 } from './vendorApis';
 
 const TTL = 10 * 60 * 1000;
@@ -34,6 +34,7 @@ export function vendorInvSource(vendorRec, { brand } = {}) {
   if (ap === 'sanmar' || nm === 'sanmar') return 'sm';
   if (ap === 'momentec' || nm === 'momentec') return 'mt';
   if (ap === 'richardson' || nm === 'richardson') return 'rs';
+  if (ap === 'champro' || nm === 'champro') return 'cp';
   if (nm === 'adidas' || b === 'adidas') return 'adidas';
   return '';
 }
@@ -47,7 +48,7 @@ export function vendorInvSource(vendorRec, { brand } = {}) {
 export async function fetchVendorSizeInventory(source, item) {
   const sku = String(item?.sku || '').trim();
   const empty = { sizes: {}, sizeNextAvail: {}, nextAvail: '', source };
-  if (!sku || !['ss', 'sm', 'mt', 'rs'].includes(source)) return empty;
+  if (!sku || !['ss', 'sm', 'mt', 'rs', 'cp'].includes(source)) return empty;
   const key = source + ':' + sku.toUpperCase() + ':' + String(item?.color || '').toLowerCase();
   const c = _cache[key];
   if (c && Date.now() - c.fetchedAt < TTL) return c.value;
@@ -57,6 +58,7 @@ export async function fetchVendorSizeInventory(source, item) {
     if (source === 'rs') value = await _rs(sku, item);
     else if (source === 'mt') value = await _mt(sku, item);
     else if (source === 'sm') value = await _sm(sku, item);
+    else if (source === 'cp') value = await _cp(sku, item);
     else value = await _ss(sku, item);
     _cache[key] = { value, fetchedAt: Date.now() };
     return value;
@@ -254,4 +256,74 @@ async function _mt(sku, item) {
     }
   } catch (e) { /* fall through to empty sizes */ }
   return { sizes, sizeNextAvail: {}, nextAvail: '', source: 'mt' };
+}
+
+// ─── Champro: ProductInfo (master → size/color SKUs) then Inventory (per-warehouse) ───
+// Our catalog SKU is the Champro "ProductMaster"; ProductInfo expands it into the
+// size/color-specific SKUs that the Inventory endpoint keys by. We roll each SKU's
+// per-warehouse quantities up by size, and carry MORE_EXPECTED_ON as the next-available
+// (restock) date — same shape Richardson backorders use, so the badges render identically.
+//
+// NOTE: this assumes our SKU == Champro's ProductMaster. The Champro catalog marks
+// adult/youth with an A/Y suffix (e.g. BS25A / BS25Y); if a master comes back empty we
+// retry once against the suffix-stripped base and keep only SKUs that still start with
+// our SKU, so the fallback can never surface another configuration's stock. Confirm the
+// exact master↔SKU rule against the live sandbox when the API key + IP are in place.
+async function _cp(sku, item) {
+  const sizes = {}; const sizeNextAvail = {}; let nextAvail = '';
+  const master = String(sku || '').trim();
+  const out = () => ({ sizes, sizeNextAvail, nextAvail, source: 'cp' });
+  if (!master) return out();
+
+  // Resolve the master → SKU rows, with a safe suffix-stripped fallback.
+  let rows = [];
+  const skuRowsFor = async (pm, keepPrefix) => {
+    let info;
+    try { info = await champroGetProductInfo(pm); } catch { return []; }
+    const list = info?.ProductSKUs || [];
+    return keepPrefix
+      ? list.filter((r) => String(r.SKU || '').toUpperCase().startsWith(keepPrefix.toUpperCase()))
+      : list;
+  };
+  rows = await skuRowsFor(master);
+  if (!rows.length) {
+    const m = master.match(/^(.*[A-Za-z0-9])([AY])$/); // strip adult/youth marker
+    if (m) rows = await skuRowsFor(m[1], master);
+  }
+  if (!rows.length) return out();
+
+  // Optional color narrowing: Champro often leaves Color blank, so only filter when BOTH
+  // the line and the SKU carry a color and they share a head token.
+  const prodColor = String(item?.color || '').toLowerCase();
+  const pc = _colorHead(prodColor);
+  const narrowed = rows.filter((r) => {
+    const rc = String(r.Color || '').toLowerCase();
+    if (!prodColor || !rc) return true;
+    const rch = _colorHead(rc);
+    return !pc || !rch || rch.includes(pc) || pc.includes(rch);
+  });
+  const use = (narrowed.length ? narrowed : rows).slice(0, 250); // cap the Inventory payload
+
+  // SKU → normalized size, to map the Inventory response back to a size bucket.
+  const skuSize = {};
+  use.forEach((r) => { if (r.SKU) skuSize[String(r.SKU).toUpperCase()] = normSzName(r.Size || 'OSFA'); });
+  const skuList = Object.keys(skuSize);
+  if (!skuList.length) return out();
+
+  let inv;
+  try { inv = await champroGetInventory(skuList); } catch { return out(); }
+  (inv?.Inventory || []).forEach((row) => {
+    const sz = skuSize[String(row.SKU || '').toUpperCase()] || normSzName('OSFA');
+    const qty = (row.Warehouses || []).reduce((a, w) => a + (parseInt(w.Quantity) || 0), 0);
+    if (qty > 0) sizes[sz] = (sizes[sz] || 0) + qty;
+    const d = row.MORE_EXPECTED_ON;
+    if (d) {
+      const dt = new Date(d);
+      if (!isNaN(dt.getTime())) {
+        if (!sizeNextAvail[sz] || dt < new Date(sizeNextAvail[sz])) sizeNextAvail[sz] = d;
+        if (!nextAvail || dt < new Date(nextAvail)) nextAvail = d;
+      }
+    }
+  });
+  return out();
 }

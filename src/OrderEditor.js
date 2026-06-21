@@ -16,6 +16,7 @@ import QuickMockBuilder from './QuickMockBuilder';
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { fetchVendorSizeInventory } from './vendorInventory';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
@@ -425,6 +426,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return false;
   },[products,vendorList]);
 
+  // Check if item is from Champro (live ProductInfo + Inventory API)
+  const isChamproItem=useCallback((item)=>{
+    if(item._cp_live)return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    if(!vId)return false;
+    const vRec=vendorList.find(v=>v.id===vId);
+    if(vRec)return vRec.api_provider==='champro'||vRec.name==='Champro';
+    return false;
+  },[products,vendorList]);
+
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='adidas')return true;
@@ -579,7 +590,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const isSM=isSanMarItem(itemRef);
     const isMT=isMomentecItem(itemRef);
     const isRS=isRichardsonItem(itemRef);
-    if(!isSS&&!isSM&&!isMT&&!isRS)return;
+    const isCP=isChamproItem(itemRef);
+    if(!isSS&&!isSM&&!isMT&&!isRS&&!isCP)return;
     const cacheKey=sku;
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
@@ -588,7 +600,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     if(vendorInvFetching.current[cacheKey])return;
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isRS?'rs':isMT?'mt':isSM?'sm':isCP?'cp':'ss'}}));
     try{
       if(isRS){
         // Richardson: pull StockInventory feed grouped by Style; pick the color match for this item
@@ -819,6 +831,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
+      }else if(isCP){
+        // Champro: ProductInfo (master→size SKUs) then Inventory (per-warehouse), via the
+        // shared vendorInventory module (also used by the OMG store pull) so the parser
+        // lives in exactly one place. Champro's inventory call carries no pricing, so cost
+        // stays at the catalog value.
+        const inv=await fetchVendorSizeInventory('cp',{sku,color:item?.color,sizes:item?.sizes,available_sizes:item?.available_sizes});
+        const sizeQty=inv?.sizes||{};const sizeNextAvail=inv?.sizeNextAvail||{};const nextAvail=inv?.nextAvail||'';
+        console.log('[Champro] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail);
+        const result={sizes:sizeQty,price:{},nextAvail,sizeNextAvail,fetchedAt:Date.now(),source:'cp'};
+        vendorInvCache.current[cacheKey]=result;
+        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:{},nextAvail,sizeNextAvail,loading:false,error:null,source:'cp'}}));
       }else{
         // S&S Activewear: fetch via REST API
         let data;
@@ -854,17 +877,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }catch(err){
       console.error('[Vendor] Inventory fetch failed for',sku,err);
-      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source:isRS?'rs':isMT?'mt':isSM?'sm':isCP?'cp':'ss'}}));
     }finally{
       delete vendorInvFetching.current[cacheKey];
     }
-  },[products,isRichardsonItem,isMomentecItem,isSanMarItem,isSSItem]);
+  },[products,isRichardsonItem,isMomentecItem,isSanMarItem,isSSItem,isChamproItem]);
 
   // Auto-fetch vendor inventory for all S&S, SanMar, Momentec, and Richardson items on the order
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)||isRichardsonItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+      if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)||isRichardsonItem(item)||isChamproItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
@@ -3373,7 +3396,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':vi.source==='cp'?'cp':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':vi.source==='cp'?'#1d4ed8':'#7c3aed';const hasNext=vi.source==='rs'||vi.source==='cp';const sizeNext=hasNext?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(hasNext&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':vi.source==='cp'?'Champro':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((hasNext&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(hasNext&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
@@ -3392,8 +3415,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
             </div>
             </>}
-            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
-              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);const isCP=isChamproItem(item);
+              if(isSS||isSM||isMT||isRS||isCP){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':isCP?'CP':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':isCP?'#1d4ed8':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':isCP?'#93c5fd':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':isCP?'Champro':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
