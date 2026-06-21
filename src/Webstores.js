@@ -934,19 +934,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const addManyFromList = useCallback(async (rows) => {
     if (!sel?.id || !rows?.length) return { added: 0 };
     const base = (detail?.catalog?.length || 0);
+    const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
     const payload = rows.map((r, i) => ({
       store_id: sel.id, kind: 'single', product_id: r.product.id, sku: r.product.sku,
       retail_price: Number(r.price) || 0, fundraise_amount: Number(r.fundraise) || 0,
       image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [],
       category: r.category || null, kit_name: r.kit_name || null, required: !!r.required,
-      options: [], active: true, sort_order: base + i,
+      options: defOpts, active: true, sort_order: base + i,
     }));
     const { error } = await supabase.from('webstore_products').insert(payload);
     if (error) { flash('Import error: ' + error.message); return { added: 0, error: error.message }; }
     flash(`Imported ${payload.length} item${payload.length === 1 ? '' : 's'}`); loadDetail(sel);
     return { added: payload.length };
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, wsSettings, flash, loadDetail]);
 
   // Apply a saved template — resolve its SKUs to live products and add the ones not already
   // in this store (carrying the template's category / price / fundraising / kit). A SECTION
@@ -984,11 +985,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
     let base = (detail?.catalog?.length || 0);
     let added = 0;
+    const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
     const mk = (p, grp, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
       retail_price: (grp.price != null && grp.price !== '') ? Number(grp.price) : (Number(p.retail_price) || 0),
       fundraise_amount: Number(grp.fundraise) || 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [], category: grp.category || null, kit_name: grp.kit_name || null,
-      required: !!grp.required, options: [], active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
+      required: !!grp.required, options: defOpts, active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
     for (const grp of plan) {
       const cols = (grp.products || []).filter((p) => p && p.id && !existing.has(p.id));
       if (!cols.length) continue;
@@ -1009,7 +1011,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     flash(added ? `Added ${added} item${added === 1 ? '' : 's'}` : 'Those colors are already in the store'); loadDetail(sel);
     return { added };
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, wsSettings, flash, loadDetail]);
 
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
