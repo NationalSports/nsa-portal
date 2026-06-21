@@ -37,9 +37,29 @@ const SYSTEM = [
   '- Output ONLY the cleaned description text. No preamble, no quotes, no headings.',
 ].join('\n');
 
+const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const WRITE_CONCURRENCY = 30;
+const DIRECT_CONCURRENCY = 8;          // parallel direct calls in the `direct` fallback
+const DIRECT_BUDGET_MS = 22000;        // stay under the 26s function timeout
 const anthropicHeaders = (apiKey) => ({ 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' });
 const json = (statusCode, obj) => ({ statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Direct (non-batch) Sonnet rewrite — used by the `direct` fallback when the batch
+// queue stalls. Retries rate-limit / overload / 5xx with backoff.
+async function cleanOne(apiKey, name, raw) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const resp = await fetch(MESSAGES_URL, {
+      method: 'POST', headers: anthropicHeaders(apiKey),
+      body: JSON.stringify({ model: MODEL, max_tokens: 400, system: SYSTEM,
+        messages: [{ role: 'user', content: `Product: ${name || '(unnamed)'}\n\nRaw description:\n${String(raw).slice(0, 4000)}` }] }),
+    });
+    if (resp.ok) { const d = await resp.json(); return (d.content || []).filter((b) => b && b.type === 'text').map((b) => b.text).join('').trim(); }
+    if (resp.status === 429 || resp.status === 529 || resp.status >= 500) { await sleep(1000 * Math.pow(2, attempt)); continue; }
+    throw new Error('anthropic ' + resp.status + ' ' + (await resp.text().catch(() => '')).slice(0, 160));
+  }
+  throw new Error('anthropic retries exhausted');
+}
 
 function actionOf(event) {
   try { return new URL(event.rawUrl).searchParams.get('action') || ''; } catch (e) { /* */ }
@@ -149,6 +169,49 @@ exports.handler = async (event) => {
         }));
       }
       return json(200, { ok: true, batch_id: id, request_counts: b.request_counts, results: lines.length, written, failed, empty, remaining: Math.max(0, remaining.size - written) });
+    }
+
+    // ---- CANCEL: stop a queued/in-progress batch (e.g. to switch to direct). ----
+    if (action === 'cancel') {
+      const id = paramOf(event, 'batch');
+      if (!id) return json(400, { error: 'batch id required' });
+      const res = await fetch(BATCHES_URL + '/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: anthropicHeaders(apiKey) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return json(502, { ok: false, error: 'cancel ' + res.status, detail: data });
+      return json(200, { ok: true, batch_id: id, processing_status: data.processing_status });
+    }
+
+    // ---- DIRECT: per-item Sonnet fallback. Drains a chunk per call (<=26s); call
+    //      repeatedly until remaining = 0. Writes guarded on description_ai IS NULL;
+    //      empty/failed results are marked '' (the storefront view treats '' as
+    //      absent and falls back to raw copy) so the drain can never stall. ----
+    if (action === 'direct') {
+      const started = Date.now();
+      let cleaned = 0, failed = 0;
+      while (Date.now() - started < DIRECT_BUDGET_MS) {
+        const { data: rows, error } = await admin
+          .from('products').select('id,name,description')
+          .ilike('brand', '%adidas%').not('description', 'is', null)
+          .is('description_ai', null).not('is_archived', 'is', true)
+          .order('id', { ascending: true }).limit(DIRECT_CONCURRENCY * 5);
+        if (error) return json(500, { error: error.message });
+        if (!rows || !rows.length) break;
+        for (let i = 0; i < rows.length && Date.now() - started < DIRECT_BUDGET_MS; i += DIRECT_CONCURRENCY) {
+          await Promise.all(rows.slice(i, i + DIRECT_CONCURRENCY).map(async (r) => {
+            const rawd = String(r.description || '').trim();
+            let text = '';
+            try { text = rawd ? await cleanOne(apiKey, r.name, rawd) : ''; } catch (e) { failed++; }
+            const { error: uErr } = await admin.from('products')
+              .update({ description_ai: text || '', description_ai_at: new Date().toISOString() })
+              .eq('id', r.id).is('description_ai', null);
+            if (uErr) console.error('[desc-backfill] direct', r.id, uErr.message);
+            else if (text) cleaned++;
+          }));
+        }
+      }
+      const { count } = await admin.from('products').select('id', { count: 'exact', head: true })
+        .ilike('brand', '%adidas%').not('description', 'is', null).is('description_ai', null).not('is_archived', 'is', true);
+      return json(200, { ok: true, cleaned, failed, remaining: count == null ? null : count });
     }
 
     return json(400, { error: 'unknown action: ' + action });
