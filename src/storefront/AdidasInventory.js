@@ -441,7 +441,7 @@ function Styles() {
         .ai-root *{box-sizing:border-box}
         .ai-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:#F4F5F7;color:#191919;min-height:100vh}
         .ai-root ::selection{background:#191919;color:#fff}
-        .ai-card{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(15,26,56,.08);transition:transform .16s ease, box-shadow .16s ease;display:flex;flex-direction:column;cursor:pointer;border:none;padding:0;text-align:left;font-family:inherit}
+        .ai-card{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(15,26,56,.08);transition:transform .16s ease, box-shadow .16s ease;display:flex;flex-direction:column;cursor:pointer;border:none;padding:0;text-align:left;font-family:inherit;width:100%;height:100%}
         .ai-card:hover{transform:translateY(-3px);box-shadow:0 14px 32px rgba(15,26,56,.13)}
         .ai-chipgrid{display:flex;flex-wrap:wrap;gap:5px}
         .ai-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid #E2E5EA;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;background:#FAFBFC;white-space:nowrap}
@@ -617,8 +617,8 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn, canF
           <div style={{ fontSize: 12, fontWeight: 600, color: '#B45309' }}>Out of stock — restock dates inside</div>
         ) : (
           <div className="ai-chipgrid">
-            {sizes.slice(0, 14).map((s) => <span key={s} className="ai-chip">{sizeLabel(s)}</span>)}
-            {sizes.length > 14 && <span className="ai-chip" style={{ color: '#6A7180' }}>+{sizes.length - 14}</span>}
+            {sizes.slice(0, 8).map((s) => <span key={s} className="ai-chip">{sizeLabel(s)}</span>)}
+            {sizes.length > 8 && <span className="ai-chip" style={{ color: '#6A7180' }}>+{sizes.length - 8}</span>}
           </div>
         )}
         <div style={{ marginTop: 'auto', fontSize: 12, fontWeight: 700, color: '#3A4150', borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
@@ -1861,7 +1861,7 @@ export default function AdidasInventory() {
       const ih = v.matchCws.reduce((a, c) => a + (c.inHouseUnits || 0), 0);
       const units = v.matchCws.reduce((a, c) => a + c.units, 0);
       let s = v.st.isFeatured ? 50000 : 0;
-      if (ih > 0) s += 1000 + Math.min(ih, 500) / 5;
+      if (ih > 0) s += 100000 + Math.min(ih, 500) / 5;
       s += popScore(v.st);
       s += bagMerchBoost(v.st); // duffels (Defender / Team Issue first) lead the Bags category
       s += Math.min(units, 2000) / 20;

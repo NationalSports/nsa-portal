@@ -12,10 +12,14 @@
 // We materialise:
 //   products           — one row per design+color, id 'mt-{design}-{color}',
 //                        sku '{design}.{color}', brand 'Momentec',
-//                        15% dealer discount off MSRP, sell = cost×1.65,
-//                        per-color images from the static CDN pattern.
+//                        15% dealer discount off MSRP, sell = cost×1.65.
+//                        Images are left to momentec-image-verify-background
+//                        (the CDN URL can't be derived reliably from the SKU).
 //   momentec_inventory — one row per colorway sku + size with live stock,
 //                        unioned into inventory_unified so LiveLook sees it.
+//
+// Made-to-order programs (Custom, FreeStyle Sublimated, CUT_* cut-and-sew) are
+// skipped — they're not blank stock and have no catalog photo.
 //
 // Triggered by momentec-sync-cron (daily) or manually:
 //   curl -X POST https://<site>/.netlify/functions/momentec-sync-background
@@ -33,7 +37,6 @@ const V2_HOSTS = {
   stage: 'https://stage-api.momentecbrands.com',
   prod:  'https://api.momentecbrands.com',
 };
-const IMG_BASE = 'https://static.momentecbrands.com/product';
 
 const CATEGORY_RULES = [
   ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],
@@ -170,9 +173,11 @@ exports.handler = async (event) => {
         const data = await style(design);
         for (const pi of arr(data.productInfo)) {
           const name = String(pi.Name || design);
-          // Skip Momentec "Custom" programs (made-to-order, not blank stock) so they
-          // never enter the catalog / live-look. Mirrors AdidasInventory's display guard.
-          if (/custom/i.test(name)) { customSkipped++; continue; }
+          // Skip Momentec made-to-order programs — "Custom" and "FreeStyle
+          // Sublimated" lines: not blank stock and they have no catalog photo,
+          // so they never enter the catalog / live-look. (CUT_* cut-and-sew SKUs
+          // are skipped per-colorway below.) Mirrors AdidasInventory's guard.
+          if (/custom|sublimat/i.test(name)) { customSkipped++; continue; }
           const desc = stripHtml(pi.longDescription).slice(0, 1000) || null;
           const msrp = arr(pi.MSRP).find((m) => String(m.currency).toUpperCase() === 'USD');
           const msrpVal = msrp ? num(msrp.value) : 0;
@@ -184,6 +189,7 @@ exports.handler = async (event) => {
             const parts = String(it.SKU || '').split('.');
             if (parts.length < 3) continue; // need design.color.size
             const dz = parts[0], colorCode = parts[1], size = parts.slice(2).join('.') || 'OSFA';
+            if (/^CUT_/i.test(dz)) continue; // cut-and-sew / made-to-order — skip
             const cwSku = `${dz}.${colorCode}`;
             let g = colors.get(cwSku);
             if (!g) { g = { dz, colorCode, colorName: String(it.colorName || ''), price: 0, sizes: [] }; colors.set(cwSku, g); }
@@ -217,8 +223,10 @@ exports.handler = async (event) => {
               catalog_sell_price: sell,
               is_active: true,
               available_sizes: g.sizes.map((s) => s.size),
-              image_front_url: `${IMG_BASE}/${g.dz}_${g.colorCode}_front.jpg`,
-              image_back_url: `${IMG_BASE}/${g.dz}_${g.colorCode}_back.jpg`,
+              // Images are owned by momentec-image-verify-background, which probes
+              // the real CDN/API URL and clears dead ones. We deliberately omit
+              // image_front_url/image_back_url here so this merge-duplicates upsert
+              // never clobbers a verified image with a blind SKU guess.
               inventory_source: 'momentec',
             });
             for (const s of g.sizes) {
