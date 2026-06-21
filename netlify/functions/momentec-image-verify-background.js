@@ -83,14 +83,30 @@ exports.handler = async (event) => {
     return { kind: sawUnknown ? 'unknown' : 'dead' };
   };
 
-  const upsert = async (rows) => {
-    for (let i = 0; i < rows.length; i += 500) {
-      const r = await sb('products?on_conflict=id', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify(rows.slice(i, i + 500)),
+  // Writes use PATCH (not upsert): we touch only image columns, so the INSERT
+  // arm of an upsert would trip products' NOT NULL columns (sku/name/brand).
+  // Dead rows all get the same value, so they batch into one id=in.() PATCH;
+  // recovered rows each have a distinct URL, so they go one at a time.
+  const patchMany = async (ids, body) => {
+    for (let i = 0; i < ids.length; i += 150) {
+      const chunk = ids.slice(i, i + 150).map((id) => encodeURIComponent(id)).join(',');
+      const r = await sb(`products?id=in.(${chunk})`, {
+        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(body),
       });
-      if (!r.ok) console.error('[momentec-image-verify] upsert', r.status, (await r.text()).slice(0, 200));
+      if (!r.ok) console.error('[momentec-image-verify] patch-null', r.status, (await r.text()).slice(0, 200));
+    }
+  };
+  const patchOne = async (id, front, back) => {
+    const r = await sb(`products?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ image_front_url: front, image_back_url: back }),
+    });
+    if (!r.ok) console.error('[momentec-image-verify] patch-one', id, r.status, (await r.text()).slice(0, 150));
+  };
+  const flush = async (toNull, toSet) => {
+    if (toNull.length) await patchMany(toNull, { image_front_url: null, image_back_url: null });
+    for (let i = 0; i < toSet.length; i += 12) {
+      await Promise.all(toSet.slice(i, i + 12).map((c) => patchOne(c.id, c.image_front_url, c.image_back_url)));
     }
   };
 
@@ -110,7 +126,7 @@ exports.handler = async (event) => {
     pages++;
     last = rows[rows.length - 1].id;
 
-    const changed = [];
+    const toNull = [], toSet = [];
     for (let i = 0; i < rows.length; i += CONC) {
       const chunk = rows.slice(i, i + CONC);
       const results = await Promise.all(chunk.map((row) => resolve(row.sku)));
@@ -122,12 +138,13 @@ exports.handler = async (event) => {
         const desiredFront = res.kind === 'found' ? res.url : null;
         if (res.kind === 'found') { if (res.url.endsWith('_front.jpg')) found_front++; else found_plain++; }
         else nulled++;
-        if (cur !== desiredFront) {
-          changed.push({ id: row.id, image_front_url: desiredFront, image_back_url: backFor(desiredFront) });
-        }
+        if (cur === desiredFront) return;
+        if (desiredFront === null) toNull.push(row.id);
+        else toSet.push({ id: row.id, image_front_url: desiredFront, image_back_url: backFor(desiredFront) });
       });
     }
-    if (changed.length) { await upsert(changed); written += changed.length; }
+    await flush(toNull, toSet);
+    written += toNull.length + toSet.length;
     if (rows.length < PAGE) break;
   }
 
