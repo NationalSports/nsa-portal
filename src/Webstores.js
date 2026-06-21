@@ -2046,6 +2046,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
+  const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
+  const [overCat, setOverCat] = useState(null); // category section being dragged over
   // Side-by-side layout: a persistent item list on the left, the item editor in a
   // pane on the right (no popup). Toggle back to the classic list+popup; remembered locally.
   const [view, setView] = useState(() => { try { return localStorage.getItem('nsa_catalog_view') || 'split'; } catch { return 'split'; } });
@@ -2070,6 +2072,52 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
+
+  // ── Category sections (side list): group cards by their category, with "+ Category"
+  // adding a (possibly empty) section you drag cards into. Dropping a card on a section
+  // header sets its category; a card with no category sits under "Uncategorized". ──
+  const maxSort = Math.max(0, ...catalog.map((c) => Number(c.sort_order) || 0));
+  const addCat = (name) => { const c = (name || '').trim(); if (c) setNewCats((p) => (p.includes(c) ? p : [...p, c])); };
+  const catSections = (() => {
+    const byCat = new Map();
+    for (const g of groups) { const c = (g.rep.category || '').trim(); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
+    const arr = [...byCat.entries()].map(([cat, gs]) => ({ cat, groups: gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
+    arr.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
+    for (const c of newCats) { if (!byCat.has(c)) arr.push({ cat: c, groups: [], minSort: Infinity }); }
+    return arr;
+  })();
+  const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
+  const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
+  const renderRep = ({ rep: p, rows: colorRows }) => {
+    const stock = stockByWp[p.id];
+    const st = stockText(stock);
+    const label = p.display_name || stock?.name || p.sku || '(unnamed)';
+    const fund = Number(p.fundraise_amount) || 0;
+    const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
+    const sel = editId === p.id;
+    const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
+    const nColors = colorRows.length;
+    return (
+      <div key={p.id} onClick={() => setEditId(p.id)}
+        onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); }}
+        style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
+          borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
+          background: sel ? '#f1f5f9' : '#fff',
+          borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f4f6f9',
+          borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
+          opacity: dragId === p.id ? 0.4 : 1 }}>
+        <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>
+        <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)} · {st.text}</div>
+        </div>
+        {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
+      </div>
+    );
+  };
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
   useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
@@ -2150,37 +2198,26 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
           {/* Left: persistent, scrollable item list */}
           <div style={{ width: 340, flexShrink: 0, position: 'sticky', top: 12, maxHeight: 'calc(100vh - 180px)', overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 12, background: '#fff' }}>
-            <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '9px 12px', borderBottom: '1px solid #eef0f3', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, zIndex: 1 }}>{groups.length} item{groups.length === 1 ? '' : 's'} · drag to reorder</div>
-            {groups.map(({ rep: p, rows: colorRows }) => {
-              const stock = stockByWp[p.id];
-              const st = stockText(stock);
-              const label = p.display_name || stock?.name || p.sku || '(unnamed)';
-              const fund = Number(p.fundraise_amount) || 0;
-              const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-              const sel = editId === p.id;
-              const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
-              const nColors = colorRows.length;
-              return (
-                <div key={p.id} onClick={() => setEditId(p.id)}
-                  onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); }}
-                  style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
-                    borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
-                    background: sel ? '#f1f5f9' : '#fff',
-                    borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f4f6f9',
-                    borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
-                    opacity: dragId === p.id ? 0.4 : 1 }}>
-                  <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>
-                  <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+            <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '8px 10px', borderBottom: '1px solid #eef0f3', display: 'flex', alignItems: 'center', gap: 6, zIndex: 2 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4 }}>{groups.length} item{groups.length === 1 ? '' : 's'}</span>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <MenuButton label="+ Category" items={[...CATEGORY_PRESETS.map((c) => ({ label: c, onClick: () => addCat(c) })), { divider: true }, { label: 'Custom name…', icon: '✏️', onClick: () => { const n = window.prompt('New category name'); if (n && n.trim()) addCat(n.trim()); } }]} />
+                <button className="btn btn-sm btn-secondary" onClick={() => { setMode('single'); setPending(null); }}>+ Item</button>
+              </div>
+            </div>
+            {useCats
+              ? catSections.map((sec) => (
+                <div key={sec.cat || '__unc'}>
+                  <div onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverCat(sec.cat); } }} onDrop={(e) => { e.preventDefault(); dropToCat(sec.cat); }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: overCat === sec.cat && dragId ? '#e0edff' : '#f8fafc', borderBottom: '1px solid #eef0f3', borderTop: '1px solid #eef0f3', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: sec.cat ? '#334155' : '#94a3b8' }}>
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sec.cat || 'Uncategorized'}</span><span style={{ color: '#cbd5e1', fontWeight: 700 }}>· {sec.groups.length}</span>
+                    {sec.groups.length === 0 && <button type="button" onClick={() => setNewCats((p) => p.filter((x) => x !== sec.cat))} title="Remove this empty section" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
-                    <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)} · {st.text}</div>
-                  </div>
-                  {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
+                  {sec.groups.map((g) => renderRep(g))}
+                  {sec.groups.length === 0 && <div style={{ padding: '14px 12px', fontSize: 11, color: '#cbd5e1', textAlign: 'center' }}>Drag items here</div>}
                 </div>
-              );
-            })}
+              ))
+              : groups.map((g) => renderRep(g))}
           </div>
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -3451,6 +3488,9 @@ function TemplateGallery({ catalog = [], stockByWp = {}, onApply, onClose }) {
 }
 
 // Common sizing scales, so a rep picks a type instead of typing sizes every time.
+// Quick-pick category names for the side-list "+ Category" (reps can also type a custom one).
+const CATEGORY_PRESETS = ['Gear', 'Varsity Gear', 'FROSH Gear', 'Player Pack', 'Mandatory Player Pack', 'Practice Gear', 'Footwear', 'Accessories', 'Parent Gear', 'Spirit Pack'];
+
 const SIZE_PRESETS = [
   { label: 'Adult S–XL', sizes: ['S', 'M', 'L', 'XL'] },
   { label: 'Adult S–2XL', sizes: ['S', 'M', 'L', 'XL', '2XL'] },
