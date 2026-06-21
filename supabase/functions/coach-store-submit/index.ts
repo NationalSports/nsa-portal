@@ -38,12 +38,20 @@ const esc = (s: string) => String(s || "").replace(/[<>&"]/g, (c) => ({ "<": "&l
 
 // Best-effort staff alert when a coach submits a store. Never throws - a failed
 // email must not fail the submission (the admin badge is the durable signal).
-async function notifyStaff(teamName: string, storeName: string, count: number, extraRecipients: string[]) {
+// `contact` carries the public lead's typed-in name/email/phone (empty for the
+// logged-in coach path, where the team is already a known customer).
+async function notifyStaff(
+  teamName: string, storeName: string, count: number, extraRecipients: string[],
+  contact: { name?: string; email?: string; phone?: string } = {},
+) {
   if (!BREVO_API_KEY) return;
   const to = [...new Set([NOTIFY_EMAIL, ...extraRecipients].map((e) => (e || "").trim()).filter((e) => e.includes("@")))];
   if (!to.length) return;
+  const contactLine = (contact.name || contact.email || contact.phone)
+    ? `<li><b>Contact:</b> ${esc(contact.name || "")}${contact.email ? ` &lt;${esc(contact.email)}&gt;` : ""}${contact.phone ? ` &middot; ${esc(contact.phone)}` : ""}</li>`
+    : "";
   const html = `<p>A coach just submitted a team store for approval.</p>
-<ul><li><b>Team:</b> ${esc(teamName)}</li><li><b>Store:</b> ${esc(storeName)}</li><li><b>Items:</b> ${count}</li></ul>
+<ul><li><b>Team:</b> ${esc(teamName)}</li><li><b>Store:</b> ${esc(storeName)}</li><li><b>Items:</b> ${count}</li>${contactLine}</ul>
 <p>Open the Webstores admin and look for the amber &ldquo;Coach submission &mdash; review&rdquo; badge to set shipping &amp; sale dates and publish it.</p>`;
   try {
     await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -66,21 +74,41 @@ serve(async (req: Request) => {
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
     const body = await req.json().catch(() => ({}));
+    // Public lead: a coach building from the login-free /team-stores "Build" flow.
+    // There's no customer/rep to anchor to, so identity is replaced by typed-in
+    // contact info and the store is filed with customer_id=null for staff to claim.
+    const isPublic = body?.public === true;
     const alphaTag = str(body?.alpha_tag);
     const customerId = str(body?.customer_id);
     const name = str(body?.name);
-    const templateId = body?.template_id ? str(body.template_id) : null;
+    // Anon has no access to staff templates (webstores is authenticated-only), so a
+    // public submission always builds from the allow-list pool — ignore template_id.
+    const templateId = !isPublic && body?.template_id ? str(body.template_id) : null;
     const productIds: string[] = Array.isArray(body?.item_product_ids) ? body.item_product_ids.map((x: unknown) => String(x)) : [];
     const branding = (body?.branding && typeof body.branding === "object") ? body.branding : {};
+    const contact = (body?.contact && typeof body.contact === "object") ? body.contact : {};
+    const contactName = str((contact as any)?.name);
+    const contactEmail = str((contact as any)?.email) || str((branding as any).coach_contact_email);
+    const contactPhone = str((contact as any)?.phone);
 
-    if (!customerId || !alphaTag) return bad("Missing team identity.");
     if (!name) return bad("Please name your store.");
     if (!productIds.length) return bad("Pick at least one item for your store.");
+    if (productIds.length > 200) return bad("That's too many items for one store.");
 
-    // 1) Identity - the alpha_tag the portal was opened with must match the team.
-    const { data: cust } = await admin.from("customers").select("id,alpha_tag,name").eq("id", customerId).maybeSingle();
-    if (!cust) return bad("We couldn't find your team.");
-    if (str(cust.alpha_tag).toLowerCase() !== alphaTag.toLowerCase()) return bad("This store link doesn't match your team.");
+    // 1) Identity. Logged-in coach: the alpha_tag the portal opened with must match
+    //    the team. Public lead: no customer, but we require reachable contact info.
+    let teamLabel: string;
+    if (isPublic) {
+      if (!contactName) return bad("Please tell us your name so we can reach you.");
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contactEmail)) return bad("Please enter a valid email so we can reach you.");
+      teamLabel = str((contact as any)?.org) || name;
+    } else {
+      if (!customerId || !alphaTag) return bad("Missing team identity.");
+      const { data: cust } = await admin.from("customers").select("id,alpha_tag,name").eq("id", customerId).maybeSingle();
+      if (!cust) return bad("We couldn't find your team.");
+      if (str(cust.alpha_tag).toLowerCase() !== alphaTag.toLowerCase()) return bad("This store link doesn't match your team.");
+      teamLabel = cust.name || alphaTag;
+    }
 
     // Coach pool config (loaded once - also gives us the fundraise cap on both paths).
     const { data: cfg } = await admin.from("coach_store_config").select("*").eq("id", 1).maybeSingle();
@@ -154,14 +182,17 @@ serve(async (req: Request) => {
       if (n > 50) { slug = `${base}-${Date.now().toString(36)}`; break; }
     }
 
-    // 5) Insert the draft store (awaiting staff approval).
+    // 5) Insert the draft store (awaiting staff approval). A public lead has no
+    //    customer yet (customer_id=null); staff link it to a customer on review.
     const storeRow: Record<string, unknown> = {
-      customer_id: customerId, name, slug, status: "draft", created_via: "coach", source: "webstore",
+      customer_id: isPublic ? null : customerId, name, slug, status: "draft", created_via: "coach", source: "webstore",
       primary_color: str((branding as any).primary_color) || null,
       accent_color: str((branding as any).accent_color) || null,
       logo_url: str((branding as any).logo_url) || null,
       hero_blurb: str((branding as any).hero_blurb) || null,
-      coach_contact_email: str((branding as any).coach_contact_email) || null,
+      coach_contact_email: contactEmail || null,
+      coach_contact_name: contactName || null,
+      coach_contact_phone: contactPhone || null,
     };
     const { data: store, error: sErr } = await admin.from("webstores").insert(storeRow).select("id,slug").single();
     if (sErr || !store) return bad(`Could not create the store: ${sErr?.message || "unknown error"}`);
@@ -181,7 +212,7 @@ serve(async (req: Request) => {
     if (pErr) return bad(`Your store was created but items couldn't be added: ${pErr.message}`, { store_id: store.id });
 
     const notifyExtra: string[] = Array.isArray(body?.notify_to) ? body.notify_to.map((x: any) => (typeof x === "string" ? x : x?.email)).filter(Boolean) : [];
-    await notifyStaff(cust.name || alphaTag, name, rows.length, notifyExtra);
+    await notifyStaff(teamLabel, name, rows.length, notifyExtra, { name: contactName, email: contactEmail, phone: contactPhone });
 
     return ok({ store_id: store.id, slug: store.slug, count: rows.length, dropped: productIds.length - rows.length });
   } catch (e) {
