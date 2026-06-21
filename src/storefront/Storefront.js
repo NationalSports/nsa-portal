@@ -453,7 +453,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
   // Honor the store's per-product size selection (sizes_offered); null = all.
   const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
-  const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
+  const _scale = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
+  // Only surface sizes that actually have stock (warehouse or vendor). A vendor
+  // lists a full scale (e.g. 3XL–6XL) for some styles but carries zero, so those
+  // would otherwise render as dead, struck-through buttons. If nothing's in stock
+  // yet but the item is on the way, fall back to the full scale so backorderable
+  // items stay orderable.
+  const _inStock = _scale.filter((s) => effSizeQty(p, s) > 0);
+  const sizesArr = _inStock.length ? _inStock : (isIncoming(p) ? _scale : _inStock);
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
@@ -498,7 +505,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
         </div>
         <div style={{ paddingTop: 4 }}>
           <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,4vw,42px)', margin: '0 0 8px', letterSpacing: 0.2, lineHeight: 0.98, textTransform: 'uppercase' }}>{p.name}</h1>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category, p.sku].filter(Boolean).join(' · ')}</div>
           <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: '#64748b', fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 

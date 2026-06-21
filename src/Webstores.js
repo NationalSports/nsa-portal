@@ -2098,7 +2098,6 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
   const renderRep = ({ rep: p, rows: colorRows }) => {
     const stock = stockByWp[p.id];
-    const st = stockText(stock);
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
@@ -2120,7 +2119,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)} · {st.text}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
       </div>
@@ -2770,7 +2769,15 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
   // Per-store size selection: which of the product's available sizes this store
   // shows. Default = all on; saving a strict subset hides the rest on the storefront.
-  const allSizes = Array.isArray(availableSizes) ? availableSizes : [];
+  // Only sizes that actually have stock (warehouse or vendor) are offerable — a
+  // vendor lists a full scale (e.g. 3XL–6XL) for some styles but carries zero, so
+  // those shouldn't show as toggles. Falls back to the full scale if nothing's in
+  // stock yet (e.g. a brand-new style on the way).
+  const _stk = stockByWp[item.id] || {};
+  const _sizeQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
+  const _scaleSizes = Array.isArray(availableSizes) ? availableSizes : [];
+  const _inStockSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0);
+  const allSizes = _inStockSizes.length ? _inStockSizes : _scaleSizes;
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
   );
