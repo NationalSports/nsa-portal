@@ -1650,6 +1650,7 @@ const BLANK = {
   fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
   size_upcharge_enabled: true,
   public_listed: true,
+  decoration_mode: 'in_house',
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
@@ -1840,6 +1841,17 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
           <Row label="Close date (optional)"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
         </div>
+        <Row label="Decoration">
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[['in_house', '🏭 In-house', 'We print / embroider it'], ['outsourced', '📦 Elsewhere', 'Decorated off-site']].map(([v, lbl, sub]) => { const on = (f.decoration_mode || 'in_house') === v; return (
+              <button key={v} type="button" onClick={() => set('decoration_mode', v)} style={{ flex: 1, textAlign: 'left', padding: '9px 12px', borderRadius: 10, cursor: 'pointer', border: on ? '2px solid #4f46e5' : '1px solid #d1d5db', background: on ? '#eef2ff' : '#fff' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#1e293b' }}>{lbl}</div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>
+              </button>
+            ); })}
+          </div>
+        </Row>
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>In-house needs production-ready art (separations / vector) connected to the customer's art folder. Decorated elsewhere just needs a PNG/AI mockup — still saved to the customer's art library so it can be upgraded later.</div>
       </Section>
 
       <Section title="Ordering & payment">
@@ -2167,7 +2179,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -4894,7 +4906,7 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -4978,6 +4990,12 @@ function ArtTab({ catalog, stockByWp, libraryArt, storeArt = [], onSaveStoreArt,
 
   return (
     <div>
+      {/* Store decoration mode — drives how strict the art needs to be */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10, marginBottom: 12, fontSize: 12.5, fontWeight: 600, border: '1px solid', ...(decorationMode === 'outsourced' ? { background: '#fff7ed', borderColor: '#fed7aa', color: '#9a3412' } : { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }) }}>
+        {decorationMode === 'outsourced'
+          ? <span>📦 <b>Decorated elsewhere</b> — a clean PNG/AI mockup is enough here. It's still saved to the customer's art library so it can be upgraded to real decoration art later.</span>
+          : <span>🏭 <b>In-house decoration</b> — each logo needs production-ready art (separations / vector) on the customer's art folder so production knows exactly what to make.</span>}
+      </div>
       <button onClick={onOpenMockBuilder} disabled={!canMock} title={canMock ? 'Open the full mock builder' : 'Needs library art and at least one store item'} style={{ width: '100%', textAlign: 'left', border: 'none', cursor: canMock ? 'pointer' : 'not-allowed', background: canMock ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff', borderRadius: 12, padding: '14px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
         <span style={{ fontSize: 13, fontWeight: 800, background: 'rgba(255,255,255,.18)', border: '1px solid rgba(255,255,255,.35)', borderRadius: 9, padding: '9px 15px', whiteSpace: 'nowrap' }}>Open →</span>
@@ -6092,6 +6110,7 @@ function SettingsTab({ store: s }) {
     ['Director', [s.director_name, s.director_email, s.director_phone].filter(Boolean).join(' · ') || '—'],
     ['Payment mode', s.payment_mode === 'either' ? 'Card + invoice-later' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
     ['Login required', s.require_login ? 'Yes (club members only)' : 'No (public)'],
+    ['Decoration', s.decoration_mode === 'outsourced' ? 'Decorated elsewhere (mockups only)' : 'In-house (production art required)'],
     ['Delivery', dlv],
     ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique required' : ''})` : 'Off'],
     ['SO creation', s.so_creation],
