@@ -13,9 +13,12 @@
 // as imaged and render a broken/"coming soon" card.
 //
 // This function fixes image_front_url to the truth, per colorway:
-//   1. try {dz}_{color}_front.jpg   (most apparel)
-//   2. else try {dz}_{color}.jpg    (FBC73M-style accessories)
-//   3. else NULL it                 (genuinely no photo)
+//   1. try {dz}_{color}_front.jpg          (most apparel)
+//   2. else try {dz}_{color}.jpg           (FBC73M-style accessories)
+//   3. else ask the /v2/Style API for the design's real Images.imageURL /
+//      altImages (shared photos live under the parent design, e.g. youth
+//      jersey 9583 → adult 9582_280.jpg)
+//   4. else NULL it                        (genuinely no photo)
 // Only a definitive 403/404 on BOTH candidates nulls a row; timeouts/5xx leave
 // it untouched so a CDN hiccup can't wipe a good image. image_back_url follows
 // the chosen front (`_back.jpg` for the _front pattern, none for plain `.jpg`).
@@ -29,6 +32,7 @@
 // Optional query:    ?brand=Momentec&concurrency=35
 
 const IMG_BASE = 'https://static.momentecbrands.com/product';
+const V2_HOST = 'https://api.momentecbrands.com'; // /v2/Style — public catalog read
 
 exports.handler = async (event) => {
   const qs = (event && event.queryStringParameters) || {};
@@ -69,8 +73,44 @@ exports.handler = async (event) => {
     }
   };
 
+  // API fallback: when a colorway's own photo is missing, Momentec often shares
+  // one under the parent design (e.g. youth jersey 9583 → adult 9582_280.jpg).
+  // The /v2/Style response carries the real URLs in Images.imageURL + altImages
+  // (excluding the _NoPicture.jpg sentinel). Resolve once per design and cache
+  // the promise so sibling colorways reuse it instead of re-calling the API.
+  const designCache = new Map(); // design -> Promise<resolved url | null>
+  const styleImage = (design) => {
+    if (designCache.has(design)) return designCache.get(design);
+    const p = (async () => {
+      try {
+        const res = await fetch(`${V2_HOST}/v2/Style`, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productOrDesignNumber: design }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const pis = Array.isArray(data.productInfo) ? data.productInfo : (data.productInfo ? [data.productInfo] : []);
+        const cands = [];
+        for (const pi of pis) {
+          const main = pi && pi.Images && pi.Images.imageURL;
+          if (main) cands.push(main);
+          if (Array.isArray(pi && pi.altImages)) cands.push(...pi.altImages);
+        }
+        for (const u of cands) {
+          if (!u || /_NoPicture/i.test(u)) continue;
+          const s = await probe(u);
+          if (s === 200 || s === 206) return u;
+        }
+      } catch (e) { /* fall through to null */ }
+      return null;
+    })();
+    designCache.set(design, p);
+    return p;
+  };
+
   // Resolve the correct front URL for a row. Returns:
-  //   { kind: 'found', url } | { kind: 'dead' } | { kind: 'unknown' }
+  //   { kind:'found', url, viaApi? } | { kind:'dead' } | { kind:'unknown' }
   const resolve = async (sku) => {
     let sawUnknown = false;
     for (const c of candidates(sku)) {
@@ -80,7 +120,13 @@ exports.handler = async (event) => {
       sawUnknown = true; // transient — don't trust a null decision
       break;
     }
-    return { kind: sawUnknown ? 'unknown' : 'dead' };
+    if (sawUnknown) return { kind: 'unknown' };
+    // Own photo is definitively missing — try the design's real API image.
+    const i = String(sku || '').indexOf('.');
+    const design = i >= 0 ? sku.slice(0, i) : sku;
+    const apiUrl = design ? await styleImage(design) : null;
+    if (apiUrl) return { kind: 'found', url: apiUrl, viaApi: true };
+    return { kind: 'dead' };
   };
 
   // Writes use PATCH (not upsert): we touch only image columns, so the INSERT
@@ -112,7 +158,7 @@ exports.handler = async (event) => {
 
   const t0 = Date.now();
   let last = '';
-  let scanned = 0, found_front = 0, found_plain = 0, nulled = 0, unknown = 0, written = 0, pages = 0;
+  let scanned = 0, found_front = 0, found_plain = 0, found_api = 0, nulled = 0, unknown = 0, written = 0, pages = 0;
 
   for (;;) {
     if (Date.now() - t0 > TIME_BUDGET_MS) { console.warn('[momentec-image-verify] time budget reached at', last); break; }
@@ -136,7 +182,7 @@ exports.handler = async (event) => {
         const cur = row.image_front_url || null;
         if (res.kind === 'unknown') { unknown++; return; }
         const desiredFront = res.kind === 'found' ? res.url : null;
-        if (res.kind === 'found') { if (res.url.endsWith('_front.jpg')) found_front++; else found_plain++; }
+        if (res.kind === 'found') { if (res.viaApi) found_api++; else if (res.url.endsWith('_front.jpg')) found_front++; else found_plain++; }
         else nulled++;
         if (cur === desiredFront) return;
         if (desiredFront === null) toNull.push(row.id);
@@ -148,7 +194,7 @@ exports.handler = async (event) => {
     if (rows.length < PAGE) break;
   }
 
-  const summary = { brand, pages, scanned, found_front, found_plain, nulled, unknown_left: unknown, rows_written: written, seconds: Math.round((Date.now() - t0) / 1000) };
+  const summary = { brand, pages, scanned, found_front, found_plain, found_api, nulled, unknown_left: unknown, rows_written: written, seconds: Math.round((Date.now() - t0) / 1000) };
   console.log('[momentec-image-verify] done', JSON.stringify(summary));
   return { statusCode: 200, body: JSON.stringify(summary) };
 };
