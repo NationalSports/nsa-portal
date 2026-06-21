@@ -394,6 +394,9 @@ export default function BuildStore({ onClose }) {
                   </span>
                 ))}
               </div>
+              <button type="button" disabled={!contactValid} onClick={startBuilding}
+                style={{ marginTop: 24, background: contactValid ? ink : '#cbd5e1', color: '#fff', border: 'none', borderRadius: 10, padding: '14px 30px', fontSize: 15, fontWeight: 800, letterSpacing: '.01em', cursor: contactValid ? 'pointer' : 'not-allowed' }}>Start building →</button>
+              {!contactValid && <div style={{ fontSize: 12, color: '#9AA1AC', marginTop: 8 }}>Add your name and email to start building.</div>}
             </div>
             {/* RIGHT — live store preview */}
             <div className="bs-contact-preview">
@@ -534,16 +537,12 @@ export default function BuildStore({ onClose }) {
       </KitScope>
 
       {/* Sticky action bar — the primary next step for each screen. */}
-      {step !== 'done' && (
+      {step !== 'done' && step !== 'contact' && (
         <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, zIndex: 20, boxShadow: '0 -4px 16px rgba(0,0,0,.05)' }}>
-          <button type="button" onClick={() => { if (step === 'contact') onClose(); else setStep(step === 'items' ? 'contact' : step === 'brand' ? 'items' : 'brand'); }}
+          <button type="button" onClick={() => setStep(step === 'items' ? 'contact' : step === 'brand' ? 'items' : 'brand')}
             style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: 9, padding: '10px 16px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>← Back</button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {step !== 'contact' && <span style={{ fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} selected</span>}
-            {step === 'contact' && (
-              <button type="button" disabled={!contactValid} onClick={startBuilding}
-                style={{ background: contactValid ? ink : '#cbd5e1', color: '#fff', border: 'none', borderRadius: 9, padding: '11px 22px', fontSize: 14, fontWeight: 800, cursor: contactValid ? 'pointer' : 'not-allowed' }}>Start building →</button>
-            )}
+            <span style={{ fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{chosen.length} item{chosen.length === 1 ? '' : 's'} selected</span>
             {step === 'items' && (
               <button type="button" disabled={!chosen.length} onClick={() => setStep('brand')}
                 style={{ background: chosen.length ? ink : '#cbd5e1', color: '#fff', border: 'none', borderRadius: 9, padding: '11px 20px', fontSize: 14, fontWeight: 800, cursor: chosen.length ? 'pointer' : 'not-allowed' }}>Continue to branding →</button>
