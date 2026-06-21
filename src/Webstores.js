@@ -1124,18 +1124,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const nm = (art.name || '').trim().toLowerCase();
     const dt = art.deco_type || '';
     const idx = arr.findIndex((a) => a.id === art.id || (nm && (a.name || '').trim().toLowerCase() === nm && (a.deco_type || '') === dt));
+    // Set BOTH the legacy single field and the "all garments (default)" entry of the
+    // per-color-way web_logos[] model, so placement (which prefers web_logos[]) uses the
+    // new cutout instead of ignoring it. Any per-CW entries already on the record are kept.
+    const withWebLogo = (a) => {
+      const wls = Array.isArray(a.web_logos) ? a.web_logos.filter((w) => w && w.url) : [];
+      const di = wls.findIndex((w) => !((w.color_way || '').trim()));
+      const web_logos = di >= 0 ? wls.map((w, i) => (i === di ? { ...w, url } : w)) : [{ url, color_way: '' }, ...wls];
+      return { ...a, web_logo_url: url, web_logos };
+    };
     let next;
     if (idx >= 0) {
-      next = arr.map((a, i) => (i === idx ? { ...a, web_logo_url: url } : a));
+      next = arr.map((a, i) => (i === idx ? withWebLogo(a) : a));
     } else {
-      next = [...arr, { id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], web_logo_url: url, kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() }];
+      next = [...arr, withWebLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
     }
     const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', custId);
     if (error) { flash('Could not attach web logo: ' + error.message); return null; }
     // Reflect on this store's curated set immediately if the record is in it.
     const curArt = Array.isArray(sel?.store_art) ? sel.store_art : [];
     if (curArt.some((a) => a.id === art.id)) {
-      const nextStore = curArt.map((a) => (a.id === art.id ? { ...a, web_logo_url: url } : a));
+      const nextStore = curArt.map((a) => (a.id === art.id ? withWebLogo(a) : a));
       const { data: st } = await supabase.from('webstores').update({ store_art: nextStore }).eq('id', sel.id).select().single();
       if (st) { setStores((prev) => prev.map((x) => (x.id === sel.id ? st : x))); setSel(st); }
     }
@@ -3838,7 +3847,7 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 
   const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
   const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes([...sizes, s]); setNewSize(''); };
-  const logoUrlOf = (it) => it && (it.web_logo_url || it.preview_url || it.art_url);
+  const logoUrlOf = (it) => it && (webLogoDefault(it) || it.web_logo_url || it.preview_url || it.art_url);
   const storeLogos = (library || []).filter((it) => it && it.kind !== 'art' && logoUrlOf(it));
   const pickLogoFile = async (file) => {
     if (!file) return;
@@ -4725,11 +4734,19 @@ function AiMatchCard({ p, on, onToggle }) {
 // a style at once, recolor the logo per garment color (saved back to the library
 // as a reusable variant), and apply to many items in one click. Applied art is
 // written to webstore_products.decorations so the storefront can render the mock.
+// The "all garments (default)" per-color-way web logo, if the record uses the
+// per-CW web_logos[] model — equivalent to the legacy single web_logo_url.
+const webLogoDefault = (art) => {
+  if (!art || !Array.isArray(art.web_logos)) return null;
+  const wl = art.web_logos.filter((w) => w && w.url);
+  if (!wl.length) return null;
+  return (wl.find((w) => !((w.color_way || '').trim())) || wl[0]).url;
+};
 const artImgUrl = (art) => {
   if (!art) return null;
-  // web_logo_url first: a clean transparent cutout attached for storefront placement
+  // web logo first: a clean transparent cutout attached for storefront placement
   // beats a full-garment mockup or .ai source for stamping a logo onto a garment.
-  const cands = [art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map((f) => f?.url)), ...((art.files || []).map((f) => f?.url))].filter(Boolean);
+  const cands = [webLogoDefault(art), art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map((f) => f?.url)), ...((art.files || []).map((f) => f?.url))].filter(Boolean);
   return cands.find((u) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(u)) || null;
 };
 const artSourceUrl = (art) => (art?.files || []).map((f) => f?.url).find(Boolean) || artImgUrl(art) || null;
@@ -4740,7 +4757,7 @@ const artThumbUrl = (art) => {
   if (!art) return null;
   const u = (f) => (typeof f === 'string' ? f : f?.url);
   const itemMocks = Object.values(art.item_mockups || {}).flat();
-  const cands = [art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
+  const cands = [webLogoDefault(art), art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
   return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
 };
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
@@ -4855,7 +4872,7 @@ async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
 function WebLogoSlot({ art, onAttach, compact }) {
   const [busy, setBusy] = useState(false);
   const ref = useRef();
-  const has = !!art?.web_logo_url;
+  const has = !!(art?.web_logo_url || (Array.isArray(art?.web_logos) && art.web_logos.some((w) => w && w.url)));
   const pick = async (file) => {
     if (!file || !onAttach) return;
     const ok = file.type?.startsWith('image/') || /\.(svg|png)$/i.test(file.name || '');
