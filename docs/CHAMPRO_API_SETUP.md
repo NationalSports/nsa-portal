@@ -39,14 +39,23 @@ explicit.
    allowlisted; there is no separate sandbox for them (the `OrderSandBox` host is for order
    placement only).
 
-## One thing to confirm against live data
+## SKU → ProductMaster + sizing (the real work)
 
-`_cp` assumes our catalog SKU **is** Champro's `ProductMaster`. Champro marks adult/youth
-with an `A`/`Y` suffix; if a master returns no SKUs, `_cp` retries once against the
-suffix-stripped base and keeps only SKUs that still start with our SKU (so it can never
-surface another configuration's stock). Verify the exact master↔SKU rule with the live key
-and tighten `_cp` if Champro encodes adult/youth as a `Configuration` rather than a SKU
-prefix.
+Live testing (with the key + IP working) showed two shapes of Champro product:
+
+- **Apparel / configurable goods** — `ProductInfo` expands the master (e.g. `BS25Y`) into
+  size/color SKUs. `_cp` queries those and buckets by `Size`. Works.
+- **Hard goods / single-size stock** (balls, bats, bags, boards, belts…) — `ProductInfo`
+  returns `ProductSKUs: null` (e.g. `CBB703CS`, `BB7`). `_cp` now falls back to querying
+  `Inventory` with the catalog SKU directly and buckets it as **OSFA**.
+
+**Sizing is the blocker for hard goods.** The catalog import left every Champro item's
+`available_sizes` empty, and the app defaults empty → apparel `S–2XL` (`OrderEditor.js`).
+~878 of 1,368 active Champro items (64%) are hard goods that should be single-size, so a
+basketball currently shows `S/M/L/XL/2XL` — and the OSFA stock from `Inventory` can't
+display against apparel columns. The authoritative fix is to drive `available_sizes` from
+`ProductInfo` (apparel → the real size range; `null` SKUs → OSFA) via a catalog sync. A
+name-based heuristic OSFA pass is a faster stopgap. (Decision pending.)
 
 ## Not yet wired (deferred)
 

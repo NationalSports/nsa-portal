@@ -259,16 +259,16 @@ async function _mt(sku, item) {
 }
 
 // ─── Champro: ProductInfo (master → size/color SKUs) then Inventory (per-warehouse) ───
-// Our catalog SKU is the Champro "ProductMaster"; ProductInfo expands it into the
-// size/color-specific SKUs that the Inventory endpoint keys by. We roll each SKU's
-// per-warehouse quantities up by size, and carry MORE_EXPECTED_ON as the next-available
-// (restock) date — same shape Richardson backorders use, so the badges render identically.
-//
-// NOTE: this assumes our SKU == Champro's ProductMaster. The Champro catalog marks
-// adult/youth with an A/Y suffix (e.g. BS25A / BS25Y); if a master comes back empty we
-// retry once against the suffix-stripped base and keep only SKUs that still start with
-// our SKU, so the fallback can never surface another configuration's stock. Confirm the
-// exact master↔SKU rule against the live sandbox when the API key + IP are in place.
+// Two shapes of Champro product:
+//   • Apparel / configurable goods — ProductInfo expands the master (our catalog SKU,
+//     e.g. BS25Y) into size/color SKUs; we query those and bucket by Size.
+//   • Hard goods / single-size stock (balls, bats, bags, boards…) — ProductInfo returns
+//     no SKUs, so the catalog SKU IS the orderable stock SKU; we query Inventory directly
+//     and bucket it as OSFA. (Such rows also need OSFA sizing on the catalog to display.)
+// MORE_EXPECTED_ON becomes the next-available (restock) date — same shape Richardson
+// backorders use, so the badges render identically. Adult/youth masters carry an A/Y
+// suffix; if a master returns nothing we retry once against the suffix-stripped base and
+// keep only SKUs that still start with our SKU.
 async function _cp(sku, item) {
   const sizes = {}; const sizeNextAvail = {}; let nextAvail = '';
   const master = String(sku || '').trim();
@@ -290,23 +290,29 @@ async function _cp(sku, item) {
     const m = master.match(/^(.*[A-Za-z0-9])([AY])$/); // strip adult/youth marker
     if (m) rows = await skuRowsFor(m[1], master);
   }
-  if (!rows.length) return out();
 
-  // Optional color narrowing: Champro often leaves Color blank, so only filter when BOTH
-  // the line and the SKU carry a color and they share a head token.
-  const prodColor = String(item?.color || '').toLowerCase();
-  const pc = _colorHead(prodColor);
-  const narrowed = rows.filter((r) => {
-    const rc = String(r.Color || '').toLowerCase();
-    if (!prodColor || !rc) return true;
-    const rch = _colorHead(rc);
-    return !pc || !rch || rch.includes(pc) || pc.includes(rch);
-  });
-  const use = (narrowed.length ? narrowed : rows).slice(0, 250); // cap the Inventory payload
-
-  // SKU → normalized size, to map the Inventory response back to a size bucket.
+  // Build the Champro SKUs to query, each mapped to a normalized size.
   const skuSize = {};
-  use.forEach((r) => { if (r.SKU) skuSize[String(r.SKU).toUpperCase()] = normSzName(r.Size || 'OSFA'); });
+  if (rows.length) {
+    // Apparel / configurable goods: narrow by color (Champro often leaves Color blank, so
+    // only filter when BOTH the line and the SKU carry a color and share a head token),
+    // then map each expanded SKU to its Size.
+    const prodColor = String(item?.color || '').toLowerCase();
+    const pc = _colorHead(prodColor);
+    const narrowed = rows.filter((r) => {
+      const rc = String(r.Color || '').toLowerCase();
+      if (!prodColor || !rc) return true;
+      const rch = _colorHead(rc);
+      return !pc || !rch || rch.includes(pc) || pc.includes(rch);
+    });
+    (narrowed.length ? narrowed : rows).slice(0, 250).forEach((r) => { // cap the payload
+      if (r.SKU) skuSize[String(r.SKU).toUpperCase()] = normSzName(r.Size || 'OSFA');
+    });
+  } else {
+    // Hard goods / single-size stock: the catalog SKU is the orderable stock SKU, so query
+    // Inventory directly and bucket it as OSFA.
+    skuSize[master.toUpperCase()] = 'OSFA';
+  }
   const skuList = Object.keys(skuSize);
   if (!skuList.length) return out();
 
