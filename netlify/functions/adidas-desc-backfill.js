@@ -13,14 +13,21 @@
 // only adidas rows with a real description and no description_ai are submitted, and
 // writes are guarded on description_ai IS NULL, so submit/collect are safe to repeat.
 //
+// Admin-only — this endpoint spends Anthropic API credits, so every call must carry
+// an admin Bearer token (Authorization: Bearer <Supabase access token of an active
+// admin/super_admin team member>); see verifyAdmin in _shared.js.
+//
 // Drive it (POST, ?action=…):
 //   submit  (default) — build + create the batch; returns { batch_id, submitted }
 //   status  &batch=ID — { processing_status, request_counts }; poll until "ended"
 //   collect &batch=ID — once ended, write results to description_ai; returns
 //                       { written, failed, empty, remaining }. Re-call if remaining>0.
+//   cancel  &batch=ID — cancel a queued/in-progress batch
+//   direct            — per-item Sonnet fallback; drains a chunk per call (<=26s),
+//                       repeat until remaining=0
 //
 // Env: ANTHROPIC_API_KEY, REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-const { getSupabaseAdmin } = require('./_shared');
+const { corsHeaders, verifyAdmin } = require('./_shared');
 
 const MODEL = 'claude-sonnet-4-6';
 const BATCHES_URL = 'https://api.anthropic.com/v1/messages/batches';
@@ -42,7 +49,7 @@ const WRITE_CONCURRENCY = 30;
 const DIRECT_CONCURRENCY = 8;          // parallel direct calls in the `direct` fallback
 const DIRECT_BUDGET_MS = 22000;        // stay under the 26s function timeout
 const anthropicHeaders = (apiKey) => ({ 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' });
-const json = (statusCode, obj) => ({ statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+const json = (statusCode, obj) => ({ statusCode, headers: corsHeaders(), body: JSON.stringify(obj) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Direct (non-batch) Sonnet rewrite — used by the `direct` fallback when the batch
@@ -99,10 +106,17 @@ async function getBatch(apiKey, id) {
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, body: '' };
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders(), body: '' };
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return json(200, { ok: false, reason: 'missing_api_key' });
-  let admin; try { admin = getSupabaseAdmin(); } catch (e) { return json(500, { error: e.message }); }
+
+  // Admin-only: this endpoint spends Anthropic API credits, so require an active
+  // admin/super_admin JWT. verifyAdmin also hands back a service-role client we reuse.
+  let adminCheck;
+  try { adminCheck = await verifyAdmin(event); } catch (e) { return json(500, { error: e.message }); }
+  if (!adminCheck.ok) return json(adminCheck.status || 403, { error: adminCheck.error || 'Not authorized' });
+  const admin = adminCheck.admin;
+
   const action = actionOf(event) || 'submit';
 
   try {
