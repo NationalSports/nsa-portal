@@ -243,9 +243,19 @@ function CoachStyleCard({ g, sel, onToggle }) {
   const lead = selected[0] || g.colorways[0];
   const priceMin = Math.min(...g.colorways.map((c) => (c.price || 0) + (c.fundraise || 0)));
   const anyOn = selected.length > 0;
+  // Tapping the photo is the big, obvious target: add the default color (or, if
+  // some are already on, clear them all). The per-color swatches below still let
+  // a coach fine-tune which colorways to carry.
+  const toggleStyle = () => {
+    if (selected.length) selected.forEach((c) => onToggle(c.product_id));
+    else if (g.colorways[0]) onToggle(g.colorways[0].product_id);
+  };
   return (
     <div className="ai-card" style={{ outline: anyOn ? '2px solid #191919' : '2px solid transparent', outlineOffset: -2, cursor: 'default' }}>
-      <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
+      <div onClick={toggleStyle} role="button" tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleStyle(); } }}
+        title={anyOn ? 'Tap to remove from store' : 'Tap to add to store'}
+        style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%', cursor: 'pointer' }}>
         {lead.image_url && !imgErr
           ? <img src={lead.image_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain' }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
@@ -275,7 +285,7 @@ function CoachStyleCard({ g, sel, onToggle }) {
             );
           })}
         </div>
-        <div style={{ fontSize: 10.5, color: '#6A7180', marginTop: 7, fontWeight: 600 }}>{anyOn ? `${selected.length} color${selected.length === 1 ? '' : 's'} added` : `${g.colorways.length} color${g.colorways.length === 1 ? '' : 's'} — tap to pick`}</div>
+        <div style={{ fontSize: 10.5, color: '#6A7180', marginTop: 7, fontWeight: 600 }}>{anyOn ? `${selected.length} color${selected.length === 1 ? '' : 's'} added` : `${g.colorways.length} color${g.colorways.length === 1 ? '' : 's'} — tap photo or color`}</div>
       </div>
     </div>
   );
