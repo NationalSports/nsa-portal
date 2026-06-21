@@ -1485,6 +1485,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // Register under both product_id and sku so an order line keyed by either resolves.
       [c.product_id, c.sku].filter(Boolean).forEach((k) => { (decosByKey[k] = decosByKey[k] || []).push(...arr); });
     });
+    // Bundle/kit components don't carry placed web-logo decos — their logo is a
+    // heat-transfer "design" code (webstore_bundle_items.transfer_code). Map each
+    // component product to its transfer code(s) and resolve the design label, so
+    // we can emit a logo deco for it on the SO (numbers/names already carry via
+    // `personalize`). Keyed by product_id to match byProduct.
+    const xferLabel = {};
+    (detail.transfers || []).forEach((t) => { if (t && t.code) xferLabel[t.code] = t.label || t.code; });
+    const bundleXfersByPid = {};
+    (detail.bundleItems || []).forEach((b) => {
+      if (!b.product_id || !b.transfer_code) return;
+      (bundleXfersByPid[b.product_id] = bundleXfersByPid[b.product_id] || new Set()).add(b.transfer_code);
+    });
     const artById = {};
     (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
     // Builder placement → the canonical SO position vocabulary (POSITIONS in settings; the
@@ -1518,6 +1530,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
         decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+      });
+      // Bundle/kit components: carry the component's heat-transfer logo to the SO
+      // as a $0 art deco (it's baked into the package price) so production sees
+      // which transfer to apply. One shared art file per transfer code.
+      (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
+        const xId = 'xfer_' + code;
+        addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
+        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
         product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
