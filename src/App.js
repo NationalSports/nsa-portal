@@ -15,7 +15,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
@@ -28102,11 +28102,33 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud'],['featured','Featured Styles'],['product_links','Product Links']];
+    const tabs=[['company','Company Info'],['pricing','Decoration'],['payments','Financial'],['tiers','Customer Tiers'],['lists','Lists & Options'],['labor','Labor Rates'],['portal','Coach Portal'],['featured','Webstores']];
+    const TAB_GROUP={pricing:['pricing','deco_vendors'],payments:['payments','taxcloud'],featured:['featured','product_links']};
+    const isActiveTab=(k)=>(TAB_GROUP[k]||[k]).includes(settingsTab);
+    const handleTab=(k)=>{
+      if(k==='pricing'&&(settingsTab==='pricing'||settingsTab==='deco_vendors'))return;
+      if(k==='payments'&&(settingsTab==='payments'||settingsTab==='taxcloud'))return;
+      if(k==='featured'&&(settingsTab==='featured'||settingsTab==='product_links'))return;
+      setSettingsTab(k);
+    };
     return(<>
-      <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
+      <div style={{display:'flex',gap:4,marginBottom:8,flexWrap:'wrap'}}>
+        {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${isActiveTab(k)?'btn-primary':'btn-secondary'}`} onClick={()=>handleTab(k)}>{label}</button>)}
       </div>
+      {/* Sub-nav for grouped tabs */}
+      {(settingsTab==='pricing'||settingsTab==='deco_vendors')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='pricing'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('pricing')}>Pricing</button>
+        <button className={`btn btn-xs ${settingsTab==='deco_vendors'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('deco_vendors')}>Deco Vendors</button>
+      </div>}
+      {(settingsTab==='payments'||settingsTab==='taxcloud')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='payments'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('payments')}>Payments</button>
+        <button className={`btn btn-xs ${settingsTab==='taxcloud'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('taxcloud')}>TaxCloud</button>
+      </div>}
+      {(settingsTab==='featured'||settingsTab==='product_links')&&<div style={{display:'flex',gap:6,marginBottom:16,paddingLeft:2}}>
+        <button className={`btn btn-xs ${settingsTab==='featured'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('featured')}>Featured Styles</button>
+        <button className={`btn btn-xs ${settingsTab==='product_links'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('product_links')}>Product Links</button>
+      </div>}
+      {!(settingsTab==='pricing'||settingsTab==='deco_vendors'||settingsTab==='payments'||settingsTab==='taxcloud'||settingsTab==='featured'||settingsTab==='product_links')&&<div style={{marginBottom:16}}/>}
 
       {/* COMPANY INFO */}
       {settingsTab==='company'&&<>
@@ -28155,6 +28177,18 @@ export default function App(){
           </div>
         </div>
         <button className="btn btn-secondary btn-sm" onClick={()=>{if(window.confirm('Reset all company info to defaults?')){setCompanyInfo({...NSA_DEFAULTS});nf('Company info reset to defaults')}}}>Reset to Defaults</button>
+        <div className="card" style={{marginTop:16}}><div className="card-header"><h3>Batch PO Free Shipping Thresholds</h3></div><div className="card-body">
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
+            </tbody>
+          </table>
+        </div></div>
       </>}
 
       {/* DECORATION PRICING */}
@@ -28434,35 +28468,6 @@ export default function App(){
           </div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{save([...val,'New'])}}>+ Add</button>
         </div></div>)}
-      </>}
-
-      {/* TERMS & POLICIES */}
-      {settingsTab==='terms'&&<>
-        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Invoice & Estimate Terms</h3></div><div className="card-body">
-          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>These terms appear on printed estimates and invoices.</div>
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Standard Terms</label>
-            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="Net 30 from invoice date unless otherwise agreed." readOnly/>
-          </div>
-          <div>
-            <label className="form-label">Deposit Terms</label>
-            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="50% deposit required to begin production. Balance due upon completion." readOnly/>
-          </div>
-          <div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Contact admin to update these terms.</div>
-        </div></div>
-
-        <div className="card"><div className="card-header"><h3>Batch PO Free Shipping Thresholds</h3></div><div className="card-body">
-          <table style={{fontSize:13}}>
-            <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
-            <tbody>
-              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
-            </tbody>
-          </table>
-        </div></div>
       </>}
 
       {/* COACH PORTAL SETTINGS */}
@@ -28776,10 +28781,11 @@ export default function App(){
       {settingsTab==='product_links'&&(()=>{
         const PL_BRANDS=['Adidas','Under Armour','Nike'];
         const vendName=(vid)=>{const v=vend.find(x=>x.id===vid);if(v)return v.name;if(vid==='v1')return 'Adidas Direct';if(vid==='v4')return 'S&S Activewear';if(vid==='v1777312659133')return 'Agron';return vid;};
-        const extractModel=(st)=>{
-          if(st.vendor_id==='v4'){const m=(st.sku_sample||'').match(/^([A-Z]{1,2}\d{3,4}[A-Z]?)-/);return m?m[1]:null;}
-          const m=(st.name||'').match(/\(([A-Z]{1,2}\d{3,4}[A-Z]?)\)/);return m?m[1]:null;
-        };
+        // Normalize style name for cross-vendor comparison:
+        // strip "Adidas " prefix, strip " (MODEL)" suffix, strip trailing " Bag/Bags", uppercase.
+        const normStyleName=(name)=>(name||'').replace(/^adidas\s+/i,'').replace(/\s*\([^)]+\)\s*$/,'').replace(/\s+bags?\s*$/i,'').trim().toUpperCase();
+        // Extract model number from S&S or CLICK name (for display in the suggestion card).
+        const extractModel=(name)=>{const m=(name||'').match(/\(([A-Z]{1,2}\d{3,4}[A-Z]?)\)/);return m?m[1]:null;};
         const loadPl=async(brand)=>{
           setPlBrand(brand);setPlLoading(true);setPlStyles([]);setPlGroups([]);setPlSkipped(new Set());setPlManualSel([]);
           const PAGE=1000;let all=[],from=0;
@@ -28802,15 +28808,20 @@ export default function App(){
           setPlLoading(false);
         };
         const linkedKeys=new Set(plGroups.flatMap(g=>(g.product_group_members||[]).map(m=>`${m.vendor_id}::${m.style_key}`)));
-        const byModel={};
+        const byNorm={};
         for(const st of plStyles){
           if(linkedKeys.has(`${st.vendor_id}::${st.style_key}`))continue;
-          const model=extractModel(st);if(!model)continue;
-          if(!byModel[model])byModel[model]=[];byModel[model].push(st);
+          const norm=normStyleName(st.name);if(!norm)continue;
+          if(!byNorm[norm])byNorm[norm]=[];byNorm[norm].push(st);
         }
-        const suggestions=Object.entries(byModel)
-          .filter(([model,members])=>{if(plSkipped.has(model))return false;return new Set(members.map(m=>m.vendor_id)).size>=2;})
-          .map(([model,members])=>({model,display_name:(members.find(m=>m.vendor_id!=='v4')?.name||members[0].name).replace(/\s*\([^)]+\)\s*$/,'').trim(),members}))
+        const suggestions=Object.entries(byNorm)
+          .filter(([norm,members])=>{if(plSkipped.has(norm))return false;return new Set(members.map(m=>m.vendor_id)).size>=2;})
+          .map(([norm,members])=>{
+            const dispSrc=members.find(m=>m.vendor_id!=='v4')?.name||members[0].name;
+            const display_name=normStyleName(dispSrc).split(' ').map(w=>w.charAt(0)+w.slice(1).toLowerCase()).join(' ');
+            const model=extractModel(members.find(m=>extractModel(m.name))?.name||'');
+            return{norm,model,display_name,members};
+          })
           .sort((a,b)=>a.display_name.localeCompare(b.display_name));
         const confirmGroup=async(sugg)=>{
           if(!supabase)return;
@@ -28820,7 +28831,7 @@ export default function App(){
           const mems=sugg.members.map(m=>({group_id:grp.id,vendor_id:m.vendor_id,style_key:m.style_key}));
           await supabase.from('product_group_members').insert(mems);
           setPlGroups(prev=>[...prev,{...grp,product_group_members:mems}]);
-          if(sugg.model)setPlSkipped(prev=>new Set([...prev,sugg.model]));
+          if(sugg.norm)setPlSkipped(prev=>new Set([...prev,sugg.norm]));
           nf('Link confirmed: '+sugg.display_name);
         };
         const deleteGroup=async(gid)=>{
@@ -28836,7 +28847,7 @@ export default function App(){
         const createManualGroup=async()=>{
           if(plManualSel.length<2)return;
           const name=(plManualSel.find(s=>s.vendor_id!=='v4')?.name||plManualSel[0].name).replace(/\s*\([^)]+\)\s*$/,'').trim();
-          await confirmGroup({display_name:name,members:plManualSel,model:null});
+          await confirmGroup({display_name:name,members:plManualSel,norm:null});
           setPlManualSel([]);setPlManualSearch('');
         };
         return(<>
