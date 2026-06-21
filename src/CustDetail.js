@@ -19,6 +19,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
+  // When a web logo / mockup is added, prompt for the color way it belongs to
+  // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
+  const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
   const[custArtFilter,setCustArtFilter]=useState('all');
   const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);
@@ -934,6 +937,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(hasLib){updateLibArt(a=>({...a,mockup_files:[...(a.mockup_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
       setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
+      // Prompt for the color way these mockups are for (or create a new one), then tag them.
+      const _tag=(cwName)=>{if(cwName)added.forEach(m=>applyMockToCW(m,cwName));setCwPrompt(null)};
+      setCwPrompt({title:'Which color way '+(added.length>1?'are these mockups':'is this mockup')+' for?',onPick:_tag,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_tag(name)}});
     };
     const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
     // Upload a new production file and attach it to this artwork — on its source order and/or the program library.
@@ -1042,8 +1048,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      saveWebLogos([...webLogos,{url,color_way:''}]);
-      nf&&nf('Web logo added');
+      // Prompt for the color way this web logo is for (or create a new one), then save.
+      const _assign=(cwName)=>{saveWebLogos([...webLogos,{url,color_way:cwName||''}]);setCwPrompt(null);nf&&nf('Web logo added'+(cwName?' — '+cwName:''))};
+      setCwPrompt({title:'Which color way is this web logo for?',onPick:_assign,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_assign(name)}});
     };
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
     const setWebLogoCw=(i,cw)=>saveWebLogos(webLogos.map((w,x)=>x===i?{...w,color_way:cw}:w));
@@ -1190,7 +1197,26 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div className="modal-footer">
         {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
-    </div></div>})()}
+    </div>
+    {cwPrompt&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
+      <div className="modal" style={{maxWidth:430}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2 style={{fontSize:16}}>{cwPrompt.title||'Apply to color way'}</h2><button className="modal-close" onClick={()=>setCwPrompt(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            <button type="button" onClick={()=>cwPrompt.onPick('')} style={{textAlign:'left',padding:'9px 12px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff',cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569'}}>All garments (default)</button>
+            {cws.map((cw,ci)=><button key={cw.id||ci} type="button" onClick={()=>cwPrompt.onPick(cw.garment_color||('CW '+(ci+1)))} style={{display:'flex',alignItems:'center',gap:8,textAlign:'left',padding:'9px 12px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff',cursor:'pointer',fontSize:13,fontWeight:600,color:'#1e293b'}}><span style={{fontSize:10,fontWeight:700,color:'#fff',background:'#64748b',borderRadius:5,padding:'1px 6px',flexShrink:0}}>CW {ci+1}</span>{cw.garment_color||('Color way '+(ci+1))}</button>)}
+          </div>
+          <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #eef2f7'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Or create a new color way</div>
+            <div style={{display:'flex',gap:6}}>
+              <input id="cwNewName" autoFocus placeholder="e.g. Black, White, Red" style={{flex:1,minWidth:0,fontSize:13,padding:'7px 10px',border:'1px solid #cbd5e1',borderRadius:8,outline:'none'}} onKeyDown={(e)=>{if(e.key==='Enter'){const v=e.currentTarget.value.trim();if(v)cwPrompt.onPickNew(v)}}}/>
+              <button type="button" className="btn btn-primary" onClick={()=>{const el=document.getElementById('cwNewName');const v=((el&&el.value)||'').trim();if(v)cwPrompt.onPickNew(v);else el&&el.focus()}}>Create &amp; apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>}
+    </div>})()}
   {tab==='catalog'&&<CoachCatalogAccess customer={customer} nf={nf} onUpdateCustomer={(nc)=>{setCustLocal(nc);onRefreshCustomer&&onRefreshCustomer(nc)}}/>}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
