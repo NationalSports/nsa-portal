@@ -207,8 +207,6 @@ exports.handler = async (event) => {
             buyer_name: buyerName, subtotal, total,
             ...(shipAddress ? { ship_address: shipAddress, ship_method: 'ship_home' } : {}),
           }).eq('id', orderId);
-          // Replace line items so re-ingest reflects the latest report.
-          await sb.from('webstore_order_items').delete().eq('order_id', orderId);
         } else {
           const { data: createdOrder, error: oErr } = await sb.from('webstore_orders').insert({
             store_id: store.id, status: 'paid', payment_mode: 'paid',
