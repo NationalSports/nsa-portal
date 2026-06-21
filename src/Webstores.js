@@ -1388,6 +1388,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
+    // Logos placed in the store builder live on webstore_products.decorations (the
+    // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
+    // kind:'art' deco lines — one per location — so the Art Dashboard shows a mockup slot
+    // per logo and production gets each logo's own art file. (Mirrors the OMG store→SO
+    // mapping in App.js.) Keyed by product_id (fallback sku) to match byProduct.
+    const decosByKey = {};
+    (detail.catalog || []).forEach((c) => {
+      const key = c.product_id || c.sku; if (!key) return;
+      const arr = Array.isArray(c.decorations) ? c.decorations.filter((d) => d && (d.art_url || d.art_id)) : [];
+      if (arr.length) (decosByKey[key] = decosByKey[key] || []).push(...arr);
+    });
+    const artById = {};
+    (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
+    // Builder placement id (+ side) → the SO/Art-Dashboard position label vocabulary.
+    const POS_LABEL = { left_chest: 'Front Left Chest', full_front: 'Front Center', full_back: 'Back Center', left_sleeve: 'Left Sleeve', right_sleeve: 'Right Sleeve', center: 'Center' };
+    const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back Center' : 'Front Center');
+    const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
+    const soArtFiles = new Map();
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, rec); };
+    const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
       const pdef = personalize[g.product_id] || {};
@@ -1396,6 +1416,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // keyed by size), NOT as free-text production notes.
       if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: g.numbers });
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_each: 6, cost_each: 3, names: g.names });
+      // Each builder logo placement → one art deco + its art file on the SO.
+      const seenPlace = new Set();
+      (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
+        const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
+        const lib = d.art_id ? artById[d.art_id] : null;
+        const artId = (lib && lib.id) || d.art_id || ('artweb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+        if (lib) {
+          // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
+          const base = cleanArt(lib);
+          if (!base.web_logo_url && d.art_url) base.web_logo_url = d.art_url;
+          addArtFile({ ...base, id: artId });
+        } else {
+          addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
+        }
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+      });
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
         product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
@@ -1404,7 +1440,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.`;
 
-    const soId = onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id });
+    const soId = onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
     if (!soId) { flash('Could not create Sales Order'); return; }
     const { error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]);
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);

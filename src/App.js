@@ -6360,12 +6360,12 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=({customer_id,memo,production_notes,items,webstore_id})=>{
+  const webstoreCreateSO=({customer_id,memo,production_notes,items,webstore_id,art_files})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
-      ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:[],jobs:[],items:items||[],
+      ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
     // Jump the user straight into the new SO in the Sales Orders editor.
