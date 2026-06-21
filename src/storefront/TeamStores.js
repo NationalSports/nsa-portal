@@ -15,9 +15,21 @@ const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif"
 const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 const NAVY = '#192853';
 const RED = '#962C32';
-// Where "Let's build one" sends shoppers — a relative path so it resolves on
-// whatever domain serves this page (the marketing site once proxied).
-const QUOTE_URL = '/get-a-quote';
+// The marketing site (nationalsportsapparel.com) wraps this page in an iframe
+// under its own header/nav — same pattern as /livelook (.../team-stores?embed=1).
+// In that mode links must break OUT of the iframe (target=_top) and point at the
+// marketing domain so the browser lands on the real, proxied URLs instead of
+// navigating inside the frame.
+const EMBEDDED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
+const MARKETING = 'https://nationalsportsapparel.com';
+const LINK_TARGET = EMBEDDED ? '_top' : undefined;
+// A store's public storefront. Absolute (marketing domain) when embedded so the
+// click escapes the iframe to nationalsportsapparel.com/shop/<slug> (proxied to
+// the portal storefront); relative when the portal serves this page directly.
+const shopHref = (slug) => (EMBEDDED ? `${MARKETING}/shop/${slug}` : `/shop/${slug}`);
+// "Let's build one" → the marketing site's quote builder. Always absolute:
+// /design-lab lives on the marketing site, not the portal.
+const QUOTE_URL = `${MARKETING}/design-lab`;
 
 function shade(hex, pct) {
   if (!hex || hex[0] !== '#' || (hex.length !== 7)) return hex || NAVY;
@@ -60,7 +72,7 @@ function StoreCard({ s }) {
   const closes = closesLabel(s.close_at);
   const stripes = 'repeating-linear-gradient(-55deg, transparent 0 26px, rgba(255,255,255,0.05) 26px 52px)';
   return (
-    <a href={'/shop/' + s.slug} className="ts-card"
+    <a href={shopHref(s.slug)} target={LINK_TARGET} className="ts-card"
       style={{ display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(15,26,56,.10)', textDecoration: 'none', color: 'inherit' }}>
       <div style={{ position: 'relative', height: 150, background: s.banner_url ? `linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.5)), url(${s.banner_url}) center/cover` : `${stripes}, linear-gradient(135deg, ${primary}, ${shade(primary, -16)})`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {s.logo_url
@@ -158,7 +170,7 @@ export default function TeamStores() {
         <p style={{ margin: '10px auto 22px', maxWidth: 560, fontSize: 16, color: 'rgba(255,255,255,0.85)' }}>We set up custom team stores for schools, clubs, and organizations — gear delivered to your team with no upfront cost.</p>
         <button type="button" onClick={() => setBuilding(true)} style={{ display: 'inline-block', fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, border: 'none', padding: '13px 30px', borderRadius: 10, cursor: 'pointer' }}>Build your store →</button>
         <div style={{ marginTop: 14 }}>
-          <a href={QUOTE_URL} style={{ fontSize: 13.5, color: 'rgba(255,255,255,0.72)', textDecoration: 'underline', fontWeight: 600 }}>Prefer to talk to us? Request a quote →</a>
+          <a href={QUOTE_URL} target={LINK_TARGET} style={{ fontSize: 13.5, color: 'rgba(255,255,255,0.72)', textDecoration: 'underline', fontWeight: 600 }}>Prefer to talk to us? Request a quote →</a>
         </div>
       </section>
 

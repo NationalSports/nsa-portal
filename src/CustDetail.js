@@ -1055,6 +1055,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
     const setWebLogoCw=(i,cw)=>saveWebLogos(webLogos.map((w,x)=>x===i?{...w,color_way:cw}:w));
     const removeWebLogoAt=(i)=>saveWebLogos(webLogos.filter((_,x)=>x!==i));
+    // Add a web logo straight to a named color way (the per-CW empty-slot path) — no
+    // "which color way?" prompt, since the slot already says which one it's for.
+    const addWebLogoForCw=async(file,cwName)=>{
+      if(!file)return;
+      const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
+      if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
+      nf&&nf('Uploading '+file.name+'...');
+      let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+      saveWebLogos([...webLogos,{url,color_way:cwName||''}]);
+      nf&&nf('Web logo added'+(cwName?' — '+cwName:''));
+    };
+    const pickWebLogoForCw=(cwName)=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoForCw(f,cwName)};inp.click()};
+    // Per-CW web-logo coverage — which named color ways still have no web PNG. Drives the
+    // artist nudge + the empty slots below so every color way gets a clean cutout for
+    // webstore + order mockups (a blank-color-way "default" covers the rest as a fallback).
+    const _cwNames=cws.map(c=>(c.garment_color||'').trim()).filter(Boolean);
+    const _haveCwLogo=new Set(webLogos.map(w=>(w.color_way||'').trim().toLowerCase()).filter(Boolean));
+    const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
+    const _hasDefaultWebLogo=webLogos.some(w=>w.url&&!((w.color_way||'').trim()));
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -1102,6 +1121,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logos <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG per color way — placed on webstore garments</span></div>
             {saveArt&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickWebLogoAdd}><Icon name="plus" size={11}/> Add web logo</button>}
           </div>
+          {/* Coverage nudge — flag color ways with no web PNG (cleanest webstore + order mockups). */}
+          {saveArt&&_cwNames.length>0&&_missingCws.length>0&&<div style={{display:'flex',alignItems:'flex-start',gap:8,padding:'8px 10px',marginBottom:8,borderRadius:8,background:_hasDefaultWebLogo?'#fffbeb':'#fef2f2',border:'1px solid '+(_hasDefaultWebLogo?'#fde68a':'#fecaca')}}>
+            <span style={{fontSize:14,lineHeight:1.2}}>{_hasDefaultWebLogo?'ℹ️':'⚠️'}</span>
+            <div style={{fontSize:11,color:_hasDefaultWebLogo?'#92400e':'#991b1b',fontWeight:600}}>
+              {_missingCws.length} of {_cwNames.length} color way{_cwNames.length===1?'':'s'} {_missingCws.length===1?'has':'have'} no web logo: <span style={{fontWeight:700}}>{_missingCws.join(', ')}</span>.
+              <div style={{fontWeight:500,marginTop:2,color:_hasDefaultWebLogo?'#b45309':'#b91c1c'}}>{_hasDefaultWebLogo?'These fall back to the default web logo on webstores & order mockups — add a per-color-way transparent PNG for the cleanest result.':'Add a transparent PNG for each so this art places cleanly on webstore garments and order mockups.'}</div>
+            </div>
+          </div>}
           {webLogos.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
             {webLogos.map((w,wi)=><div key={wi} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
               <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:'#f0fdf4',position:'relative'}}>
@@ -1113,6 +1140,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   ?<input list={'cw-names-'+art.id} value={w.color_way||''} onChange={e=>setWebLogoCw(wi,e.target.value)} placeholder="All garments (default)" title="Assign this logo to a color way" style={{width:'100%',boxSizing:'border-box',fontSize:11,fontWeight:600,color:'#166534',border:'1px solid #d1fae5',borderRadius:6,background:'#fff',padding:'3px 6px',outline:'none'}}/>
                   :<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{w.color_way||'All garments'}</div>}
               </div>
+            </div>)}
+          </div>}
+          {/* One empty slot per color way still missing a web logo — uploading pre-tags that CW. */}
+          {saveArt&&_missingCws.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:8}}>
+            {_missingCws.map((nm,_mi)=><div key={nm+'|'+_mi} onClick={()=>pickWebLogoForCw(nm)} title={'Add a web PNG for '+nm}
+              onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
+              onDragLeave={e=>{e.currentTarget.style.background='#fafafa';e.currentTarget.style.borderColor='#d1d5db'}}
+              onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#fafafa';e.currentTarget.style.borderColor='#d1d5db';const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)addWebLogoForCw(f,nm)}}
+              style={{border:'2px dashed #d1d5db',borderRadius:8,overflow:'hidden',background:'#fafafa',cursor:'pointer',display:'flex',flexDirection:'column'}}>
+              <div style={{height:84,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,color:'#94a3b8'}}>
+                <Icon name="plus" size={18}/><span style={{fontSize:10,fontWeight:600}}>Add web PNG</span>
+              </div>
+              <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</div>
             </div>)}
           </div>}
           {saveArt&&<datalist id={'cw-names-'+art.id}>{cws.map((cw,ci)=>cw.garment_color?<option key={ci} value={cw.garment_color}/>:null)}</datalist>}
