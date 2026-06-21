@@ -256,7 +256,11 @@ const DRIVE_IMAGES = {
   'R75S':    '1Yo9vkgwhN-hOjRRQNBpNRil2_XZewslx',
   'R78':     '1Oa2BkAQKU9nh98IL7JNNXBRoyGdpGXhX',
 };
-const DRIVE_IMAGE_BASE = 'https://drive.google.com/uc?export=view&id=';
+// lh3.googleusercontent.com serves the file directly (200 image/jpeg). The older
+// `uc?export=view` form 303-redirects to a download endpoint that browsers can't
+// render in an <img>, so it shows "image coming soon". Format: BASE + id + SIZE.
+const DRIVE_IMAGE_BASE = 'https://lh3.googleusercontent.com/d/';
+const DRIVE_IMAGE_SIZE = '=w800';
 
 const CATEGORY_RULES = [
   ['Beanies', /BEANIE|KNIT|TOQUE/i],
@@ -385,7 +389,10 @@ exports.handler = async () => {
             id: productId,
             vendor_id: vendorId,
             sku: productSku,
-            name: 'Richardson ' + style + ' ' + color,
+            // Name is the style only (no color) so LiveLook groups every colorway
+            // into one card with a color picker, instead of one card per color.
+            // The color lives in its own field below.
+            name: 'Richardson ' + style,
             brand: 'Richardson',
             color,
             category,
@@ -395,7 +402,7 @@ exports.handler = async () => {
             is_active: true,
             available_sizes: sizes,
             inventory_source: 'richardson',
-            ...(driveId ? { image_front_url: DRIVE_IMAGE_BASE + driveId } : {}),
+            ...(driveId ? { image_front_url: DRIVE_IMAGE_BASE + driveId + DRIVE_IMAGE_SIZE } : {}),
           });
           for (const v of grp.variants) {
             const invId = productSku + '-' + v.size;
