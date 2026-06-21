@@ -123,7 +123,7 @@ export default function TeamStores() {
             <input className="ts-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by school, team, or organization name…"
               style={{ width: '100%', fontFamily: BODY, fontSize: 17, color: '#fff', padding: '16px 18px 16px 52px', borderRadius: 12, border: '1.5px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.08)', outline: 'none' }} />
           </div>
-          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => setBuilding(true)}
               style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, border: 'none', padding: '11px 24px', borderRadius: 10, cursor: 'pointer' }}>Build your store →</button>
           </div>
@@ -139,8 +139,8 @@ export default function TeamStores() {
             : (results && results.length)
               ? <>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b', marginBottom: 16, textAlign: 'center' }}>{results.length} store{results.length === 1 ? '' : 's'} matching “{term}”</div>
-                  {/* auto-FIT (not auto-fill) collapses the empty trailing tracks so
-                      a small result set actually centers instead of hugging the left. */}
+                  {/* Cap the column width (not 1fr) + center the tracks so a small
+                      result set sits centered instead of hugging the left edge. */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 340px))', gap: 22, justifyContent: 'center' }}>
                     {results.map((s) => <StoreCard key={s.slug} s={s} />)}
                   </div>
