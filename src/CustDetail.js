@@ -1071,8 +1071,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // artist nudge + the empty slots below so every color way gets a clean cutout for
     // webstore + order mockups (a blank-color-way "default" covers the rest as a fallback).
     const _cwNames=cws.map(c=>(c.garment_color||'').trim()).filter(Boolean);
-    const _haveCwLogo=new Set(webLogos.map(w=>(w.color_way||'').trim()).filter(Boolean));
-    const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n));
+    const _haveCwLogo=new Set(webLogos.map(w=>(w.color_way||'').trim().toLowerCase()).filter(Boolean));
+    const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
     const _hasDefaultWebLogo=webLogos.some(w=>w.url&&!((w.color_way||'').trim()));
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
@@ -1144,7 +1144,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>}
           {/* One empty slot per color way still missing a web logo — uploading pre-tags that CW. */}
           {saveArt&&_missingCws.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:8}}>
-            {_missingCws.map((nm)=><div key={nm} onClick={()=>pickWebLogoForCw(nm)} title={'Add a web PNG for '+nm}
+            {_missingCws.map((nm,_mi)=><div key={nm+'|'+_mi} onClick={()=>pickWebLogoForCw(nm)} title={'Add a web PNG for '+nm}
               onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
               onDragLeave={e=>{e.currentTarget.style.background='#fafafa';e.currentTarget.style.borderColor='#d1d5db'}}
               onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#fafafa';e.currentTarget.style.borderColor='#d1d5db';const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)addWebLogoForCw(f,nm)}}

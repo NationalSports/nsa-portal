@@ -1395,15 +1395,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // mapping in App.js.) Keyed by product_id (fallback sku) to match byProduct.
     const decosByKey = {};
     (detail.catalog || []).forEach((c) => {
-      const key = c.product_id || c.sku; if (!key) return;
       const arr = Array.isArray(c.decorations) ? c.decorations.filter((d) => d && (d.art_url || d.art_id)) : [];
-      if (arr.length) (decosByKey[key] = decosByKey[key] || []).push(...arr);
+      if (!arr.length) return;
+      // Register under both product_id and sku so an order line keyed by either resolves.
+      [c.product_id, c.sku].filter(Boolean).forEach((k) => { (decosByKey[k] = decosByKey[k] || []).push(...arr); });
     });
     const artById = {};
     (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
-    // Builder placement id (+ side) → the SO/Art-Dashboard position label vocabulary.
-    const POS_LABEL = { left_chest: 'Front Left Chest', full_front: 'Front Center', full_back: 'Back Center', left_sleeve: 'Left Sleeve', right_sleeve: 'Right Sleeve', center: 'Center' };
-    const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back Center' : 'Front Center');
+    // Builder placement → the canonical SO position vocabulary (POSITIONS in settings; the
+    // SO deco editor binds a <select> to it, so the value must be one of those options).
+    const POS_LABEL = { left_chest: 'Left Chest', full_front: 'Front', full_back: 'Back', left_sleeve: 'Left Sleeve', right_sleeve: 'Right Sleeve' };
+    const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
     const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
     const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, rec); };
