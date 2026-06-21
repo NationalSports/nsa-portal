@@ -150,9 +150,9 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nationalsportsapparel.com/coach?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
+    const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
@@ -163,7 +163,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
+    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+customer.alpha_tag:'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));

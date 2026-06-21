@@ -12426,9 +12426,9 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
-                const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
+                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+ic.alpha_tag:'';
                 const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
-                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nationalsportsapparel.com/coach?portal='+(ic?.alpha_tag||'');
                 // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
                 const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
                 const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
@@ -12452,7 +12452,7 @@ export default function App(){
                 }catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
             {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
-              onClick={()=>{const purl='https://nsa-portal.netlify.app/?portal='+ic.alpha_tag;navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
+              onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+ic.alpha_tag;navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
                 // If line_items not stored on invoice, populate from computed items before splitting
@@ -13154,7 +13154,7 @@ export default function App(){
                   brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
-                const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';
+                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+siCust.alpha_tag:'';
                 const emailHtml=buildBrandedEmailHtml(si.msg.replace(/\n/g,'<br>')
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
                   +(si.review?buildReviewButtonHtml():''),companyInfo);
@@ -13555,7 +13555,7 @@ export default function App(){
         const sendAll=async()=>{
           if(sendableCustomers.length===0){nf('Pick at least one recipient','error');return}
           upd(s=>({...s,sending:true,progress:{done:0,total:sendableCustomers.length,sent:0,failed:0}}));
-          const portalBase='https://nsa-portal.netlify.app/?portal=';
+          const portalBase='https://nationalsportsapparel.com/coach?portal=';
           const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           for(const t of sendableCustomers){
             const c=t.customer;
