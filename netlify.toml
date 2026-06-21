@@ -53,6 +53,11 @@
 [functions."catalog-stock-alert-check"]
   schedule = "0 14 * * *"
 
+# Webstore close sweep — hourly. Closes stores whose close_at has passed and, for each,
+# creates a rep to-do + emails the rep & assigned CSR a breakdown to process the orders.
+[functions."webstore-close-sweep"]
+  schedule = "0 * * * *"
+
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
 # style from the S&S API into products + adidas_inventory for /adidas.
