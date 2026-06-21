@@ -1241,7 +1241,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Move a catalog item to an arbitrary spot (drag-and-drop): drop it before
   // `beforeId` (or at the end when null), then renormalize sort_order so the
   // storefront and admin agree — same persistence path as the up/down arrows.
-  const moveItem = useCallback(async (item, beforeId) => {
+  const moveItem = useCallback(async (item, beforeId, category) => {
     const list = [...(detail?.catalog || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     const fromIdx = list.findIndex((x) => x.id === item.id);
     if (fromIdx < 0) return;
@@ -1250,7 +1250,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (toIdx < 0) toIdx = list.length;
     list.splice(toIdx, 0, moved);
     for (let i = 0; i < list.length; i++) {
-      if ((list[i].sort_order || 0) !== i) await supabase.from('webstore_products').update({ sort_order: i }).eq('id', list[i].id);
+      const row = list[i];
+      const needSort = (row.sort_order || 0) !== i;
+      const setCat = category !== undefined && row.id === item.id && (row.category || null) !== (category || null);
+      if (needSort || setCat) {
+        const upd = {}; if (needSort) upd.sort_order = i; if (setCat) upd.category = category || null;
+        await supabase.from('webstore_products').update(upd).eq('id', row.id);
+      }
     }
     loadDetail(sel);
   }, [detail, sel, loadDetail]);
@@ -2101,7 +2107,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     const nColors = colorRows.length;
     return (
       <div key={p.id} onClick={() => setEditId(p.id)}
-        onDragOver={useCats ? undefined : (e) => onRowDragOver(e, p)} onDrop={useCats ? undefined : (e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
+        onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
         style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
           borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
           background: sel ? '#f1f5f9' : '#fff',
@@ -2141,16 +2147,18 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const onRowDrop = (e, p) => {
     if (!dragId) return;
     e.preventDefault();
+    e.stopPropagation(); // the card handles the drop (position + recategorize) — don't also bubble to the section
     if (dragId !== p.id) {
       // Reorder operates on cards (representative rows), so step over to the next card.
       const tIdx = repsList.findIndex((x) => x.id === p.id);
       const beforeId = overPos === 'before' ? p.id : (repsList[tIdx + 1] ? repsList[tIdx + 1].id : null);
       if (beforeId !== dragId) {
         const dragged = repsList.find((x) => x.id === dragId);
-        if (dragged) onMove(dragged, beforeId);
+        // In category mode, dropping onto a card also moves it into that card's section.
+        if (dragged) onMove(dragged, beforeId, useCats ? ((catalog.find((c) => c.id === p.id) || {}).category || null) : undefined);
       }
     }
-    setDragId(null); setOverId(null);
+    setDragId(null); setOverId(null); setOverCat(null);
   };
   return (
     <>
@@ -2957,12 +2965,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
-        <div>
-        <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
-          <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />
-        </ItemSection>
-        </div>
+      <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
+        <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} />
+      </ItemSection>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
         {groupColors && groupColors.length > 0 && (
           <ItemSection title="Colors in this item" hint={`· ${groupColors.length} color${groupColors.length === 1 ? '' : 's'} shown as options on one card`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
