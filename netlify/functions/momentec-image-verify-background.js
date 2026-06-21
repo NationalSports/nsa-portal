@@ -1,30 +1,39 @@
-// Momentec image verifier.
+// Momentec image verifier / corrector.
 //
-// The Momentec catalog sync (momentec-sync-background) derives each product's
-// image_front_url / image_back_url straight from the SKU
-// (https://static.momentecbrands.com/product/{dz}_{color}_front.jpg) WITHOUT
-// checking the file exists. The Momentec CDN only has photos for a subset of
-// styles — roughly 40% of the rows point at objects that return HTTP 403
-// (S3 "AccessDenied"/NoSuchKey). Those non-null-but-dead URLs render as broken
-// images and, worse, defeat every "no image" guard in the app: the Featured
-// Styles editor counts them as having an image, and the LiveLook catalog's
-// imageless-hide treats them as imaged and shows a "coming soon" card.
+// The Momentec catalog sync derives each product image straight from the SKU as
+// {IMG_BASE}/{dz}_{color}_front.jpg WITHOUT checking the file exists. Momentec's
+// CDN is inconsistent: most apparel really is at `_front.jpg`, but a chunk of
+// styles (belts/accessories like FBC73M) only exist at the plain `.jpg` URL, and
+// many (sublimation "ALL-OVER PATTERN"/"ARGYLE" lines, some hard goods) have no
+// photo at all — the API returns `_NoPicture.jpg` for those and the CDN answers
+// HTTP 403. The blind `_front` guess therefore (a) 403s for the plain-`.jpg`
+// styles and (b) leaves real-but-missing styles pointing at a broken image.
+// Either way the non-null-but-dead URL defeats every "no image" guard: the
+// Featured Styles "No image" count and the LiveLook imageless-hide both treat it
+// as imaged and render a broken/"coming soon" card.
 //
-// This function probes every Momentec product image and NULLs the ones that are
-// missing, so image_front_url is truthy only when a real photo exists. It runs
-// daily right after the sync (momentec-image-verify-cron) and is idempotent —
-// already-nulled rows drop out of the working set, and if Momentec later adds a
-// photo the next sync re-derives the URL and this keeps it (200 ⇒ left alone).
+// This function fixes image_front_url to the truth, per colorway:
+//   1. try {dz}_{color}_front.jpg   (most apparel)
+//   2. else try {dz}_{color}.jpg    (FBC73M-style accessories)
+//   3. else NULL it                 (genuinely no photo)
+// Only a definitive 403/404 on BOTH candidates nulls a row; timeouts/5xx leave
+// it untouched so a CDN hiccup can't wipe a good image. image_back_url follows
+// the chosen front (`_back.jpg` for the _front pattern, none for plain `.jpg`).
+//
+// It scans every active Momentec product (not just non-null ones) so it also
+// repairs rows an earlier blind pass cleared. Idempotent and self-healing — if
+// Momentec later publishes a photo the next run picks it up. Runs daily right
+// after the catalog sync (momentec-image-verify-cron).
 //
 // Trigger manually:  POST /.netlify/functions/momentec-image-verify-background
-// Optional query:    ?brand=Momentec&concurrency=40
+// Optional query:    ?brand=Momentec&concurrency=35
 
-const IMG_HOST = 'static.momentecbrands.com';
+const IMG_BASE = 'https://static.momentecbrands.com/product';
 
 exports.handler = async (event) => {
   const qs = (event && event.queryStringParameters) || {};
   const brand = qs.brand || 'Momentec';
-  const CONC = Math.min(60, Math.max(1, parseInt(qs.concurrency, 10) || 40));
+  const CONC = Math.min(60, Math.max(1, parseInt(qs.concurrency, 10) || 35));
   const PAGE = 1000;
   const TIME_BUDGET_MS = 13 * 60 * 1000; // background fns get ~15 min
 
@@ -39,10 +48,18 @@ exports.handler = async (event) => {
     headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: 'Bearer ' + sbKey, ...(init && init.headers) },
   });
 
-  // Probe one image. A ranged GET avoids downloading the whole JPEG: live
-  // objects answer 200/206, missing ones 403/404. Anything else (timeout, 5xx,
-  // 429) is "unknown" — we leave those rows untouched rather than risk nulling a
-  // good image because the CDN hiccuped.
+  // Candidate front-image URLs for a colorway SKU "{dz}.{color}", in priority
+  // order. The CDN joins design+color with "_" (the SKU uses ".").
+  const candidates = (sku) => {
+    const i = String(sku || '').indexOf('.');
+    if (i < 0) return [];
+    const base = sku.slice(0, i) + '_' + sku.slice(i + 1); // FBC73M.NAV -> FBC73M_NAV
+    return [`${IMG_BASE}/${base}_front.jpg`, `${IMG_BASE}/${base}.jpg`];
+  };
+  const backFor = (front) => (front && front.endsWith('_front.jpg') ? front.replace(/_front\.jpg$/, '_back.jpg') : null);
+
+  // Ranged GET so we don't pull whole JPEGs: live objects answer 200/206,
+  // missing ones 403/404. Anything else is "unknown".
   const probe = async (url) => {
     try {
       const res = await fetch(encodeURI(url), { method: 'GET', headers: { Range: 'bytes=0-0' } });
@@ -52,15 +69,39 @@ exports.handler = async (event) => {
     }
   };
 
+  // Resolve the correct front URL for a row. Returns:
+  //   { kind: 'found', url } | { kind: 'dead' } | { kind: 'unknown' }
+  const resolve = async (sku) => {
+    let sawUnknown = false;
+    for (const c of candidates(sku)) {
+      const s = await probe(c);
+      if (s === 200 || s === 206) return { kind: 'found', url: c };
+      if (s === 403 || s === 404) continue;
+      sawUnknown = true; // transient — don't trust a null decision
+      break;
+    }
+    return { kind: sawUnknown ? 'unknown' : 'dead' };
+  };
+
+  const upsert = async (rows) => {
+    for (let i = 0; i < rows.length; i += 500) {
+      const r = await sb('products?on_conflict=id', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(rows.slice(i, i + 500)),
+      });
+      if (!r.ok) console.error('[momentec-image-verify] upsert', r.status, (await r.text()).slice(0, 200));
+    }
+  };
+
   const t0 = Date.now();
   let last = '';
-  let scanned = 0, dead = 0, kept = 0, unknown = 0, pages = 0;
+  let scanned = 0, found_front = 0, found_plain = 0, nulled = 0, unknown = 0, written = 0, pages = 0;
 
   for (;;) {
-    if (Date.now() - t0 > TIME_BUDGET_MS) { console.warn('[momentec-image-verify] time budget reached'); break; }
-    // Keyset pagination by id so nulling rows mid-run can't shift an offset and
-    // skip records — already-cleared rows leave the not-null filter behind us.
-    let path = `products?select=id,image_front_url&brand=eq.${encodeURIComponent(brand)}&is_active=eq.true&image_front_url=not.is.null&order=id.asc&limit=${PAGE}`;
+    if (Date.now() - t0 > TIME_BUDGET_MS) { console.warn('[momentec-image-verify] time budget reached at', last); break; }
+    // Keyset pagination by id so writes mid-run can't shift an offset window.
+    let path = `products?select=id,sku,image_front_url&brand=eq.${encodeURIComponent(brand)}&is_active=eq.true&order=id.asc&limit=${PAGE}`;
     if (last) path += `&id=gt.${encodeURIComponent(last)}`;
     const r = await sb(path);
     if (!r.ok) { console.error('[momentec-image-verify] select', r.status, (await r.text()).slice(0, 200)); break; }
@@ -69,33 +110,28 @@ exports.handler = async (event) => {
     pages++;
     last = rows[rows.length - 1].id;
 
-    const deadIds = [];
+    const changed = [];
     for (let i = 0; i < rows.length; i += CONC) {
       const chunk = rows.slice(i, i + CONC);
-      const codes = await Promise.all(chunk.map((x) => probe(x.image_front_url)));
-      codes.forEach((c, j) => {
+      const results = await Promise.all(chunk.map((row) => resolve(row.sku)));
+      results.forEach((res, j) => {
         scanned++;
-        if (c === 403 || c === 404) { deadIds.push(chunk[j].id); dead++; }
-        else if (c === 200 || c === 206) kept++;
-        else unknown++;
+        const row = chunk[j];
+        const cur = row.image_front_url || null;
+        if (res.kind === 'unknown') { unknown++; return; }
+        const desiredFront = res.kind === 'found' ? res.url : null;
+        if (res.kind === 'found') { if (res.url.endsWith('_front.jpg')) found_front++; else found_plain++; }
+        else nulled++;
+        if (cur !== desiredFront) {
+          changed.push({ id: row.id, image_front_url: desiredFront, image_back_url: backFor(desiredFront) });
+        }
       });
     }
-
-    // Clear the whole image set for missing styles (a missing front means the
-    // SKU's photo set isn't on the CDN; the back is gone too).
-    for (let i = 0; i < deadIds.length; i += 200) {
-      const ids = deadIds.slice(i, i + 200).map((id) => encodeURIComponent(id)).join(',');
-      const u = await sb(`products?id=in.(${ids})`, {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({ image_front_url: null, image_back_url: null }),
-      });
-      if (!u.ok) console.error('[momentec-image-verify] patch', u.status, (await u.text()).slice(0, 200));
-    }
+    if (changed.length) { await upsert(changed); written += changed.length; }
     if (rows.length < PAGE) break;
   }
 
-  const summary = { host: IMG_HOST, brand, pages, scanned, dead_cleared: dead, kept, unknown_left: unknown, seconds: Math.round((Date.now() - t0) / 1000) };
+  const summary = { brand, pages, scanned, found_front, found_plain, nulled, unknown_left: unknown, rows_written: written, seconds: Math.round((Date.now() - t0) / 1000) };
   console.log('[momentec-image-verify] done', JSON.stringify(summary));
   return { statusCode: 200, body: JSON.stringify(summary) };
 };
