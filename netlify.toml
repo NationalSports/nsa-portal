@@ -83,3 +83,9 @@
 # to populate on the first run.
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
+
+# Champro catalog sizing sync — daily at 16:30 UTC. Fires champro-catalog-sync-background,
+# which sets available_sizes from Champro ProductInfo (apparel → real range, hard goods →
+# OSFA). Only touches rows with empty sizes, so it's cheap after the first backfill.
+[functions."champro-catalog-sync-cron"]
+  schedule = "30 16 * * *"

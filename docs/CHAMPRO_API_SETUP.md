@@ -13,6 +13,7 @@ SanMar / S&S: the browser never sees the API key.
 | Client wrappers (`champroApiCall`, `champroGetProductInfo`, `champroGetInventory`) | `src/vendorApis.js` |
 | Shared stock parser (`_cp`) + source mapping (`'cp'`) | `src/vendorInventory.js` |
 | Order Editor live-stock badges (`isChamproItem`, `CP` refresh chip) | `src/OrderEditor.js` |
+| Catalog sizing sync (ProductInfo → `available_sizes`) | `netlify/functions/champro-catalog-sync-background.js` + `-cron.js` |
 
 **How a stock check works.** Our catalog SKU (e.g. `BS25Y`, vendor `ns_49`) is Champro's
 *ProductMaster*. `ProductInfo` expands it into the size/color-specific SKUs (e.g.
@@ -52,10 +53,24 @@ Live testing (with the key + IP working) showed two shapes of Champro product:
 **Sizing is the blocker for hard goods.** The catalog import left every Champro item's
 `available_sizes` empty, and the app defaults empty → apparel `S–2XL` (`OrderEditor.js`).
 ~878 of 1,368 active Champro items (64%) are hard goods that should be single-size, so a
-basketball currently shows `S/M/L/XL/2XL` — and the OSFA stock from `Inventory` can't
-display against apparel columns. The authoritative fix is to drive `available_sizes` from
-`ProductInfo` (apparel → the real size range; `null` SKUs → OSFA) via a catalog sync. A
-name-based heuristic OSFA pass is a faster stopgap. (Decision pending.)
+basketball showed `S/M/L/XL/2XL` — and the OSFA stock from `Inventory` couldn't display
+against apparel columns.
+
+**Fixed by the catalog sizing sync.** `champro-catalog-sync-background.js` reads each
+Champro product's real sizes from `ProductInfo` (apparel → the actual size range; `null`
+SKUs → OSFA) and writes `available_sizes`. It's idempotent and, by default, only touches
+rows whose sizes are still empty — so the daily cron is cheap after the first backfill and
+naturally resumes if a run hits the 15-min limit. Reprocess everything with `?all=1`.
+
+Run the **first backfill** once the deploy with these functions is live (needs
+`CHAMPRO_API_KEY` + the allowlisted egress, which the proxy already uses):
+
+```
+curl -X POST https://<site>/.netlify/functions/champro-catalog-sync-background
+```
+
+After it completes, hard goods become OSFA (single column) and their `Inventory` stock
+shows; apparel items get their true size range instead of the `S–2XL` default.
 
 ## Not yet wired (deferred)
 
