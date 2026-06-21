@@ -11,6 +11,17 @@ import { supabase } from './lib/supabase';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 
+// The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
+// via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
+// When embedded, links to other surfaces must break OUT of the iframe (target=_top)
+// and point at the marketing domain; opened directly, they open in a new tab.
+const CP_EMBEDDED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
+const CP_MARKETING = 'https://nationalsportsapparel.com';
+const CP_LINK_TARGET = CP_EMBEDDED ? '_top' : '_blank';
+// Live Look = the live-inventory catalog. Marketing wraps it at /livelook; the
+// portal serves it directly at /adidas.
+const CP_LIVELOOK_URL = CP_EMBEDDED ? `${CP_MARKETING}/livelook` : '/adidas';
+
 // Read-only team-store view for the coach: headline order/fundraising/batch
 // summary up top, with the per-player order list as a searchable, collapsible
 // section below. No editing.
@@ -697,6 +708,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
+  // Invite-gated coach-portal capabilities — set per customer in Catalog Access
+  // (CustDetail → Catalog tab). Default off so nothing new shows for everyone.
+  const coachAiBuilder=!!customer.coach_ai_builder;
+  const coachLivelook=!!customer.coach_livelook;
+  const coachBuildOrders=!!customer.coach_build_orders;
 
   // Track portal visit — mark sent documents as viewed by coach
   const _portalTracked=useRef(false);
@@ -1575,7 +1591,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
   // Main portal view
   return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
-    <div style={{width:'100%',maxWidth:700,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+    <div style={{width:'100%',maxWidth:1100,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
       <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
@@ -1589,19 +1605,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>
       </div>
       <div style={{padding:'20px 28px'}}>
+        <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}`}</style>
+        <div className="cp-grid">
 
-        {/* Build a team store — coach self-serve entry */}
-        <button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
-          <div>
-            <div style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.8}}>New</div>
-            <div style={{fontSize:18,fontWeight:800,marginTop:2}}>✨ Build your team store</div>
-            <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
-          </div>
-          <div style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'10px 16px',whiteSpace:'nowrap'}}>Start →</div>
-        </button>
-
-        {/* Team store — read-only order tracking for the coach */}
-        <CoachStore customer={customer} />
+        {/* ── LEFT COLUMN — Orders & Billing ── */}
+        <div className="cp-col">
+        <div className="cp-colhead">Orders &amp; Billing</div>
+        {(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
+          <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
         {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
@@ -1830,6 +1841,59 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           </>})()}
 
+        </div>{/* ── /LEFT COLUMN ── */}
+
+        {/* ── RIGHT COLUMN — Team Store & Tools ── */}
+        <div className="cp-col">
+        <div className="cp-colhead">Team Store</div>
+
+        {/* Build a team store — coach self-serve entry (invite-only) */}
+        {coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.8}}>New</div>
+            <div style={{fontSize:18,fontWeight:800,marginTop:2}}>✨ Build your team store</div>
+            <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
+          </div>
+          <div style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'10px 16px',whiteSpace:'nowrap'}}>Start →</div>
+        </button>}
+
+        {/* Team store — read-only order tracking for the coach */}
+        <CoachStore customer={customer} />
+
+        {/* Shop & order — invite-gated live-look + order building */}
+        {(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>🛍️ Shop &amp; Order</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {coachLivelook&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
+              <span style={{fontSize:22}}>🏷️</span>
+              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Live Look — Shop Live Inventory</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse in-stock gear at your team pricing &amp; colors.</span></span>
+              <span style={{color:'#94a3b8'}}>›</span>
+            </a>}
+            {coachBuildOrders&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
+              <span style={{fontSize:22}}>🧾</span>
+              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Build &amp; Submit an Order</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Put an order together and send it to {rep?.name||'your rep'} for a quote.</span></span>
+              <span style={{color:'#94a3b8'}}>›</span>
+            </a>}
+          </div>
+        </div>}
+
+        {/* Catalogs — always-available browse links (open on the marketing site) */}
+        <div style={{marginTop:16}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📚 Catalogs</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <a className="cp-tool" href={CP_MARKETING+'/team-stores'} target={CP_LINK_TARGET} rel="noopener noreferrer">
+              <span style={{fontSize:22}}>👕</span>
+              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Team Stores</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Find an open store or see how they work.</span></span>
+              <span style={{color:'#94a3b8'}}>›</span>
+            </a>
+            <a className="cp-tool" href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer">
+              <span style={{fontSize:22}}>🎨</span>
+              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Custom &amp; Catalog Gear</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse our catalogs or request a custom quote.</span></span>
+              <span style={{color:'#94a3b8'}}>›</span>
+            </a>
+          </div>
+        </div>
+
         {/* Your rep */}
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
@@ -1857,6 +1921,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Changes will be reviewed by your rep before updating</div>
           </>}
         </div>
+        </div>{/* ── /RIGHT COLUMN ── */}
+        </div>{/* ── /cp-grid ── */}
       </div>
     </div>
 
