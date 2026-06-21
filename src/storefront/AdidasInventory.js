@@ -711,7 +711,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   // the row would otherwise be mostly empty: give them a much larger, centered
   // product image. Sized apparel keeps the compact thumb so its size grid fits.
   const oneSize = st.colorways.every((cw) => cw.sizes.length > 0 && cw.sizes.every((s) => isOneSize(s.size)));
-  const thumb = oneSize ? 140 : 76;
+  const thumb = oneSize ? 72 : 76;
 
   return (
     <>
@@ -746,9 +746,9 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
             {cq && <div style={{ fontSize: 12, color: '#6A7180', marginTop: 6 }}>{shownCws.length} of {st.colorways.length} colors</div>}
           </div>
         )}
-        <div style={{ padding: '0 24px 22px' }}>
+        <div style={{ padding: '0 24px 22px', ...(oneSize ? { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 10, alignItems: 'start' } : null) }}>
           {cq && shownCws.length === 0 && (
-            <div style={{ padding: '14px 0', fontSize: 13.5, color: '#6A7180' }}>No colors match “{colorQ}”.</div>
+            <div style={{ padding: '14px 0', fontSize: 13.5, color: '#6A7180', gridColumn: '1 / -1' }}>No colors match “{colorQ}”.</div>
           )}
           {shownCws.map((cw) => {
             const availNow = (s) => (s.q || 0) + (s.ih || 0);
@@ -762,7 +762,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
             const hasOOS = cw.sizes.some((s) => !availNow(s));
             const oosSizes = cw.sizes.filter((s) => !availNow(s));
             return (
-              <div key={cw.sku} className="ai-cwrow" style={{ ...(oneSize ? { alignItems: 'center' } : null), ...(matchSet.has(cw.sku) ? null : { opacity: .55 }) }}>
+              <div key={cw.sku} className="ai-cwrow" style={{ ...(oneSize ? { alignItems: 'center', borderTop: 'none', border: '1px solid #EEF0F3', borderRadius: 12, padding: 12, gap: 10 } : null), ...(matchSet.has(cw.sku) ? null : { opacity: .55 }) }}>
                 <button type="button" disabled={!cw.img}
                   onClick={() => cw.img && setZoomImg({ img: cw.img, alt: cw.color || cw.family })}
                   title={cw.img ? 'Click to enlarge' : undefined}
