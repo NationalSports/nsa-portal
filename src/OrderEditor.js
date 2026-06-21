@@ -1489,12 +1489,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
     // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes.
     // For Richardson, trust the feed's size tokens verbatim (e.g. "Y", "XS-SM", "SM-MD", "LG-XL").
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    const apiSizes=(isRS||isCP)?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isCP?[]:isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     // SanMar provides availableSizes as comma-separated string
     const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
     // For non-RS items keep the legacy default; for Richardson use only what the feed gives us.
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    const STD_SIZES=(isRS||isCP)?[]:['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
@@ -1506,7 +1506,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
     });
     const liveFlag=isCP?'_cp_live':isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
-    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
+    const fallbackSizes=(isRS||isCP)?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const newItem={
       product_id:catMatch?.id||null,sku:style.sku,name:nameWithBrand(style.styleName,style.brandName),brand:style.brandName,
       vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,
@@ -1637,10 +1637,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    const apiSizes=(isRS||isCP)?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isCP?[]:isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    const STD_SIZES=(isRS||isCP)?[]:['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
@@ -1650,7 +1650,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // size badge render "0 sm" forever until a per-size refresh happens.
     color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isCP?'_cp_live':isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
-    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
+    const fallbackSizes=(isRS||isCP)?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
     const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];
     // Clear stale live-vendor flags from the source
@@ -1718,10 +1718,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    const apiSizes=(isRS||isCP)?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isCP?[]:isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    const STD_SIZES=(isRS||isCP)?[]:['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
@@ -1731,7 +1731,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // size badge render "0 sm" forever until a per-size refresh happens.
     color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isCP?'_cp_live':isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
-    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
+    const fallbackSizes=(isRS||isCP)?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
