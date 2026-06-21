@@ -3213,6 +3213,7 @@ let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
 let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
@@ -11791,7 +11792,9 @@ export default function App(){
                         // batch rows match on SO + item index (+ source PO# when present).
                         const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
                         const rcv={};let _ord=0,_rcvd=0;
-                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)){
+                        // Only size keys are positive numbers on a po_line; skip _META metadata and any
+                        // _-prefixed helper (e.g. _bill_cost) so a billed line's cost isn't counted as units.
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)&&!k.startsWith('_')){
                           _ord+=v;
                           const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;
                           const rv=el?Math.max(0,parseInt(el.value)||0):0;rcv[k]=rv;_rcvd+=rv}});
@@ -28078,13 +28081,21 @@ export default function App(){
   const[dvTab,setDvTab]=useState('embroidery');
   const[dvNewName,setDvNewName]=useState('');
   const[dvAddr,setDvAddr]=useState({});// draft ship-to address for the deco vendor being edited
+  const[featBrand,setFeatBrand]=useState('');
+  const[featProds,setFeatProds]=useState([]);
+  const[featSearch,setFeatSearch]=useState('');
+  const[featCategory,setFeatCategory]=useState('');
+  const[featColor,setFeatColor]=useState('');
+  const[featLoading,setFeatLoading]=useState(false);
+  const[featShowHidden,setFeatShowHidden]=useState(false);
+  const[featShowNoImg,setFeatShowNoImg]=useState(false);
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud'],['featured','Featured Styles']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -28623,6 +28634,137 @@ export default function App(){
           </div>
         </div>
       </>}
+
+      {/* FEATURED STYLES */}
+      {settingsTab==='featured'&&(()=>{
+        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
+        // Mirror LiveLook's color-family classification (src/storefront/AdidasInventory.js)
+        // so the filter matches the storefront and covers products with no color_category
+        // (the family is parsed from the free-text color, e.g. "Collegiate Navy" → Navy).
+        const COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown','Other'];
+        const SEGMENT_RULES=[['Navy',/NAVY/],['Royal',/ROYAL/],['Maroon',/MAROON|BURGUNDY|CARDINAL/],['Gold',/GOLD/],['Black',/BLACK/],['White',/WHITE|CREAM|IVORY/],['Grey',/GREY|GRAY|SILVER|CHARCOAL|HEATHER|ONIX|CARBON|GRANITE/],['Red',/\bRED\b|SCARLET|CRIMSON/],['Orange',/ORANGE|AMBER/],['Yellow',/YELLOW|LEMON|SOLAR/],['Green',/GREEN|FOREST|MINT|OLIVE/],['Blue',/BLUE|AQUA|TEAL|SKY|INDIGO/],['Purple',/PURPLE|VIOLET|REGAL/],['Pink',/PINK|MAGENTA|ROSE|FUCHSIA/],['Brown',/BROWN|KHAKI|TAN\b|EARTH/]];
+        const CC_ALIAS={'Light Grey':'Grey','Vegas Gold':'Gold'};
+        const colorTags=(p)=>{
+          const tags=new Set();
+          for(const seg of String(p.color||'').split('/').map(s=>s.trim()).filter(Boolean)){
+            const u=seg.toUpperCase();
+            for(const[fam,re]of SEGMENT_RULES){if(re.test(u)){tags.add(fam);break;}}
+          }
+          if(!tags.size){const cc=CC_ALIAS[p.color_category]||p.color_category;if(cc&&COLOR_FAMILIES.includes(cc))tags.add(cc);}
+          if(!tags.size)tags.add('Other');
+          return tags;
+        };
+        // Category cleanup matching LiveLook so the pills line up with the storefront.
+        const CAT_ALIAS={Hood:'Hoods',Jerseys:'Jersey','Jersey Tops':'Jersey','Jersey Bottoms':'Jersey'};
+        const normCat=(c)=>CAT_ALIAS[c]||c||'Other';
+        const loadFeatProds=async(brand)=>{
+          setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');setFeatCategory('');setFeatColor('');
+          // Paginate past PostgREST's 1000-row cap so every colorway is pulled in.
+          const PAGE=1000;let all=[],from=0;
+          for(;;){
+            const{data,error}=await supabase.from('products')
+              .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
+              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+            if(error){nf('Error loading: '+error.message,'error');break;}
+            all=all.concat(data||[]);
+            if(!data||data.length<PAGE)break;
+            from+=PAGE;
+          }
+          // Classify color once at load time (not per render) so typing stays snappy.
+          setFeatProds(all.map(p=>({...p,_tags:colorTags(p)})));setFeatLoading(false);
+        };
+        // Collapse colorways into one entry per style (same name = same style).
+        const styleList=[];const styleByKey={};const colorSet=new Set();
+        for(const p of featProds){
+          if(!p.name)continue;
+          const k=p.name.trim().toUpperCase();
+          let st=styleByKey[k];
+          if(!st){st={key:k,name:p.name,colorways:[],ids:[],isFeatured:false,isHidden:true};styleByKey[k]=st;styleList.push(st);}
+          (p._tags||colorTags(p)).forEach(t=>colorSet.add(t));
+          st.colorways.push(p);st.ids.push(p.id);
+          if(p.is_featured)st.isFeatured=true;
+          if(!p.is_archived)st.isHidden=false;
+          if(p.image_front_url)st.hasImage=true;
+        }
+        const toggleFeat=async(st)=>{
+          const newVal=!st.isFeatured;const ids=st.ids;
+          setFeatProds(prev=>prev.map(x=>ids.includes(x.id)?{...x,is_featured:newVal}:x));
+          const{error}=await supabase.from('products').update({is_featured:newVal}).in('id',ids);
+          if(error)nf('Error saving: '+error.message,'error');
+        };
+        const toggleHide=async(e,st)=>{
+          e.stopPropagation();
+          const newVal=!st.isHidden;const ids=st.ids;
+          setFeatProds(prev=>prev.map(x=>ids.includes(x.id)?{...x,is_archived:newVal}:x));
+          const{error}=await supabase.from('products').update({is_archived:newVal}).in('id',ids);
+          if(error)nf('Error saving: '+error.message,'error');
+        };
+        const cats=[...new Set(featProds.map(p=>normCat(p.category)).filter(Boolean))].sort();
+        const colors=COLOR_FAMILIES.filter(f=>f!=='Other'&&colorSet.has(f));
+        // Pick the colorway to show on a style card: the filtered color if set, else one with an image.
+        const pickCw=(st)=>{
+          let pool=st.colorways;
+          if(featColor)pool=pool.filter(c=>(c._tags||colorTags(c)).has(featColor));
+          return pool.find(c=>c.image_front_url)||pool[0]||st.colorways[0];
+        };
+        const hiddenCount=styleList.filter(s=>s.isHidden).length;
+        const noImgCount=styleList.filter(s=>!s.hasImage).length;
+        const filteredStyles=styleList.filter(st=>{
+          if(!featShowHidden&&st.isHidden)return false;
+          if(featShowNoImg&&st.hasImage)return false;
+          if(featCategory&&!st.colorways.some(c=>normCat(c.category)===featCategory))return false;
+          if(featColor&&!st.colorways.some(c=>(c._tags||colorTags(c)).has(featColor)))return false;
+          if(!featSearch)return true;
+          const s=featSearch.toLowerCase();
+          return st.name.toLowerCase().includes(s)||st.colorways.some(c=>(c.sku||'').toLowerCase().includes(s)||(c.color||'').toLowerCase().includes(s));
+        });
+        const RENDER_CAP=400;
+        const shown=filteredStyles.slice(0,RENDER_CAP);
+        const featCount=styleList.filter(s=>s.isFeatured).length;
+        return(<>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h3>Featured Styles</h3></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>Featured styles always appear first in the LiveLook catalog. Each card is one style — starring it features all of its colors. Filter by color to preview a specific colorway.</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+                {FEAT_BRANDS.map(b=><button key={b} className={`btn btn-sm ${featBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>featBrand!==b&&loadFeatProds(b)}>{b}</button>)}
+              </div>
+              {featBrand&&<>
+                {cats.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                  <button className={`btn btn-sm ${!featCategory?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory('')}>All</button>
+                  {cats.map(c=><button key={c} className={`btn btn-sm ${featCategory===c?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory(featCategory===c?'':c)}>{c}</button>)}
+                </div>}
+                {colors.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                  {colors.map(c=><button key={c} className={`btn btn-sm ${featColor===c?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatColor(featColor===c?'':c)}>{c}</button>)}
+                </div>}
+                <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:10}}>
+                  <input className="form-input" placeholder="Search name, SKU, or color…" value={featSearch} onChange={e=>setFeatSearch(e.target.value)} style={{maxWidth:280,fontSize:13}}/>
+                  {featCount>0&&<span style={{fontSize:12,color:'#0369a1',fontWeight:700}}>★ {featCount} style{featCount!==1?'s':''} featured</span>}
+                  {hiddenCount>0&&<button className={`btn btn-sm ${featShowHidden?'btn-warning':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatShowHidden(h=>!h)}>⊗ {featShowHidden?'Hide':'Show'} hidden ({hiddenCount})</button>}
+                  {noImgCount>0&&<button className={`btn btn-sm ${featShowNoImg?'btn-danger':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatShowNoImg(h=>!h)}>📷 {featShowNoImg?'All items':'No image'} ({noImgCount})</button>}
+                  {featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>Loading…</span>}
+                  {!featLoading&&<span style={{fontSize:12,color:'#94a3b8'}}>{filteredStyles.length} style{filteredStyles.length!==1?'s':''}</span>}
+                </div>
+                {!featLoading&&filteredStyles.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
+                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;const isHid=st.isHidden;const styleSku=(p.sku||'').split('.')[0]||p.sku||'';const showCount=st.colorways.length>1&&!featColor;const skuShown=showCount?styleSku:p.sku;const infoLeft=isHid?'Hidden from catalog':(showCount?`${st.colorways.length} colors`:(p.color||''));return(
+                    <div key={st.key} onClick={()=>!isHid&&toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isHid?'#e2e8f0':isFeat?'#bae6fd':'#e2e8f0',background:isHid?'#f8fafc':isFeat?'#f0f9ff':'#fff',cursor:isHid?'default':'pointer',opacity:isHid?0.55:1}}>
+                      <div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0,position:'relative',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,overflow:'hidden'}} title={p.image_front_url?'':'No image'}>📷{p.image_front_url&&<img src={p.image_front_url} alt="" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.currentTarget.style.display='none'}}/>}</div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:600,color:isHid?'#94a3b8':'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
+                        <div style={{fontSize:11,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{infoLeft}{skuShown&&<span style={{fontFamily:'monospace',color:'#64748b'}}>{infoLeft?' · ':''}{skuShown}</span>}</div>
+                      </div>
+                      {!isHid&&<span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>}
+                      <span onClick={e=>toggleHide(e,st)} title={isHid?'Show in catalog':'Hide from catalog'} style={{fontSize:14,color:isHid?'#ef4444':'#cbd5e1',flexShrink:0,lineHeight:1,cursor:'pointer',userSelect:'none'}}>⊗</span>
+                    </div>
+                  );})}
+                </div>
+                {filteredStyles.length>RENDER_CAP&&<div style={{fontSize:12,color:'#94a3b8',textAlign:'center',marginTop:8}}>Showing first {RENDER_CAP} of {filteredStyles.length} — use search or filters to narrow.</div>}
+              </>}
+            </div>
+          </div>
+        </>);
+      })()}
     </>)};
 
   // ─── SALES TOOLS PAGE ───

@@ -77,6 +77,13 @@
 [functions."ss-brands-sync-cron"]
   schedule = "30 15 * * *"
 
+# Momentec image verifier — daily at 16:00 UTC, after the Momentec catalog sync
+# (15:00) re-derives image URLs from SKUs without checking they exist. Probes
+# each product image and clears the ~40% that return 403/404 on the CDN, so the
+# Featured Styles "no image" count and the LiveLook imageless-hide stay accurate.
+[functions."momentec-image-verify-cron"]
+  schedule = "0 16 * * *"
+
 # SanMar brands catalog sync — daily at 16:00 UTC. Pulls Port Authority,
 # Sport-Tek, District, Bella+Canvas from SanMar → products + sanmar_inventory.
 # Seed SANMAR_BRAND_STYLES env var with style numbers (e.g. "K500,PC61,DT6000")

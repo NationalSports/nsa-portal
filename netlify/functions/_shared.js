@@ -102,6 +102,18 @@ async function reconcileInvoiceFromIntent(admin, pi) {
   const targets = rows.filter((r) => r.status !== 'paid' && (Number(r.total) || 0) - (Number(r.paid) || 0) > 0.005);
   const balTotal = targets.reduce((a, r) => a + ((Number(r.total) || 0) - (Number(r.paid) || 0)), 0);
   const collected = (pi.amount_received != null ? pi.amount_received : (pi.amount || 0)) / 100;
+  // SECURITY: never settle an invoice for less than its open balance. This function sets
+  // paid = total for every target, so without this guard ANY succeeded PaymentIntent —
+  // including a $0.50 underpayment — would mark a large invoice fully paid. Legitimate portal
+  // payments always capture the full balance (plus the card surcharge), so this only rejects
+  // genuine underpayments; the 1-cent tolerance absorbs rounding. Captured funds remain in
+  // Stripe (visible in the dashboard) for manual handling.
+  if (targets.length && collected + 0.01 < balTotal) {
+    console.error('[reconcileInvoice] underpayment ignored for intent', pi.id,
+      '— captured', collected, 'vs open balance', balTotal,
+      '; left open:', targets.map((r) => r.id).join(','));
+    return { reconciled: [], underpaid: true, collected, balanceDue: balTotal };
+  }
   const feeTotal = Math.max(0, Math.round((collected - balTotal) * 100) / 100);
   const nowIso = new Date().toISOString();
   const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
@@ -128,4 +140,75 @@ async function reconcileInvoiceFromIntent(admin, pi) {
   return { reconciled };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent };
+// Sync an order's webstore_order_items to `lineItems` WITHOUT destroying fulfillment state.
+// Existing rows are matched by (sku, size) and updated in place, so each row's id and its
+// fulfillment columns (shipped_qty, missing_qty, line_status) survive. The id matters because
+// webstore_shipments references it (items[].lineItemKey) to reconcile partial shipments — a
+// blind delete + reinsert minted new ids and reset fulfillment to defaults on every re-ingest,
+// permanently orphaning shipment links and discarding received/shipped counts. New lines are
+// inserted; lines no longer present are removed ONLY when they carry no fulfillment progress,
+// so a shipment link is never orphaned. `contentKeys` are the columns copied from each lineItem
+// onto a matched row (must exclude the fulfillment columns). Each lineItem must include `sku`
+// and `size` (the match key) plus the columns needed to insert a brand-new row.
+async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const key = (o) => `${String(o.sku || '').toUpperCase()}|${String(o.size || '')}`;
+  const { data: existingItems, error } = await sb.from('webstore_order_items')
+    .select('id,sku,size,shipped_qty,missing_qty,line_status').eq('order_id', orderId);
+  if (error) {
+    // Can't read current items — fall back to the historical replace so we never risk
+    // double-inserting. Worst case this reverts to the old behavior, not data corruption.
+    console.warn('[syncOrderItems] item read failed, falling back to replace:', error.message);
+    await sb.from('webstore_order_items').delete().eq('order_id', orderId);
+    if (items.length) {
+      const { error: iErr } = await sb.from('webstore_order_items')
+        .insert(items.map((li) => ({ ...li, order_id: orderId })));
+      if (iErr) throw new Error(`Items insert failed: ${iErr.message}`);
+    }
+    return { matched: 0, inserted: items.length, removed: 0, fallback: true };
+  }
+  // Bucket existing rows by (sku,size); a queue tolerates the rare duplicate line.
+  const queues = new Map();
+  for (const it of (existingItems || [])) {
+    const k = key(it);
+    if (!queues.has(k)) queues.set(k, []);
+    queues.get(k).push(it);
+  }
+  let matched = 0;
+  const toInsert = [];
+  for (const li of items) {
+    const q = queues.get(key(li));
+    const hit = (q && q.length) ? q.shift() : null;
+    if (hit) {
+      const patch = {};
+      for (const c of contentKeys) patch[c] = li[c];
+      const { error: uErr } = await sb.from('webstore_order_items').update(patch).eq('id', hit.id);
+      if (uErr) throw new Error(`Item update failed: ${uErr.message}`);
+      matched++;
+    } else {
+      toInsert.push({ ...li, order_id: orderId });
+    }
+  }
+  if (toInsert.length) {
+    const { error: iErr } = await sb.from('webstore_order_items').insert(toInsert);
+    if (iErr) throw new Error(`Items insert failed: ${iErr.message}`);
+  }
+  // Leftover existing rows = lines no longer in the source. Drop only those with no
+  // fulfillment progress so we never orphan a shipment link or lose shipped/received counts.
+  const stale = [];
+  for (const q of queues.values()) {
+    for (const it of q) {
+      const active = (Number(it.shipped_qty) || 0) > 0
+        || (Number(it.missing_qty) || 0) > 0
+        || (it.line_status && it.line_status !== 'pending');
+      if (!active) stale.push(it.id);
+    }
+  }
+  if (stale.length) {
+    const { error: dErr } = await sb.from('webstore_order_items').delete().in('id', stale);
+    if (dErr) throw new Error(`Stale item cleanup failed: ${dErr.message}`);
+  }
+  return { matched, inserted: toInsert.length, removed: stale.length };
+}
+
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems };

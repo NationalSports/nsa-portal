@@ -1,16 +1,18 @@
-// Background function (15-min limit): syncs selected non-Nike brands from
-// SanMar into the portal so the public Team Catalog (/adidas, /livelook)
-// shows SanMar-sourced styles for Port Authority, Sport-Tek, District, and
-// Bella+Canvas with images, sizes, and live inventory.
+// Background function (15-min limit): syncs SanMar styles into the portal so the
+// public Team Catalog (/adidas, /livelook) shows SanMar-sourced styles with
+// images, sizes, and live inventory. Ingests the team-relevant SanMar brands
+// (excludes Nike & Richardson — own feeds — plus a few off-profile long-tail
+// lines; see EXCLUDE_BRAND_RE). On LiveLook these surface under the "Non Branded"
+// filter while each card keeps its real brand.
 //
 // SanMar's API is style-number-gated (no "list by brand" endpoint), so the
 // style set is seeded from:
-//   1. Products already in the DB with these brands on the SanMar vendor
-//      (refresh runs on every sync)
-//   2. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
+//   1. The sanmar_style_seeds table (pulled from sanmarsports.com/products.json)
+//   2. Products already SanMar-sourced in the DB (refresh runs on every sync)
+//   3. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
 //      numbers to add (e.g. "K500,PC61,DT6000,3001C")
-// On the FIRST live run, add your style list via SANMAR_BRAND_STYLES; the
-// sync will persist them and future runs refresh automatically from the DB.
+// New (not-yet-synced) styles are processed first so the 15-min budget always
+// makes forward progress; large seed sets converge over a couple of runs.
 //
 // Writes:
 //   products        — one row per style+color, id 'smb-{style}-{colorCode}',
@@ -26,8 +28,16 @@
 //      REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 //      (SANMAR_USERNAME + SANMAR_PASSWORD are used inside sanmar-proxy)
 
-const TARGET_BRANDS = ['Port Authority', 'Sport-Tek', 'District', 'Bella+Canvas'];
-const TARGET_BRAND_RE = /port\s*authority|sport-?tek|^district$|bella\+?canvas/i;
+// We ingest the team-relevant SanMar brands and exclude:
+//   • Nike, Richardson — have their own dedicated feeds (avoid dup cards); Nike
+//     stays branded "Nike", Richardson keeps its own live feed.
+//   • Off-profile "long tail" lines (resort / dress / industrial workwear /
+//     lifestyle) — trimmed to keep the Non Branded catalog tight for a team
+//     dealer: tentree, Tommy Bahama, Red Kap, Stanley/Stella, Brooks Brothers.
+//     (Seeds keep the full site list; this only gates ingest.)
+// Everything else (Port Authority, Sport-Tek, District, Bella+Canvas, Gildan,
+// New Era, OGIO, Eddie Bauer, North Face, Carhartt, TravisMathew, …) is pulled in.
+const EXCLUDE_BRAND_RE = /nike|richardson|tentree|tommy\s*bahama|red\s*kap|stanley|brooks\s*brothers/i;
 
 const CATEGORY_RULES = [
   ['1/4 Zips', /QUARTER[- ]ZIP|1\/4[- ]ZIP/i],
@@ -53,7 +63,10 @@ function canonicalBrand(name) {
   if (/sport-?tek/i.test(n)) return 'Sport-Tek';
   if (/^district$/i.test(n)) return 'District';
   if (/bella\+?canvas/i.test(n)) return 'Bella+Canvas';
-  return n || 'Other';
+  // Match the S&S canonical name exactly so the S&S→SanMar cutover finds the
+  // old rows to retire (S&S maps Gildan + Jerzees → "Gildan").
+  if (/gildan/i.test(n)) return 'Gildan';
+  return (n || 'Other').trim();
 }
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
@@ -97,11 +110,20 @@ exports.handler = async () => {
     const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
     if (!vendorId) return { statusCode: 200, body: 'No SanMar vendor configured' };
 
-    // Style list: existing target-brand SanMar products + env seed
-    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&select=sku&brand=in.(' + TARGET_BRANDS.map((b) => '"' + b + '"').join(',') + ')')).json();
+    // Style list: existing SanMar-sourced products (refresh) + DB seeds + env seed
+    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=sku')).json();
+    const dbSeeds = await (await sb('sanmar_style_seeds?select=style,brand')).json();
     const styleOf = (sku) => String(sku || '').split('-')[0].trim();
     const seed = (process.env.SANMAR_BRAND_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...seed].filter(Boolean))];
+    // Skip seeds for the dedicated-feed brands (Nike/Richardson); seeds with no
+    // brand recorded are always tried.
+    const seedStyles = arr(dbSeeds).filter((r) => !EXCLUDE_BRAND_RE.test(r.brand || '')).map((r) => r.style);
+    const existingStyles = arr(existing).map((p) => styleOf(p.sku)).filter(Boolean);
+    const existingSet = new Set(existingStyles);
+    // New (not-yet-synced) styles go first so first-time ingest wins the 15-min
+    // budget; already-synced styles refresh afterward and roll forward run to run.
+    const newStyles = [...seedStyles, ...seed].filter((s) => s && !existingSet.has(s));
+    const styles = [...new Set([...newStyles, ...existingStyles])];
     console.log('[sanmar-brands-sync] styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
     if (!styles.length) {
       return { statusCode: 200, body: JSON.stringify({ message: 'No brand styles to sync. Add SanMar style numbers to SANMAR_BRAND_STYLES env var (e.g. "K500,PC61,DT6000,3001C") to seed the catalog.', styles: 0 }) };
@@ -109,6 +131,7 @@ exports.handler = async () => {
 
     let productsUpserted = 0, invRows = 0;
     const errors = [];
+    const syncedBrands = new Set(); // brands actually ingested this run (drives the S&S cutover)
 
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
@@ -118,10 +141,10 @@ exports.handler = async () => {
         const items = arr(prod.items).map((raw) => ({ ...(raw.productBasicInfo || {}), ...(raw.productImageInfo || {}), ...(raw.productPriceInfo || {}), ...raw }));
         if (!items.length) continue;
 
-        // Only process if it's actually a target brand
+        // Skip brands that have their own dedicated feed (Nike, Richardson).
         const brandText = String(items[0].brandName || items[0].brand || '');
-        if (!TARGET_BRAND_RE.test(brandText)) {
-          console.warn('[sanmar-brands-sync] style', style, 'is brand "' + brandText + '" — skip');
+        if (EXCLUDE_BRAND_RE.test(brandText)) {
+          console.warn('[sanmar-brands-sync] style', style, 'is dedicated-feed brand "' + brandText + '" — skip');
           continue;
         }
         const brand = canonicalBrand(brandText);
@@ -166,7 +189,8 @@ exports.handler = async () => {
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
-          const title  = r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName);
+          // SanMar prefixes retired styles with "DISCONTINUED" — strip it (still sells from stock).
+          const title  = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
           prodRows.push({
             id: 'smb-' + sku,
             vendor_id: vendorId,
@@ -200,6 +224,7 @@ exports.handler = async () => {
         });
         if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
         productsUpserted += prodRows.length;
+        if (prodRows.length) syncedBrands.add(brand);
 
         for (let j = 0; j < invUpserts.length; j += 500) {
           const ir = await sb('sanmar_inventory?on_conflict=sku,size', {
@@ -215,8 +240,24 @@ exports.handler = async () => {
       }
     }
 
-    console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', errors.length, 'errors');
-    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, errors: errors.slice(0, 10) }) };
+    // Cutover: now that SanMar is the source for these brands, retire the old
+    // S&S rows for any brand we actually ingested this run (e.g. Gildan moves
+    // from S&S → SanMar). Scoped to synced brands only, so a brand we didn't
+    // reach this run keeps its existing rows — no empty gap. Boxercraft stays on
+    // S&S because SanMar doesn't carry it (never enters syncedBrands).
+    let ssRetired = 0;
+    if (syncedBrands.size) {
+      const inList = [...syncedBrands].map((b) => '"' + String(b).replace(/"/g, '') + '"').join(',');
+      const cr = await sb('products?inventory_source=eq.ss_activewear&is_active=eq.true&brand=in.(' + inList + ')', {
+        method: 'PATCH', headers: { Prefer: 'return=representation', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: false }),
+      });
+      if (cr.ok) { const rows = await cr.json().catch(() => []); ssRetired = Array.isArray(rows) ? rows.length : 0; }
+      else console.warn('[sanmar-brands-sync] S&S cutover failed', cr.status, (await cr.text()).slice(0, 200));
+    }
+
+    console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', ssRetired, 'S&S rows retired,', errors.length, 'errors');
+    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
   } catch (e) {
     console.error('[sanmar-brands-sync]', e);
     return { statusCode: 500, body: e.message };

@@ -367,11 +367,14 @@ function CoachStoreBuilder({ customer, rep, onClose }) {
           fundraise: dFund,
         }));
       }
-      // Hard in-stock filter — coaches never see dead stock.
+      // Hard in-stock filter — coaches never see dead stock. Also hide photoless
+      // items from the catalog browse (coaches are building a storefront, so a
+      // "No image" product is never a good pick); templates are pre-curated, so
+      // keep whatever the curator put in them.
       const stock = await fetchStockMap(items.map((i) => ({ id: i.product_id, sku: i.sku })));
       const inStock = items
         .map((i) => ({ ...i, _stock: stock.get(i.product_id) || { units: 0, sizes: [] } }))
-        .filter((i) => (i._stock.units || 0) > 0);
+        .filter((i) => (i._stock.units || 0) > 0 && (tid || i.image_url));
       setPool(inStock);
       // Template items are pre-curated → default all selected; catalog → start empty.
       setSel(new Set(tid ? inStock.map((i) => i.product_id) : []));
