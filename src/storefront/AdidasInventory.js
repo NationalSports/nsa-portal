@@ -1822,6 +1822,9 @@ export default function AdidasInventory() {
       if (matchQ && !matchQ(st)) continue;
       const matchCws = st.colorways.filter(cwMatcher);
       if (!matchCws.length) continue;
+      // Auto-hide imageless styles from the browse grid (no "image coming soon"
+      // cards). Still findable via search, where q is set.
+      if (!q && !matchCws.some((c) => c.img)) continue;
       out.push({ st, matchCws });
     }
     // With team colors picked, float styles whose colorways hit more of them;
@@ -1874,7 +1877,8 @@ export default function AdidasInventory() {
   const facets = useMemo(() => {
     const brands = {}, cats = {}, sports = {}, genders = {}, colors = {};
     for (const st of styles) {
-      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      // Match the grid: count only styles with an available, imaged colorway.
+      const anyAvail = st.colorways.some((c) => (c.units > 0 || (includeIncoming && c.hasIncoming)) && c.img);
       if (!anyAvail) continue;
       if (st.brand) brands[brandGroup(st.brand)] = (brands[brandGroup(st.brand)] || 0) + 1;
       cats[st.category] = (cats[st.category] || 0) + 1;
@@ -1899,7 +1903,7 @@ export default function AdidasInventory() {
     const counts = {};
     for (const st of styles) {
       if (brandGroup(st.brand) !== NON_BRANDED) continue;
-      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      const anyAvail = st.colorways.some((c) => (c.units > 0 || (includeIncoming && c.hasIncoming)) && c.img);
       if (!anyAvail) continue;
       counts[st.brand] = (counts[st.brand] || 0) + 1;
     }
