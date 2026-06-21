@@ -28077,6 +28077,9 @@ export default function App(){
   const[featLoading,setFeatLoading]=useState(false);
   const[featShowHidden,setFeatShowHidden]=useState(false);
   const[featShowNoImg,setFeatShowNoImg]=useState(false);
+  const[featApiSearch,setFeatApiSearch]=useState('');
+  const[featApiResults,setFeatApiResults]=useState([]);
+  const[featApiLoading,setFeatApiLoading]=useState(false);
   const[plBrand,setPlBrand]=useState('');
   const[plStyles,setPlStyles]=useState([]);
   const[plGroups,setPlGroups]=useState([]);
@@ -28637,7 +28640,8 @@ export default function App(){
 
       {/* FEATURED STYLES */}
       {settingsTab==='featured'&&(()=>{
-        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
+        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','SanMar','S&S','Momentec'];
+        const SANMAR_BRANDS=['Port Authority','Sport-Tek','District','Port & Co','OGIO','Eddie Bauer','Mercer+Mettle','The North Face','Bella + Canvas','New Era','TravisMathew','Rabbit Skins','Carhartt'];
         // Mirror LiveLook's color-family classification (src/storefront/AdidasInventory.js)
         // so the filter matches the storefront and covers products with no color_category
         // (the family is parsed from the free-text color, e.g. "Collegiate Navy" → Navy).
@@ -28659,12 +28663,17 @@ export default function App(){
         const normCat=(c)=>CAT_ALIAS[c]||c||'Other';
         const loadFeatProds=async(brand)=>{
           setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');setFeatCategory('');setFeatColor('');
+          setFeatApiSearch('');setFeatApiResults([]);
+          // S&S tab is API-search only — no local DB products to load.
+          if(brand==='S&S'){setFeatLoading(false);return;}
           // Paginate past PostgREST's 1000-row cap so every colorway is pulled in.
-          const PAGE=1000;let all=[],from=0;
+          const PAGE=1000;let all=[],from=0;const isSanMar=brand==='SanMar';
           for(;;){
-            const{data,error}=await supabase.from('products')
+            let q=supabase.from('products')
               .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
-              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('is_active',true).order('name').range(from,from+PAGE-1);
+            q=isSanMar?q.in('brand',SANMAR_BRANDS):q.eq('brand',brand);
+            const{data,error}=await q;
             if(error){nf('Error loading: '+error.message,'error');break;}
             all=all.concat(data||[]);
             if(!data||data.length<PAGE)break;
@@ -28672,6 +28681,66 @@ export default function App(){
           }
           // Classify color once at load time (not per render) so typing stays snappy.
           setFeatProds(all.map(p=>({...p,_tags:colorTags(p)})));setFeatLoading(false);
+        };
+        const runFeatApiSearch=async()=>{
+          const q=(featApiSearch||'').trim();if(!q){setFeatApiResults([]);return;}
+          setFeatApiLoading(true);setFeatApiResults([]);
+          try{
+            let results=[];
+            if(featBrand==='S&S'){
+              const styles=await ssApiCall('/Styles?search='+encodeURIComponent(q));
+              const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
+              if(sArr.length){
+                const styleIDs=[...new Set(sArr.map(s=>s.styleID).filter(Boolean))].slice(0,6);
+                if(styleIDs.length){
+                  const data=await ssApiCall('/Products?style='+encodeURIComponent(styleIDs.join(',')));
+                  const items=Array.isArray(data)?data:data?[data]:[];
+                  const grouped={};
+                  items.forEach(it=>{
+                    const sid=String(it.styleID||q);const color=it.colorName||'';
+                    let fg=it.colorFrontImage||it.colorSideImage||'';if(fg&&fg.startsWith('http://'))fg=fg.replace('http://','https://');
+                    if(!grouped[sid]){const sInfo=sArr.find(s=>String(s.styleID)===sid)||sArr[0]||{};
+                      grouped[sid]={id:sid,sku:sInfo.partNumber||it.styleName||sid,name:sInfo.title||(it.brandName+' '+(sInfo.partNumber||it.styleName||q)),brand:it.brandName||'S&S',frontUrl:fg,colors:[]};}
+                    if(!grouped[sid].colors.find(c=>c.colorName===color))grouped[sid].colors.push({colorName:color,frontUrl:fg});
+                  });
+                  results=Object.values(grouped);
+                }
+              }
+            }else if(featBrand==='SanMar'){
+              const prodData=await sanmarGetProduct(q.toUpperCase().trim());
+              const items=(prodData?.items||[]).filter(r=>{const bi=r.productBasicInfo||r;const pi=r.productPriceInfo||r;return !!(bi.brandName)&&parseFloat(pi.piecePrice||pi.casePrice||0)>0});
+              const grouped={};
+              items.forEach(raw=>{
+                const bi=raw.productBasicInfo||{};const ii=raw.productImageInfo||{};const it={...bi,...ii,...(raw.productPriceInfo||{}),...raw};
+                const sid=String(it.style||it.styleNumber||q);const color=it.catalogColor||it.color||it.colorName||'';
+                let fg=it.colorProductImage||it.colorProductImageThumbnail||'';if(fg&&fg.startsWith('http://'))fg=fg.replace('http://','https://');
+                if(!grouped[sid])grouped[sid]={id:sid,sku:sid,name:((it.brandName||'')+' '+(it.productTitle||sid)).trim(),brand:it.brandName||'SanMar',frontUrl:fg,colors:[]};
+                if(!grouped[sid].colors.find(c=>c.colorName===color))grouped[sid].colors.push({colorName:color,frontUrl:fg});
+              });
+              results=Object.values(grouped);
+            }
+            // Mark which results are already featured in the DB.
+            if(results.length){
+              const skus=results.map(r=>r.sku).filter(Boolean);
+              const{data:existing}=await supabase.from('products').select('sku,is_featured').in('sku',skus);
+              const featMap=Object.fromEntries((existing||[]).map(p=>[p.sku,p.is_featured]));
+              results=results.map(r=>({...r,isFeatured:!!featMap[r.sku]}));
+            }
+            setFeatApiResults(results);
+          }catch(e){nf('Search failed: '+e.message,'error');}
+          setFeatApiLoading(false);
+        };
+        const toggleFeatApi=async(style)=>{
+          const newVal=!style.isFeatured;
+          const{data:existing}=await supabase.from('products').select('id').eq('sku',style.sku).maybeSingle();
+          let err;
+          if(existing){
+            ({error:err}=await supabase.from('products').update({is_featured:newVal}).eq('id',existing.id));
+          }else{
+            ({error:err}=await supabase.from('products').insert({sku:style.sku,name:style.name,brand:style.brand,image_front_url:style.frontUrl,is_featured:true,is_active:true,is_archived:false}));
+          }
+          if(err){nf('Error: '+err.message,'error');return;}
+          setFeatApiResults(prev=>prev.map(r=>r.id===style.id?{...r,isFeatured:newVal}:r));
         };
         // Collapse colorways into one entry per style (same name = same style).
         const styleList=[];const styleByKey={};const colorSet=new Set();
@@ -28730,6 +28799,33 @@ export default function App(){
                 {FEAT_BRANDS.map(b=><button key={b} className={`btn btn-sm ${featBrand===b?'btn-primary':'btn-secondary'}`} onClick={()=>featBrand!==b&&loadFeatProds(b)}>{b}</button>)}
               </div>
               {featBrand&&<>
+                {/* API search panel — S&S (only source) and SanMar (supplements DB browse) */}
+                {(featBrand==='S&S'||featBrand==='SanMar')&&<div style={{marginBottom:14,padding:'12px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:12,fontWeight:600,color:'#475569',marginBottom:8}}>Search {featBrand} catalog via API</div>
+                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                    <input className="form-input" placeholder={featBrand==='S&S'?'Style # or keyword (e.g. Gildan 18000, BSN30)':'Style # (e.g. PC61, J317)'}
+                      value={featApiSearch} onChange={e=>setFeatApiSearch(e.target.value)}
+                      onKeyDown={e=>e.key==='Enter'&&runFeatApiSearch()}
+                      style={{maxWidth:300,fontSize:13}}/>
+                    <button className="btn btn-sm btn-primary" disabled={featApiLoading||!featApiSearch.trim()} onClick={runFeatApiSearch}>{featApiLoading?'Searching…':'Search'}</button>
+                    {featApiResults.length>0&&<span style={{fontSize:12,color:'#64748b'}}>{featApiResults.length} style{featApiResults.length!==1?'s':''} found</span>}
+                  </div>
+                  {featApiResults.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,marginTop:10,maxHeight:400,overflowY:'auto',paddingRight:4}}>
+                    {featApiResults.map(st=>{const isFeat=st.isFeatured;return(
+                      <div key={st.id} onClick={()=>toggleFeatApi(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isFeat?'#bae6fd':'#e2e8f0',background:isFeat?'#f0f9ff':'#fff',cursor:'pointer'}}>
+                        <div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0,position:'relative',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,overflow:'hidden'}}>📷{st.frontUrl&&<img src={st.frontUrl} alt="" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.currentTarget.style.display='none'}}/>}</div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
+                          <div style={{fontSize:11,color:'#94a3b8'}}>{st.colors.length} color{st.colors.length!==1?'s':''}<span style={{fontFamily:'monospace',color:'#64748b'}}> · {st.sku}</span></div>
+                        </div>
+                        <span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>
+                      </div>
+                    );})}
+                  </div>}
+                  {!featApiLoading&&featApiSearch.trim()&&featApiResults.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'12px 0 4px'}}>No results. Try a different style number or keyword.</div>}
+                </div>}
+                {/* DB browse — hidden for S&S (API-only), shown for all other tabs */}
+                {featBrand!=='S&S'&&<>
                 {cats.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
                   <button className={`btn btn-sm ${!featCategory?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory('')}>All</button>
                   {cats.map(c=><button key={c} className={`btn btn-sm ${featCategory===c?'btn-primary':'btn-outline-secondary'}`} style={{fontSize:11}} onClick={()=>setFeatCategory(featCategory===c?'':c)}>{c}</button>)}
@@ -28760,6 +28856,7 @@ export default function App(){
                   );})}
                 </div>
                 {filteredStyles.length>RENDER_CAP&&<div style={{fontSize:12,color:'#94a3b8',textAlign:'center',marginTop:8}}>Showing first {RENDER_CAP} of {filteredStyles.length} — use search or filters to narrow.</div>}
+                </>}
               </>}
             </div>
           </div>
