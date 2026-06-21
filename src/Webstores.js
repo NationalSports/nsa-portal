@@ -2732,7 +2732,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
-  const [name, setName] = useState(item.display_name || '');
+  const [name, setName] = useState(item.display_name || defaultName || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
@@ -2846,7 +2846,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
