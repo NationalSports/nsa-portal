@@ -380,6 +380,24 @@ function DecoOverlay({ decorations, side = 'front', colorName }) {
   })}</>;
 }
 
+// Sample number/name on the garment mockup so shoppers see an item is personalized.
+// Default back placement; the real value is entered at checkout. Mirrors the builder.
+const PERSO_DEFAULTS = { name: { x: 50, y: 22, w: 64 }, number: { x: 50, y: 51, w: 34 } };
+function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber = '00' }) {
+  if (!takesNumber && !takesName) return null;
+  const tok = (p, vb, ty, fs, body) => (
+    <div style={{ position: 'absolute', left: p.x + '%', top: p.y + '%', width: p.w + '%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 1 }}>
+      <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible' }}>
+        <text x="50" y={ty} textAnchor="middle" fontFamily="'Barlow Condensed',Oswald,Impact,sans-serif" fontWeight="800" fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.6)" strokeWidth="1.3" paintOrder="stroke" letterSpacing="1">{body}</text>
+      </svg>
+    </div>
+  );
+  return <>
+    {takesName && tok(PERSO_DEFAULTS.name, 26, 20, 20, String(sampleName).toUpperCase())}
+    {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
+  </>;
+}
+
 function BundleCollage({ comps, theme }) {
   const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
   if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
@@ -514,6 +532,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // so the back logos always have a garment to sit on.
   const descText = cleanDesc(p.description);
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
+  // Number/name personalization previews on the back, so make the back viewable for it too.
+  const isPerso = !!(p.takes_number || p.takes_name);
   const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
@@ -524,8 +544,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
+            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} />}
           </div>
-          {hasBackDeco && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
           </div>}
         </div>
