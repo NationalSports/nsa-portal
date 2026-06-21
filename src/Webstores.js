@@ -2048,6 +2048,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [editId, setEditId] = useState(null); // catalog row being edited inline
   const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
   const [overCat, setOverCat] = useState(null); // category section being dragged over
+  const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
+  useEffect(() => { setPaneTab('details'); }, [editId]);
   // Side-by-side layout: a persistent item list on the left, the item editor in a
   // pane on the right (no popup). Toggle back to the classic list+popup; remembered locally.
   const [view, setView] = useState(() => { try { return localStorage.getItem('nsa_catalog_view') || 'split'; } catch { return 'split'; } });
@@ -2228,12 +2230,17 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
               const groupColors = colorsForRep(p.id);
               return (
                 <div style={{ border: '1px solid #eef0f3', borderRadius: 14, background: '#fff' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 16px', borderBottom: '1px solid #eef0f3', borderRadius: '14px 14px 0 0' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15 }}>{p.display_name || stock?.name || p.sku}{groupColors.length > 1 ? <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}> · {groupColors.length} colors</span> : null}</div>
-                    <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', borderBottom: '1px solid #eef0f3', borderRadius: '14px 14px 0 0', flexWrap: 'wrap' }}>
+                    <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{p.display_name || stock?.name || p.sku}{groupColors.length > 1 ? <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}> · {groupColors.length} colors</span> : null}</div>
+                    {p.kind !== 'bundle' && <div style={{ display: 'flex', gap: 2 }}>
+                      {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = paneTab === k; return (
+                        <button key={k} type="button" onClick={() => setPaneTab(k)} style={{ background: 'none', border: 'none', borderBottom: '2px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 12.5, padding: '4px 10px', cursor: 'pointer' }}>{lbl}</button>
+                      ); })}
+                    </div>}
+                    <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto', color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                   </div>
                 </div>
               );
@@ -2718,7 +2725,7 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
   .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
 
-function CatalogItemEditor({ item, groupColors = [], defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
@@ -2742,7 +2749,9 @@ function CatalogItemEditor({ item, groupColors = [], defaultName, stockImg, stoc
   const [extraImages, setExtraImages] = useState(item.extra_image_urls || []);
   const [imgBusy, setImgBusy] = useState(false);
   // Two-page editor: 'details' (setup/info) and 'art' (image-driven art & colors).
-  const [page, setPage] = useState('details');
+  const [pageState, setPageState] = useState('details');
+  const page = pageProp || pageState;
+  const setPage = setPageProp || setPageState;
   // Storefront placement + requirement (new per-item fields).
   const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
   const [required, setRequired] = useState(!!item.required);
@@ -2856,7 +2865,7 @@ function CatalogItemEditor({ item, groupColors = [], defaultName, stockImg, stoc
   const kitListId = 'kit-suggest-' + item.id;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
-      {!isBundle && (
+      {!isBundle && !setPageProp && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
           {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
             <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>

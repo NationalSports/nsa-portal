@@ -267,9 +267,28 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
         <SectionTitle theme={theme} eyebrow="Gear up">The <em>Collection</em></SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
-          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 }}>
-              {groupProducts(products).map(({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />)}
-            </div>}
+          : (() => {
+              const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 };
+              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />;
+              const grouped = groupProducts(products);
+              // Split into the store's categories (set in the builder), ordered by the
+              // builder's sort order; uncategorized items fall into a trailing section.
+              const byCat = new Map();
+              for (const g of grouped) { const c = (g.rep.store_category || '').trim(); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
+              const sections = [...byCat.entries()].map(([cat, gs]) => ({ cat, gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
+              sections.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
+              const useCats = sections.length > 1 || (sections.length === 1 && sections[0].cat);
+              if (!useCats) return <div style={grid}>{grouped.map(cardOf)}</div>;
+              return sections.map((sec) => (
+                <div key={sec.cat || '__more'} style={{ marginBottom: 44 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, margin: '0 0 18px', borderBottom: `2px solid ${shade(theme.accent, 60)}`, paddingBottom: 8 }}>
+                    <h3 style={{ fontFamily: DISPLAY, fontSize: 'clamp(20px,2.6vw,28px)', textTransform: 'uppercase', letterSpacing: 0.3, color: '#192853', margin: 0, fontWeight: 800 }}>{sec.cat || 'More gear'}</h3>
+                    <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700, whiteSpace: 'nowrap' }}>{sec.gs.length} item{sec.gs.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={grid}>{sec.gs.map(cardOf)}</div>
+                </div>
+              ));
+            })()}
       </div>
     </>
   );
