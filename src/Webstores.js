@@ -776,6 +776,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
+  // On a manual close, trigger the server handler that creates a rep to-do and emails the
+  // rep + assigned CSR a breakdown of the closed store. The scheduled webstore-close-sweep
+  // does the same for stores that close automatically on their schedule; both are idempotent
+  // (closed_notified_at) so a store is processed once.
+  const notifyStoreClosed = useCallback(async (store) => {
+    flash('Store closed');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) return;
+      const r = await fetch('/.netlify/functions/webstore-closed-notify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ store_id: store.id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j && j.notified) flash('Store closed — rep notified + to-do created');
+    } catch (e) { /* close already succeeded; the to-do/email is best-effort here */ }
+  }, [flash]);
+
   const saveStore = useCallback(async (form, existingId) => {
     if (existingId) {
       const prevStore = stores.find((s) => s.id === existingId);
@@ -805,8 +824,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (sel?.id === store.id) setSel(data);
     // Email the coach only when the launch dialog opted in (with a recipient).
     if (status === 'open' && opts.emailCoach && coachEmail) notifyCoachPublished({ ...data, coach_contact_email: coachEmail });
+    // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
+    else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
-  }, [sel, flash, notifyCoachPublished]);
+  }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
