@@ -86,6 +86,17 @@ const sizeSoon = (p, sz) => { const d = (p.vendor_size_eta || {})[sz]; if (!d) r
 const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
+// Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
+// (common in the Adidas feed) and squeeze the leftover separators/whitespace.
+function cleanDesc(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/\b[A-Z][A-Z0-9 /&+-]*:\s*N\/?A\b\.?/g, ' ')
+    .replace(/\s*·\s*(?=·)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s·.]+|[\s·]+$/g, '')
+    .trim();
+}
 
 function isMissingTable(err) {
   if (!err) return false;
@@ -240,27 +251,27 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 380 }}>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
-        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 18, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
+        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 10, display: 'flex', justifyContent: 'center', gap: 8, opacity: 0.85, pointerEvents: 'none' }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 32, height: 60, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
+            <div key={i} style={{ width: 26, height: 36, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
           ))}
         </div>
-        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,72px) 20px clamp(72px,7vw,100px)' }}>
-          <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 2, textTransform: 'uppercase', padding: '8px 20px', marginBottom: 22, transform: 'skewX(-5deg)' }}>
+        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,36px) 20px clamp(36px,4vw,52px)' }}>
+          <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 2, textTransform: 'uppercase', padding: '7px 18px', marginBottom: 12, transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>Official Team Store</span>
           </div>
-          {closes && <div style={{ display: 'inline-block', marginLeft: 12, marginBottom: 22, background: closes.urgent ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.10)', color: '#fff', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-5deg)' }}>
+          {closes && <div style={{ display: 'inline-block', marginLeft: 12, marginBottom: 12, background: closes.urgent ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.10)', color: '#fff', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '7px 14px', transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{closes.text}</span>
           </div>}
-          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(40px,7vw,76px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1.02, maxWidth: 880, fontWeight: 800 }}>
+          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(28px,4.4vw,50px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1.03, maxWidth: 880, fontWeight: 800 }}>
             {head}{rest && <> <em style={{ fontStyle: 'italic', color: accentLight, fontWeight: 800 }}>{rest}</em></>}
           </h1>
-          {store.hero_blurb && <p style={{ margin: '20px 0 0', maxWidth: 580, fontSize: 18, lineHeight: 1.55, color: 'rgba(255,255,255,0.88)', fontWeight: 500 }}>{store.hero_blurb}</p>}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 32 }}>
+          {store.hero_blurb && <p style={{ margin: '12px 0 0', maxWidth: 560, fontSize: 16, lineHeight: 1.5, color: 'rgba(255,255,255,0.88)', fontWeight: 500 }}>{store.hero_blurb}</p>}
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 18 }}>
             <SkewBtn theme={theme} variant="red" onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}>Shop the Collection</SkewBtn>
             <SkewBtn theme={theme} variant="white" onClick={() => navTo('/shop/' + store.slug + '/cart')}>View cart</SkewBtn>
           </div>
@@ -269,7 +280,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
 
       <TrustStrip store={store} theme={theme} />
 
-      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(48px,7vw,80px) 20px clamp(64px,8vw,96px)' }}>
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,34px) 20px clamp(56px,7vw,88px)' }}>
         <SectionTitle theme={theme} eyebrow="Gear up">The <em>Collection</em></SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
@@ -329,7 +340,7 @@ function TrustStrip({ store, theme }) {
 }
 
 function SectionTitle({ children, theme, eyebrow }) {
-  return <div style={{ textAlign: 'center', marginBottom: 36 }}>
+  return <div style={{ textAlign: 'center', marginBottom: 24 }}>
     {eyebrow && <div style={{ fontFamily: DISPLAY, color: '#5A6075', fontWeight: 700, fontSize: 13, letterSpacing: 3, textTransform: 'uppercase', marginBottom: 8 }}>{eyebrow}</div>}
     <h2 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(30px,4vw,44px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1, color: '#192853', fontWeight: 800 }}>{children}</h2>
   </div>;
@@ -494,6 +505,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // Only surface the back when it actually carries artwork (per the store builder's
   // "show back only if it's got artwork" rule). The back image falls back to the front
   // so the back logos always have a garment to sit on.
+  const descText = cleanDesc(p.description);
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
   const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
@@ -572,6 +584,12 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           </button>
         </div>
       </div>
+      {descText && (
+        <div style={{ marginTop: 40, maxWidth: 760 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Details</div>
+          <p style={{ fontSize: 15, lineHeight: 1.7, color: '#3A4150', whiteSpace: 'pre-line', margin: 0 }}>{descText}</p>
+        </div>
+      )}
     </div>
   );
 }
