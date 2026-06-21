@@ -28637,7 +28637,8 @@ export default function App(){
 
       {/* FEATURED STYLES */}
       {settingsTab==='featured'&&(()=>{
-        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','Port Authority','Sport-Tek','District','Bella+Canvas','Boxercraft','Gildan','Momentec'];
+        const FEAT_BRANDS=['Adidas','Under Armour','Nike','Richardson','SanMar','Boxercraft','Gildan','Momentec'];
+        const SANMAR_BRANDS=['Port Authority','Sport-Tek','District','Port & Co','OGIO','Eddie Bauer','Mercer+Mettle','The North Face','Bella + Canvas','New Era','TravisMathew','Rabbit Skins','Carhartt'];
         // Mirror LiveLook's color-family classification (src/storefront/AdidasInventory.js)
         // so the filter matches the storefront and covers products with no color_category
         // (the family is parsed from the free-text color, e.g. "Collegiate Navy" → Navy).
@@ -28660,11 +28661,13 @@ export default function App(){
         const loadFeatProds=async(brand)=>{
           setFeatBrand(brand);setFeatLoading(true);setFeatProds([]);setFeatSearch('');setFeatCategory('');setFeatColor('');
           // Paginate past PostgREST's 1000-row cap so every colorway is pulled in.
-          const PAGE=1000;let all=[],from=0;
+          const PAGE=1000;let all=[],from=0;const isSanMar=brand==='SanMar';
           for(;;){
-            const{data,error}=await supabase.from('products')
+            let q=supabase.from('products')
               .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
-              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('is_active',true).order('name').range(from,from+PAGE-1);
+            q=isSanMar?q.in('brand',SANMAR_BRANDS):q.eq('brand',brand);
+            const{data,error}=await q;
             if(error){nf('Error loading: '+error.message,'error');break;}
             all=all.concat(data||[]);
             if(!data||data.length<PAGE)break;
