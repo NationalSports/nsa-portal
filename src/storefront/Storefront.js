@@ -132,6 +132,7 @@ function closesLabel(close_at) {
 
 export default function Storefront() {
   const [route, setRoute] = useState(parsePath());
+  const isEmbed = useMemo(() => new URLSearchParams(window.location.search).get('embed') === '1', []);
   useEffect(() => {
     const onPop = () => setRoute(parsePath());
     window.addEventListener('popstate', onPop);
@@ -192,7 +193,7 @@ export default function Storefront() {
       <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} isEmbed={isEmbed} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
@@ -236,7 +237,7 @@ function PreviewBanner({ status }) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, isEmbed = false }) {
   const closes = closesLabel(store.close_at);
   const accentLight = shade(theme.accent, 18);
   const heroBg = store.banner_url
@@ -251,7 +252,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
+      {!isEmbed && <><section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
@@ -279,6 +280,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
       </section>
 
       <TrustStrip store={store} theme={theme} />
+      </>}
 
       <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,34px) 20px clamp(56px,7vw,88px)' }}>
         {products.length === 0

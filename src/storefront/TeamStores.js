@@ -60,7 +60,7 @@ function StoreCard({ s }) {
   const closes = closesLabel(s.close_at);
   const stripes = 'repeating-linear-gradient(-55deg, transparent 0 26px, rgba(255,255,255,0.05) 26px 52px)';
   return (
-    <a href={'/shop/' + s.slug} className="ts-card"
+    <a href={'/shop/' + s.slug + '?embed=1'} className="ts-card"
       style={{ display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 16, overflow: 'hidden', boxShadow: '0 4px 14px rgba(15,26,56,.10)', textDecoration: 'none', color: 'inherit' }}>
       <div style={{ position: 'relative', height: 150, background: s.banner_url ? `linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.5)), url(${s.banner_url}) center/cover` : `${stripes}, linear-gradient(135deg, ${primary}, ${shade(primary, -16)})`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {s.logo_url
