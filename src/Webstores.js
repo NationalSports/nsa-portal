@@ -3095,7 +3095,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     (async () => {
       const { data } = await supabase.from('products')
         .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
-        .eq('name', defaultName).neq('id', item.product_id).order('color').limit(60);
+        .eq('name', defaultName).neq('id', item.product_id).order('color').limit(200);
       if (!cancelled) setColorSibs(data || []);
     })();
     return () => { cancelled = true; };
@@ -3104,11 +3104,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const colorOptions = useMemo(() => {
     const map = new Map();
     for (const s of colorSibs) {
-      const key = (s.color || '').trim().toLowerCase();
-      if (!key || existingForStyle.has(key) || map.has(key)) continue;
+      const colorKey = (s.color || '').trim().toLowerCase();
+      // Blank color (caps & sublimated jerseys carry the color/pattern in the SKU) → key by
+      // SKU so those variants don't all collapse into a single empty entry and disappear.
+      const key = colorKey || ('sku:' + (s.sku || '').toLowerCase());
+      if (!key || (colorKey && existingForStyle.has(colorKey)) || map.has(key)) continue;
       if (!map.get(key) || (!map.get(key).image_front_url && s.image_front_url)) map.set(key, s);
     }
-    return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
+    return [...map.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colorSibs, catalog, stockByWp, defaultName]);
   // Section names already used on this store, offered as type-ahead for placement.
@@ -3408,7 +3411,7 @@ function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false,
     (async () => {
       const { data } = await supabase.from('products')
         .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
-        .eq('name', product.name).neq('id', product.id).order('color').limit(40);
+        .eq('name', product.name).neq('id', product.id).order('color').limit(200);
       if (!cancelled) setSiblings(data || []);
     })();
     return () => { cancelled = true; };
@@ -4472,7 +4475,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               {bulkTab === 'art' && (
                 <div>
                   <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 6 }}>Optionally place a logo — applied to <b>all {selProducts.length}</b> at the same spot. You can fine-tune any item afterward.</div>
-                  <LogoPlacer imageUrl={selProducts[0] && selProducts[0].image_front_url} decorations={bulkDecos} onChange={setBulkDecos} library={library} onSaveLogo={onSaveLogo} />
+                  <LogoPlacer imageUrl={selProducts[0] && selProducts[0].image_front_url} decorations={bulkDecos} onChange={setBulkDecos} library={library} storeColors={storeColors} onSaveLogo={onSaveLogo} />
                 </div>
               )}
 
