@@ -7,10 +7,10 @@
 The same physical garment reaches us from more than one source under different
 SKUs and slightly different names:
 
-| Garment | Adidas-direct (CLICK) | Agron | S&S Activewear |
+| Garment | Adidas-direct (vendor `v1`) | Agron (`v1777…`) | S&S Activewear (vendor `v4`) |
 |---|---|---|---|
-| Men's Pregame Tee | `JX4452` | — | `AT101` |
-| Defender 5 Medium Duffel | `AB602-59` (CLICK) | `5159430`, `JJ7406` | (S&S #) |
+| Men's Pregame Tee | `JX4452` | — | `AT101` *(not yet imported)* |
+| Defender 5 Medium Duffel | — | `5159430`, `JJ7406` | `AB602-59` |
 
 Today each source is a **separate catalog item** (separate `products` rows,
 separate cards), because the live-look / featured / store catalogs group styles
@@ -44,12 +44,23 @@ Duffel" cards.
   (`OrderEditor.js` `resolveVendor`). The editor can already **re-point a line to
   another vendor's matching product** (`OrderEditor.js:1510` `switchVendor`,
   `copyIWithSku`) — today it only finds equivalents that share the **same SKU**.
-- We **already multi-source Adidas** (CLICK + Agron) — the mechanics exist; we're
-  formalizing the relationship and automating the routing.
+- We **already multi-source Adidas across three distributors** — Adidas-direct
+  (`v1`), Agron (`v1777312659133`), and **S&S Activewear (`v4`, 636 rows / 150
+  styles)**. The mechanics exist; we're formalizing the relationship and
+  automating the routing.
 
-**Gaps to fill:** (a) a durable "these SKUs are the same garment" link, (b)
-pooled availability in the catalog/store UIs, (c) automatic source allocation at
-PO time, and (d) S&S's Adidas catalog isn't imported yet.
+**Distributor is `products.vendor_id`, not `inventory_source`.** The
+`inventory_source` tag is legacy — S&S Adidas rows are tagged `'click'` and their
+stock sits in `adidas_inventory`, which is why an `inventory_source` filter misses
+them. The real distributor is `vendor_id` → `vendors` (`v1` Adidas, `v4` S&S,
+`v1777312659133` Agron). Stock lives in `inventory_unified` keyed by SKU, and each
+distributor uses distinct SKUs (`JX####` direct, `A###-##`/`AB###-##` S&S,
+`5159###`/`JJ####` Agron), so pooling = sum across the equivalent SKUs and routing
+= the vendor of the chosen SKU.
+
+**Gaps to fill:** (a) a durable "these SKUs are the same garment" link, (b) pooled
+availability in the catalog/store UIs, and (c) automatic source allocation at PO
+time. (S&S Adidas is already imported — see §10.)
 
 ## 4. Data model
 
@@ -74,23 +85,22 @@ create table product_groups (
 -- A source-style that belongs to a group. A group has 2+ members.
 create table product_group_members (
   group_id   uuid references product_groups(id) on delete cascade,
-  source     text not null,              -- 'click' | 'agron' | 'ss_activewear' ...
-  style_key  text not null,              -- normalized name (or model #) per source
-  vendor_id  text,                       -- the vendor these colorways buy from
-  primary key (group_id, source, style_key)
+  vendor_id  text not null,              -- the distributor: v1 Adidas, v4 S&S, Agron…
+  style_key  text not null,              -- normalized name (or model #) per distributor
+  primary key (group_id, vendor_id, style_key)
 );
 ```
 
 `style_key` is how we tie a member back to its `products` rows: every product
-whose `(inventory_source, normalized_name)` matches a member belongs to the
-group. (Normalized name = upper/trimmed, the same key the catalog already groups
-by.) We keep the link at style granularity so we don't have to maintain a row
-per colorway.
+whose `(vendor_id, normalized_name)` matches a member belongs to the group.
+(Normalized name = upper/trimmed, the same key the catalog already groups by.) We
+keep the link at style granularity so we don't have to maintain a row per
+colorway.
 
 > **Alternative considered:** a `style_group_id` column directly on `products`.
 > Simpler to query, but it has to be re-stamped on every sync (syncs rewrite
 > `products`), and it muddies the per-colorway table. The side tables above
-> survive syncs because they key on `(source, style_key)`, which is stable.
+> survive syncs because they key on `(vendor_id, style_key)`, which is stable.
 
 ### Runtime matching inside a group
 - **Colorways** are matched across sources by **color family** (the existing
@@ -177,13 +187,19 @@ already has vendor-switching) pre-filled with the auto choice.
 - **Order editor / PO:** auto source allocation + per-line override; PO preview
   shows the split.
 
-## 10. Prerequisite: import S&S's Adidas catalog
+## 10. S&S Adidas coverage (already imported)
 
-S&S Adidas isn't in `products` yet (0 rows; only CLICK + Agron). The S&S plumbing
-exists (`ss_inventory`, `ss_activewear` source, `ss-*-sync` functions), so this is
-a focused add: an `ss-adidas-sync` that writes `products` (brand Adidas,
-`inventory_source='ss_activewear'`) + `ss_inventory`, mapping S&S style/color/size
-and the Adidas model number (for matching).
+Correction from an earlier draft: **S&S Adidas is already imported** — 636 rows /
+150 styles under `vendor_id='v4'` (S&S Activewear), e.g. `A721-50`, `A601-50`,
+`AB602-59`. They're tagged `inventory_source='click'` with stock in
+`adidas_inventory`, which is why an `inventory_source` filter missed them.
+
+So there's **no from-scratch import** — we can link the existing three-distributor
+Adidas catalog immediately. The only open item is **coverage**: not every S&S
+Adidas style is in yet (e.g. the Pregame Tee `AT101` isn't), so an optional
+follow-up can widen the S&S Adidas pull for more overlap. Matching anchor: S&S
+SKUs *are* the Adidas model number (`A721`, `AB602`), which also appears in
+CLICK/Agron names like `"… (AB602)"`.
 
 ## 11. Edge cases & risks
 
@@ -202,7 +218,8 @@ and the Adidas model number (for matching).
 
 ## 12. Rollout phases
 
-- **Phase 0 — S&S Adidas import.** Gives a real second source to link (§10).
+- **Phase 0 — (mostly done) S&S Adidas is already imported** (150 styles, vendor
+  `v4`); only an optional follow-up widens coverage (§10). Linking can start now.
 - **Phase 1 — Link layer + admin.** Tables + assisted Product Links screen
   (§4–5). No behavior change yet; just establish links.
 - **Phase 2 — Pooled display.** Merge pass in LiveLook + Featured Styles editor
