@@ -342,6 +342,14 @@ function buildStyles(prods, inv, inHouseRows, opts = {}) {
     // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
     // not blank stock — keep them out of the live-look catalog.
     if (p.inventory_source === 'momentec' && /custom/i.test(p.name || '')) continue;
+    // Underwear never belongs in the team catalog (all brands).
+    if (/underwear/i.test(p.category || '')) continue;
+    // Boxercraft: keep ONLY the flannel pajama / lounge pants (and flannel
+    // joggers). Drop tees, hoods, crew, shorts, flannel shirts, boxers, etc.
+    if (p.brand === 'Boxercraft') {
+      const nm = p.name || '';
+      if (!(/flannel|lounge|pajama/i.test(nm) && /pant|jogger/i.test(nm))) continue;
+    }
     const inHouse = inHouseByPid[p.id] || null;
     const sizes = bySku[p.sku] || [];
     if (p.inventory_source === 'agron' && !sizes.length) continue;
