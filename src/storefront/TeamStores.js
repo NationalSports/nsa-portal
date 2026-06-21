@@ -84,15 +84,11 @@ export default function TeamStores() {
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null); // null = not searched yet; [] = no match
   const [searching, setSearching] = useState(false);
-  const [openCount, setOpenCount] = useState(null);
   const [building, setBuilding] = useState(false); // public store-builder overlay
   const seq = useRef(0);
 
   useEffect(() => {
     document.title = 'Team Stores · National Sports Apparel';
-    supabase.from('webstores_public').select('id', { count: 'exact', head: true })
-      .eq('status', 'open').eq('public_listed', true)
-      .then(({ count }) => setOpenCount(typeof count === 'number' ? count : null));
   }, []);
 
   // Debounced search — only runs once 2+ characters are typed.
@@ -127,8 +123,7 @@ export default function TeamStores() {
             <input className="ts-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by school, team, or organization name…"
               style={{ width: '100%', fontFamily: BODY, fontSize: 17, color: '#fff', padding: '16px 18px 16px 52px', borderRadius: 12, border: '1.5px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.08)', outline: 'none' }} />
           </div>
-          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
-            {openCount != null && <div style={{ fontFamily: DISPLAY, fontSize: 14, letterSpacing: 1.5, textTransform: 'uppercase', color: shade(RED, 30), fontWeight: 700 }}>{openCount} open store{openCount === 1 ? '' : 's'}</div>}
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <button type="button" onClick={() => setBuilding(true)}
               style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, border: 'none', padding: '11px 24px', borderRadius: 10, cursor: 'pointer' }}>Build your store →</button>
           </div>
@@ -144,9 +139,9 @@ export default function TeamStores() {
             : (results && results.length)
               ? <>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b', marginBottom: 16, textAlign: 'center' }}>{results.length} store{results.length === 1 ? '' : 's'} matching “{term}”</div>
-                  {/* Cap the column width (not 1fr) + center the tracks so a small
-                      result set sits centered instead of hugging the left edge. */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 340px))', gap: 22, justifyContent: 'center' }}>
+                  {/* auto-FIT (not auto-fill) collapses the empty trailing tracks so
+                      a small result set actually centers instead of hugging the left. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 340px))', gap: 22, justifyContent: 'center' }}>
                     {results.map((s) => <StoreCard key={s.slug} s={s} />)}
                   </div>
                 </>
