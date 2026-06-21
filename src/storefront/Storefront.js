@@ -281,7 +281,6 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
       <TrustStrip store={store} theme={theme} />
 
       <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,34px) 20px clamp(56px,7vw,88px)' }}>
-        <SectionTitle theme={theme} eyebrow="Gear up">The <em>Collection</em></SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
           : (() => {
