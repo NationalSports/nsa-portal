@@ -599,6 +599,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       storeColors,
     });
     setDetailLoading(false);
+    // Lazy AI cleanup of Adidas spec-dump descriptions for the items used in this store.
+    // Fire-and-forget: the function rewrites only Adidas items not yet cleaned and saves
+    // the result, so the clean copy is reused on the storefront and in future stores.
+    // No-op until ANTHROPIC_API_KEY is configured in Netlify.
+    try {
+      const _pids = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
+      if (_pids.length) authFetch('/.netlify/functions/ai-clean-description', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product_ids: _pids }) }).catch(() => {});
+    } catch (e) { /* background best-effort */ }
   }, []);
 
   const openStore = useCallback(async (store) => {
