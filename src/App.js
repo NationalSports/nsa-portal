@@ -3640,7 +3640,7 @@ export default function App(){
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
-    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
+    realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
@@ -3972,7 +3972,7 @@ export default function App(){
           if(as.est_history)setEstHistory(as.est_history);
           if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
@@ -4036,7 +4036,7 @@ export default function App(){
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -5204,15 +5204,17 @@ export default function App(){
       }
     }catch{}
   },[]);
-  // Handle QB OAuth callback tokens from URL hash (Netlify flow)
-  // Step 1: Parse tokens from hash immediately and save to ref (before Supabase can overwrite)
+  // Handle the QB OAuth callback (Netlify flow). Tokens are stored server-side now; the callback
+  // only returns a connected flag + realm id in the hash — no credentials reach the browser.
+  // Step 1: capture the connected signal before the Supabase load can overwrite qbConfig.
   React.useEffect(()=>{
     const hash=window.location.hash;
-    if(hash.includes('tokens=')){
+    if(hash.includes('qb_connected=')){
       try{
-        const encoded=hash.split('tokens=')[1]?.split('&')[0];
-        if(encoded){_pendingQBTokens.current=JSON.parse(atob(encoded));window.location.hash=''}
-      }catch(e){console.error('[QB] Token parse error:',e)}
+        const qs=new URLSearchParams(hash.split('?')[1]||'');
+        _pendingQBTokens.current={realm_id:qs.get('realm')||''};
+        window.location.hash='';
+      }catch(e){console.error('[QB] connect parse error:',e)}
     }
     if(hash.includes('error=')&&!hash.includes('error_code=')){
       // Supabase auth errors also set `error=` but include `error_code=` — LoginGate handles those
@@ -5221,32 +5223,29 @@ export default function App(){
       window.location.hash='';
     }
   },[]);
-  // Step 2: Apply tokens AFTER Supabase load completes so they don't get overwritten
+  // Step 2: apply AFTER Supabase load so the persisted qb_config doesn't overwrite it.
   React.useEffect(()=>{
     if(dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
-    setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
-      realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
+    setQBConfig(prev=>({...prev,connected:true,sandbox:false,realm_id:t.realm_id||prev.realm_id}));
+    // Company name comes from the proxy; the access token is read server-side, not passed here.
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
+      body:JSON.stringify({action:'company_info'})})
       .then(r=>r.json()).then(d=>{
         const ci=d?.CompanyInfo;
         if(ci)setQBConfig(prev=>({...prev,companyId:t.realm_id,companyName:ci.CompanyName||'Connected'}));
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
-  // Proactive QB token refresh on load — if connected with expired access token, try refreshing
+  // On load, reconcile connection state with the server-side token store (source of truth).
+  // qb-api refreshes the token server-side, so the client no longer manages tokens at all.
   React.useEffect(()=>{
-    if(dbLoading||!qbConfig.connected||!qbConfig.refresh_token||_pendingQBTokens.current)return;
-    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
-    if(tokenAge>3300000){// >55 min = expired or stale
-      fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})})
-        .then(r=>r.json()).then(d=>{
-          if(d.access_token){setQBConfig(prev=>({...prev,access_token:d.access_token,refresh_token:d.refresh_token||prev.refresh_token,token_created_at:Date.now()}));console.log('[QB] Token refreshed on load')}
-          else{setQBConfig(prev=>({...prev,connected:false}));console.warn('[QB] Refresh failed — token may be expired')}
-        }).catch(e=>{console.warn('[QB] Refresh error on load:',e);setQBConfig(prev=>({...prev,connected:false}))});
-    }
+    if(dbLoading||_pendingQBTokens.current)return;
+    authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'connection_status'})})
+      .then(r=>r.ok?r.json():null).then(d=>{
+        if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id}));
+      }).catch(()=>{});
   },[dbLoading]); // eslint-disable-line
   // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
   // Builds a URL with the given deep-link params and opens it in a new tab.
@@ -22622,26 +22621,15 @@ export default function App(){
   };
 
   // ── QB API helper (shared by rImport and rQB) ──
+  // Tokens are held + refreshed server-side; the client sends only the action + payload.
   const qbApi=async(action,payload={})=>{
-    if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
-    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
-    if(tokenAge>3300000&&qbConfig.refresh_token){
-      try{
-        const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
-        const rd=await rr.json();
-        if(rd.access_token){
-          setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
-          payload.access_token=rd.access_token;
-        }
-      }catch(e){console.warn('[QB] Token refresh failed:',e)}
-    }
+    if(!qbConfig.connected){nf('QB not connected','error');return null}
     try{
       const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
-      if(!r.ok&&r.status!==401){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
+        body:JSON.stringify({action,sandbox:qbConfig.sandbox,...payload})});
+      if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
-      if(r.status===401){nf('QB session expired — please reconnect','error');return null}
+      if(r.status===401||r.status===409){setQBConfig(prev=>({...prev,connected:false}));nf('QB not connected — please reconnect','error');return null}
       return d;
     }catch(e){nf('QB API error: '+e.message,'error');return null}
   };
@@ -22660,9 +22648,10 @@ export default function App(){
   // ── Disconnect from QB (shared by rImport & rQB) ──
   const disconnectQB=async()=>{
     if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
-    try{await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'disconnect',refresh_token:qbConfig.refresh_token})});}catch{}
-    setQBConfig(prev=>({...prev,connected:false,access_token:'',refresh_token:'',realm_id:'',companyId:'',companyName:''}));
+    // authFetch sends the staff JWT — disconnect is staff-only and revokes the token server-side.
+    try{await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'disconnect'})});}catch{}
+    setQBConfig(prev=>({...prev,connected:false,realm_id:'',companyId:'',companyName:''}));
     nf('Disconnected from QuickBooks');
   };
 
@@ -25486,7 +25475,6 @@ export default function App(){
             {qbConfig.connected?'QuickBooks Connected'+(qbConfig.companyName?' — '+qbConfig.companyName:''):'QuickBooks Not Connected — bills will be saved locally but NOT pushed to QB'}
           </span>
           {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
-          {qbConfig.connected&&(()=>{const age=Date.now()-(qbConfig.token_created_at||0);return age>3300000?<span style={{marginLeft:'auto',fontSize:10,color:'#d97706',fontWeight:600}}>Token may be stale — <button style={{background:'none',border:'none',color:'#2563eb',cursor:'pointer',fontSize:10,fontWeight:700,textDecoration:'underline'}} onClick={connectQB}>Reconnect</button></span>:null})()}
         </div>
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           <div className="card">
@@ -27505,9 +27493,9 @@ export default function App(){
             <div className="card-body" style={{fontSize:12}}>
               <div style={{marginBottom:6}}><strong>Realm ID:</strong> <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>{qbConfig.realm_id||'—'}</code></div>
               <div style={{marginBottom:6}}><strong>Company:</strong> {qbConfig.companyName||'—'}</div>
-              <div style={{marginBottom:6}}><strong>Token Status:</strong> {qbConfig.access_token?
-                <span style={{color:'#16a34a',fontWeight:600}}>Active ({Math.max(0,Math.round((3600000-(Date.now()-(qbConfig.token_created_at||0)))/60000))} min remaining)</span>:
-                <span style={{color:'#dc2626'}}>Not authenticated</span>}</div>
+              <div style={{marginBottom:6}}><strong>Connection:</strong> {qbConfig.connected?
+                <span style={{color:'#16a34a',fontWeight:600}}>Connected (tokens secured server-side)</span>:
+                <span style={{color:'#dc2626'}}>Not connected</span>}</div>
               <div style={{marginBottom:12}}><strong>Auto-sync:</strong> {qbConfig.autoSync}</div>
               <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
                 <strong>Required Netlify env vars:</strong><br/>
