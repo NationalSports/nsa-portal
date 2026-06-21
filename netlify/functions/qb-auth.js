@@ -1,7 +1,17 @@
-// Netlify serverless function for QuickBooks Online OAuth2
-// Handles: connect (redirect to Intuit), callback (exchange code for tokens), refresh, disconnect
-const https = require('https');
+// Netlify serverless function for QuickBooks Online OAuth2.
+//   connect    → returns the Intuit authorization URL and sets a short-lived state cookie (CSRF).
+//   callback   → validates state, exchanges the code, stores tokens SERVER-SIDE (qb_oauth_tokens,
+//                service-role only), then redirects WITHOUT any tokens in the URL.
+//   refresh    → refreshes the stored token in place (returns status only, never tokens).
+//   disconnect → revokes at Intuit + clears the store (staff-only).
+// Tokens never cross to the browser or appear in a URL — see _qb.js for the store.
 const crypto = require('crypto');
+const { verifyUser } = require('./_shared');
+const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
+
+const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
+const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
+const STATE_COOKIE = 'qb_oauth_state';
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -9,35 +19,18 @@ const corsHeaders = (origin) => ({
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Content-Type': 'application/json',
 });
-
-// QB OAuth endpoints
-const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
-const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
-const QB_REVOKE_URL = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke';
-
-function httpsPost(url, body, headers) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const options = { hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'POST', headers };
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, data }); }
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
+// HttpOnly + SameSite=Lax: not readable by JS, and sent on the top-level GET redirect Intuit
+// makes back to the callback. Path-scoped to this function so it's only sent where it's needed.
+const stateCookie = (val, maxAge) => `${STATE_COOKIE}=${val}; Path=/.netlify/functions/qb-auth; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+const readCookie = (event, name) => {
+  const raw = event.headers?.cookie || event.headers?.Cookie || '';
+  const hit = raw.split(/;\s*/).find((c) => c.startsWith(name + '='));
+  return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
+};
 
 exports.handler = async (event) => {
   const origin = event.headers?.origin || event.headers?.Origin || '*';
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: corsHeaders(origin), body: '' };
-  }
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders(origin), body: '' };
 
   const QB_CLIENT_ID = process.env.QB_CLIENT_ID;
   const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET;
@@ -45,139 +38,95 @@ exports.handler = async (event) => {
   const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI || `${SITE_URL}/.netlify/functions/qb-auth?action=callback`;
 
   if (!QB_CLIENT_ID || !QB_CLIENT_SECRET) {
-    return {
-      statusCode: 500,
-      headers: corsHeaders(origin),
-      body: JSON.stringify({ error: 'QuickBooks credentials not configured. Add QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI to Netlify env vars.' }),
-    };
+    return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'QuickBooks credentials not configured. Add QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI to Netlify env vars.' }) };
   }
 
-  // Parse action from query params or body
   const params = event.queryStringParameters || {};
   let action = params.action;
   let body = {};
-  if (event.body) {
-    try { body = JSON.parse(event.body); } catch { body = {}; }
-    if (body.action) action = body.action;
-  }
-
-  const basicAuth = 'Basic ' + Buffer.from(QB_CLIENT_ID + ':' + QB_CLIENT_SECRET).toString('base64');
+  if (event.body) { try { body = JSON.parse(event.body); } catch { body = {}; } if (body.action) action = body.action; }
 
   // ── ACTION: debug ──
-  // Returns the current redirect_uri configuration for troubleshooting
   if (action === 'debug') {
-    return {
-      statusCode: 200,
-      headers: corsHeaders(origin),
-      body: JSON.stringify({
-        redirect_uri: QB_REDIRECT_URI,
-        site_url: SITE_URL,
-        has_explicit_redirect_uri: !!process.env.QB_REDIRECT_URI,
-        client_id_prefix: QB_CLIENT_ID ? QB_CLIENT_ID.substring(0, 8) + '...' : 'NOT SET',
-        hint: 'The redirect_uri above must EXACTLY match what is listed in your Intuit Developer portal under Keys & credentials > Redirect URIs.',
-      }),
-    };
+    return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({
+      redirect_uri: QB_REDIRECT_URI, site_url: SITE_URL, has_explicit_redirect_uri: !!process.env.QB_REDIRECT_URI,
+      client_id_prefix: QB_CLIENT_ID ? QB_CLIENT_ID.substring(0, 8) + '...' : 'NOT SET',
+      hint: 'The redirect_uri above must EXACTLY match an entry in Intuit Developer > Keys & credentials > Redirect URIs.',
+    }) };
   }
 
   // ── ACTION: connect ──
-  // Returns the OAuth2 authorization URL for the frontend to redirect to
+  // Returns the OAuth2 authorization URL and sets the CSRF state cookie.
   if (action === 'connect') {
     const state = crypto.randomBytes(16).toString('hex');
     const authUrl = `${QB_AUTH_URL}?client_id=${QB_CLIENT_ID}&response_type=code&scope=com.intuit.quickbooks.accounting&redirect_uri=${encodeURIComponent(QB_REDIRECT_URI)}&state=${state}`;
     return {
       statusCode: 200,
-      headers: corsHeaders(origin),
-      body: JSON.stringify({ authUrl, state, redirect_uri: QB_REDIRECT_URI }),
+      headers: { ...corsHeaders(origin), 'Set-Cookie': stateCookie(state, 600) },
+      body: JSON.stringify({ authUrl, redirect_uri: QB_REDIRECT_URI }),
     };
   }
 
   // ── ACTION: callback ──
-  // Intuit redirects here after user authorizes. Exchange code for tokens.
+  // Intuit redirects here after the user authorizes. Validate state, exchange code, store tokens.
   if (action === 'callback' || params.code) {
+    const clearState = stateCookie('', 0);
+    // CSRF: the state echoed back by Intuit must match the cookie set at connect.
+    const cookieState = readCookie(event, STATE_COOKIE);
+    if (!params.state || !cookieState || params.state !== cookieState) {
+      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=state_mismatch`, 'Set-Cookie': clearState }, body: '' };
+    }
     const code = params.code;
     const realmId = params.realmId;
-
     if (!code || !realmId) {
-      // Redirect back to app with error
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=missing_code` }, body: '' };
+      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=missing_code`, 'Set-Cookie': clearState }, body: '' };
     }
-
     try {
       const tokenBody = `grant_type=authorization_code&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(QB_REDIRECT_URI)}`;
       const result = await httpsPost(QB_TOKEN_URL, tokenBody, {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': basicAuth,
-        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(), 'Accept': 'application/json',
       });
-
       if (result.status !== 200 || !result.data?.access_token) {
-        return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=token_exchange_failed` }, body: '' };
+        return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=token_exchange_failed`, 'Set-Cookie': clearState }, body: '' };
       }
-
-      // Redirect back to app with tokens encoded in hash (stays client-side, not logged in server)
-      const tokenData = {
+      // Persist tokens server-side ONLY. They never reach the browser or the redirect URL.
+      await saveTokens(getSupabaseAdmin(), {
+        realm_id: realmId,
         access_token: result.data.access_token,
         refresh_token: result.data.refresh_token,
         expires_in: result.data.expires_in,
-        realm_id: realmId,
-        token_type: result.data.token_type,
-        created_at: Date.now(),
-      };
-      const encoded = Buffer.from(JSON.stringify(tokenData)).toString('base64');
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?tokens=${encoded}` }, body: '' };
+        token_created_at: Date.now(),
+      });
+      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?qb_connected=1&realm=${encodeURIComponent(realmId)}`, 'Set-Cookie': clearState }, body: '' };
     } catch (err) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=exception` }, body: '' };
+      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=exception`, 'Set-Cookie': clearState }, body: '' };
     }
   }
 
   // ── ACTION: refresh ──
-  // Refresh an expired access token
+  // Refresh the stored access token in place. Returns status only — no tokens cross the wire.
   if (action === 'refresh') {
-    const refreshToken = body.refresh_token;
-    if (!refreshToken) {
-      return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: 'refresh_token required' }) };
-    }
-
     try {
-      const tokenBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`;
-      const result = await httpsPost(QB_TOKEN_URL, tokenBody, {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': basicAuth,
-        'Accept': 'application/json',
-      });
-
-      if (result.status !== 200 || !result.data?.access_token) {
-        return { statusCode: 401, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Token refresh failed', details: result.data }) };
-      }
-
-      return {
-        statusCode: 200,
-        headers: corsHeaders(origin),
-        body: JSON.stringify({
-          access_token: result.data.access_token,
-          refresh_token: result.data.refresh_token,
-          expires_in: result.data.expires_in,
-          created_at: Date.now(),
-        }),
-      };
+      const admin = getSupabaseAdmin();
+      const cur = await getStoredTokens(admin);
+      if (!cur) return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ ok: false, connected: false }) };
+      const saved = await refreshStoredTokens(admin, cur);
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ ok: true, connected: true, token_created_at: saved.token_created_at }) };
     } catch (err) {
-      return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Refresh failed: ' + err.message }) };
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ ok: false, error: err.message }) };
     }
   }
 
   // ── ACTION: disconnect ──
-  // Revoke tokens
+  // Revoke at Intuit + clear the store. Staff-only (no token is accepted from the client).
   if (action === 'disconnect') {
-    const token = body.refresh_token || body.access_token;
-    if (token) {
-      try {
-        await httpsPost(QB_REVOKE_URL, `token=${encodeURIComponent(token)}`, {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': basicAuth,
-          'Accept': 'application/json',
-        });
-      } catch { /* best effort */ }
-    }
+    const v = await verifyUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
+    try {
+      const admin = getSupabaseAdmin();
+      const cur = await getStoredTokens(admin);
+      if (cur) { await revokeToken(cur.refresh_token || cur.access_token); await clearTokens(admin); }
+    } catch { /* best effort */ }
     return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ success: true }) };
   }
 

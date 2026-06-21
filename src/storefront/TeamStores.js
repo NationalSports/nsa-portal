@@ -4,8 +4,12 @@
 // team / organization name and only matching OPEN, publicly-listed stores appear.
 // Surfaced at nationalsportsapparel.com/team-stores via the same Netlify proxy
 // rewrite used for /livelook, so the browser URL stays on the marketing domain.
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { supabase } from '../lib/supabase';
+
+// The public store builder is a sizeable, login-free flow; load it only when a
+// coach actually clicks "Build" so the directory itself stays instant.
+const BuildStore = lazy(() => import('./BuildStore'));
 
 const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
 const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
@@ -93,6 +97,7 @@ export default function TeamStores() {
   const [results, setResults] = useState(null); // null = not searched yet; [] = no match
   const [searching, setSearching] = useState(false);
   const [openCount, setOpenCount] = useState(null);
+  const [building, setBuilding] = useState(false); // public store-builder overlay
   const seq = useRef(0);
 
   useEffect(() => {
@@ -128,14 +133,17 @@ export default function TeamStores() {
       {/* Hero + search */}
       <section style={{ position: 'relative', overflow: 'hidden', background: `repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,0.03) 30px 60px), linear-gradient(135deg, ${NAVY}, ${shade(NAVY, -18)})`, color: '#fff' }}>
         <div style={{ maxWidth: 880, margin: '0 auto', padding: 'clamp(40px,6vw,76px) 20px clamp(36px,5vw,56px)', textAlign: 'center' }}>
-          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(38px,6.5vw,72px)', letterSpacing: 0.3, textTransform: 'uppercase', lineHeight: 0.98, fontWeight: 800 }}>Find your <em style={{ fontStyle: 'italic', color: shade(RED, 26) }}>Team Store</em></h1>
-          <p style={{ margin: '14px auto 26px', maxWidth: 560, fontSize: 17, lineHeight: 1.5, color: 'rgba(255,255,255,0.86)', fontWeight: 500 }}>Search for your school or organization to browse gear, order uniforms, and shop your team's custom store.</p>
+          <h1 style={{ fontFamily: DISPLAY, margin: '0 0 26px', fontSize: 'clamp(38px,6.5vw,72px)', letterSpacing: 0.3, textTransform: 'uppercase', lineHeight: 0.98, fontWeight: 800 }}>Find your <em style={{ fontStyle: 'italic', color: shade(RED, 26) }}>Team Store</em></h1>
           <div style={{ position: 'relative', maxWidth: 640, margin: '0 auto' }}>
             <span style={{ position: 'absolute', left: 20, top: '50%', transform: 'translateY(-50%)', fontSize: 18, opacity: 0.6 }}>🔍</span>
             <input className="ts-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by school, team, or organization name…"
               style={{ width: '100%', fontFamily: BODY, fontSize: 17, color: '#fff', padding: '16px 18px 16px 52px', borderRadius: 12, border: '1.5px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.08)', outline: 'none' }} />
           </div>
-          {openCount != null && <div style={{ marginTop: 16, fontFamily: DISPLAY, fontSize: 14, letterSpacing: 1.5, textTransform: 'uppercase', color: shade(RED, 30), fontWeight: 700 }}>{openCount} open store{openCount === 1 ? '' : 's'}</div>}
+          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
+            {openCount != null && <div style={{ fontFamily: DISPLAY, fontSize: 14, letterSpacing: 1.5, textTransform: 'uppercase', color: shade(RED, 30), fontWeight: 700 }}>{openCount} open store{openCount === 1 ? '' : 's'}</div>}
+            <button type="button" onClick={() => setBuilding(true)}
+              style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, border: 'none', padding: '11px 24px', borderRadius: 10, cursor: 'pointer' }}>Build your store →</button>
+          </div>
         </div>
       </section>
 
@@ -147,8 +155,10 @@ export default function TeamStores() {
             ? <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 15, padding: '40px 20px' }}>Searching…</div>
             : (results && results.length)
               ? <>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b', marginBottom: 16 }}>{results.length} store{results.length === 1 ? '' : 's'} matching “{term}”</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 22 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b', marginBottom: 16, textAlign: 'center' }}>{results.length} store{results.length === 1 ? '' : 's'} matching “{term}”</div>
+                  {/* Cap the column width (not 1fr) + center the tracks so a small
+                      result set sits centered instead of hugging the left edge. */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 340px))', gap: 22, justifyContent: 'center' }}>
                     {results.map((s) => <StoreCard key={s.slug} s={s} />)}
                   </div>
                 </>
@@ -159,8 +169,18 @@ export default function TeamStores() {
       <section style={{ background: `repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,0.03) 30px 60px), linear-gradient(135deg, ${NAVY}, ${shade(NAVY, -12)})`, color: '#fff', textAlign: 'center', padding: 'clamp(36px,5vw,56px) 20px', borderTop: `3px solid ${RED}` }}>
         <div style={{ fontFamily: DISPLAY, fontSize: 'clamp(24px,3.5vw,36px)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3 }}>Don't see your store? <span style={{ color: shade(RED, 28) }}>Let's build one.</span></div>
         <p style={{ margin: '10px auto 22px', maxWidth: 560, fontSize: 16, color: 'rgba(255,255,255,0.85)' }}>We set up custom team stores for schools, clubs, and organizations — gear delivered to your team with no upfront cost.</p>
-        <a href={QUOTE_URL} target={LINK_TARGET} style={{ display: 'inline-block', fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, padding: '13px 30px', borderRadius: 10, textDecoration: 'none' }}>Get a quote →</a>
+        <button type="button" onClick={() => setBuilding(true)} style={{ display: 'inline-block', fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: RED, border: 'none', padding: '13px 30px', borderRadius: 10, cursor: 'pointer' }}>Build your store →</button>
+        <div style={{ marginTop: 14 }}>
+          <a href={QUOTE_URL} target={LINK_TARGET} style={{ fontSize: 13.5, color: 'rgba(255,255,255,0.72)', textDecoration: 'underline', fontWeight: 600 }}>Prefer to talk to us? Request a quote →</a>
+        </div>
       </section>
+
+      {/* Public store builder — a full-screen overlay, lazy-loaded on demand. */}
+      {building && (
+        <Suspense fallback={<div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9', color: '#64748b', fontFamily: BODY, fontWeight: 600 }}>Loading the builder…</div>}>
+          <BuildStore onClose={() => setBuilding(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
