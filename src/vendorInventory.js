@@ -270,9 +270,9 @@ async function _mt(sku, item) {
 // suffix; if a master returns nothing we retry once against the suffix-stripped base and
 // keep only SKUs that still start with our SKU.
 async function _cp(sku, item) {
-  const sizes = {}; const sizeNextAvail = {}; let nextAvail = '';
+  const sizes = {}; const sizeNextAvail = {}; let nextAvail = ''; let errMsg = '';
   const master = String(sku || '').trim();
-  const out = () => ({ sizes, sizeNextAvail, nextAvail, source: 'cp' });
+  const out = () => ({ sizes, sizeNextAvail, nextAvail, source: 'cp', error: errMsg || undefined });
   if (!master) return out();
 
   // Resolve the master → SKU rows, with a safe suffix-stripped fallback.
@@ -317,7 +317,12 @@ async function _cp(sku, item) {
   if (!skuList.length) return out();
 
   let inv;
-  try { inv = await champroGetInventory(skuList); } catch { return out(); }
+  try { inv = await champroGetInventory(skuList); }
+  catch (e) { errMsg = e.message; return out(); }
+  // Champro reports bad/unknown SKUs and IP/key problems in-body via ErrorMessages —
+  // capture them so the caller can surface "why" instead of a silent blank badge.
+  const errs = inv?.ErrorMessages;
+  if (Array.isArray(errs) && errs.length) errMsg = errs.join('; ');
   (inv?.Inventory || []).forEach((row) => {
     const sz = skuSize[String(row.SKU || '').toUpperCase()] || normSzName('OSFA');
     const qty = (row.Warehouses || []).reduce((a, w) => a + (parseInt(w.Quantity) || 0), 0);
@@ -331,5 +336,6 @@ async function _cp(sku, item) {
       }
     }
   });
+  if (Object.keys(sizes).length) errMsg = ''; // got real stock → not an error
   return out();
 }

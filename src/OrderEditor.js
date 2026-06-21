@@ -838,7 +838,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // stays at the catalog value.
         const inv=await fetchVendorSizeInventory('cp',{sku,color:item?.color,sizes:item?.sizes,available_sizes:item?.available_sizes});
         const sizeQty=inv?.sizes||{};const sizeNextAvail=inv?.sizeNextAvail||{};const nextAvail=inv?.nextAvail||'';
-        console.log('[Champro] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail);
+        console.log('[Champro] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail,inv?.error?('err: '+inv.error):'');
+        // Surface a Champro error (e.g. "SKU does not Exist", IP/key issues) as ⚠ CP when
+        // no stock came back, instead of a silently blank badge.
+        if(inv?.error&&!Object.keys(sizeQty).length)throw new Error(inv.error);
         const result={sizes:sizeQty,price:{},nextAvail,sizeNextAvail,fetchedAt:Date.now(),source:'cp'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:{},nextAvail,sizeNextAvail,loading:false,error:null,source:'cp'}}));
