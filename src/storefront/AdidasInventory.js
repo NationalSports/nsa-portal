@@ -657,6 +657,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   const [alertBusy, setAlertBusy] = useState(false);
   const [inboundOpen, setInboundOpen] = useState({}); // sku → expanded inbound rows
   const [zoomImg, setZoomImg] = useState(null); // {img,alt} for the click-to-enlarge lightbox
+  const [colorQ, setColorQ] = useState(''); // live filter for the colorway list (styles with many colors)
 
   useEffect(() => {
     // Escape closes the enlarged image first (if open), otherwise the modal.
@@ -699,6 +700,12 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
 
   // Colorways that match the current filters float to the top
   const cws = [...st.colorways].sort((a, b) => (matchSet.has(b.sku) - matchSet.has(a.sku)) || a.color.localeCompare(b.color));
+  // Live color filter — matches color name, family, or SKU. For styles like
+  // Richardson 112 (100+ colorways) scrolling is unworkable without it.
+  const cq = colorQ.trim().toLowerCase();
+  const shownCws = cq
+    ? cws.filter((cw) => ((cw.color || '') + ' ' + (cw.family || '') + ' ' + cw.sku).toLowerCase().includes(cq))
+    : cws;
   const gb = GENDER_BADGE[st.gender];
   // One-size styles (OSFA — most Agron accessories) show a single size cell, so
   // the row would otherwise be mostly empty: give them a much larger, centered
@@ -732,8 +739,18 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
         <div style={{ padding: '0 24px 6px', fontSize: 12, color: '#6A7180' }}>
           Type quantities under the sizes you need — they go straight onto your order list.
         </div>
+        {st.colorways.length > 10 && (
+          <div style={{ position: 'sticky', top: 0, zIndex: 5, background: '#fff', padding: '4px 24px 10px' }}>
+            <input className="ai-search" value={colorQ} onChange={(e) => setColorQ(e.target.value)}
+              placeholder={`Search ${st.colorways.length} colors…`} style={{ width: '100%' }} />
+            {cq && <div style={{ fontSize: 12, color: '#6A7180', marginTop: 6 }}>{shownCws.length} of {st.colorways.length} colors</div>}
+          </div>
+        )}
         <div style={{ padding: '0 24px 22px' }}>
-          {cws.map((cw) => {
+          {cq && shownCws.length === 0 && (
+            <div style={{ padding: '14px 0', fontSize: 13.5, color: '#6A7180' }}>No colors match “{colorQ}”.</div>
+          )}
+          {shownCws.map((cw) => {
             const availNow = (s) => (s.q || 0) + (s.ih || 0);
             const inStock = cw.sizes.filter((s) => availNow(s) > 0);
             const incoming = {};
