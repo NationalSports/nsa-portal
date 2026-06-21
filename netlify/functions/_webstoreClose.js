@@ -37,7 +37,8 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   const brevoKey = opts.brevoKey || process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
 
   const b = await buildBreakdown(admin, store);
-  const link = `${portal}/?pg=webstores`;
+  // Deep-link straight to this store's page in the portal (Webstores reads ?store=).
+  const link = `${portal}/?pg=webstores&store=${encodeURIComponent(store.id)}`;
   const summaryLines = [
     `${b.orderCount} order${b.orderCount === 1 ? '' : 's'} · ${b.units} unit${b.units === 1 ? '' : 's'}`,
     `Gross ${money(b.gross)}${b.fundraise > 0 ? ` · Fundraising ${money(b.fundraise)}` : ''}`,

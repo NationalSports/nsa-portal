@@ -119,8 +119,19 @@ window._sizeMaps = window._sizeMaps || {};
 { const SB='https://hpslkvngulqirmbstlfx.supabase.co'; const SK='<anon key>';
   const res = await fetch(SB+'/rest/v1/adidas_size_maps?select=conversion_id,code_labels',{headers:{'apikey':SK,'Authorization':'Bearer '+SK}});
   (res.ok?await res.json():[]).forEach(r=>{ window._sizeMaps[r.conversion_id]={...(r.code_labels||{}),...(window._sizeMaps[r.conversion_id]||{})}; }); }
-window._sizeMaps["51"]={"210":"XS","230":"S","250":"M","270":"L","290":"XL","310":"2XL","320":"3XL","330":"4XL","340":"5XL","360":"6XL","370":"7XL","380":"LT","390":"XLT","400":"2XLT","410":"3XLT","420":"4XLT","430":"5XLT","450":"LT2","460":"XLT2","470":"2XT2"};
+window._sizeMaps["51"]={"210":"XS","230":"S","250":"M","270":"L","290":"XL","310":"2XL","320":"3XL","330":"4XL","340":"5XL","360":"ST","370":"MT","380":"LT","390":"XLT","400":"2XLT","410":"3XLT","420":"4XLT","430":"5XLT","450":"LT2","460":"XLT2","470":"2XT2"};
 ```
+
+> ⚠️ **Codes 360/370 are ST/MT, not 6XL/7XL.** adidas apparel has **no 6XL or 7XL anywhere**
+> (max is 5XL + the tall run ST→5XLT). The previous seed mapped `360→6XL, 370→7XL`, but those
+> codes sit exactly where the tall run begins (…`340:5XL, 360:ST, 370:MT, 380:LT, 390:XLT`…),
+> so every adidas store/catalog SKU was getting a phantom 6XL/7XL whose stock mirrored ST/MT
+> (the same codes also surfaced "7XL" on kids' shoes and "6XL" on women's bras — categorically
+> impossible). On 2026-06-21 the 773 phantom `adidas_inventory` rows were deleted and 6XL/7XL
+> stripped from 586 adidas `products.available_sizes`. **Two live-skill fixes are required so it
+> doesn't recur:** (1) this seed correction (360→ST, 370→MT), and (2) the Step 5 self-heal must
+> also drop stale extended-size **labels** (e.g. a `6XL`/`7XL` row when a labeled tall twin
+> exists), not only raw 3-digit codes.
 
 Re-learn a conversionId only when a richer/new example appears (`_convSizes[cid].n` > stored
 size). Learn from the FULL size run via the hidden product-page iframe loader (query

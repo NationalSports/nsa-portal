@@ -6,7 +6,7 @@ import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, e
 import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -507,8 +507,14 @@ function isMissingTable(err) {
 
 // ── Coach launch email + printable flyer ─────────────────────────────
 const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
-const _storefrontUrl = (store) => `${(typeof window !== 'undefined' ? window.location.origin : '')}/shop/${store.slug}`;
-const _qrImg = (data, size = 300) => `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&data=${encodeURIComponent(data)}`;
+// Families get the BRANDED marketing URL (nationalsportsapparel.com/shop/<slug>), which the
+// marketing site 200-proxies to this storefront — never the raw portal origin staff happen
+// to trigger the email from.
+const PUBLIC_SITE = 'https://nationalsportsapparel.com';
+const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
+// QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
+// goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
+const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&margin=2&ecLevel=M&text=${encodeURIComponent(data)}`;
 const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
 const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
@@ -764,6 +770,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     await loadDetail(store);
   }, [loadDetail]);
 
+  // Deep-link: the store-closed email's "Process the store" button (and any
+  // ?pg=webstores&store=<id> link) lands here. Once the store list is loaded, open that
+  // store's page, then strip the param so a refresh / back-nav doesn't re-trigger it.
+  const _deepLinked = useRef(false);
+  useEffect(() => {
+    if (_deepLinked.current || loading || !stores.length) return;
+    let id = null;
+    try { id = new URLSearchParams(window.location.search).get('store'); } catch { /* */ }
+    if (!id) return;
+    _deepLinked.current = true;
+    const store = stores.find((s) => s.id === id);
+    if (store) openStore(store);
+    try { const u = new URL(window.location); u.searchParams.delete('store'); window.history.replaceState({}, '', u); } catch { /* */ }
+  }, [stores, loading, openStore]);
+
   // ── writes ──────────────────────────────────────────────────────────
   // When a store is launched, email the coach/director the polished launch email
   // (shop link + scannable QR + key info + their tracking portal).
@@ -813,14 +834,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
-  const setStoreStatus = useCallback(async (store, status) => {
-    const { data, error } = await supabase.from('webstores').update({ status, updated_at: new Date().toISOString() }).eq('id', store.id).select().single();
+  const setStoreStatus = useCallback(async (store, status, opts = {}) => {
+    const patch = { status, updated_at: new Date().toISOString() };
+    // A coach email typed in the launch dialog is saved to the store so it's on file.
+    const coachEmail = (opts.coachEmail || '').trim();
+    if (status === 'open' && opts.emailCoach && coachEmail && coachEmail !== (store.coach_contact_email || '')) patch.coach_contact_email = coachEmail;
+    const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
     if (error) { flash('Could not update status: ' + error.message); return; }
     setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
     if (sel?.id === store.id) setSel(data);
-    // On launch, email the coach/director the store link + flyer QR (any store with a
-    // recipient on file — not just coach-built ones).
-    if (store.status !== 'open' && status === 'open' && (data.coach_contact_email || data.director_email)) notifyCoachPublished(data);
+    // Email the coach only when the launch dialog opted in (with a recipient).
+    if (status === 'open' && opts.emailCoach && coachEmail) notifyCoachPublished({ ...data, coach_contact_email: coachEmail });
+    // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
@@ -954,19 +979,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const addManyFromList = useCallback(async (rows) => {
     if (!sel?.id || !rows?.length) return { added: 0 };
     const base = (detail?.catalog?.length || 0);
+    const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
     const payload = rows.map((r, i) => ({
       store_id: sel.id, kind: 'single', product_id: r.product.id, sku: r.product.sku,
       retail_price: Number(r.price) || 0, fundraise_amount: Number(r.fundraise) || 0,
       image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [],
       category: r.category || null, kit_name: r.kit_name || null, required: !!r.required,
-      options: [], active: true, sort_order: base + i,
+      options: defOpts, active: true, sort_order: base + i,
     }));
     const { error } = await supabase.from('webstore_products').insert(payload);
     if (error) { flash('Import error: ' + error.message); return { added: 0, error: error.message }; }
     flash(`Imported ${payload.length} item${payload.length === 1 ? '' : 's'}`); loadDetail(sel);
     return { added: payload.length };
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, wsSettings, flash, loadDetail]);
 
   // Apply a saved template — resolve its SKUs to live products and add the ones not already
   // in this store (carrying the template's category / price / fundraising / kit). A SECTION
@@ -1004,11 +1030,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
     let base = (detail?.catalog?.length || 0);
     let added = 0;
+    const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
     const mk = (p, grp, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
       retail_price: (grp.price != null && grp.price !== '') ? Number(grp.price) : (Number(p.retail_price) || 0),
       fundraise_amount: Number(grp.fundraise) || 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [], category: grp.category || null, kit_name: grp.kit_name || null,
-      required: !!grp.required, options: [], active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
+      required: !!grp.required, options: defOpts, active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
     for (const grp of plan) {
       const cols = (grp.products || []).filter((p) => p && p.id && !existing.has(p.id));
       if (!cols.length) continue;
@@ -1029,7 +1056,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     flash(added ? `Added ${added} item${added === 1 ? '' : 's'}` : 'Those colors are already in the store'); loadDetail(sel);
     return { added };
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, wsSettings, flash, loadDetail]);
 
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
@@ -2222,9 +2249,50 @@ function MenuButton({ label, items = [], primary = false, align = 'left', icon }
   );
 }
 
+// Launch confirmation — going live, with an explicit option to email the coach/director
+// the store link + QR (prefilled from the email on file; a newly typed one is saved).
+function LaunchStoreModal({ store, onClose, onLaunch }) {
+  const onFile = (store.coach_contact_email || store.director_email || '').trim();
+  const [emailCoach, setEmailCoach] = useState(!!onFile);
+  const [coachEmail, setCoachEmail] = useState(onFile);
+  const [busy, setBusy] = useState(false);
+  const valid = !emailCoach || /.+@.+\..+/.test(coachEmail.trim());
+  const go = async () => { if (!valid) return; setBusy(true); await onLaunch({ emailCoach, coachEmail: coachEmail.trim() }); setBusy(false); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 460, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>🚀 Launch store</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, color: '#334155', marginBottom: 14 }}>Make <b>{store.name}</b> live for shoppers.</div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
+            <input type="checkbox" checked={emailCoach} onChange={(e) => setEmailCoach(e.target.checked)} />
+            Email the coach the store link + QR
+          </label>
+          {emailCoach && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Coach / director email</div>
+              <input className="form-input" type="email" value={coachEmail} onChange={(e) => setCoachEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} />
+              {!onFile && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>No email on file — what you enter is saved to the store.</div>}
+              {!valid && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email, or uncheck to launch without notifying.</div>}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={busy || !valid} style={{ background: '#166534' }} onClick={go}>{busy ? 'Launching…' : (emailCoach ? 'Launch & email coach' : 'Launch store')}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
+  const [launchOpen, setLaunchOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -2303,11 +2371,12 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
               : { label: 'Email store link', icon: '✉️', title: 'Add a coach/director email in Settings first', disabled: true },
           ]} />
           {onSetStatus && (s.status !== 'open'
-            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => onSetStatus(s, 'open')} title="Make this store live for shoppers">🚀 Launch store</button>
+            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
+      {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
 
       {(() => {
         const primary = s.primary_color || '#192853';
@@ -2617,7 +2686,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
             <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '8px 10px', borderBottom: '1px solid #eef0f3', display: 'flex', alignItems: 'center', gap: 6, zIndex: 2 }}>
               <span style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4 }}>{groups.length} item{groups.length === 1 ? '' : 's'}</span>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <MenuButton label="+ Category" items={[...CATEGORY_PRESETS.map((c) => ({ label: c, onClick: () => addCat(c) })), { divider: true }, { label: 'Custom name…', icon: '✏️', onClick: () => { const n = window.prompt('New category name'); if (n && n.trim()) addCat(n.trim()); } }]} />
+                <MenuButton label="+ Category" items={[...[...standardCategories, ...CATEGORY_PRESETS.filter((c) => !standardCategories.some((s) => (s || '').toLowerCase() === c.toLowerCase()))].map((c) => ({ label: c, onClick: () => addCat(c) })), { divider: true }, { label: 'Custom name…', icon: '✏️', onClick: () => { const n = window.prompt('New category name'); if (n && n.trim()) addCat(n.trim()); } }]} />
                 <button className="btn btn-sm btn-secondary" onClick={() => { setMode('single'); setPending(null); }}>+ Item</button>
               </div>
             </div>
@@ -3257,11 +3326,15 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g. 3XL–6XL)
   // for some styles but carries zero with the next delivery months out, so those
   // shouldn't show as toggles. Falls back to the full scale if nothing qualifies yet
-  // (e.g. a brand-new style still on the way).
+  // (e.g. a brand-new style still on the way). Tall sizes fulfill their regular twin
+  // (a coach orders "L", we ship "LT"), so the store offers regular sizes only and a
+  // size counts its tall twin's stock/ETA toward availability.
   const _stk = stockByWp[item.id] || {};
-  const _sizeQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
-  const _scaleSizes = Array.isArray(availableSizes) ? availableSizes : [];
-  const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || sizeEtaSoon(_stk.vendor_size_eta, sz));
+  const _rawQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
+  const _rawSoon = (sz) => sizeEtaSoon(_stk.vendor_size_eta, sz);
+  const _scaleSizes = foldScale(availableSizes);
+  const _sizeQty = (sz) => foldedQty(sz, _rawQty);
+  const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || foldedSoon(sz, _rawSoon));
   const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
@@ -3386,28 +3459,20 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         <ItemSection title="Pricing & margin">
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-            <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? storeFundAmt.toFixed(2) + ' (auto)' : '0'} /></Row>
-            <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
-            <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
+            <Row label="Price"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 120 }} /></Row>
+            <Row label="Fundraising"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? storeFundAmt.toFixed(2) + ' (auto)' : '0'} style={{ width: 130 }} /></Row>
+            <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700, width: 110 }}>{money(total)}</div></Row>
           </div>
-          {!isBundle && storeFund?.enabled && (
-            <div style={{ fontSize: 11.5, color: storeFundAmt > 0 ? '#166534' : '#94a3b8', marginTop: 6 }}>
-              {Number(fundraise) > 0
-                ? `This item’s own fundraising overrides the store rule (store default would add ${money(storeFundAmt)}).`
-                : `Store fundraising adds ${Number(storeFund.flat) > 0 ? money(storeFund.flat) : (storeFund.pct || 0) + '%'}${storeFund.round ? ', rounded up to the next $1' : ''} = ${money(storeFundAmt)} — already in “Shopper pays.” Enter an amount to override.`}
-            </div>
-          )}
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here).</div>
           {!isBundle && (garmentCost != null
-            ? <div style={{ marginTop: 10, padding: '8px 12px', background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5 }}>
-                <span style={{ color: '#64748b' }}>Garment <b style={{ color: '#191919' }}>{money(garmentCost)}</b></span>
-                <span style={{ color: '#64748b' }}>Decoration <b style={{ color: '#191919' }}>{decoIncluded ? '~' + money(decoCost) : '—'}</b></span>
-                <span style={{ color: '#64748b' }}>True cost <b style={{ color: '#191919' }}>{money(trueCost)}</b></span>
-                <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>Margin {marginPct != null ? marginPct + '%' : '—'}<span style={{ fontWeight: 500, color: '#94a3b8' }}> after deco</span></span>
-                {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Price {money(target45)} for 45%</button>}
+            ? <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5, color: '#64748b' }}>
+                <span>Cost <b style={{ color: '#191919' }}>{money(trueCost)}</b>{decoIncluded ? <span style={{ color: '#94a3b8' }}> (incl. ~{money(decoCost)} deco)</span> : null}</span>
+                <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>{marginPct != null ? marginPct + '% margin' : '— margin'}</span>
+                {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Set {money(target45)} (45%)</button>}
               </div>
-            : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see true margin (garment + ~$5 decoration) here.</div>)}
+            : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see margin.</div>)}
+          {!isBundle && storeFund?.enabled && (Number(fundraise) > 0
+            ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Overrides the store rule ({money(storeFundAmt)} default).</div>
+            : storeFundAmt > 0 ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Includes {money(storeFundAmt)} store fundraising — enter to override.</div> : null)}
         </ItemSection>
 
         {!isBundle && allSizes.length > 0 && (
@@ -3442,6 +3507,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <OptionsEditor value={options} onChange={setOptions} />
           </ItemSection>
         )}
+
+        <ItemSection title="Shipping" hint="· used for ship-to-home rates">
+          <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 130 }} /></Row>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Blank = auto-estimate by item type (~{estOz} oz).</div>
+        </ItemSection>
         </div>
       </div>
 
