@@ -78,6 +78,12 @@ function groupProducts(list) {
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
 const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
+// A size is "available soon" when its vendor restock date is within ~2 weeks, so we
+// surface sizes a shopper can actually get shortly (in stock now or arriving) and
+// hide ones whose next delivery is months out.
+const SIZE_SOON_MS = 14 * 24 * 60 * 60 * 1000;
+const sizeSoon = (p, sz) => { const d = (p.vendor_size_eta || {})[sz]; if (!d) return false; const t = Date.parse(d); return !isNaN(t) && t <= Date.now() + SIZE_SOON_MS; };
+const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
 
@@ -454,13 +460,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // Honor the store's per-product size selection (sizes_offered); null = all.
   const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
   const _scale = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
-  // Only surface sizes that actually have stock (warehouse or vendor). A vendor
-  // lists a full scale (e.g. 3XL–6XL) for some styles but carries zero, so those
-  // would otherwise render as dead, struck-through buttons. If nothing's in stock
-  // yet but the item is on the way, fall back to the full scale so backorderable
-  // items stay orderable.
-  const _inStock = _scale.filter((s) => effSizeQty(p, s) > 0);
-  const sizesArr = _inStock.length ? _inStock : (isIncoming(p) ? _scale : _inStock);
+  // Only surface sizes a shopper can actually get: in stock now (warehouse or
+  // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g.
+  // 3XL–6XL) for some styles but carries zero with the next delivery months out, so
+  // those would otherwise render as dead, struck-through buttons. If nothing
+  // qualifies yet but the item is on the way, fall back to the full scale so
+  // backorderable items stay orderable.
+  const _avail = _scale.filter((s) => sizeSellable(p, s));
+  const sizesArr = _avail.length ? _avail : (isIncoming(p) ? _scale : _avail);
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
@@ -529,8 +536,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {sizes.map((sz) => {
-                const q = effSizeQty(p, sz); const sel = size === sz; const out = q <= 0 && !incoming; const up = sizeUp(p, sz);
-                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+                const q = effSizeQty(p, sz); const soon = sizeSoon(p, sz); const etaD = (p.vendor_size_eta || {})[sz]; const sel = size === sz; const out = q <= 0 && !soon && !incoming; const up = sizeUp(p, sz);
+                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
                   style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
               })}
             </div>

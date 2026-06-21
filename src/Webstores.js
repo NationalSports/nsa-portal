@@ -522,7 +522,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
+      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
@@ -2037,6 +2037,18 @@ function stockText(stock) {
   return { text: 'Out of stock', color: '#b91c1c' };
 }
 
+// A size is "available soon" when the vendor's per-size restock date is within ~2
+// weeks (vendor_size_eta from the storefront view). Used so the store offers sizes
+// you can actually get shortly — in stock now or arriving — and hides ones whose
+// next delivery is months out (e.g. a style whose 3XL–6XL only return next season).
+const SIZE_SOON_MS = 14 * 24 * 60 * 60 * 1000;
+function sizeEtaSoon(etaMap, sz) {
+  const d = etaMap && etaMap[sz];
+  if (!d) return false;
+  const t = Date.parse(d);
+  return !isNaN(t) && t <= Date.now() + SIZE_SOON_MS;
+}
+
 // ── Catalog tab with editing ─────────────────────────────────────────
 // Store-wide fundraising rule (Settings → Fundraising): a % of price or a flat $,
 // optionally rounded up to the next $1. A per-item amount always overrides it.
@@ -2769,15 +2781,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
   // Per-store size selection: which of the product's available sizes this store
   // shows. Default = all on; saving a strict subset hides the rest on the storefront.
-  // Only sizes that actually have stock (warehouse or vendor) are offerable — a
-  // vendor lists a full scale (e.g. 3XL–6XL) for some styles but carries zero, so
-  // those shouldn't show as toggles. Falls back to the full scale if nothing's in
-  // stock yet (e.g. a brand-new style on the way).
+  // Only sizes that are actually gettable are offerable: in stock now (warehouse or
+  // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g. 3XL–6XL)
+  // for some styles but carries zero with the next delivery months out, so those
+  // shouldn't show as toggles. Falls back to the full scale if nothing qualifies yet
+  // (e.g. a brand-new style still on the way).
   const _stk = stockByWp[item.id] || {};
   const _sizeQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
   const _scaleSizes = Array.isArray(availableSizes) ? availableSizes : [];
-  const _inStockSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0);
-  const allSizes = _inStockSizes.length ? _inStockSizes : _scaleSizes;
+  const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || sizeEtaSoon(_stk.vendor_size_eta, sz));
+  const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
   );
