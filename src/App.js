@@ -28745,12 +28745,12 @@ export default function App(){
                 </div>
                 {!featLoading&&filteredStyles.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'24px 0',textAlign:'center'}}>No products found.</div>}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:6,maxHeight:500,overflowY:'auto',paddingRight:4}}>
-                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;const isHid=st.isHidden;return(
+                  {shown.map(st=>{const p=pickCw(st);const isFeat=st.isFeatured;const isHid=st.isHidden;const styleSku=(p.sku||'').split('.')[0]||p.sku||'';const showCount=st.colorways.length>1&&!featColor;const skuShown=showCount?styleSku:p.sku;const infoLeft=isHid?'Hidden from catalog':(showCount?`${st.colorways.length} colors`:(p.color||''));return(
                     <div key={st.key} onClick={()=>!isHid&&toggleFeat(st)} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',borderRadius:6,border:'1px solid',borderColor:isHid?'#e2e8f0':isFeat?'#bae6fd':'#e2e8f0',background:isHid?'#f8fafc':isFeat?'#f0f9ff':'#fff',cursor:isHid?'default':'pointer',opacity:isHid?0.55:1}}>
-                      {p.image_front_url?<img src={p.image_front_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,flexShrink:0}}/>:<div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}} title="No image">📷</div>}
+                      <div style={{width:36,height:36,background:'#f1f5f9',borderRadius:4,flexShrink:0,position:'relative',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,overflow:'hidden'}} title={p.image_front_url?'':'No image'}>📷{p.image_front_url&&<img src={p.image_front_url} alt="" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.currentTarget.style.display='none'}}/>}</div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:12,fontWeight:600,color:isHid?'#94a3b8':'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.name}</div>
-                        <div style={{fontSize:11,color:'#94a3b8'}}>{isHid?'Hidden from catalog':(st.colorways.length>1&&!featColor?`${st.colorways.length} colors`:[p.color,p.sku].filter(Boolean).join(' · '))}</div>
+                        <div style={{fontSize:11,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{infoLeft}{skuShown&&<span style={{fontFamily:'monospace',color:'#64748b'}}>{infoLeft?' · ':''}{skuShown}</span>}</div>
                       </div>
                       {!isHid&&<span style={{fontSize:20,color:isFeat?'#0284c7':'#cbd5e1',flexShrink:0,lineHeight:1}}>{isFeat?'★':'☆'}</span>}
                       <span onClick={e=>toggleHide(e,st)} title={isHid?'Show in catalog':'Hide from catalog'} style={{fontSize:14,color:isHid?'#ef4444':'#cbd5e1',flexShrink:0,lineHeight:1,cursor:'pointer',userSelect:'none'}}>⊗</span>
