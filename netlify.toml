@@ -1,7 +1,7 @@
 [build]
   command = "GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
-  environment = { NODE_VERSION = "18" }
+  environment = { NODE_VERSION = "18", PUBLIC_URL = "https://nsa-portal.netlify.app" }
 
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
