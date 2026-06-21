@@ -132,7 +132,6 @@ function closesLabel(close_at) {
 
 export default function Storefront() {
   const [route, setRoute] = useState(parsePath());
-  const isEmbed = useMemo(() => new URLSearchParams(window.location.search).get('embed') === '1', []);
   useEffect(() => {
     const onPop = () => setRoute(parsePath());
     window.addEventListener('popstate', onPop);
@@ -193,7 +192,7 @@ export default function Storefront() {
       <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} isEmbed={isEmbed} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
@@ -237,7 +236,7 @@ function PreviewBanner({ status }) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, isEmbed = false }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const closes = closesLabel(store.close_at);
   const accentLight = shade(theme.accent, 18);
   const heroBg = store.banner_url
@@ -252,7 +251,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, isEmbed
   const rest = parts.join(' ');
   return (
     <>
-      {!isEmbed && <><section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
@@ -280,7 +279,6 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, isEmbed
       </section>
 
       <TrustStrip store={store} theme={theme} />
-      </>}
 
       <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,34px) 20px clamp(56px,7vw,88px)' }}>
         {products.length === 0
@@ -362,16 +360,42 @@ function bundleBadge(count) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
+// Per-color web-logo override (mirrors the store builder): a deco's cw_by_color maps a
+// lowercased garment color -> the web logo to show for that color (e.g. a white logo on a
+// black tee); falls back to the placed art_url.
+const decoUrlForColor = (d, colorName) => {
+  const k = String(colorName || '').trim().toLowerCase();
+  return (d && d.cw_by_color && k && d.cw_by_color[k]) || (d && d.art_url) || '';
+};
 // Applied logo art (from webstore_products.decorations) composited on the
-// garment image at its placement — the on-screen mock shoppers see.
-function DecoOverlay({ decorations, side = 'front' }) {
+// garment image at its placement — the on-screen mock shoppers see. colorName picks the
+// per-color web logo so the right color way shows for the active variant.
+function DecoOverlay({ decorations, side = 'front', colorName }) {
   if (!Array.isArray(decorations)) return null;
-  return <>{decorations.filter((d) => d && d.art_url && (d.side || 'front') === side).map((d, i) => {
+  return <>{decorations.filter((d) => d && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
     const pl = placementById(d.placement);
     // A decoration may carry its own x/y/w (editable placement) overriding the preset.
     const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
-    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
+    return <img key={i} src={decoUrlForColor(d, colorName)} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
   })}</>;
+}
+
+// Sample number/name on the garment mockup so shoppers see an item is personalized.
+// Default back placement; the real value is entered at checkout. Mirrors the builder.
+const PERSO_DEFAULTS = { name: { x: 50, y: 22, w: 64 }, number: { x: 50, y: 51, w: 34 } };
+function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber = '00' }) {
+  if (!takesNumber && !takesName) return null;
+  const tok = (p, vb, ty, fs, body) => (
+    <div style={{ position: 'absolute', left: p.x + '%', top: p.y + '%', width: p.w + '%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 1 }}>
+      <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible' }}>
+        <text x="50" y={ty} textAnchor="middle" fontFamily="'Barlow Condensed',Oswald,Impact,sans-serif" fontWeight="800" fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.6)" strokeWidth="1.3" paintOrder="stroke" letterSpacing="1">{body}</text>
+      </svg>
+    </div>
+  );
+  return <>
+    {takesName && tok(PERSO_DEFAULTS.name, 26, 20, 20, String(sampleName).toUpperCase())}
+    {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
+  </>;
 }
 
 function BundleCollage({ comps, theme }) {
@@ -426,7 +450,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
           : p.image_front_url
             ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <Placeholder theme={theme} label={p.name || store.name} />}
-        {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Count chip for packages — reinforces "this is multiple items" */}
         {isBundle && comps.length > 1 && <span style={chip}>{comps.length} pieces</span>}
         {nColors > 1 && <span style={chip}>{nColors} colors</span>}
@@ -508,6 +532,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // so the back logos always have a garment to sit on.
   const descText = cleanDesc(p.description);
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
+  // Number/name personalization previews on the back, so make the back viewable for it too.
+  const isPerso = !!(p.takes_number || p.takes_name);
   const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
@@ -517,9 +543,10 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
         <div>
           <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
-            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} />
+            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
+            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} />}
           </div>
-          {hasBackDeco && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
           </div>}
         </div>
@@ -790,6 +817,8 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [couponInput, setCouponInput] = useState('');
   const [coupon, setCoupon] = useState(null);
   const [couponErr, setCouponErr] = useState('');
+  const [checkoutMsg, setCheckoutMsg] = useState('');
+  useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
@@ -845,6 +874,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     <div style={{ paddingTop: 26, maxWidth: 640 }}>
       <BackLink store={store} />
       <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,5vw,44px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 20px', lineHeight: 0.95 }}>Checkout</h1>
+      {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
 
       <Field label="Your name"><input style={inp} value={buyer.name} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
