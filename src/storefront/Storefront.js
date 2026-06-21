@@ -360,15 +360,23 @@ function bundleBadge(count) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
+// Per-color web-logo override (mirrors the store builder): a deco's cw_by_color maps a
+// lowercased garment color -> the web logo to show for that color (e.g. a white logo on a
+// black tee); falls back to the placed art_url.
+const decoUrlForColor = (d, colorName) => {
+  const k = String(colorName || '').trim().toLowerCase();
+  return (d && d.cw_by_color && k && d.cw_by_color[k]) || (d && d.art_url) || '';
+};
 // Applied logo art (from webstore_products.decorations) composited on the
-// garment image at its placement — the on-screen mock shoppers see.
-function DecoOverlay({ decorations, side = 'front' }) {
+// garment image at its placement — the on-screen mock shoppers see. colorName picks the
+// per-color web logo so the right color way shows for the active variant.
+function DecoOverlay({ decorations, side = 'front', colorName }) {
   if (!Array.isArray(decorations)) return null;
-  return <>{decorations.filter((d) => d && d.art_url && (d.side || 'front') === side).map((d, i) => {
+  return <>{decorations.filter((d) => d && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
     const pl = placementById(d.placement);
     // A decoration may carry its own x/y/w (editable placement) overriding the preset.
     const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
-    return <img key={i} src={d.art_url} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
+    return <img key={i} src={decoUrlForColor(d, colorName)} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
   })}</>;
 }
 
@@ -424,7 +432,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
           : p.image_front_url
             ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <Placeholder theme={theme} label={p.name || store.name} />}
-        {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Count chip for packages — reinforces "this is multiple items" */}
         {isBundle && comps.length > 1 && <span style={chip}>{comps.length} pieces</span>}
         {nColors > 1 && <span style={chip}>{nColors} colors</span>}
@@ -515,7 +523,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
         <div>
           <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
-            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} />
+            <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
           </div>
           {hasBackDeco && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}

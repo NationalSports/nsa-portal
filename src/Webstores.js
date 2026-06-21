@@ -965,8 +965,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const updateCatalogItem = useCallback(async (id, fields) => {
     const { error } = await supabase.from('webstore_products').update(fields).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
+    // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
+    // multi-color card's art changes, push the same decorations to every color row in the
+    // group so the storefront and order handoff render the right logo for each color.
+    if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) {
+      const cat = detail?.catalog || [];
+      const me = cat.find((c) => c.id === id);
+      const groupKey = me ? (me.variant_group_id || me.id) : null;
+      const groupIds = groupKey ? cat.filter((c) => (c.variant_group_id || c.id) === groupKey && c.id !== id).map((c) => c.id) : [];
+      if (groupIds.length) await supabase.from('webstore_products').update({ decorations: fields.decorations }).in('id', groupIds);
+    }
     flash('Item updated'); loadDetail(sel);
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   // Reprice every single (with a known cost) to a target margin: price = trueCost / (1 - m),
   // where trueCost = garment cost + ~$5 decoration when the item is decorated. One reload.
@@ -1432,7 +1442,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
         product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
@@ -3016,6 +3026,30 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
   .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
 
+// Per-color web-logo override on a placed deco. cw_by_color maps a lowercased garment
+// color name -> the web-logo URL to use for that color (e.g. a white logo on a black tee,
+// a dark logo on a white tee). Falls back to the deco's placed art_url when unset.
+const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
+const decoUrlForColor = (deco, colorName) => {
+  if (!deco) return '';
+  const m = deco.cw_by_color; const k = colorKeyOf(colorName);
+  return (m && k && m[k]) || deco.art_url || '';
+};
+// Read-only garment thumbnail with the placed FRONT logos composited at their saved
+// placement — previews each color of a multi-color card with its art (and per-color web
+// logo) applied. Mirrors the LogoPlacer hero-canvas math (x/y center %, w = width %).
+function GarmentLogoPreview({ imageUrl, decorations = [], colorName }) {
+  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName));
+  return (
+    <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
+      {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+      {front.map((d, i) => { const p = placementById(d.placement); const x = d.x != null ? d.x : p.x, y = d.y != null ? d.y : p.y, w = d.w != null ? d.w : p.w; return (
+        <img key={i} src={decoUrlForColor(d, colorName)} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+      ); })}
+    </div>
+  );
+}
+
 function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
@@ -3023,6 +3057,24 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
+  // Per-color web-logo override: set/clear the web logo a given garment color uses for a
+  // placed deco (so a black tee can wear the white logo, a white tee the dark one). Empty
+  // url clears the override (falls back to the placed art).
+  const setColorCw = (colorName, decoIndex, url) => {
+    const k = colorKeyOf(colorName);
+    setDecorations((ds) => ds.map((d, i) => {
+      if (i !== decoIndex) return d;
+      const m = { ...(d.cw_by_color || {}) };
+      if (!url) delete m[k]; else m[k] = url;
+      return { ...d, cw_by_color: m };
+    }));
+  };
+  // Available web-logo color ways per placed deco (from the art library record), so each
+  // color can pick a different one. Only decos whose art has 2+ web logos offer a choice.
+  const decoCwChoices = decorations.map((d) => {
+    const art = (library || []).find((a) => a.id === d.art_id);
+    return (art && Array.isArray(art.web_logos)) ? art.web_logos.filter((w) => w && w.url) : [];
+  });
   const [name, setName] = useState(item.display_name || defaultName || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
@@ -3266,14 +3318,18 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
         {groupColors && groupColors.length > 0 && (
-          <ItemSection title="Colors in this item" hint={`· ${groupColors.length} color${groupColors.length === 1 ? '' : 's'} shown as options on one card`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
+          <ItemSection title="Colors in this item" hint={`· each color previewed with the art — pick a web-logo color way per color`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {groupColors.map((c) => { const cs = stockByWp[c.id]; const cName = cs?.color || c.sku; const cImg = c.image_url || cs?.image_front_url; const isPrimary = c.id === item.id; return (
-                <div key={c.id} style={{ position: 'relative', width: 92, border: '2px solid ' + (isPrimary ? '#191919' : '#e2e8f0'), borderRadius: 10, padding: 5, background: '#fff' }}>
-                  <div style={{ width: '100%', height: 86, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {cImg ? <img src={cImg} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{String(cName || '').slice(0, 12)}</span>}
-                  </div>
+              {groupColors.map((c) => { const cs = stockByWp[c.id]; const cName = cs?.color || c.sku; const cImg = c.image_url || cs?.image_front_url; const isPrimary = c.id === item.id; const ck = colorKeyOf(cName); return (
+                <div key={c.id} style={{ position: 'relative', width: 116, border: '2px solid ' + (isPrimary ? '#191919' : '#e2e8f0'), borderRadius: 10, padding: 6, background: '#fff' }}>
+                  <GarmentLogoPreview imageUrl={cImg} decorations={decorations} colorName={cName} />
                   <div style={{ fontSize: 10.5, color: '#191919', fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cName}{isPrimary ? ' (main)' : ''}</div>
+                  {decorations.map((d, di) => { const choices = decoCwChoices[di]; if ((d.side || 'front') === 'back' || !choices || choices.length < 2) return null; const cur = (d.cw_by_color && d.cw_by_color[ck]) || ''; return (
+                    <select key={di} value={cur} onChange={(e) => setColorCw(cName, di, e.target.value)} title="Which web-logo color way this garment color uses" style={{ width: '100%', marginTop: 4, fontSize: 10, border: '1px solid #e2e8f0', borderRadius: 6, padding: '2px 4px', background: '#fff', color: '#334155', cursor: 'pointer' }}>
+                      <option value="">Logo {di + 1}: auto</option>
+                      {choices.map((w, wi) => <option key={wi} value={w.url}>{w.color_way || 'All garments'}</option>)}
+                    </select>
+                  ); })}
                   {onRemoveColor && groupColors.length > 1 && <button type="button" title="Remove this color" onClick={() => onRemoveColor(c.id, cName)} style={{ position: 'absolute', top: -8, right: -8, background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', borderRadius: '50%', width: 20, height: 20, fontSize: 12, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)' }}>×</button>}
                 </div>
               ); })}
