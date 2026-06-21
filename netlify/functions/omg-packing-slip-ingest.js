@@ -21,7 +21,11 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser } = require('./_shared');
+const { verifyUser, syncOrderItems } = require('./_shared');
+
+// Content columns updated on re-ingest, excluding the (sku,size) match key and the
+// fulfillment columns (line_status/shipped_qty/missing_qty). See omg-player-report-ingest.
+const ITEM_CONTENT_KEYS = ['name', 'color', 'qty', 'unit_price', 'player_name', 'image_url'];
 
 const extractSku = (str) => { const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/); return m ? m[1].toUpperCase() : ''; };
 const cleanColor = (str) => (str || '').replace(/\s*\([A-Za-z0-9]{4,10}\)\s*/g, '').trim();
@@ -123,14 +127,14 @@ exports.handler = async (event) => {
         created++;
       }
 
-      // Replace line items only when the slip actually gave us some.
+      // Sync line items only when the slip actually gave us some (a parse miss leaves a prior
+      // player-report import intact). Merge by (sku,size) rather than delete+reinsert so existing
+      // rows keep their id + fulfillment state and shipment links aren't orphaned. See _shared.js.
       const items = Array.isArray(o.items) ? o.items.filter((i) => (i.product || i.color) && (i.qty || 1) > 0) : [];
       if (items.length) {
-        await sb.from('webstore_order_items').delete().eq('order_id', orderId);
-        const rows = items.map((i) => {
+        const lineItems = items.map((i) => {
           const sku = extractSku(i.color) || '';
           return {
-            order_id: orderId,
             sku,
             name: i.product || '',
             color: cleanColor(i.color) || i.color || '',
@@ -142,9 +146,8 @@ exports.handler = async (event) => {
             image_url: imgFor(sku, i.product),
           };
         });
-        const { error: iErr } = await sb.from('webstore_order_items').insert(rows);
-        if (iErr) throw new Error(`Items insert failed (${orderNumber}): ${iErr.message}`);
-        itemsWritten += rows.length;
+        await syncOrderItems(sb, orderId, lineItems, ITEM_CONTENT_KEYS);
+        itemsWritten += lineItems.length;
       }
     }
 
