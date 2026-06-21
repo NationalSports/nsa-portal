@@ -1291,7 +1291,7 @@ const testMomentecConnection = async () => {
 // Champro also restricts by source IP, so the proxy's egress IP must be allowlisted on
 // the Champro Account & Contact Info page. The proxy injects the key server-side, so
 // callers never see it. Docs: https://api.champrosports.com/ — see docs/CHAMPRO_API_SETUP.md.
-const champroApiCall = async (path, options = {}) => {
+const champroApiCall = async (path, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/champro-proxy?path=${encodeURIComponent(path)}`;
@@ -1301,6 +1301,13 @@ const champroApiCall = async (path, options = {}) => {
       ...(options.body ? { body: options.body } : {})
     });
     if (!response.ok) {
+      // Champro rate-limits aggressively (429). Back off and retry a few times before giving up.
+      if ((response.status === 429 || response.status === 503) && _retries < 3) {
+        const delay = (2 ** _retries) * 1000;
+        console.warn(`[Champro] ${response.status} on ${path}, retrying in ${delay}ms (attempt ${_retries + 1}/3)`);
+        await new Promise(r => setTimeout(r, delay));
+        return champroApiCall(path, options, _retries + 1);
+      }
       const errText = await response.text().catch(() => '');
       let msg; try { msg = JSON.parse(errText)?.error; } catch {}
       throw new Error(msg || `Champro API error: ${response.status}`);
@@ -1314,8 +1321,13 @@ const champroApiCall = async (path, options = {}) => {
 // ProductInfo — expands a ProductMaster (our catalog SKU, e.g. "BS25Y") into its
 // size/color-specific SKUs ({ SKU, Configuration, Fabric, Color, Size }) plus MOQ and
 // available lead times. The proxy injects APICustomerKey, so callers pass only the master.
-const champroGetProductInfo = async (productMaster) =>
-  champroApiCall(`/api/Order/ProductInfo?ProductMaster=${encodeURIComponent(productMaster)}`);
+const champroGetProductInfo = async (productMaster) => {
+  const data = await champroApiCall(`/api/Order/ProductInfo?ProductMaster=${encodeURIComponent(productMaster)}`);
+  // Plain-text diagnostic so the key field is readable in the console without expanding the object.
+  const skus = data && data.ProductSKUs;
+  console.log(`[Champro] ProductInfo ${productMaster} → ProductSKUs:`, Array.isArray(skus) ? `${skus.length} item(s)` : skus);
+  return data;
+};
 
 // Inventory — per-warehouse on-hand for a set of size/color-specific SKUs. Champro keys
 // inventory by the full SKU (e.g. "BS25YGRBM"), so resolve those from ProductInfo first.
