@@ -3841,7 +3841,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url');
+      // Hide retired products (inactive/archived) so the store builder can't add what the catalog
+      // live-look already hides — same filter as src/storefront/AdidasInventory.js.
+      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
+        .eq('is_active', true).or('is_archived.is.null,is_archived.eq.false');
       if (favOnly) {
         // Favorites view — load every colorway of each starred STYLE (across all categories)
         // so the rep's + team's picks always show, regardless of color/stock filters.
@@ -4147,7 +4150,9 @@ function AiStoreBuilder({ onAddProducts, onClose, submitLabel }) {
   // source as the catalog live-look, so the in-stock toggle and the per-card
   // stock badges agree on exactly what's orderable right now.
   const loadCandidates = async (s) => {
-    let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url').limit(300);
+    // Match the catalog live-look: exclude inactive/archived products from AI candidates too.
+    let q = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,available_sizes,image_front_url')
+      .eq('is_active', true).or('is_archived.is.null,is_archived.eq.false').limit(300);
     if (s.brands?.length) q = q.in('brand', s.brands);
     if (s.categories?.length) q = q.in('category', s.categories);
     const { data } = await q;

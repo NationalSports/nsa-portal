@@ -11792,7 +11792,9 @@ export default function App(){
                         // batch rows match on SO + item index (+ source PO# when present).
                         const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
                         const rcv={};let _ord=0,_rcvd=0;
-                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)){
+                        // Only size keys are positive numbers on a po_line; skip _META metadata and any
+                        // _-prefixed helper (e.g. _bill_cost) so a billed line's cost isn't counted as units.
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)&&!k.startsWith('_')){
                           _ord+=v;
                           const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;
                           const rv=el?Math.max(0,parseInt(el.value)||0):0;rcv[k]=rv;_rcvd+=rv}});
