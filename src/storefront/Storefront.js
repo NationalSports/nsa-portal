@@ -63,6 +63,18 @@ const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_pri
 // Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
 // publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
 const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
+// Group color variants of one garment (rows sharing variant_group_id) so the grid
+// shows one card and the product page offers a color picker. Bundles never group.
+const variantKey = (p) => p.variant_group_id || p.webstore_product_id;
+function groupProducts(list) {
+  const byKey = new Map(); const order = [];
+  for (const p of (list || [])) {
+    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : variantKey(p);
+    if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
+    byKey.get(k).push(p);
+  }
+  return order.map((k) => { const rows = byKey.get(k); const rep = rows.find((r) => r.webstore_product_id === k) || rows[0]; return { key: k, rep, rows }; });
+}
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
 const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
@@ -164,7 +176,11 @@ export default function Storefront() {
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} />}
-        {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'p' && (() => {
+          const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
+        })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
@@ -252,7 +268,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
           : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 }}>
-              {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} bundleItems={bundleItems} compInfo={compInfo} />)}
+              {groupProducts(products).map(({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />)}
             </div>}
       </div>
     </>
@@ -343,8 +359,9 @@ function BundleCollage({ comps, theme }) {
   return grid('1fr 1fr', '1fr 1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
 }
 
-function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
+function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {} }) {
   const isBundle = p.kind === 'bundle';
+  const nColors = isBundle ? 0 : (colorRows ? colorRows.length : 1);
   // For a package, preview the actual pieces instead of one image: pull each
   // component's product photo (already loaded in compInfo) and montage them.
   const comps = isBundle
@@ -371,6 +388,7 @@ function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
       </div>
       {/* Count chip for packages — reinforces "this is multiple items" */}
       {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
+      {nColors > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{nColors} colors</span>}
       <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)' }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
       {/* Bottom gradient overlay holding the name + price */}
       <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '46px 16px 18px', color: '#fff', background: 'linear-gradient(0deg, rgba(15,26,56,0.95) 0%, rgba(15,26,56,0.78) 55%, rgba(15,26,56,0) 100%)' }}>
@@ -395,14 +413,20 @@ function Placeholder({ theme, label }) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
+function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd }) {
+  const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
-  if (!p) return <Splash>Product not found.</Splash>;
+  // Reset the picked color / size when navigating to a different product.
+  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  if (!rep) return <Splash>Product not found.</Splash>;
+  // The active color variant drives the image, sizes, stock, price and cart line —
+  // each color is its own row, so everything downstream stays per-SKU and correct.
+  const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
   // Honor the store's per-product size selection (sizes_offered); null = all.
   const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
   const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
@@ -453,6 +477,20 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
           <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
           <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: '#64748b', fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
+
+          {colorRows.length > 1 && <div style={{ margin: '4px 0 20px' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Color{p.color ? ` · ${p.color}` : ''}</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {colorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
+                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg('front'); }}
+                  style={{ width: 56, border: '2px solid ' + (on ? theme.accent : '#e2e8f0'), borderRadius: 10, padding: 3, background: '#fff', cursor: 'pointer' }}>
+                  <div style={{ width: '100%', height: 52, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {c.image_front_url ? <img src={c.image_front_url} alt={c.color || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', textAlign: 'center', padding: 2 }}>{(c.color || '').slice(0, 8)}</span>}
+                  </div>
+                </button>
+              ); })}
+            </div>
+          </div>}
 
           <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
 

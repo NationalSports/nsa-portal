@@ -715,6 +715,59 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Add more colors of the same garment as options ON one card (not new cards).
+  // Each color stays its own SKU/row — so per-color stock, the order line, and POs
+  // all keep working — but the rows share variant_group_id (= the primary's id), so
+  // the builder and storefront group them into a single item with a color picker.
+  const addColorsToItem = useCallback(async (primary, colorProducts, shared = {}) => {
+    if (!primary?.id || !Array.isArray(colorProducts) || !colorProducts.length) return;
+    const groupId = primary.variant_group_id || primary.id;
+    const base = (detail?.catalog?.length || 0);
+    const takesNum = shared.takes_number != null ? shared.takes_number : primary.takes_number;
+    const rows = colorProducts.map((p, i) => ({
+      store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
+      retail_price: Number(shared.price != null ? shared.price : primary.retail_price) || 0,
+      fundraise_amount: Number(shared.fundraise != null ? shared.fundraise : primary.fundraise_amount) || 0,
+      image_url: null,
+      takes_number: !!takesNum,
+      takes_name: !!(shared.takes_name != null ? shared.takes_name : primary.takes_name),
+      name_upcharge: Number(shared.name_upcharge != null ? shared.name_upcharge : primary.name_upcharge) || 0,
+      transfer_codes: shared.transfer_codes || primary.transfer_codes || [],
+      num_transfer_sets: takesNum ? (shared.num_transfer_sets || primary.num_transfer_sets || []) : [],
+      decorations: shared.decorations || primary.decorations || [],
+      category: (shared.category != null ? shared.category : primary.category) || null,
+      kit_name: (shared.kit_name != null ? shared.kit_name : primary.kit_name) || null,
+      required: !!(shared.required != null ? shared.required : primary.required),
+      options: Array.isArray(primary.options) ? primary.options : [],
+      active: true, sort_order: base + i, variant_group_id: groupId,
+    }));
+    const ops = [supabase.from('webstore_products').insert(rows)];
+    if (!primary.variant_group_id) ops.push(supabase.from('webstore_products').update({ variant_group_id: groupId }).eq('id', primary.id));
+    const results = await Promise.all(ops);
+    const e = results.find((r) => r.error);
+    if (e?.error) { flash('Error: ' + e.error.message); return; }
+    flash(`Added ${rows.length} color${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+  }, [sel, detail, flash, loadDetail]);
+
+  // Explicit "copy to a new item": clone a row as its own standalone card
+  // (variant_group_id cleared) for when a separate card really is wanted.
+  const copyToNewItem = useCallback(async (row) => {
+    if (!row?.id) return;
+    const clone = {
+      store_id: sel.id, kind: row.kind || 'single', product_id: row.product_id, sku: row.sku,
+      retail_price: Number(row.retail_price) || 0, fundraise_amount: Number(row.fundraise_amount) || 0,
+      image_url: row.image_url || null, image_back_url: row.image_back_url || null,
+      takes_number: !!row.takes_number, takes_name: !!row.takes_name, name_upcharge: Number(row.name_upcharge) || 0,
+      transfer_codes: row.transfer_codes || [], num_transfer_sets: row.num_transfer_sets || [],
+      decorations: row.decorations || [], category: row.category || null, kit_name: row.kit_name || null,
+      required: !!row.required, options: Array.isArray(row.options) ? row.options : [],
+      display_name: row.display_name || null, active: true, sort_order: (detail?.catalog?.length || 0), variant_group_id: null,
+    };
+    const { error } = await supabase.from('webstore_products').insert(clone);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Copied to a new item'); loadDetail(sel);
+  }, [sel, detail, flash, loadDetail]);
+
   // Bulk import from a sales rep's spreadsheet — one insert + one reload (vs. addSingle per
   // row). Each row is { product, price, fundraise, category, kit_name, required } already
   // matched to a product. Returns { added }.
@@ -1160,6 +1213,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Removed'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // Remove a whole garment card — the item and all of its color variants — in one go.
+  const removeGroup = useCallback(async (ids, label) => {
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length) return;
+    if (!window.confirm(`Remove "${label}"${list.length > 1 ? ` and its ${list.length} colors` : ''} from this store?`)) return;
+    const { error } = await supabase.from('webstore_products').delete().in('id', list);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Removed'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
   // Move a catalog item up/down; normalizes sort_order to its array index so
   // the storefront and admin show the same order.
   const reorderItem = useCallback(async (item, dir) => {
@@ -1215,7 +1278,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddColors={addColorsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -1719,7 +1782,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1824,7 +1887,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -1914,7 +1977,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, onApplyLogo, onSaveLogo, onAddSingle, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onReorder, onMove, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -1928,9 +1991,23 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  // Group color variants of the same garment into one card. Colors of a garment
+  // share variant_group_id (= the primary row's id); a null group id = standalone.
+  const groupKeyOf = (p) => p.variant_group_id || p.id;
+  const groups = [];
+  {
+    const byKey = new Map();
+    for (const p of ordered) { const k = groupKeyOf(p); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(p); }
+    for (const [k, rows] of byKey) { const rep = rows.find((r) => r.id === k) || rows[0]; groups.push({ key: k, rep, rows }); }
+    groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
+  }
+  const repsList = groups.map((g) => g.rep);
+  const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
+  // Up/down on a card moves the whole group (by its representative) past the next card.
+  const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
   // In side-by-side view keep one item selected so the editor pane is never empty
-  // (and re-home the selection if the chosen item gets removed).
-  useEffect(() => { if (view === 'split' && ordered.length && !ordered.some((p) => p.id === editId)) setEditId(ordered[0].id); }, [view, catalog]);
+  // (and re-home the selection if the chosen item / its card gets removed).
+  useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
 
   // Drag-to-reorder: the grab handle on a row starts the drag; every row is a
   // drop target. Hovering the top/bottom half drops the item before/after that
@@ -1950,10 +2027,11 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
     if (!dragId) return;
     e.preventDefault();
     if (dragId !== p.id) {
-      const tIdx = ordered.findIndex((x) => x.id === p.id);
-      const beforeId = overPos === 'before' ? p.id : (ordered[tIdx + 1] ? ordered[tIdx + 1].id : null);
+      // Reorder operates on cards (representative rows), so step over to the next card.
+      const tIdx = repsList.findIndex((x) => x.id === p.id);
+      const beforeId = overPos === 'before' ? p.id : (repsList[tIdx + 1] ? repsList[tIdx + 1].id : null);
       if (beforeId !== dragId) {
-        const dragged = ordered.find((x) => x.id === dragId);
+        const dragged = repsList.find((x) => x.id === dragId);
         if (dragged) onMove(dragged, beforeId);
       }
     }
@@ -2000,8 +2078,8 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
           {/* Left: persistent, scrollable item list */}
           <div style={{ width: 340, flexShrink: 0, position: 'sticky', top: 12, maxHeight: 'calc(100vh - 180px)', overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 12, background: '#fff' }}>
-            <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '9px 12px', borderBottom: '1px solid #eef0f3', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, zIndex: 1 }}>{ordered.length} item{ordered.length === 1 ? '' : 's'} · drag to reorder</div>
-            {ordered.map((p) => {
+            <div style={{ position: 'sticky', top: 0, background: '#fff', padding: '9px 12px', borderBottom: '1px solid #eef0f3', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, zIndex: 1 }}>{groups.length} item{groups.length === 1 ? '' : 's'} · drag to reorder</div>
+            {groups.map(({ rep: p, rows: colorRows }) => {
               const stock = stockByWp[p.id];
               const st = stockText(stock);
               const label = p.display_name || stock?.name || p.sku || '(unnamed)';
@@ -2009,6 +2087,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
               const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
               const sel = editId === p.id;
               const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
+              const nColors = colorRows.length;
               return (
                 <div key={p.id} onClick={() => setEditId(p.id)}
                   onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); }}
@@ -2023,7 +2102,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                     {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}</div>
+                    <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
                     <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)} · {st.text}</div>
                   </div>
                   {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
@@ -2034,17 +2113,18 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {(() => {
-              const p = ordered.find((x) => x.id === editId) || null;
+              const p = repsList.find((x) => x.id === editId) || null;
               if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
               const stock = stockByWp[p.id];
+              const groupColors = colorsForRep(p.id);
               return (
                 <div style={{ border: '1px solid #eef0f3', borderRadius: 14, background: '#fff' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 16px', borderBottom: '1px solid #eef0f3', borderRadius: '14px 14px 0 0' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15 }}>{p.display_name || stock?.name || p.sku}</div>
-                    <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, p.display_name || stock?.name || p.sku)}>Remove</button>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>{p.display_name || stock?.name || p.sku}{groupColors.length > 1 ? <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}> · {groupColors.length} colors</span> : null}</div>
+                    <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                   </div>
                 </div>
               );
@@ -2058,11 +2138,12 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
               <th style={th}>Order</th><th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
-              {ordered.map((p, i) => {
+              {groups.map(({ rep: p, rows: colorRows }, i) => {
                 const stock = stockByWp[p.id];
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
                 const label = p.display_name || stock?.name || p.sku || '(unnamed)';
+                const nColors = colorRows.length;
                 const fund = Number(p.fundraise_amount) || 0;
                 // Singles fall back to the store-wide fundraising rule when they have no own amount.
                 const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
@@ -2085,13 +2166,13 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                         title="Drag to reorder"
                         style={{ cursor: 'grab', color: '#94a3b8', fontSize: 15, padding: '0 8px 0 2px', userSelect: 'none', display: 'inline-block' }}
                       >⠿</span>
-                      <button onClick={() => onReorder(p, 'up')} disabled={i === 0} title="Move up" style={arrowBtn(i === 0)}>▲</button>
-                      <button onClick={() => onReorder(p, 'down')} disabled={i === ordered.length - 1} title="Move down" style={arrowBtn(i === ordered.length - 1)}>▼</button>
+                      <button onClick={() => moveRep(i, 'up')} disabled={i === 0} title="Move up" style={arrowBtn(i === 0)}>▲</button>
+                      <button onClick={() => moveRep(i, 'down')} disabled={i === groups.length - 1} title="Move down" style={arrowBtn(i === groups.length - 1)}>▼</button>
                     </td>
                     <td style={td}><RowImage row={p} stockImg={stock?.image_front_url} onUpdateImage={onUpdateImage} /></td>
                     <td style={{ ...td, cursor: 'pointer' }} onClick={() => setEditId(p.id)} title="Click to edit this item">
                       <div style={{ fontWeight: 600, color: '#191919' }}>{label} <span style={{ fontSize: 11, fontWeight: 600, color: '#2563eb' }}>· edit</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, stock?.color, stock?.category].filter(Boolean).join(' · ')}</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, stock?.color, stock?.category].filter(Boolean).join(' · ')}{nColors > 1 ? <span style={{ color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
                       {comps.length > 0 && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
                         {comps.map((c) => <div key={c.id}>• {c.qty}× {c.sku || c.product_id}{c.size_required ? '' : ' (one size)'}{c.takes_number ? ' #' : ''}</div>)}
                       </div>}
@@ -2121,7 +2202,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                     </td>
                     <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-sm btn-secondary" onClick={() => setEditId(editId === p.id ? null : p.id)}>{editId === p.id ? 'Close' : 'Edit'}</button>
-                      <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', marginLeft: 6 }} onClick={() => onRemove(p.id, label)}>Remove</button>
+                      <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', marginLeft: 6 }} onClick={() => onRemoveGroup(colorRows.map((r) => r.id), label)}>Remove</button>
                     </td>
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
@@ -2131,7 +2212,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, costByPid = {}, transfers
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor item={p} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -2528,7 +2609,7 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
   .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
   .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
 
-function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onSaveLogo, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
@@ -2626,12 +2707,13 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
   }, [catalog]);
   const toggleColor = (id) => setPickedColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const addColors = async () => {
-    if (!onAddSingle || !pickedColors.size) return;
+    if (!onAddColors || !pickedColors.size) return;
     setAddingColors(true);
     try {
-      for (const s of colorOptions.filter((c) => pickedColors.has(c.id))) {
-        await onAddSingle({ product: s, price: Number(price) || 0, fundraise: Number(fundraise) || 0, image_url: null, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), num_transfer_sets: [] });
-      }
+      const picks = colorOptions.filter((c) => pickedColors.has(c.id));
+      // Add the picked colors as options ON this same card (sharing the editor's
+      // current price/options/logos), instead of creating separate cards.
+      await onAddColors(item, picks, { price: Number(price) || 0, fundraise: Number(fundraise) || 0, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), decorations });
       setPickedColors(new Set());
     } finally { setAddingColors(false); }
   };
@@ -2768,8 +2850,24 @@ function CatalogItemEditor({ item, defaultName, stockImg, stockBackImg, availabl
           <ImageUpload value={image} fallback={stockImg || item.image_url} onChange={setImage} onBusy={setImgBusy} label="Main image" />
         </ItemSection>
 
-        {onAddSingle && colorOptions.length > 0 && (
-          <ItemSection title="Other colors of this garment" hint="· add them to the store at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
+        {groupColors && groupColors.length > 0 && (
+          <ItemSection title="Colors in this item" hint={`· ${groupColors.length} color${groupColors.length === 1 ? '' : 's'} shown as options on one card`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {groupColors.map((c) => { const cs = stockByWp[c.id]; const cName = cs?.color || c.sku; const cImg = c.image_url || cs?.image_front_url; const isPrimary = c.id === item.id; return (
+                <div key={c.id} style={{ position: 'relative', width: 92, border: '2px solid ' + (isPrimary ? '#191919' : '#e2e8f0'), borderRadius: 10, padding: 5, background: '#fff' }}>
+                  <div style={{ width: '100%', height: 86, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {cImg ? <img src={cImg} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{String(cName || '').slice(0, 12)}</span>}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: '#191919', fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cName}{isPrimary ? ' (main)' : ''}</div>
+                  {onRemoveColor && groupColors.length > 1 && <button type="button" title="Remove this color" onClick={() => onRemoveColor(c.id, cName)} style={{ position: 'absolute', top: -8, right: -8, background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', borderRadius: '50%', width: 20, height: 20, fontSize: 12, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)' }}>×</button>}
+                </div>
+              ); })}
+            </div>
+          </ItemSection>
+        )}
+
+        {onAddColors && colorOptions.length > 0 && (
+          <ItemSection title="Add more colors" hint="· add other colors of this garment to this same card, at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
                 <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku} style={{ position: 'relative', width: 92, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 5, cursor: 'pointer' }}>
