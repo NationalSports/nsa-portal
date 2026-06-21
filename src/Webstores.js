@@ -4532,6 +4532,11 @@ const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
 // returns null, so the UI asks for a web logo instead of stamping the shirt image.
 const artPlaceUrl = (art) => {
   if (!art) return null;
+  if (Array.isArray(art.web_logos) && art.web_logos.length) {
+    const wl = art.web_logos.filter((w) => w && w.url);
+    const def = wl.find((w) => !((w.color_way || '').trim())) || wl[0];
+    if (def) return def.url;
+  }
   if (art.web_logo_url) return art.web_logo_url;
   const cwLogo = (art.color_ways || []).map((c) => c.web_logo_url).find(Boolean);
   if (cwLogo) return cwLogo;
