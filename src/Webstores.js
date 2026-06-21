@@ -239,6 +239,141 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
   </body></html>`);
 }
 
+// ─── CSV export ──────────────────────────────────────────────────────
+// Client-side CSV download. Cells are quote-escaped; a UTF-8 BOM is prepended
+// so Excel opens accented names cleanly.
+function downloadCsv(filename, header, rows) {
+  const cell = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
+const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
+
+// ─── Per-player roll-up ──────────────────────────────────────────────
+// One section per player: exactly what they're getting across the whole store,
+// plus the roster members who haven't ordered yet.
+function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
+  const players = {};
+  lines.forEach((i) => {
+    const o = orderById[i.order_id] || {};
+    const nm = (i.player_name || '').trim();
+    const num = (i.player_number != null ? String(i.player_number) : '').trim();
+    const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
+    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
+    p.units += (i.qty || 1);
+    p.items.push({ name: _itemName(i, stockByPid), sku: i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+  });
+  const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
+  const notOrdered = (roster || []).filter((r) => !r.ordered);
+  const totalUnits = list.reduce((a, p) => a + p.units, 0);
+  const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const block = (p) => {
+    const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    return `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
+      <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  };
+  printHtml(`<!doctype html><html><head><title>Player report — ${esc(store.name)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:760px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:24px 0 8px;border-bottom:2px solid #0b1220;padding-bottom:5px}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:96px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip .n{font-size:22px;font-weight:900}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9}.grid td.c{text-align:center}.grid td.b{font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}
+    .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
+    .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
+  </style></head><body>
+    <h1>Player Report</h1>
+    <div class="meta">${esc(store.name)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    ${list.map(block).join('') || '<div class="meta">No orders yet.</div>'}
+    ${notOrdered.length ? `<h3>Roster — not ordered yet</h3><div class="warn">${notOrdered.map((r) => esc(r.player_name || '') + (r.player_number ? ' #' + esc(String(r.player_number)) : '')).join(' · ')}</div>` : ''}
+  </body></html>`);
+}
+
+// Aggregate store demand vs stock per product+size, split into what we can fill
+// from our own shelves, what we'd buy from the vendor (Adidas), and what nobody
+// has (true backorder). The basis for the stock report + its CSV.
+function aggStock(lines, stockByPid) {
+  const agg = {};
+  lines.forEach((i) => {
+    const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
+    const k = (pid || i.sku || 'x') + '|' + size;
+    const st = pid ? stockByPid[pid] : null;
+    if (!agg[k]) agg[k] = {
+      name: (st && st.name) || i.name || i.sku || pid, sku: i.sku || '', size, need: 0,
+      ours: Number(((st && st.size_stock) || {})[size]) || 0,
+      vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0,
+      tracked: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
+    };
+    agg[k].need += need;
+  });
+  return Object.values(agg).map((r) => {
+    const fillOurs = Math.min(r.need, r.ours);
+    const poVendor = Math.min(Math.max(0, r.need - r.ours), r.vendor);
+    const backorder = r.tracked ? Math.max(0, r.need - r.ours - r.vendor) : 0;
+    return { ...r, fillOurs, poVendor, backorder };
+  });
+}
+
+// ─── Store-close stock / shortage report ─────────────────────────────
+// "What can we fill from stock, what do we need to order from Adidas, and what
+// is nobody able to supply (backorder)." Vendor-split, not the combined view.
+function buildStockReport(store, label, lines, stockByPid) {
+  const rows = aggStock(lines, stockByPid);
+  const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
+  const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
+    .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
+  const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const untracked = rows.filter((r) => !r.tracked);
+  const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendor}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
+  const fillRow = (r) => `<tr><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td></tr>`;
+  printHtml(`<!doctype html><html><head><title>Stock report — ${esc(store.name)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:780px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:24px 0 8px;border-bottom:2px solid #0b1220;padding-bottom:5px}
+    h3 .ct{float:right;color:#94a3b8;font-weight:600}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:110px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip.bad{background:#fef2f2;border-color:#fecaca}.chip.bad .n{color:#b91c1c}
+    .chip .n{font-size:22px;font-weight:900}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+    .grid td.c{text-align:center}.grid td.b{font-weight:800}.grid tr.r td{background:#fef2f2}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
+    .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
+    @media print{.chip,.grid tr.r td,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>
+    <h1>Stock Report</h1>
+    <div class="meta">${esc(store.name)} · ${esc(label)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">
+      ${chip(sum((r) => r.need), 'Units ordered')}
+      ${chip(sum((r) => r.fillOurs), 'From our stock')}
+      ${chip(sum((r) => r.poVendor), 'Order from Adidas', sum((r) => r.poVendor) > 0)}
+      ${chip(sum((r) => r.backorder), 'Backordered', sum((r) => r.backorder) > 0)}
+    </div>
+    ${untracked.length ? `<div class="meta" style="margin-top:8px">${untracked.reduce((a, r) => a + r.need, 0)} made-to-order unit(s) (no stock record) are not counted as shortfalls.</div>` : ''}
+    ${needSrc.length
+      ? `<h3>Need to source <span class="ct">${needSrc.length} line${needSrc.length === 1 ? '' : 's'}</span></h3>
+         <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">PO Adidas</th><th class="c">Backorder</th></tr></thead><tbody>${needSrc.map(srcRow).join('')}</tbody></table>`
+      : '<h3>Need to source</h3><div class="ok">✓ Everything is covered by our own stock.</div>'}
+    <h3>Fillable from our stock <span class="ct">${fillable.length} line${fillable.length === 1 ? '' : 's'}</span></h3>
+    ${fillable.length ? `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th></tr></thead><tbody>${fillable.map(fillRow).join('')}</tbody></table>` : '<div class="meta">None.</div>'}
+  </body></html>`);
+}
+
 // Convert a webstore order to a ShipStation order (ship-to-home label).
 function webstoreToShipStation(order, items, store, imageByPid = {}) {
   const a = order.ship_address || {};
@@ -1076,6 +1211,59 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById);
   }, [sel, detail, gatherBatch, flash]);
 
+  // All valid (non-cancelled, non-pending) orders — the whole-store picture for
+  // the player + stock reports (not just the unbatched ones the FAFO report uses).
+  const gatherAll = useCallback(() => {
+    const valid = (detail?.orders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const ids = new Set(valid.map((o) => o.id));
+    const lines = (detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent);
+    const stockByPid = {};
+    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
+    return { valid, lines, stockByPid, orderById, roster: detail?.roster || [] };
+  }, [detail]);
+
+  // Per-player roll-up (printable): every player and exactly what they ordered.
+  const playerReport = useCallback(() => {
+    if (!sel || !detail) return;
+    const { valid, lines, orderById, roster, stockByPid } = gatherAll();
+    if (!valid.length) { flash('No orders yet'); return; }
+    buildPlayerReport(sel, lines, orderById, roster, stockByPid);
+  }, [sel, detail, gatherAll, flash]);
+
+  // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
+  // vs backorder, split by vendor.
+  const stockReport = useCallback(() => {
+    if (!sel || !detail) return;
+    const { valid, lines, stockByPid } = gatherAll();
+    if (!valid.length) { flash('No orders yet'); return; }
+    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid);
+  }, [sel, detail, gatherAll, flash]);
+
+  // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
+  // 'orders' (every line item with order + payment detail).
+  const exportCsv = useCallback((kind) => {
+    if (!sel || !detail) return;
+    const { lines, orderById, stockByPid } = gatherAll();
+    if (!lines.length) { flash('No orders yet'); return; }
+    const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
+    if (kind === 'players') {
+      const header = ['Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      downloadCsv(`${slug}-players.csv`, header, rows);
+    } else if (kind === 'stock') {
+      const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
+      const rows = aggStock(lines, stockByPid)
+        .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
+        .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
+      downloadCsv(`${slug}-stock.csv`, header, rows);
+    } else {
+      const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
+      downloadCsv(`${slug}-orders.csv`, header, rows);
+    }
+  }, [sel, detail, gatherAll, flash]);
+
   // Batch all not-yet-batched orders into one Sales Order via the app's normal
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
@@ -1215,7 +1403,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -1719,7 +1907,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onUpdateImage, onBatch, onAvailabilityReport, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddMany, onApplyTemplate, onPriceToMargin, onCreateBundle, onRemove, onUpdateImage, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
@@ -1826,7 +2014,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -5157,7 +5345,7 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -5256,6 +5444,24 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
           <button className="btn btn-secondary" disabled={!unbatchedCount} onClick={onAvailabilityReport} title={unbatchedCount ? 'What can we fill, and whose items fall short?' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
             📋 Availability report
           </button>
+        )}
+        {onPlayerReport && (
+          <button className="btn btn-secondary" onClick={onPlayerReport} title="Every player and exactly what they ordered (plus who hasn't ordered)">
+            👥 Player report
+          </button>
+        )}
+        {onStockReport && (
+          <button className="btn btn-secondary" onClick={onStockReport} title="What we can fill from stock, what to order from Adidas, and what's backordered">
+            📦 Stock report
+          </button>
+        )}
+        {onExportCsv && (
+          <select style={sel} value="" onChange={(e) => { const v = e.target.value; if (v) onExportCsv(v); }} title="Download as CSV (Excel)">
+            <option value="">⬇️ Export CSV…</option>
+            <option value="players">Players CSV</option>
+            <option value="stock">Stock CSV</option>
+            <option value="orders">Orders CSV</option>
+          </select>
         )}
         <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
           Create Sales Order ({unbatchedCount})
