@@ -2025,26 +2025,26 @@ export default function AdidasInventory() {
             {facets.brands.length > 1 && (
             <select className="ai-select" value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
               <option value="All">All brands</option>
-              {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             )}
             {brand === NON_BRANDED && subBrandOptions.length > 1 && (
             <select className="ai-select" value={subBrand} onChange={(e) => setSubBrand(e.target.value)} aria-label="Brand name">
               <option value="All">All brands</option>
-              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             )}
             <select className="ai-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Item type">
               <option value="All">All items</option>
-              {facets.categories.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.categories.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <select className="ai-select" value={gender} onChange={(e) => setGender(e.target.value)} aria-label="Gender">
               <option value="All">All genders</option>
-              {facets.genders.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.genders.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <select className="ai-select" value={sport} onChange={(e) => setSport(e.target.value)} aria-label="Sport">
               <option value="All">All sports</option>
-              {facets.sports.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.sports.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <div style={{ position: 'relative' }} ref={colorRef}>
               <button className={'ai-filterbtn' + (colorSel.length ? ' on' : '')} style={{ padding: '8px 13px', borderRadius: 10, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}
