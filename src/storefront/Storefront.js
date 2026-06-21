@@ -63,11 +63,40 @@ const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_pri
 // Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
 // publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
 const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
+// Group color variants of one garment (rows sharing variant_group_id) so the grid
+// shows one card and the product page offers a color picker. Bundles never group.
+const variantKey = (p) => p.variant_group_id || p.webstore_product_id;
+function groupProducts(list) {
+  const byKey = new Map(); const order = [];
+  for (const p of (list || [])) {
+    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : variantKey(p);
+    if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
+    byKey.get(k).push(p);
+  }
+  return order.map((k) => { const rows = byKey.get(k); const rep = rows.find((r) => r.webstore_product_id === k) || rows[0]; return { key: k, rep, rows }; });
+}
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
 const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
+// A size is "available soon" when its vendor restock date is within ~2 weeks, so we
+// surface sizes a shopper can actually get shortly (in stock now or arriving) and
+// hide ones whose next delivery is months out.
+const SIZE_SOON_MS = 14 * 24 * 60 * 60 * 1000;
+const sizeSoon = (p, sz) => { const d = (p.vendor_size_eta || {})[sz]; if (!d) return false; const t = Date.parse(d); return !isNaN(t) && t <= Date.now() + SIZE_SOON_MS; };
+const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
+// Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
+// (common in the Adidas feed) and squeeze the leftover separators/whitespace.
+function cleanDesc(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/\b[A-Z][A-Z0-9 /&+-]*:\s*N\/?A\b\.?/g, ' ')
+    .replace(/\s*·\s*(?=·)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s·.]+|[\s·]+$/g, '')
+    .trim();
+}
 
 function isMissingTable(err) {
   if (!err) return false;
@@ -164,7 +193,11 @@ export default function Storefront() {
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} />}
-        {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'p' && (() => {
+          const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
+        })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
@@ -218,27 +251,27 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 380 }}>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 200 }}>
         {/* Diagonal stripes overlay */}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
         {/* Red chevron row (4 chevrons across the bottom) */}
-        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 18, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
+        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 10, display: 'flex', justifyContent: 'center', gap: 8, opacity: 0.85, pointerEvents: 'none' }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 32, height: 60, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
+            <div key={i} style={{ width: 26, height: 36, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
           ))}
         </div>
-        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,72px) 20px clamp(72px,7vw,100px)' }}>
-          <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 2, textTransform: 'uppercase', padding: '8px 20px', marginBottom: 22, transform: 'skewX(-5deg)' }}>
+        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,36px) 20px clamp(36px,4vw,52px)' }}>
+          <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 2, textTransform: 'uppercase', padding: '7px 18px', marginBottom: 12, transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>Official Team Store</span>
           </div>
-          {closes && <div style={{ display: 'inline-block', marginLeft: 12, marginBottom: 22, background: closes.urgent ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.10)', color: '#fff', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-5deg)' }}>
+          {closes && <div style={{ display: 'inline-block', marginLeft: 12, marginBottom: 12, background: closes.urgent ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.10)', color: '#fff', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '7px 14px', transform: 'skewX(-5deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{closes.text}</span>
           </div>}
-          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(40px,7vw,76px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1.02, maxWidth: 880, fontWeight: 800 }}>
+          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(28px,4.4vw,50px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1.03, maxWidth: 880, fontWeight: 800 }}>
             {head}{rest && <> <em style={{ fontStyle: 'italic', color: accentLight, fontWeight: 800 }}>{rest}</em></>}
           </h1>
-          {store.hero_blurb && <p style={{ margin: '20px 0 0', maxWidth: 580, fontSize: 18, lineHeight: 1.55, color: 'rgba(255,255,255,0.88)', fontWeight: 500 }}>{store.hero_blurb}</p>}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 32 }}>
+          {store.hero_blurb && <p style={{ margin: '12px 0 0', maxWidth: 560, fontSize: 16, lineHeight: 1.5, color: 'rgba(255,255,255,0.88)', fontWeight: 500 }}>{store.hero_blurb}</p>}
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 18 }}>
             <SkewBtn theme={theme} variant="red" onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}>Shop the Collection</SkewBtn>
             <SkewBtn theme={theme} variant="white" onClick={() => navTo('/shop/' + store.slug + '/cart')}>View cart</SkewBtn>
           </div>
@@ -247,13 +280,31 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
 
       <TrustStrip store={store} theme={theme} />
 
-      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(48px,7vw,80px) 20px clamp(64px,8vw,96px)' }}>
-        <SectionTitle theme={theme} eyebrow="Gear up">The <em>Collection</em></SectionTitle>
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(20px,3vw,34px) 20px clamp(56px,7vw,88px)' }}>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
-          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 }}>
-              {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} bundleItems={bundleItems} compInfo={compInfo} />)}
-            </div>}
+          : (() => {
+              const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 };
+              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />;
+              const grouped = groupProducts(products);
+              // Split into the store's categories (set in the builder), ordered by the
+              // builder's sort order; uncategorized items fall into a trailing section.
+              const byCat = new Map();
+              for (const g of grouped) { const c = (g.rep.store_category || '').trim(); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
+              const sections = [...byCat.entries()].map(([cat, gs]) => ({ cat, gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
+              sections.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
+              const useCats = sections.length > 1 || (sections.length === 1 && sections[0].cat);
+              if (!useCats) return <div style={grid}>{grouped.map(cardOf)}</div>;
+              return sections.map((sec) => (
+                <div key={sec.cat || '__more'} style={{ marginBottom: 44 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, margin: '0 0 18px', borderBottom: `2px solid ${shade(theme.accent, 60)}`, paddingBottom: 8 }}>
+                    <h3 style={{ fontFamily: DISPLAY, fontSize: 'clamp(20px,2.6vw,28px)', textTransform: 'uppercase', letterSpacing: 0.3, color: '#192853', margin: 0, fontWeight: 800 }}>{sec.cat || 'More gear'}</h3>
+                    <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700, whiteSpace: 'nowrap' }}>{sec.gs.length} item{sec.gs.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={grid}>{sec.gs.map(cardOf)}</div>
+                </div>
+              ));
+            })()}
       </div>
     </>
   );
@@ -288,7 +339,7 @@ function TrustStrip({ store, theme }) {
 }
 
 function SectionTitle({ children, theme, eyebrow }) {
-  return <div style={{ textAlign: 'center', marginBottom: 36 }}>
+  return <div style={{ textAlign: 'center', marginBottom: 24 }}>
     {eyebrow && <div style={{ fontFamily: DISPLAY, color: '#5A6075', fontWeight: 700, fontSize: 13, letterSpacing: 3, textTransform: 'uppercase', marginBottom: 8 }}>{eyebrow}</div>}
     <h2 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(30px,4vw,44px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1, color: '#192853', fontWeight: 800 }}>{children}</h2>
   </div>;
@@ -343,8 +394,9 @@ function BundleCollage({ comps, theme }) {
   return grid('1fr 1fr', '1fr 1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
 }
 
-function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
+function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {} }) {
   const isBundle = p.kind === 'bundle';
+  const nColors = isBundle ? 0 : (colorRows ? colorRows.length : 1);
   // For a package, preview the actual pieces instead of one image: pull each
   // component's product photo (already loaded in compInfo) and montage them.
   const comps = isBundle
@@ -356,28 +408,34 @@ function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   // Notched-corner card: angular clip-path (8px notches) borrowed from the
-  // sport-card pattern on the marketing site. Photo fills the card with a
-  // dark gradient overlay holding the title and price.
+  // sport-card pattern on the marketing site. The garment sits in a 4:5 image
+  // box (identical geometry to the item-builder art editor) so any applied logo
+  // lands in exactly the spot the rep positioned it, with the name + price in a
+  // clean white footer below.
   const notch = 'polygon(0 8px, 8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%)';
+  const chip = { position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)', zIndex: 2 };
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'block', aspectRatio: '1 / 1.18', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
-      <div style={{ position: 'absolute', inset: 0, background: '#F7F8FB' }}>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
+      {/* Garment image — SAME 4:5 cover box as the art editor's LogoPlacer, so the
+          DecoOverlay (positioned as % of this box) matches the art page exactly. */}
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#F7F8FB', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
             ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <Placeholder theme={theme} label={p.name || store.name} />}
         {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        {/* Count chip for packages — reinforces "this is multiple items" */}
+        {isBundle && comps.length > 1 && <span style={chip}>{comps.length} pieces</span>}
+        {nColors > 1 && <span style={chip}>{nColors} colors</span>}
+        <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)', zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
       </div>
-      {/* Count chip for packages — reinforces "this is multiple items" */}
-      {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
-      <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)' }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
-      {/* Bottom gradient overlay holding the name + price */}
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '46px 16px 18px', color: '#fff', background: 'linear-gradient(0deg, rgba(15,26,56,0.95) 0%, rgba(15,26,56,0.78) 55%, rgba(15,26,56,0) 100%)' }}>
-        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 15, letterSpacing: 0.4, lineHeight: 1.15, minHeight: 36 }}>{p.name}</div>
+      {/* Clean footer — name + price, dark on white (no gradient) */}
+      <div style={{ padding: '12px 14px 15px', borderTop: '1px solid #EEF0F4' }}>
+        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 14, letterSpacing: 0.3, lineHeight: 1.18, color: theme.primary, minHeight: 33, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 6 }}>
-          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800 }}>{money(priceOf(p))}</span>
-          {showFund && <span style={{ fontSize: 11, color: shade(theme.accent, 32), fontWeight: 700 }}>♥ {money(p.fundraise_amount)} to team</span>}
+          <span style={{ fontFamily: DISPLAY, fontSize: 21, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
+          {showFund && <span style={{ fontSize: 11, color: shade(theme.accent, -10), fontWeight: 700 }}>♥ {money(p.fundraise_amount)} to team</span>}
         </div>
       </div>
       {/* Accent bar reveal on hover */}
@@ -395,17 +453,31 @@ function Placeholder({ theme, label }) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
+function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd }) {
+  const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
-  if (!p) return <Splash>Product not found.</Splash>;
+  // Reset the picked color / size when navigating to a different product.
+  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  if (!rep) return <Splash>Product not found.</Splash>;
+  // The active color variant drives the image, sizes, stock, price and cart line —
+  // each color is its own row, so everything downstream stays per-SKU and correct.
+  const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
   // Honor the store's per-product size selection (sizes_offered); null = all.
   const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered : null;
-  const sizesArr = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
+  const _scale = (Array.isArray(p.available_sizes) ? p.available_sizes : []).filter((s) => !_offered || _offered.includes(s));
+  // Only surface sizes a shopper can actually get: in stock now (warehouse or
+  // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g.
+  // 3XL–6XL) for some styles but carries zero with the next delivery months out, so
+  // those would otherwise render as dead, struck-through buttons. If nothing
+  // qualifies yet but the item is on the way, fall back to the full scale so
+  // backorderable items stay orderable.
+  const _avail = _scale.filter((s) => sizeSellable(p, s));
+  const sizesArr = _avail.length ? _avail : (isIncoming(p) ? _scale : _avail);
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
@@ -432,6 +504,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   // Only surface the back when it actually carries artwork (per the store builder's
   // "show back only if it's got artwork" rule). The back image falls back to the front
   // so the back logos always have a garment to sit on.
+  const descText = cleanDesc(p.description);
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
   const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
@@ -450,9 +523,23 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
         </div>
         <div style={{ paddingTop: 4 }}>
           <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,4vw,42px)', margin: '0 0 8px', letterSpacing: 0.2, lineHeight: 0.98, textTransform: 'uppercase' }}>{p.name}</h1>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category, p.sku].filter(Boolean).join(' · ')}</div>
           <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: '#64748b', fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
+
+          {colorRows.length > 1 && <div style={{ margin: '4px 0 20px' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Color{p.color ? ` · ${p.color}` : ''}</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {colorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
+                <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg('front'); }}
+                  style={{ width: 56, border: '2px solid ' + (on ? theme.accent : '#e2e8f0'), borderRadius: 10, padding: 3, background: '#fff', cursor: 'pointer' }}>
+                  <div style={{ width: '100%', height: 52, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {c.image_front_url ? <img src={c.image_front_url} alt={c.color || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', textAlign: 'center', padding: 2 }}>{(c.color || '').slice(0, 8)}</span>}
+                  </div>
+                </button>
+              ); })}
+            </div>
+          </div>}
 
           <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
 
@@ -460,8 +547,8 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {sizes.map((sz) => {
-                const q = effSizeQty(p, sz); const sel = size === sz; const out = q <= 0 && !incoming; const up = sizeUp(p, sz);
-                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+                const q = effSizeQty(p, sz); const soon = sizeSoon(p, sz); const etaD = (p.vendor_size_eta || {})[sz]; const sel = size === sz; const out = q <= 0 && !soon && !incoming; const up = sizeUp(p, sz);
+                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
                   style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
               })}
             </div>
@@ -496,6 +583,12 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
           </button>
         </div>
       </div>
+      {descText && (
+        <div style={{ marginTop: 40, maxWidth: 760 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Details</div>
+          <p style={{ fontSize: 15, lineHeight: 1.7, color: '#3A4150', whiteSpace: 'pre-line', margin: 0 }}>{descText}</p>
+        </div>
+      )}
     </div>
   );
 }
