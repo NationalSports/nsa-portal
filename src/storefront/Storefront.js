@@ -392,33 +392,34 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   // Notched-corner card: angular clip-path (8px notches) borrowed from the
-  // sport-card pattern on the marketing site. Photo fills the card with a
-  // dark gradient overlay holding the title and price.
+  // sport-card pattern on the marketing site. The garment sits in a 4:5 image
+  // box (identical geometry to the item-builder art editor) so any applied logo
+  // lands in exactly the spot the rep positioned it, with the name + price in a
+  // clean white footer below.
   const notch = 'polygon(0 8px, 8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%)';
+  const chip = { position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)', zIndex: 2 };
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'block', aspectRatio: '1 / 1.18', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
-      <div style={{ position: 'absolute', inset: 0, background: '#F7F8FB' }}>
-        {/* Inset the garment + its art a touch so items don't fill the card edge-to-edge,
-            and show the whole garment (contain). Logo overlay shares this box so it stays aligned. */}
-        <div style={{ position: 'absolute', inset: 0, padding: hasCollage ? 0 : '6% 9% 2%' }}>
-          {hasCollage
-            ? <BundleCollage comps={comps} theme={theme} />
-            : p.image_front_url
-              ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-              : <Placeholder theme={theme} label={p.name || store.name} />}
-          {!isBundle && <DecoOverlay decorations={p.decorations} />}
-        </div>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
+      {/* Garment image — SAME 4:5 cover box as the art editor's LogoPlacer, so the
+          DecoOverlay (positioned as % of this box) matches the art page exactly. */}
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#F7F8FB', overflow: 'hidden' }}>
+        {hasCollage
+          ? <BundleCollage comps={comps} theme={theme} />
+          : p.image_front_url
+            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            : <Placeholder theme={theme} label={p.name || store.name} />}
+        {!isBundle && <DecoOverlay decorations={p.decorations} />}
+        {/* Count chip for packages — reinforces "this is multiple items" */}
+        {isBundle && comps.length > 1 && <span style={chip}>{comps.length} pieces</span>}
+        {nColors > 1 && <span style={chip}>{nColors} colors</span>}
+        <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)', zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
       </div>
-      {/* Count chip for packages — reinforces "this is multiple items" */}
-      {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
-      {nColors > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{nColors} colors</span>}
-      <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)' }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
-      {/* Bottom gradient overlay holding the name + price */}
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '46px 16px 18px', color: '#fff', background: 'linear-gradient(0deg, rgba(15,26,56,0.95) 0%, rgba(15,26,56,0.78) 55%, rgba(15,26,56,0) 100%)' }}>
-        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 15, letterSpacing: 0.4, lineHeight: 1.15, minHeight: 36 }}>{p.name}</div>
+      {/* Clean footer — name + price, dark on white (no gradient) */}
+      <div style={{ padding: '12px 14px 15px', borderTop: '1px solid #EEF0F4' }}>
+        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 14, letterSpacing: 0.3, lineHeight: 1.18, color: theme.primary, minHeight: 33, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 6 }}>
-          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800 }}>{money(priceOf(p))}</span>
-          {showFund && <span style={{ fontSize: 11, color: shade(theme.accent, 32), fontWeight: 700 }}>♥ {money(p.fundraise_amount)} to team</span>}
+          <span style={{ fontFamily: DISPLAY, fontSize: 21, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
+          {showFund && <span style={{ fontSize: 11, color: shade(theme.accent, -10), fontWeight: 700 }}>♥ {money(p.fundraise_amount)} to team</span>}
         </div>
       </div>
       {/* Accent bar reveal on hover */}
