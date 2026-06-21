@@ -1452,6 +1452,7 @@ const BLANK = {
   so_creation: 'manual',
   fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
   size_upcharge_enabled: true,
+  public_listed: true,
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
@@ -1650,6 +1651,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         </select></Row>
         <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
         <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
+        <Toggle label="List on the public Team Stores page" checked={f.public_listed !== false} onChange={(v) => set('public_listed', v)} />
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>When on, this store shows on nationalsportsapparel.com/team-stores once it's open. Turn off to keep it unlisted (shareable by link only).</div>
       </Section>
 
       </div>
