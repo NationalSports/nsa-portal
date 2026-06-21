@@ -1860,8 +1860,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         </select></Row>
         <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
         <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
-        <Toggle label="List on the public Team Stores page" checked={f.public_listed !== false} onChange={(v) => set('public_listed', v)} />
-        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>When on, this store shows on nationalsportsapparel.com/team-stores once it's open. Turn off to keep it unlisted (shareable by link only).</div>
+        <Toggle label="Findable on the public Team Stores search" checked={f.public_listed !== false} onChange={(v) => set('public_listed', v)} />
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>When on, this open store can be found by name at nationalsportsapparel.com/team-stores. Turn off to keep it unlisted (shareable by direct link only).</div>
       </Section>
 
       </div>
