@@ -319,7 +319,11 @@ async function fetchAllPages(buildQuery) {
   }
 }
 
-function buildStyles(prods, inv, inHouseRows) {
+// Columns LiveLook needs for a product row — shared by the catalog load and the
+// on-demand search effect. No cost columns: this renders on a public storefront.
+const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
+
+function buildStyles(prods, inv, inHouseRows, opts = {}) {
   const bySku = {};
   let synced = null;
   for (const r of inv) {
@@ -338,6 +342,14 @@ function buildStyles(prods, inv, inHouseRows) {
     // Momentec "Custom" programs (e.g. "Custom Series …" caps) are made-to-order,
     // not blank stock — keep them out of the live-look catalog.
     if (p.inventory_source === 'momentec' && /custom/i.test(p.name || '')) continue;
+    // Underwear never belongs in the team catalog (all brands).
+    if (/underwear/i.test(p.category || '')) continue;
+    // Boxercraft: keep ONLY the flannel pajama / lounge pants (and flannel
+    // joggers). Drop tees, hoods, crew, shorts, flannel shirts, boxers, etc.
+    if (p.brand === 'Boxercraft') {
+      const nm = p.name || '';
+      if (!(/flannel|lounge|pajama/i.test(nm) && /pant|jogger/i.test(nm))) continue;
+    }
     const inHouse = inHouseByPid[p.id] || null;
     const sizes = bySku[p.sku] || [];
     if (p.inventory_source === 'agron' && !sizes.length) continue;
@@ -395,27 +407,14 @@ function buildStyles(prods, inv, inHouseRows) {
     if (p.is_featured) st.isFeatured = true;
     st.colorways.push(cw);
   }
-  // Momentec's catalog runs to 1,600+ in-stock styles — far too many for the
-  // grid. Curate down to MAX_MOMENTEC: only styles with a product image are
-  // eligible (imageless Momentec items are dropped entirely), featured styles
-  // are always kept, then the rest fill by in-stock units. Drop any Momentec
-  // style with no image and not featured outright.
-  const MAX_MOMENTEC = 100;
-  const isMomentec = (st) => st.brand === 'Momentec';
-  const hasImg = (st) => st.colorways.some((c) => c.img);
-  for (const [k, st] of [...styleMap]) {
-    if (isMomentec(st) && !st.isFeatured && !hasImg(st)) styleMap.delete(k);
-  }
-  const momentecKeys = [...styleMap.keys()].filter((k) => isMomentec(styleMap.get(k)));
-  if (momentecKeys.length > MAX_MOMENTEC) {
-    const unitTotal = (st) => st.colorways.reduce((s, c) => s + c.units, 0);
-    // Featured first (always kept), then by in-stock units.
-    momentecKeys.sort((a, b) => {
-      const sa = styleMap.get(a), sb = styleMap.get(b);
-      return (sb.isFeatured - sa.isFeatured) || (unitTotal(sb) - unitTotal(sa));
-    });
-    for (const k of momentecKeys.slice(MAX_MOMENTEC)) {
-      if (!styleMap.get(k).isFeatured) styleMap.delete(k);
+  // Momentec's catalog is 30K+ styles — far too many to browse. Show ONLY
+  // featured (hand-picked in Settings → Featured Styles) Momentec styles in the
+  // grid; every other Momentec item is reachable via search (opts.keepAllMomentec),
+  // which queries the full catalog on demand. The Phase 1/2 queries already load
+  // only featured Momentec, so this is a defensive guard for any slipping through.
+  if (!opts.keepAllMomentec) {
+    for (const [k, st] of [...styleMap]) {
+      if (st.brand === 'Momentec' && !st.isFeatured) styleMap.delete(k);
     }
   }
   const grouped = [...styleMap.values()];
@@ -1291,6 +1290,9 @@ export default function AdidasInventory() {
   const [styles, setStyles] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
   const [search, setSearch] = useState('');
+  // Styles pulled in by the on-demand DB search — items NOT in the browse set
+  // (archived/X'd, non-featured Momentec, curated SanMar/S&S not yet loaded).
+  const [searchExtra, setSearchExtra] = useState([]);
   const [brand, setBrand] = useState('All');
   const [subBrand, setSubBrand] = useState('All');
   const [category, setCategory] = useState('All');
@@ -1594,7 +1596,7 @@ export default function AdidasInventory() {
   useEffect(() => {
     let alive = true;
     setLoadingAll(true);
-    const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
+    // PROD_SELECT is module-scoped (shared with the search effect below).
     // Unrestricted accounts get the named-brand catalog PLUS every SanMar-sourced
     // item (the "Non Branded" lines) regardless of their exact brand string;
     // restricted coaches stay locked to just their allowed named brands.
@@ -1633,7 +1635,6 @@ export default function AdidasInventory() {
                 mkBrandQ('Under Armour').limit(80),
                 mkBrandQ('Nike').limit(50),
                 mkBrandQ('Richardson').limit(50),
-                mkBrandQ('Momentec').limit(40),
                 mkBrandQ('Gildan').limit(30),
                 mkBrandQ('Boxercraft').limit(30),
               ]
@@ -1675,7 +1676,12 @@ export default function AdidasInventory() {
         // parallel waves — avoids a slow offset-pagination scan of the full
         // 136K-row inventory_unified view.
         try {
-          const allProds = await fetchAllPages(() => baseQ().order('name'));
+          // Skip non-featured Momentec in the full load — it's 30K+ rows and
+          // only featured Momentec shows in the grid (the rest is search-only).
+          // (brand != Momentec) OR (is_featured = true) keeps everything else
+          // plus the hand-picked Momentec styles.
+          const allProds = await fetchAllPages(
+            () => baseQ().or('brand.neq.Momentec,is_featured.eq.true').order('name'));
           if (!alive) return;
 
           const allSkus = [...new Set(allProds.map((p) => p.sku))];
@@ -1732,6 +1738,52 @@ export default function AdidasInventory() {
     return () => { alive = false; };
   }, [effectiveBrands]);
 
+  // On-demand search: when the user types, query the DB directly so items that
+  // aren't in the browse set still surface — archived (X'd) items, non-featured
+  // Momentec, and any curated SanMar/S&S not yet loaded. Results merge into
+  // `visible` below; the in-stock filter still applies. SKU-first (the stated
+  // "I have a SKU" case); multi-word over-fetches by token, then compileSearch
+  // narrows with AND semantics.
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) { setSearchExtra([]); return; }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const toks = q.replace(/[%,()]/g, ' ').split(/\s+/).filter((t) => t.length >= 2).slice(0, 4);
+        if (!toks.length) { setSearchExtra([]); return; }
+        const orParts = [];
+        for (const t of toks) orParts.push(`name.ilike.%${t}%`, `sku.ilike.%${t}%`, `color.ilike.%${t}%`);
+        const unrestricted = effectiveBrands === CATALOG_BRANDS;
+        let pq = supabase.from('products').select(PROD_SELECT)
+          .eq('is_active', true)             // NOT is_archived: X'd items stay searchable
+          .or(orParts.join(','))
+          .limit(200);
+        if (!unrestricted) pq = pq.in('brand', effectiveBrands);
+        const { data: prods, error } = await pq;
+        if (error) throw error;
+        if (!alive) return;
+        if (!prods || !prods.length) { setSearchExtra([]); return; }
+        const skus = [...new Set(prods.map((p) => p.sku))];
+        const ids  = [...new Set(prods.map((p) => p.id))];
+        const [invRes, ihRes] = await Promise.all([
+          supabase.from('inventory_unified')
+            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
+            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000),
+          supabase.from('product_inventory')
+            .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000),
+        ]);
+        if (!alive) return;
+        // keepAllMomentec: don't drop non-featured Momentec from search results.
+        const { grouped } = buildStyles(prods, invRes.data || [], ihRes.data || [], { keepAllMomentec: true });
+        setSearchExtra(grouped);
+      } catch (e) {
+        if (alive) { console.warn('[livelook] search failed:', (e && e.message) || e); setSearchExtra([]); }
+      }
+    }, 350);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [search, effectiveBrands]);
+
   // Colorway-level filters: a style shows if ANY colorway passes all of them.
   // Team colors: a colorway matches when it features ANY selected color —
   // so picking Maroon + Gold surfaces Maroon/White, Gold/Maroon, plain Maroon…
@@ -1752,8 +1804,16 @@ export default function AdidasInventory() {
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     const matchQ = q ? compileSearch(q) : null;
+    // When searching, fold in DB-search results (archived / non-featured Momentec /
+    // not-yet-loaded curated items) that aren't already in the loaded browse set.
+    let source = styles;
+    if (q && searchExtra.length) {
+      const m = new Map(styles.map((s) => [s.key, s]));
+      for (const s of searchExtra) if (!m.has(s.key)) m.set(s.key, s);
+      source = [...m.values()];
+    }
     const out = [];
-    for (const st of styles) {
+    for (const st of source) {
       if (brand !== 'All' && brandGroup(st.brand) !== brand) continue;
       if (brand === NON_BRANDED && subBrand !== 'All' && st.brand !== subBrand) continue;
       if (category !== 'All' && st.category !== category) continue;
@@ -1762,6 +1822,9 @@ export default function AdidasInventory() {
       if (matchQ && !matchQ(st)) continue;
       const matchCws = st.colorways.filter(cwMatcher);
       if (!matchCws.length) continue;
+      // Auto-hide imageless styles from the browse grid (no "image coming soon"
+      // cards). Still findable via search, where q is set.
+      if (!q && !matchCws.some((c) => c.img)) continue;
       out.push({ st, matchCws });
     }
     // With team colors picked, float styles whose colorways hit more of them;
@@ -1807,14 +1870,15 @@ export default function AdidasInventory() {
       }
     }
     return mixed;
-  }, [styles, search, brand, subBrand, category, gender, sport, cwMatcher, colorSel]);
+  }, [styles, searchExtra, search, brand, subBrand, category, gender, sport, cwMatcher, colorSel]);
 
   // Facet options (with counts under everything-but-this-facet filtering kept
   // simple: counts reflect the full availability mode, not cross-facets)
   const facets = useMemo(() => {
     const brands = {}, cats = {}, sports = {}, genders = {}, colors = {};
     for (const st of styles) {
-      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      // Match the grid: count only styles with an available, imaged colorway.
+      const anyAvail = st.colorways.some((c) => (c.units > 0 || (includeIncoming && c.hasIncoming)) && c.img);
       if (!anyAvail) continue;
       if (st.brand) brands[brandGroup(st.brand)] = (brands[brandGroup(st.brand)] || 0) + 1;
       cats[st.category] = (cats[st.category] || 0) + 1;
@@ -1839,7 +1903,7 @@ export default function AdidasInventory() {
     const counts = {};
     for (const st of styles) {
       if (brandGroup(st.brand) !== NON_BRANDED) continue;
-      const anyAvail = st.colorways.some((c) => c.units > 0 || (includeIncoming && c.hasIncoming));
+      const anyAvail = st.colorways.some((c) => (c.units > 0 || (includeIncoming && c.hasIncoming)) && c.img);
       if (!anyAvail) continue;
       counts[st.brand] = (counts[st.brand] || 0) + 1;
     }
@@ -1973,26 +2037,26 @@ export default function AdidasInventory() {
             {facets.brands.length > 1 && (
             <select className="ai-select" value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
               <option value="All">All brands</option>
-              {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.brands.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             )}
             {brand === NON_BRANDED && subBrandOptions.length > 1 && (
             <select className="ai-select" value={subBrand} onChange={(e) => setSubBrand(e.target.value)} aria-label="Brand name">
               <option value="All">All brands</option>
-              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {subBrandOptions.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             )}
             <select className="ai-select" value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Item type">
               <option value="All">All items</option>
-              {facets.categories.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.categories.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <select className="ai-select" value={gender} onChange={(e) => setGender(e.target.value)} aria-label="Gender">
               <option value="All">All genders</option>
-              {facets.genders.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.genders.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <select className="ai-select" value={sport} onChange={(e) => setSport(e.target.value)} aria-label="Sport">
               <option value="All">All sports</option>
-              {facets.sports.map(({ v, n }) => <option key={v} value={v}>{v} ({n})</option>)}
+              {facets.sports.map(({ v, n }) => <option key={v} value={v}>{v}{loadingAll ? '' : ` (${n})`}</option>)}
             </select>
             <div style={{ position: 'relative' }} ref={colorRef}>
               <button className={'ai-filterbtn' + (colorSel.length ? ' on' : '')} style={{ padding: '8px 13px', borderRadius: 10, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}
