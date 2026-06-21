@@ -13,7 +13,7 @@ SanMar / S&S: the browser never sees the API key.
 | Client wrappers (`champroApiCall`, `champroGetProductInfo`, `champroGetInventory`) | `src/vendorApis.js` |
 | Shared stock parser (`_cp`) + source mapping (`'cp'`) | `src/vendorInventory.js` |
 | Order Editor live-stock badges (`isChamproItem`, `CP` refresh chip) | `src/OrderEditor.js` |
-| Catalog sizing sync (ProductInfo → `available_sizes`) | `netlify/functions/champro-catalog-sync-background.js` + `-cron.js` |
+| Catalog sizing sync (parses sizes from product names) | `netlify/functions/champro-catalog-sync-background.js` + `-cron.js` |
 
 **How a stock check works.** Our catalog SKU (e.g. `BS25Y`, vendor `ns_49`) is Champro's
 *ProductMaster*. `ProductInfo` expands it into the size/color-specific SKUs (e.g.
@@ -40,37 +40,37 @@ explicit.
    allowlisted; there is no separate sandbox for them (the `OrderSandBox` host is for order
    placement only).
 
-## SKU → ProductMaster + sizing (the real work)
+## Our catalog SKUs ≠ Champro's API SKUs (important)
 
-Live testing (with the key + IP working) showed two shapes of Champro product:
+Live testing surfaced the core constraint: **Champro's `ProductInfo` does not recognize our
+catalog SKUs.** Even apparel masters like `BS25A` return `ProductSKUs: null` (not just hard
+goods like `CBB703CS` / `BB7`). Our SKUs came from the PDF price list and are not Champro's
+API `ProductMaster` codes. This has two consequences:
 
-- **Apparel / configurable goods** — `ProductInfo` expands the master (e.g. `BS25Y`) into
-  size/color SKUs. `_cp` queries those and buckets by `Size`. Works.
-- **Hard goods / single-size stock** (balls, bats, bags, boards, belts…) — `ProductInfo`
-  returns `ProductSKUs: null` (e.g. `CBB703CS`, `BB7`). `_cp` now falls back to querying
-  `Inventory` with the catalog SKU directly and buckets it as **OSFA**.
+- **Sizing can't come from the API** — but the size range is right there in each product
+  *name* (`A: S-2XL`, `Y: S-XL`, `Sizes: S-3XL`), so we parse that instead.
+- **Live inventory is limited** — `_cp` still tries `ProductInfo` then a direct `Inventory`
+  call on the catalog SKU. Where Champro's `Inventory` recognizes the SKU you get stock;
+  where it doesn't, the Order Editor now shows **⚠ CP** with Champro's reason (e.g.
+  "SKU does not Exist") instead of a blank badge. Full live inventory would need a
+  catalog-SKU → Champro-SKU mapping (open item).
 
-**Sizing is the blocker for hard goods.** The catalog import left every Champro item's
-`available_sizes` empty, and the app defaults empty → apparel `S–2XL` (`OrderEditor.js`).
-~878 of 1,368 active Champro items (64%) are hard goods that should be single-size, so a
-basketball showed `S/M/L/XL/2XL` — and the OSFA stock from `Inventory` couldn't display
-against apparel columns.
+## Sizing — fixed via product-name parsing (done)
 
-**Fixed by the catalog sizing sync.** `champro-catalog-sync-background.js` reads each
-Champro product's real sizes from `ProductInfo` (apparel → the actual size range; `null`
-SKUs → OSFA) and writes `available_sizes`. It's idempotent and, by default, only touches
-rows whose sizes are still empty — so the daily cron is cheap after the first backfill and
-naturally resumes if a run hits the 15-min limit. Reprocess everything with `?all=1`.
+The import left every Champro `available_sizes` empty, and the app defaults empty →
+apparel `S–2XL` (`OrderEditor.js`), so hard goods (≈64% of the catalog) wrongly showed
+`S/M/L/XL/2XL`. `champro-catalog-sync-background.js` parses the size range from the product
+name (no API): apparel → its real range, names with no range (balls/bats/bags/boards) →
+OSFA. It's idempotent, only touches empty-sized rows by default (cheap daily cron that
+self-heals new imports), and leaves the 3 curated pre-existing SKUs (FV, HC7, WBCCV) alone.
+Reprocess everything with `?all=1`.
 
-Run the **first backfill** once the deploy with these functions is live (needs
-`CHAMPRO_API_KEY` + the allowlisted egress, which the proxy already uses):
+The initial backfill has already been applied to the live catalog (465 apparel rows got
+real ranges, 903 hard goods → OSFA). To re-run after a future import:
 
 ```
 curl -X POST https://<site>/.netlify/functions/champro-catalog-sync-background
 ```
-
-After it completes, hard goods become OSFA (single column) and their `Inventory` stock
-shows; apparel items get their true size range instead of the `S–2XL` default.
 
 ## Not yet wired (deferred)
 

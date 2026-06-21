@@ -23,14 +23,13 @@
 //   • a body field `APICustomerKey` for POST requests
 // so it is never shipped to the browser.
 
-const { verifyUserOrInternal } = require('./_shared');
+const { verifyUser } = require('./_shared');
 
 const BASE = 'https://api.champrosports.com';
 
 exports.handler = async (event) => {
-  // Staff-only (a signed-in team member) OR a trusted internal job presenting the shared
-  // secret — the latter lets champro-catalog-sync-background reuse this proxy server-side.
-  const v = await verifyUserOrInternal(event);
+  // Staff-only: this proxy injects the company Champro API key.
+  const v = await verifyUser(event);
   if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
 
   const apiKey = process.env.CHAMPRO_API_KEY;
