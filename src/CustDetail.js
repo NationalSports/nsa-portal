@@ -1020,6 +1020,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // persist once on blur. Discrete actions (add/remove/quick-pick) call persistColorWays directly.
     const setCwsLocal=(newCws)=>setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     const cws=art.color_ways||[];
+    // Per-color-way web logo — a clean cutout assigned to one CW (e.g. a white logo for
+    // dark garments, a dark one for light). Stored on color_ways[ci].web_logo_url so it
+    // carries to stores, orders and the library via persistColorWays; the webstore builder
+    // reads it per garment color.
+    const setCwWebLogoFile=async(ci,file)=>{
+      if(!file)return;
+      const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
+      if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
+      nf&&nf('Uploading '+file.name+'...');
+      let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
+      persistColorWays((art.color_ways||[]).map((c,x)=>x===ci?{...c,web_logo_url:url}:c));
+      nf&&nf('Web logo added to CW '+(ci+1));
+    };
+    const pickCwWebLogo=(ci)=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)setCwWebLogoFile(ci,f)};inp.click()};
+    const removeCwWebLogo=(ci)=>persistColorWays((art.color_ways||[]).map((c,x)=>x===ci?{...c,web_logo_url:''}:c));
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -1055,6 +1070,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <div style={{marginTop:6}}>{art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
                   :<PantoneQuickPicks colors={mergeColors(customer,allCustomers,'pantone_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>}</div>
                   <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',padding:'4px 0 0',fontWeight:600}}>+ Add color</button>
+                  {/* Per-CW web logo — the clean cutout used on webstore garments for this color way */}
+                  <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5}}>
+                      <span style={{fontSize:10,fontWeight:700,color:'#166534',textTransform:'uppercase',letterSpacing:0.3}}>Web logo</span>
+                      {cw.web_logo_url&&<button onClick={()=>removeCwWebLogo(ci)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,fontWeight:700,padding:0}}>Remove</button>}
+                    </div>
+                    {cw.web_logo_url
+                      ?<div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <div style={{width:44,height:44,borderRadius:6,background:'#fff',border:'1px solid #bbf7d0',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}><img src={cw.web_logo_url} alt="" style={{maxWidth:'88%',maxHeight:'88%',objectFit:'contain'}}/></div>
+                        <button onClick={()=>pickCwWebLogo(ci)} style={{fontSize:10,fontWeight:700,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'4px 8px',cursor:'pointer'}}>Replace</button>
+                      </div>
+                      :<div onClick={()=>pickCwWebLogo(ci)} onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7'}} onDragLeave={e=>{e.currentTarget.style.background='#f0fdf4'}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#f0fdf4';const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)setCwWebLogoFile(ci,f)}} style={{border:'1.5px dashed #bbf7d0',borderRadius:6,padding:'7px 8px',textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}>
+                        <div style={{fontSize:10,color:'#166534',fontWeight:600}}>Drop PNG/SVG or click</div>
+                      </div>}
+                  </div>
                 </div>
               </div>)}
               <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
@@ -1064,7 +1094,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {/* Web logo — clean transparent cutout for webstore placement */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logo <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG — placed &amp; recolored on webstore garments</span></div>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Default web logo <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG — used when a color way has no logo of its own</span></div>
             {saveArt&&art.web_logo_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={removeWebLogo}>Remove</button>}
           </div>
           {art.web_logo_url&&<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
