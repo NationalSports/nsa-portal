@@ -77,6 +77,18 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: cur }); }
   };
 
+  // Coach-portal capability switches (coach_ai_builder / coach_livelook /
+  // coach_build_orders on the customer). Each gates an optional area of the
+  // coach portal, so these are off by default and turned on per team. Saved
+  // immediately, optimistic with rollback on error — same shape as toggleBrand.
+  const togglePortalCap = async (field) => {
+    const next = !(customer && customer[field]);
+    if (onUpdateCustomer) onUpdateCustomer({ ...customer, [field]: next });
+    const { error } = await supabase.from('customers').update({ [field]: next }).eq('id', customer.id);
+    if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, [field]: !next }); }
+    else note(next ? 'Enabled' : 'Disabled', 'success');
+  };
+
   return (
     <div className="card">
       <div className="card-header"><h2>🎽 Catalog Access</h2></div>
@@ -86,6 +98,33 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
           and automatically see <strong>{customer && customer.name}</strong>'s pricing
           {TIER_DISC[tier] ? <> — <strong>Tier {tier} ({TIER_DISC[tier]} off)</strong></> : null} and school colors.
         </p>
+
+        {/* Coach portal access — master switches for the optional portal areas */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Coach portal access</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {[
+              ['coach_ai_builder', '✨ Build with AI', "Show the team-store builder in this team's coach portal."],
+              ['coach_livelook', '🏷️ Live Look', 'Let coaches shop the live-inventory catalog from the portal.'],
+              ['coach_build_orders', '🧾 Build orders', 'Let coaches build & submit orders to their rep.'],
+            ].map(([field, label, desc]) => {
+              const on = !!(customer && customer[field]);
+              return (
+                <button key={field} onClick={() => togglePortalCap(field)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '9px 12px', cursor: 'pointer' }}>
+                  <span style={{ width: 36, height: 20, borderRadius: 999, background: on ? '#22c55e' : '#cbd5e1', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
+                    <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .15s' }} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#1e293b' }}>{label}</span>
+                    <span style={{ display: 'block', fontSize: 11, color: '#94a3b8' }}>{desc}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Off by default — turn on per team. Saves automatically.</div>
+        </div>
 
         {/* Brand access */}
         <div style={{ marginBottom: 18 }}>
