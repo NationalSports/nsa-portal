@@ -805,7 +805,7 @@ const _dbLoad = async (opts={}) => {
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
-      rHistInvs] = await _batch([
+      rHistInvs,rBoxes] = await _batch([
       _cold(()=>_safeQuery('team_members',{order:'name'})),
       // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
       // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
@@ -880,6 +880,7 @@ const _dbLoad = async (opts={}) => {
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
       ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
+      _cold(()=>_safeQuery('boxes')),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -906,7 +907,7 @@ const _dbLoad = async (opts={}) => {
     const quoteReqRaw=d(rQuoteReqs);const quoteReqItemsRaw=d(rQuoteReqItems);
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
-    const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
+    const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);const boxes=d(rBoxes);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -1026,7 +1027,7 @@ const _dbLoad = async (opts={}) => {
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,boxes,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -3912,6 +3913,7 @@ export default function App(){
   const[teamInlineEmailVal,setTeamInlineEmailVal]=useState('');
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
+  const[whBoxes,setWhBoxes]=useState([]);// warehouse box records (overlay; loaded from `boxes` table — [] if table absent)
   const[assignedTodos,setAssignedTodos]=useState([]);
   // When each OMG store was first brought into the portal, keyed by store id:
   // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
@@ -3993,6 +3995,7 @@ export default function App(){
           setIssues(d.issues||[]);
           if(d.quote_requests)setQuoteRequests(d.quote_requests);
           if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
+          if(d.boxes)setWhBoxes(d.boxes);
           if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
           if(d.decoVendors)setDecoVendors(d.decoVendors);
           if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
@@ -4961,6 +4964,8 @@ export default function App(){
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
+  // Warehouse boxes auto-save (overlay model — purely additive; mirrors the rep-CSR diff-save)
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.boxes||[];const changed=whBoxes.filter(b=>{const old=snap.find(p=>p.id===b.id);return!old||JSON.stringify(old)!==JSON.stringify(b)});if(changed.length)_dbSave('boxes',changed);_dbSnap.current.boxes=whBoxes},[whBoxes]);
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
