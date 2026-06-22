@@ -552,14 +552,14 @@ const _LABEL_CSS=`
   .qr img{width:1.3in;height:1.3in;display:inline-block;image-rendering:pixelated}
   .code{font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0}
   .subtitle{font-size:22px;font-weight:700;line-height:1.1;text-align:center;margin:0}
-  .program{font-size:22px;font-weight:900;line-height:1.15;text-align:center;margin:4px 0 0;word-break:break-word}
+  .program{font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
   .note{font-size:11px;font-weight:800;text-align:center;margin:3px 0 0}
   .items{margin-top:8px}
-  .item{margin-bottom:6px}
-  .item-title{font-size:18px;font-weight:800;line-height:1.18}
-  .item-detail{font-size:13px;font-weight:500;color:#475569;margin-top:1px}
-  .item-sz{font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:1px}
+  .item{margin-bottom:6px;text-align:center}
+  .item-title{font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word}
+  .item-detail{font-size:13px;font-weight:500;color:#475569;margin-top:2px}
+  .item-sz{font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px}
   .foot-note{font-size:10px;color:#64748b;font-weight:600;text-align:center;margin-top:8px}
 `;
 // Wait for every QR image to finish loading before printing (a stacked
@@ -633,7 +633,7 @@ export const downloadQrLabel=async(label={})=>{
   const sb=label.shipBadge;
   const badge=sb&&sb.text?`<div style="display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid ${sb.color||'#d97706'};color:${sb.color||'#92400e'};background:${sb.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:12px;text-align:center">${sb.text}</div>`:'';
   const notesHtml=(z.notes||[]).map(n=>`<div style="font-size:11px;font-weight:800;text-align:center;margin:3px 0 0;${n.style||'color:#166534'}">${n.text}</div>`).join('');
-  const itemsHtml=(z.items||[]).map(it=>`<div style="margin-bottom:6px"><div style="font-size:18px;font-weight:800;line-height:1.18">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:1px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:1px">${it.sizes}</div>`:''}</div>`).join('');
+  const itemsHtml=(z.items||[]).map(it=>`<div style="margin-bottom:6px;text-align:center"><div style="font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:2px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px">${it.sizes}</div>`:''}</div>`).join('');
   // Off-screen container at position:absolute;left:-9999px (not fixed, no
   // negative z-index) so html2canvas captures the real box, not a blank region.
   const container=document.createElement('div');
@@ -643,7 +643,7 @@ export const downloadQrLabel=async(label={})=>{
   page.innerHTML=`<div style="text-align:center;margin-bottom:2px"><img src="${qrSrc}" style="width:125px;height:125px;display:inline-block;image-rendering:pixelated"/></div>`
     +(z.code?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${z.code}</div>`:'')
     +(z.subtitle?`<div style="font-size:22px;font-weight:700;line-height:1.1;text-align:center">${z.subtitle}</div>`:'')
-    +(z.program?`<div style="font-size:22px;font-weight:900;line-height:1.15;text-align:center;margin:4px 0 0;word-break:break-word">${z.program}</div>`:'')
+    +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
     +badge+notesHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`
     +(label.codeSub?`<div style="font-size:10px;color:#64748b;font-weight:600;text-align:center;margin-top:8px">${label.codeSub}</div>`:'');
