@@ -75,6 +75,215 @@ function useKitInventory(items) {
 const _dotColor = (avail, incoming) =>
   avail > 0 ? '#15803d' : incoming > 0 ? '#b45309' : '#dc2626';
 
+// Default Encinitas-style kit — used to seed a brand-new item catalog so staff
+// have a starting point to attach product IDs to.
+const DEFAULT_KIT = [
+  { slot: 'jersey_white', label: 'Jersey (White)', takes_number: true, qty: 1, product_id: '' },
+  { slot: 'jersey_navy', label: 'Jersey (Navy)', takes_number: true, qty: 1, product_id: '' },
+  { slot: 'shorts', label: 'Shorts', qty: 2, product_id: '' },
+  { slot: 'training_shirt', label: 'Training Shirt', qty: 2, product_id: '' },
+  { slot: 'game_day_shirt', label: 'Game Day Shirt', takes_number: true, qty: 1, product_id: '' },
+  { slot: 'socks', label: 'Socks', qty: 2, product_id: '', sock: true },
+  { slot: 'jacket', label: 'Jacket', optional: true, qty: 1, product_id: '' },
+  { slot: 'pants', label: 'Pants', optional: true, qty: 1, product_id: '' },
+  { slot: 'backpack', label: 'Backpack', optional: true, qty: 1, product_id: '' },
+  { slot: 'keeper_jersey', label: 'Keeper Jersey', gk_only: true, optional: true, qty: 1, product_id: '' },
+  { slot: 'keeper_shorts', label: 'Keeper Shorts', gk_only: true, optional: true, qty: 1, product_id: '' },
+  { slot: 'keeper_socks', label: 'Keeper Socks', gk_only: true, optional: true, qty: 1, product_id: '', sock: true },
+];
+
+// A session's working kit: its own kit_items wins; otherwise fall back to the
+// linked template's items (older sessions created before kit_items existed).
+const effectiveKit = (session, template) =>
+  (session && Array.isArray(session.kit_items) && session.kit_items.length)
+    ? session.kit_items
+    : (template?.items || []);
+
+// Load a customer's master item catalog row (is_catalog = true).
+async function fetchCatalog(customerId) {
+  if (!customerId) return null;
+  const { data } = await supabase.from('roster_kit_templates')
+    .select('*').eq('customer_id', customerId).eq('is_catalog', true).maybeSingle();
+  return data || null;
+}
+
+// Invite a coach to a team. Goes through the coach-invite function which, given a
+// team_id, provisions the coach_accounts row + roster_team_coaches assignment with
+// the service role (works for both staff and coach-initiated invites) and emails
+// the magic-link. Returns { coach_id } (may be null if service creds are absent).
+async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, role }) {
+  try {
+    const res = await fetch('/.netlify/functions/coach-invite', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, name: name || email, team: teamLabel || '', team_id: teamId, customer_id: customerId, role: role || 'editor' }),
+    });
+    const j = await res.json().catch(() => ({}));
+    return { coach_id: j.coach_id || null, ok: j.ok !== false, emailed: !!j.emailed };
+  } catch (e) {
+    console.error('[inviteRosterCoach]', e);
+    return { coach_id: null, ok: false };
+  }
+}
+
+// ─── Item Catalog manager (staff) ─────────────────────────────────────────────
+// NSA loads the available kit pieces here and links each to a product (SKU) so
+// live inventory/availability works. Coaches then add these items to their kits.
+function ItemCatalogManager({ customer, onClose }) {
+  const [items, setItems] = useState([]);
+  const [rowId, setRowId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cat = await fetchCatalog(customer.id);
+      if (cancelled) return;
+      if (cat) { setRowId(cat.id); setItems(cat.items || []); }
+      else { setItems(DEFAULT_KIT.map(i => ({ ...i }))); }
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [customer.id]);
+
+  const updateItem = (i, f, v) => setItems(p => p.map((it, idx) => idx === i ? { ...it, [f]: v } : it));
+  const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', qty: 1, product_id: '' }]);
+  const removeItem = (i) => setItems(p => p.filter((_, idx) => idx !== i));
+
+  const save = async () => {
+    setSaving(true);
+    const clean = items.filter(it => (it.label || '').trim());
+    try {
+      if (rowId) {
+        await supabase.from('roster_kit_templates').update({ items: clean }).eq('id', rowId);
+      } else {
+        const { data } = await supabase.from('roster_kit_templates')
+          .insert({ customer_id: customer.id, name: (customer.name || 'Customer') + ' Item Catalog', is_catalog: true, items: clean })
+          .select().single();
+        setRowId(data?.id);
+      }
+      onClose && onClose(true);
+    } catch (e) { console.error(e); setSaving(false); }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 760, margin: '0 16px 40px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900, color: '#0b1220' }}>Item Catalog — {customer.name}</h2>
+          <button onClick={() => onClose && onClose(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+        </div>
+        <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 16 }}>
+          Load the kit pieces this account can order. Paste a <b>Product ID</b> on each so coaches see live size availability. Coaches pick from these when building their teams' kits.
+        </div>
+        {loading ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : (
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc' }}>
+                  {['Item', 'Slot key', 'Product ID (links inventory)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((ki, idx) => (
+                  <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '4px 6px' }}>
+                      <input value={ki.label || ''} placeholder="e.g. Socks" onChange={e => updateItem(idx, 'label', e.target.value)}
+                        style={{ border: 'none', fontSize: 12, width: '100%', outline: 'none', minWidth: 110 }} />
+                    </td>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{ki.slot}</td>
+                    <td style={{ padding: '4px 6px' }}>
+                      <input value={ki.product_id || ''} placeholder="paste product ID" onChange={e => updateItem(idx, 'product_id', e.target.value)}
+                        style={{ border: 'none', fontSize: 11, width: '100%', outline: 'none', fontFamily: 'monospace', color: '#1e40af', minWidth: 140 }} />
+                    </td>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => updateItem(idx, 'qty', parseInt(e.target.value) || 1)}
+                        style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
+                    </td>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <input type="checkbox" checked={!!ki.takes_number} onChange={e => updateItem(idx, 'takes_number', e.target.checked)} />
+                    </td>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <input type="checkbox" checked={!!ki.gk_only} onChange={e => updateItem(idx, 'gk_only', e.target.checked)} />
+                    </td>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <input type="checkbox" checked={!!ki.sock} onChange={e => updateItem(idx, 'sock', e.target.checked)} />
+                    </td>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <button onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+              <button onClick={addItem} style={{ padding: '5px 12px', borderRadius: 7, border: '1px dashed #cbd5e1', background: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#374151' }}>+ Add item</button>
+            </div>
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={() => onClose && onClose(false)} style={{ padding: '8px 20px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={save} disabled={saving}
+            style={{ padding: '8px 24px', border: 'none', borderRadius: 8, background: '#0b1220', color: '#fff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
+            {saving ? 'Saving…' : 'Save catalog'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Kit items bar — add/remove items on a session from the catalog ───────────
+function KitItemsBar({ session, catalog, onChange, readOnly }) {
+  const items = (session.kit_items && session.kit_items.length) ? session.kit_items : [];
+  const catItems = catalog?.items || [];
+  const available = catItems.filter(ci => !items.some(it => it.slot === ci.slot));
+  const [busy, setBusy] = useState(false);
+
+  const persist = async (next) => {
+    setBusy(true);
+    onChange({ ...session, kit_items: next });
+    await supabase.from('roster_order_sessions').update({ kit_items: next, updated_at: new Date().toISOString() }).eq('id', session.id);
+    setBusy(false);
+  };
+  const addItem = (slot) => { const ci = catItems.find(c => c.slot === slot); if (ci) persist([...items, { ...ci }]); };
+  const removeItem = (slot) => persist(items.filter(it => it.slot !== slot));
+
+  return (
+    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+        Kit items {items.length ? `(${items.length})` : ''}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+        {items.length === 0 && <span style={{ fontSize: 12, color: '#94a3b8' }}>No items yet — add the gear this order needs.</span>}
+        {items.map(it => (
+          <span key={it.slot} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, color: '#0b1220' }}>
+            {it.label}{it.product_id ? <span title="linked to inventory" style={{ width: 6, height: 6, borderRadius: '50%', background: '#15803d' }} /> : <span title="no product linked — no availability" style={{ width: 6, height: 6, borderRadius: '50%', background: '#cbd5e1' }} />}
+            {!readOnly && <button onClick={() => removeItem(it.slot)} disabled={busy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
+          </span>
+        ))}
+      </div>
+      {!readOnly && (
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {available.length > 0 ? (
+            <select value="" disabled={busy} onChange={e => { if (e.target.value) addItem(e.target.value); e.target.value = ''; }}
+              style={{ fontSize: 12.5, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>
+              <option value="">+ Add item…</option>
+              {available.map(ci => <option key={ci.slot} value={ci.slot}>{ci.label}</option>)}
+            </select>
+          ) : catItems.length === 0 ? (
+            <span style={{ fontSize: 11.5, color: '#b45309' }}>No item catalog yet — ask National Sports Apparel to load your items.</span>
+          ) : (
+            <span style={{ fontSize: 11.5, color: '#94a3b8' }}>All catalog items added.</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Roster Table Editor ──────────────────────────────────────────────────────
 function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   const [players, setPlayers] = useState([]);
@@ -532,8 +741,9 @@ function RosterTotals({ session, teams, kitTemplate }) {
 
 // ─── Staff: Session Detail ────────────────────────────────────────────────────
 function SessionDetail({ session, customer, onBack }) {
+  const [sess, setSess] = useState(session); // local copy so kit_items edits re-render
   const [teams, setTeams] = useState([]);
-  const [kitTemplate, setKitTemplate] = useState(null);
+  const [kitTemplate, setKitTemplate] = useState(null); // the customer's item catalog
   const [loading, setLoading] = useState(true);
   const [addingTeam, setAddingTeam] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
@@ -541,22 +751,21 @@ function SessionDetail({ session, customer, onBack }) {
   const [openTeam, setOpenTeam] = useState(null);
   const [inviteForm, setInviteForm] = useState({}); // { teamId: {email, name, sending} }
   const [coachAccounts, setCoachAccounts] = useState({});
+  const kit = useMemo(() => ({ items: effectiveKit(sess, kitTemplate) }), [sess, kitTemplate]);
 
   useEffect(() => {
     if (!session?.id) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const [{ data: ts }, { data: kt }] = await Promise.all([
+      const [{ data: ts }, cat] = await Promise.all([
         supabase.from('roster_teams').select('*').eq('session_id', session.id).order('sort_order').order('created_at'),
-        session.kit_template_id
-          ? supabase.from('roster_kit_templates').select('*').eq('id', session.kit_template_id).single()
-          : { data: null },
+        fetchCatalog(customer.id),
       ]);
       if (cancelled) return;
       const teamList = ts || [];
       setTeams(teamList);
-      setKitTemplate(kt);
+      setKitTemplate(cat);
       // Load coach assignments
       if (teamList.length) {
         const { data: tc } = await supabase.from('roster_team_coaches')
@@ -600,30 +809,15 @@ function SessionDetail({ session, customer, onBack }) {
     if (!email) return;
     setInviteForm(prev => ({ ...prev, [teamId]: { ...prev[teamId], sending: true } }));
     try {
-      // Ensure coach_account exists
-      const { data: existing } = await supabase.from('coach_accounts').select('id').eq('email', email).maybeSingle();
-      let coachId = existing?.id;
-      if (!coachId) {
-        const { data: created } = await supabase.from('coach_accounts')
-          .insert({ email, name: name || email, customer_id: customer.id }).select('id').single();
-        coachId = created?.id;
-      }
-      if (coachId) {
-        const team = teams.find(t => t.id === teamId);
-        await supabase.from('roster_team_coaches').upsert(
-          { team_id: teamId, coach_id: coachId, role: 'editor' },
-          { onConflict: 'team_id,coach_id' }
-        );
-        // Send invite email (reuse existing function)
-        await fetch('/.netlify/functions/coach-invite', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name: name || email, team: `${team?.name || ''} — ${session.name}` }),
-        });
-        setCoachAccounts(prev => ({
-          ...prev, [teamId]: [...(prev[teamId] || []).filter(c => c.email !== email), { email, name, role: 'editor', id: coachId }],
-        }));
-        setInviteForm(prev => ({ ...prev, [teamId]: { email: '', name: '', sending: false } }));
-      }
+      const team = teams.find(t => t.id === teamId);
+      const { coach_id } = await inviteRosterCoach({
+        email, name, teamId, customerId: customer.id,
+        teamLabel: `${team?.name || ''} — ${session.name}`,
+      });
+      setCoachAccounts(prev => ({
+        ...prev, [teamId]: [...(prev[teamId] || []).filter(c => c.email !== email), { email, name, role: 'editor', id: coach_id }],
+      }));
+      setInviteForm(prev => ({ ...prev, [teamId]: { email: '', name: '', sending: false } }));
     } catch (e) {
       console.error(e);
       setInviteForm(prev => ({ ...prev, [teamId]: { ...prev[teamId], sending: false } }));
@@ -660,11 +854,13 @@ function SessionDetail({ session, customer, onBack }) {
       </div>
 
       {view === 'totals' && (
-        <RosterTotals session={session} teams={teams} kitTemplate={kitTemplate} />
+        <RosterTotals session={sess} teams={teams} kitTemplate={kit} />
       )}
 
       {view === 'teams' && (
         <>
+          {/* Kit items for this session (add/remove from the customer catalog) */}
+          <KitItemsBar session={sess} catalog={kitTemplate} onChange={setSess} />
           {/* Teams list */}
           {teams.map(team => (
             <div key={team.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
@@ -683,7 +879,7 @@ function SessionDetail({ session, customer, onBack }) {
               </div>
               {openTeam?.id === team.id && (
                 <div style={{ padding: 16, borderTop: '1px solid #f1f5f9' }}>
-                  <TeamRosterEditor team={team} kitTemplate={kitTemplate} readOnly={false} />
+                  <TeamRosterEditor team={team} kitTemplate={kit} readOnly={false} />
                   {/* Invite coach */}
                   <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Invite coach to this team</div>
@@ -735,34 +931,29 @@ function SessionDetail({ session, customer, onBack }) {
 // ─── Staff: create session form ───────────────────────────────────────────────
 function CreateSessionModal({ customer, onCreated, onClose }) {
   const [form, setForm] = useState({ name: '', season: new Date().getFullYear().toString(), deadline: '', notes: '' });
-  const [kitItems, setKitItems] = useState([
-    { slot: 'jersey_white', label: 'Jersey (White)', takes_number: true, qty: 1, product_id: '' },
-    { slot: 'jersey_navy', label: 'Jersey (Navy)', takes_number: true, qty: 1, product_id: '' },
-    { slot: 'shorts', label: 'Shorts', qty: 2, product_id: '' },
-    { slot: 'training_shirt', label: 'Training Shirt', qty: 2, product_id: '' },
-    { slot: 'game_day_shirt', label: 'Game Day Shirt', takes_number: true, qty: 1, product_id: '' },
-    { slot: 'socks', label: 'Socks', qty: 2, product_id: '', sock: true },
-    { slot: 'jacket', label: 'Jacket', optional: true, product_id: '' },
-    { slot: 'pants', label: 'Pants', optional: true, product_id: '' },
-    { slot: 'backpack', label: 'Backpack', optional: true, product_id: '' },
-    { slot: 'keeper_jersey', label: 'Keeper Jersey', gk_only: true, optional: true, product_id: '' },
-    { slot: 'keeper_shorts', label: 'Keeper Shorts', gk_only: true, optional: true, product_id: '' },
-    { slot: 'keeper_socks', label: 'Keeper Socks', gk_only: true, optional: true, product_id: '', sock: true },
-  ]);
+  const [kitItems, setKitItems] = useState([]);
+  const [catalogId, setCatalogId] = useState(null);
   const [saving, setSaving] = useState(false);
+
+  // Seed the new session's kit from the customer's item catalog (or the default
+  // kit if none exists yet), so it inherits the product/inventory links.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cat = await fetchCatalog(customer.id);
+      if (cancelled) return;
+      setCatalogId(cat?.id || null);
+      setKitItems((cat?.items?.length ? cat.items : DEFAULT_KIT).map(i => ({ ...i })));
+    })();
+    return () => { cancelled = true; };
+  }, [customer.id]);
 
   const save = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
     try {
-      // Save kit template
-      const { data: kt, error: kte } = await supabase.from('roster_kit_templates').insert({
-        customer_id: customer.id, name: form.name.trim() + ' Kit', items: kitItems,
-      }).select().single();
-      if (kte) throw kte;
-      // Save session
       const { data: sess, error: se } = await supabase.from('roster_order_sessions').insert({
-        customer_id: customer.id, kit_template_id: kt.id,
+        customer_id: customer.id, kit_template_id: catalogId, kit_items: kitItems,
         name: form.name.trim(), season: form.season, deadline: form.deadline || null,
         notes: form.notes, status: 'open',
       }).select().single();
@@ -850,7 +1041,17 @@ export function RosterOrdersStaff({ customer, nf }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [leadInvite, setLeadInvite] = useState({ open: false, email: '', name: '', sending: false, done: '' });
   const [openSession, setOpenSession] = useState(null);
+
+  const sendLeadInvite = async () => {
+    const email = (leadInvite.email || '').trim();
+    if (!email) return;
+    setLeadInvite(p => ({ ...p, sending: true, done: '' }));
+    const { ok } = await inviteRosterCoach({ email, name: (leadInvite.name || '').trim(), customerId: customer.id, teamLabel: customer.name });
+    setLeadInvite({ open: true, email: '', name: '', sending: false, done: ok ? `Invited ${email} ✓` : 'Could not invite — check email service config.' });
+  };
 
   useEffect(() => {
     if (!customer?.id) return;
@@ -885,11 +1086,42 @@ export function RosterOrdersStaff({ customer, nf }) {
           <div style={{ fontWeight: 900, fontSize: 16, color: '#0b1220' }}>Roster Orders</div>
           <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Season-by-season kit ordering for {customer.name}</div>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          style={{ padding: '8px 18px', borderRadius: 9, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
-          + New session
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setLeadInvite(p => ({ ...p, open: !p.open }))}
+            style={{ padding: '8px 16px', borderRadius: 9, border: '1px solid #e2e8f0', background: '#fff', color: '#0b1220', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+            👤 Add coach
+          </button>
+          <button onClick={() => setShowCatalog(true)}
+            style={{ padding: '8px 16px', borderRadius: 9, border: '1px solid #e2e8f0', background: '#fff', color: '#0b1220', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+            🧩 Manage items
+          </button>
+          <button onClick={() => setShowCreate(true)}
+            style={{ padding: '8px 18px', borderRadius: 9, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
+            + New session
+          </button>
+        </div>
       </div>
+
+      {leadInvite.open && (
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 16, background: '#f8fafc' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#0b1220', marginBottom: 8 }}>
+            Give a coach self-serve access — they can create teams, build rosters &amp; invite others.
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input placeholder="Coach email" value={leadInvite.email}
+              onChange={e => setLeadInvite(p => ({ ...p, email: e.target.value }))}
+              style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, width: 220 }} />
+            <input placeholder="Name (optional)" value={leadInvite.name}
+              onChange={e => setLeadInvite(p => ({ ...p, name: e.target.value }))}
+              style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, width: 160 }} />
+            <button onClick={sendLeadInvite} disabled={leadInvite.sending || !leadInvite.email.trim()}
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+              {leadInvite.sending ? 'Sending…' : 'Invite & email'}
+            </button>
+            {leadInvite.done && <span style={{ fontSize: 12, color: leadInvite.done.includes('✓') ? '#15803d' : '#dc2626' }}>{leadInvite.done}</span>}
+          </div>
+        </div>
+      )}
       {loading ? (
         <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div>
       ) : sessions.length === 0 ? (
@@ -926,144 +1158,247 @@ export function RosterOrdersStaff({ customer, nf }) {
         </div>
       )}
       {showCreate && <CreateSessionModal customer={customer} onCreated={onCreated} onClose={() => setShowCreate(false)} />}
+      {showCatalog && <ItemCatalogManager customer={customer} onClose={() => setShowCatalog(false)} />}
     </div>
   );
 }
 
 // ─── Coach: exported component (embeds in CoachPortal) ───────────────────────
+// Self-serve: a coach who belongs to this customer can create sessions + teams,
+// build the kit from NSA's item catalog, fill rosters, and invite other coaches.
 export function RosterOrdersCoach({ customer }) {
-  const [teams, setTeams] = useState([]);
-  const [sessions, setSessions] = useState({});
-  const [kitTemplates, setKitTemplates] = useState({});
+  const [coach, setCoach] = useState(null);        // { id, email, name }
+  const [sessions, setSessions] = useState([]);    // this customer's non-draft sessions
+  const [teams, setTeams] = useState([]);          // all teams across those sessions
+  const [coachesByTeam, setCoachesByTeam] = useState({});
+  const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [coachId, setCoachId] = useState(null);
   const [openTeam, setOpenTeam] = useState(null);
-  const [viewTotals, setViewTotals] = useState(null); // session if viewing totals
+  const [viewTotals, setViewTotals] = useState(null);
+  // create / invite UI state
+  const [newSession, setNewSession] = useState({ name: '', season: new Date().getFullYear().toString(), open: false, saving: false });
+  const [newTeam, setNewTeam] = useState({}); // { sessionId: {name, saving} }
+  const [invite, setInvite] = useState({});   // { teamId: {email, name, sending} }
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // Identify the coach from auth session
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.email) { setLoading(false); return; }
-      const { data: coach } = await supabase.from('coach_accounts').select('id').eq('email', user.email).maybeSingle();
-      if (!coach?.id || cancelled) { setLoading(false); return; }
-      setCoachId(coach.id);
-
-      // Get their team assignments
-      const { data: tc } = await supabase.from('roster_team_coaches').select('team_id, role').eq('coach_id', coach.id);
-      if (!tc?.length || cancelled) { setLoading(false); return; }
-      const teamIds = tc.map(r => r.team_id);
-
-      // Get teams (filter by customer for this portal session)
-      const { data: ts } = await supabase.from('roster_teams').select('*').in('id', teamIds);
+  const reload = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.email) { setCoach(null); setLoading(false); return; }
+    const { data: c } = await supabase.from('coach_accounts').select('id,email,name,customer_id')
+      .ilike('email', user.email).maybeSingle();
+    // Must be a coach belonging to this customer to manage its rosters.
+    if (!c?.id || (c.customer_id && c.customer_id !== customer.id)) { setCoach(null); setLoading(false); return; }
+    setCoach(c);
+    const [{ data: ss }, cat] = await Promise.all([
+      supabase.from('roster_order_sessions').select('*')
+        .eq('customer_id', customer.id).neq('status', 'draft').order('created_at', { ascending: false }),
+      fetchCatalog(customer.id),
+    ]);
+    setCatalog(cat);
+    const sessList = ss || [];
+    setSessions(sessList);
+    if (sessList.length) {
+      const { data: ts } = await supabase.from('roster_teams').select('*')
+        .in('session_id', sessList.map(s => s.id)).order('sort_order').order('created_at');
       const teamList = ts || [];
+      setTeams(teamList);
+      if (teamList.length) {
+        const { data: tc } = await supabase.from('roster_team_coaches')
+          .select('team_id, coach_id, role, coach_accounts(email, name)').in('team_id', teamList.map(t => t.id));
+        const cmap = {};
+        (tc || []).forEach(r => { (cmap[r.team_id] = cmap[r.team_id] || []).push({ ...r.coach_accounts, role: r.role, id: r.coach_id }); });
+        setCoachesByTeam(cmap);
+      } else setCoachesByTeam({});
+    } else { setTeams([]); setCoachesByTeam({}); }
+    setLoading(false);
+  }, [customer.id]);
 
-      // Get sessions & kit templates for those teams
-      const sessionIds = [...new Set(teamList.map(t => t.session_id))];
-      const { data: ss } = await supabase.from('roster_order_sessions').select('*')
-        .in('id', sessionIds).eq('customer_id', customer.id).neq('status', 'draft');
-      const sessMap = {};
-      (ss || []).forEach(s => { sessMap[s.id] = s; });
+  useEffect(() => { let c = false; (async () => { await reload(); })(); return () => { c = true; }; }, [reload]);
 
-      const ktIds = [...new Set((ss || []).map(s => s.kit_template_id).filter(Boolean))];
-      let ktMap = {};
-      if (ktIds.length) {
-        const { data: kts } = await supabase.from('roster_kit_templates').select('*').in('id', ktIds);
-        (kts || []).forEach(kt => { ktMap[kt.id] = kt; });
-      }
+  const patchSession = (next) => setSessions(prev => prev.map(s => s.id === next.id ? next : s));
 
-      if (!cancelled) {
-        // Only show teams from sessions that belong to this customer
-        const filteredTeams = teamList.filter(t => sessMap[t.session_id]);
-        setTeams(filteredTeams);
-        setSessions(sessMap);
-        setKitTemplates(ktMap);
-        setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [customer?.id]);
+  const createSession = async () => {
+    if (!newSession.name.trim()) return;
+    setNewSession(n => ({ ...n, saving: true }));
+    const cat = catalog || await fetchCatalog(customer.id);
+    const { data, error } = await supabase.from('roster_order_sessions').insert({
+      customer_id: customer.id, kit_template_id: cat?.id || null,
+      kit_items: (cat?.items?.length ? cat.items : DEFAULT_KIT),
+      name: newSession.name.trim(), season: newSession.season || null,
+      status: 'open', created_by: coach?.email || null,
+    }).select().single();
+    if (!error && data) {
+      setSessions(prev => [data, ...prev]);
+      setNewSession({ name: '', season: new Date().getFullYear().toString(), open: false, saving: false });
+    } else { setNewSession(n => ({ ...n, saving: false })); }
+  };
+
+  const createTeam = async (sessionId) => {
+    const f = newTeam[sessionId] || {};
+    if (!(f.name || '').trim()) return;
+    setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: true } }));
+    const count = teams.filter(t => t.session_id === sessionId).length;
+    const { data, error } = await supabase.from('roster_teams').insert({
+      session_id: sessionId, name: f.name.trim(), sort_order: count,
+    }).select().single();
+    if (!error && data) {
+      setTeams(prev => [...prev, data]);
+      setNewTeam(prev => ({ ...prev, [sessionId]: { name: '', saving: false } }));
+    } else setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: false } }));
+  };
+
+  const inviteCoach = async (team, session) => {
+    const f = invite[team.id] || {};
+    const email = (f.email || '').trim();
+    if (!email) return;
+    setInvite(prev => ({ ...prev, [team.id]: { ...f, sending: true } }));
+    const { coach_id } = await inviteRosterCoach({
+      email, name: (f.name || '').trim(), teamId: team.id, customerId: customer.id,
+      teamLabel: `${team.name} — ${session.name}`,
+    });
+    setCoachesByTeam(prev => ({
+      ...prev, [team.id]: [...(prev[team.id] || []).filter(c => c.email !== email), { email, name: f.name, role: 'editor', id: coach_id }],
+    }));
+    setInvite(prev => ({ ...prev, [team.id]: { email: '', name: '', sending: false } }));
+  };
 
   if (loading) return null;
-  if (!teams.length) return null;
+  if (!coach) return null; // not a signed-in coach for this account → show nothing
 
-  const sessionTeams = {};
-  teams.forEach(t => {
-    const s = sessions[t.session_id];
-    if (!s) return;
-    if (!sessionTeams[s.id]) sessionTeams[s.id] = { session: s, teams: [] };
-    sessionTeams[s.id].teams.push(t);
-  });
+  const kitFor = (session) => ({ items: effectiveKit(session, catalog) });
 
-  if (viewTotals) {
-    const { session, teams: sessTeams } = viewTotals;
-    const kt = kitTemplates[session.kit_template_id];
-    return (
-      <div style={{ border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}>
-        <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontWeight: 800 }}>📋 {session.name}</span>
-          <button onClick={() => setViewTotals(null)}
-            style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>
-            ← Back to teams
-          </button>
-        </div>
-        <div style={{ padding: 16 }}>
-          <RosterTotals session={session} teams={sessTeams} kitTemplate={kt} />
-        </div>
-      </div>
-    );
-  }
-
+  // ── Drill-in: a single team's roster editor ──
   if (openTeam) {
-    const sess = sessions[openTeam.session_id];
-    const kt = sess ? kitTemplates[sess.kit_template_id] : null;
+    const session = sessions.find(s => s.id === openTeam.session_id);
     return (
-      <div style={{ border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}>
+      <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
         <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontWeight: 800 }}>📋 {sess?.name}</span>
+          <span style={{ fontWeight: 800 }}>📋 {session?.name}</span>
           <span style={{ opacity: 0.7, fontSize: 13 }}>· {openTeam.name}</span>
-          <button onClick={() => setOpenTeam(null)}
-            style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>
-            ← All teams
-          </button>
+          <button onClick={() => { setOpenTeam(null); }} style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>← All teams</button>
         </div>
         <div style={{ padding: 16 }}>
-          <TeamRosterEditor team={openTeam} kitTemplate={kt} readOnly={false} />
+          <TeamRosterEditor team={openTeam} kitTemplate={kitFor(session)} readOnly={false} />
+          {/* Invite another coach to this team */}
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Coaches on this team</div>
+            {(coachesByTeam[openTeam.id] || []).map(c => (
+              <div key={c.id || c.email} style={{ fontSize: 12, color: '#0b1220', marginBottom: 4 }}>👤 {c.name || c.email} <span style={{ color: '#94a3b8' }}>({c.email})</span></div>
+            ))}
+            <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+              <input placeholder="Coach email" value={(invite[openTeam.id] || {}).email || ''}
+                onChange={e => setInvite(prev => ({ ...prev, [openTeam.id]: { ...(prev[openTeam.id] || {}), email: e.target.value } }))}
+                style={{ padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, width: 190 }} />
+              <input placeholder="Name (optional)" value={(invite[openTeam.id] || {}).name || ''}
+                onChange={e => setInvite(prev => ({ ...prev, [openTeam.id]: { ...(prev[openTeam.id] || {}), name: e.target.value } }))}
+                style={{ padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, width: 150 }} />
+              <button onClick={() => inviteCoach(openTeam, session)} disabled={(invite[openTeam.id] || {}).sending || !(invite[openTeam.id] || {}).email}
+                style={{ padding: '6px 14px', borderRadius: 7, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                {(invite[openTeam.id] || {}).sending ? 'Sending…' : 'Invite & email'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
+  // ── Drill-in: a session's totals ──
+  if (viewTotals) {
+    const sessTeams = teams.filter(t => t.session_id === viewTotals.id);
+    return (
+      <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
+        <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontWeight: 800 }}>📋 {viewTotals.name}</span>
+          <button onClick={() => setViewTotals(null)} style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>← Back to teams</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <RosterTotals session={viewTotals} teams={sessTeams} kitTemplate={kitFor(viewTotals)} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main: sessions + teams ──
   return (
-    <div style={{ marginBottom: 16 }}>
-      {Object.values(sessionTeams).map(({ session, teams: sessTeams }) => (
-        <div key={session.id} style={{ border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 12 }}>
-          <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <div>
-              <span style={{ fontWeight: 800 }}>📋 {session.name}</span>
-              {session.deadline && <span style={{ marginLeft: 10, fontSize: 11, opacity: 0.7 }}>Deadline: {session.deadline}</span>}
-            </div>
-            <button onClick={() => setViewTotals({ session, teams: sessTeams })}
-              style={{ background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
-              View totals
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: '#1e3a5f' }}>📋 Team Roster Orders</div>
+        <button onClick={() => setNewSession(n => ({ ...n, open: !n.open }))}
+          style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', color: '#0b1220' }}>
+          + New order
+        </button>
+      </div>
+
+      {newSession.open && (
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 12, background: '#f8fafc' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div><div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Order name</div>
+              <input autoFocus value={newSession.name} placeholder="e.g. Younger Girls 2026" onChange={e => setNewSession(n => ({ ...n, name: e.target.value }))}
+                style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, width: 220 }} /></div>
+            <div><div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Season</div>
+              <input value={newSession.season} placeholder="2026" onChange={e => setNewSession(n => ({ ...n, season: e.target.value }))}
+                style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, width: 90 }} /></div>
+            <button onClick={createSession} disabled={newSession.saving || !newSession.name.trim()}
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+              {newSession.saving ? 'Creating…' : 'Create'}
             </button>
           </div>
-          <div style={{ padding: 12 }}>
-            {sessTeams.map(team => (
-              <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, marginBottom: 6,
-                background: '#f8fafc', border: '1px solid #f1f5f9', cursor: 'pointer' }}
-                onClick={() => setOpenTeam(team)}>
-                <span style={{ fontWeight: 700, fontSize: 13, color: '#0b1220', flex: 1 }}>{team.name}</span>
-                {team.locked
-                  ? <span style={{ background: '#dcfce7', color: '#15803d', borderRadius: 999, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>LOCKED ✓</span>
-                  : <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 999, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>In progress</span>}
-                <span style={{ color: '#94a3b8', fontSize: 14 }}>›</span>
-              </div>
-            ))}
-          </div>
+          {!catalog && <div style={{ marginTop: 10, fontSize: 11.5, color: '#92400e' }}>Heads up: National Sports Apparel hasn't loaded your item list yet — you can still build rosters, and we'll attach products so availability shows.</div>}
         </div>
-      ))}
+      )}
+
+      {sessions.length === 0 && !newSession.open && (
+        <div style={{ padding: '22px 16px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 12, color: '#64748b', fontSize: 13 }}>
+          No roster orders yet. Tap <b>+ New order</b> to start your teams &amp; sizes.
+        </div>
+      )}
+
+      {sessions.map(session => {
+        const sessTeams = teams.filter(t => t.session_id === session.id);
+        return (
+          <div key={session.id} style={{ border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 12 }}>
+            <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <span style={{ fontWeight: 800 }}>📋 {session.name}</span>
+                {session.deadline && <span style={{ marginLeft: 10, fontSize: 11, opacity: 0.7 }}>Deadline: {session.deadline}</span>}
+              </div>
+              <button onClick={() => setViewTotals(session)}
+                style={{ background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
+                View totals
+              </button>
+            </div>
+            <div style={{ padding: 12 }}>
+              {/* Build the kit by adding items from the catalog */}
+              <KitItemsBar session={session} catalog={catalog} onChange={patchSession} />
+
+              {sessTeams.map(team => (
+                <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, marginBottom: 6,
+                  background: '#f8fafc', border: '1px solid #f1f5f9', cursor: 'pointer' }}
+                  onClick={() => setOpenTeam(team)}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: '#0b1220', flex: 1 }}>{team.name}</span>
+                  {(coachesByTeam[team.id] || []).length > 0 && <span style={{ fontSize: 10, color: '#94a3b8' }}>{(coachesByTeam[team.id] || []).length} coach{(coachesByTeam[team.id] || []).length !== 1 ? 'es' : ''}</span>}
+                  {team.locked
+                    ? <span style={{ background: '#dcfce7', color: '#15803d', borderRadius: 999, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>LOCKED ✓</span>
+                    : <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 999, padding: '2px 9px', fontSize: 10, fontWeight: 700 }}>In progress</span>}
+                  <span style={{ color: '#94a3b8', fontSize: 14 }}>›</span>
+                </div>
+              ))}
+
+              {/* Add team */}
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <input value={(newTeam[session.id] || {}).name || ''} placeholder="+ Add a team (e.g. GU9 Premier)"
+                  onChange={e => setNewTeam(prev => ({ ...prev, [session.id]: { ...(prev[session.id] || {}), name: e.target.value } }))}
+                  onKeyDown={e => e.key === 'Enter' && createTeam(session.id)}
+                  style={{ flex: 1, padding: '7px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13 }} />
+                <button onClick={() => createTeam(session.id)} disabled={(newTeam[session.id] || {}).saving || !((newTeam[session.id] || {}).name || '').trim()}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                  {(newTeam[session.id] || {}).saving ? '…' : '+ Team'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

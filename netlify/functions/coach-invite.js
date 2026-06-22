@@ -1,7 +1,44 @@
-// Netlify function: emails a coach their catalog invite when staff create a
-// coach account in the portal. Sends via Brevo; the coach clicks through to
+// Netlify function: emails a coach their catalog invite when staff OR another
+// coach invite them in the portal. Sends via Brevo; the coach clicks through to
 // /adidas and signs in with the magic link (their email is pre-filled).
+//
+// When a team_id is supplied (roster-order invites), this also provisions the
+// coach_accounts row and the roster_team_coaches assignment using the service
+// role — that path bypasses RLS so a signed-in coach can invite a teammate even
+// though coach_accounts INSERT is otherwise staff-only.
+const { createClient } = require('@supabase/supabase-js');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function getSupabaseAdmin() {
+  const url = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+}
+
+// Ensure a coach_accounts row exists for `email`, then assign them to the team.
+// Returns { coach_id } or { error }. No-op-safe if service creds are absent.
+async function provisionRosterCoach({ email, name, customerId, teamId, role }) {
+  const admin = getSupabaseAdmin();
+  if (!admin) return { error: 'service-creds-missing' };
+  const lower = email.toLowerCase();
+  let coachId;
+  const { data: existing } = await admin.from('coach_accounts').select('id').ilike('email', lower).maybeSingle();
+  if (existing?.id) {
+    coachId = existing.id;
+  } else {
+    const { data: created, error: ce } = await admin.from('coach_accounts')
+      .insert({ email, name: name || email, customer_id: customerId || null, status: 'invited' })
+      .select('id').single();
+    if (ce) return { error: ce.message };
+    coachId = created?.id;
+  }
+  if (coachId && teamId) {
+    await admin.from('roster_team_coaches')
+      .upsert({ team_id: teamId, coach_id: coachId, role: role || 'editor' }, { onConflict: 'team_id,coach_id' });
+  }
+  return { coach_id: coachId };
+}
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
@@ -13,11 +50,27 @@ exports.handler = async (event) => {
     const email = String(body.email || '').trim();
     const name = String(body.name || '').trim();
     const team = String(body.team || '').trim();
+    const teamId = String(body.team_id || '').trim();
+    const customerId = String(body.customer_id || '').trim();
+    const role = String(body.role || 'editor').trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Valid email required' }) };
     }
+
+    // Roster-order invites: provision the coach account (+ team assignment when a
+    // team is given) server-side. A customer_id with no team_id just grants the
+    // coach access to that account so they can self-serve (bootstrap the lead coach).
+    let coachId = null;
+    if (teamId || customerId) {
+      const prov = await provisionRosterCoach({ email, name, customerId, teamId, role });
+      if (prov.error && prov.error !== 'service-creds-missing') {
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: prov.error }) };
+      }
+      coachId = prov.coach_id || null;
+    }
+
     const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
-    if (!brevoKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, emailed: false, error: 'Email not configured' }) };
+    if (!brevoKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: !!coachId, coach_id: coachId, emailed: false, error: 'Email not configured' }) };
 
     const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
     const link = `${portal}/adidas?signin=${encodeURIComponent(email)}`;
@@ -55,9 +108,9 @@ exports.handler = async (event) => {
     });
     if (!res.ok) {
       console.error('[coach-invite] Brevo error:', res.status, await res.text());
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: false, emailed: false, error: 'Send failed' }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: !!coachId, coach_id: coachId, emailed: false, error: 'Send failed' }) };
     }
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, emailed: true }) };
+    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, coach_id: coachId, emailed: true }) };
   } catch (e) {
     return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: e.message }) };
   }
