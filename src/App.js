@@ -4966,6 +4966,10 @@ export default function App(){
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
   // Warehouse boxes auto-save (overlay model — purely additive; mirrors the rep-CSR diff-save)
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.boxes||[];const changed=whBoxes.filter(b=>{const old=snap.find(p=>p.id===b.id);return!old||JSON.stringify(old)!==JSON.stringify(b)});if(changed.length)_dbSave('boxes',changed);_dbSnap.current.boxes=whBoxes},[whBoxes]);
+  // Mint the next BX-#### plate (max existing + 1, base 2000). Mirrors nextEstId.
+  const nextBoxId=()=>{const mx=whBoxes.reduce((m,b)=>{const n=parseInt(String(b.id).replace(/^BX-/i,''),10);return Number.isFinite(n)&&n>m?n:m},2000);return 'BX-'+(mx+1)};
+  // Upsert a box into state; the effect above persists it. Best-effort by design (never in a critical path).
+  const saveBox=(box)=>{const ts=new Date().toISOString();setWhBoxes(prev=>{const i=prev.findIndex(b=>b.id===box.id);if(i>=0){const c=[...prev];c[i]={...c[i],...box,updated_at:ts};return c}return[...prev,{status:'staged',contents:[],source_refs:[],created_by:cu?.id,created_at:ts,updated_at:ts,...box}]})};
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
@@ -17753,11 +17757,15 @@ export default function App(){
                       try{
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
+                          // One box per pull: record exactly what was pulled and label it with its BX plate (QR → box).
+                          const boxId=nextBoxId();
+                          const boxContents=pulledItemsForLabel.map(({pi,qtys})=>{const sizes={};pi.szKeys.forEach(sz=>{if((qtys[sz]||0)>0)sizes[sz]=qtys[sz]});return{sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes}});
+                          saveBox({id:boxId,kind:'fulfillment',if_id:pickIdToUse,so_id:t.soId,source_refs:[{type:'IF',id:pickIdToUse}],contents:boxContents,status:'staged'});
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
-                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:pickIdToUse+' · PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
-                          printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
+                          printQrLabel({id:boxId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(boxId),shipBadge:labelShipBadge,lines});
                         }
                       }catch(e){/* label print is best-effort */}
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
@@ -30614,7 +30622,17 @@ export default function App(){
     try{const u=new URL(scanVal);const sp=u.searchParams.get('scan');if(sp)scanVal=sp}catch{}
     // Also handle JSON-encoded QR data (legacy format)
     try{const j=JSON.parse(scanVal);if(j.id)scanVal=j.id}catch{}
-    const upper=scanVal.toUpperCase();
+    let upper=scanVal.toUpperCase();
+    // Box plate (BX-####): resolve the box (following a combined plate to its survivor) and
+    // route to its IF/SO/PO. (The full Box Action modal lands in the next increment.)
+    if(upper.startsWith('BX-')){
+      let bx=whBoxes.find(b=>(b.id||'').toUpperCase()===upper);
+      let guard=0;while(bx&&bx.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===bx.merged_into);if(!nx)break;bx=nx}
+      if(!bx){nf('Box "'+scanVal+'" not found','warn');return}
+      nf('Scanned box '+bx.id+(bx.if_id?(' → '+bx.if_id):''));
+      scanVal=bx.if_id||bx.so_id||bx.po_id||'';upper=scanVal.toUpperCase();
+      if(!scanVal){setPg('warehouse');return}
+    }
     // Check if it's an Item Fulfillment (IF-XXXX)
     if(upper.startsWith('IF-')){
       for(const so of sos){
