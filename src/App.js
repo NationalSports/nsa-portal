@@ -19,7 +19,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -11602,69 +11602,36 @@ export default function App(){
     // Group by PO ID
     const poGroups={};allPOLines.forEach(pl=>{const k=pl.poId;if(!poGroups[k])poGroups[k]={poId:k,lines:[]};poGroups[k].lines.push(pl)});
     const matchedPO=q2?poGroups[Object.keys(poGroups).find(k=>k.toLowerCase()===q2)]||null:null;
-    // Label print helper
+    // Label print helpers — every 4×6 box label routes through the shared
+    // landscape renderer (utils.printQrLabels): customer/team name biggest, then
+    // the items, then the PO# + scan QR at the foot. The QR always encodes the
+    // batch/parent PO so a phone camera (or the in-app scanner) opens this PO.
+    const _recvScanUrl=(po)=>window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po);
+    const _recvItems=(items)=>(items||[]).map(it=>{
+      const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);
+      const qty=sz.reduce((a,[,v])=>a+v,0);
+      return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',qty+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')};
+    });
+    const _recvUnits=(items)=>(items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(v>0?v:0),0),0);
+    const _recvOne=(arr,key)=>{const s=[...new Set((arr||[]).map(x=>x[key]).filter(Boolean))];return s.length===1?s[0]:''};
+    // Full program name = the SO's customer name (PO lines only carry the short alpha_tag); fall back to the tag.
+    const _recvName=(soId,fallback)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fallback||''};
+    const _recvNoteStyle=(boxLabel)=>/received/i.test(boxLabel||'')?'color:#166534':'color:#475569';
+    // Single 4×6 — a non-batch PO, or one source PO pulled out of a batch.
     const printLabel=(items,poId,boxLabel)=>{
-      const w=window.open('','_blank','width=400,height=600');if(!w)return;
-      const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
-      const qrData=encodeURIComponent(scanUrl);
-      const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+qrData;
-      w.document.write('<html><head><title>Box Label</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}');
-      w.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
-      w.document.write('.box-label{font-size:14px;font-weight:700;text-align:center;color:#666;margin-bottom:8px}');
-      w.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
-      w.document.write('.sz{font-weight:700;font-size:10px}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}');
-      w.document.write('</style></head><body>');
-      w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
-      w.document.write('<div class="po">'+poId+'</div>');
-      if(boxLabel)w.document.write('<div class="box-label">'+boxLabel+'</div>');
-      w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-      items.forEach(it=>{
-        const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
-        const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-        w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td class="sz">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>');
-      });
-      w.document.write('</tbody></table>');
-      const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-      w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQty+' units</div>');
-      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR with tablet camera to open this PO</div>');
-      w.document.write('</body></html>');w.document.close();
-      setTimeout(()=>w.print(),400);
+      const soId=_recvOne(items,'soId');
+      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
     };
-    // Print separate labels per source PO within a batch (one page per SO box)
+    // One 4×6 page per source PO in a batch — each box carries its own
+    // customer + items, but all scan back to the same parent PO.
     const printBatchSeparateLabels=(sourcePOs,poId,boxLabel)=>{
-      const w=window.open('','_blank','width=400,height=600');if(!w)return;
-      const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
-      const qrData=encodeURIComponent(scanUrl);
-      const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+qrData;
-      w.document.write('<html><head><title>Box Labels — '+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:0}');
-      w.document.write('.label-page{padding:12px;width:3.6in;page-break-after:always}');
-      w.document.write('.label-page:last-child{page-break-after:auto}');
-      w.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
-      w.document.write('.box-label{font-size:14px;font-weight:700;text-align:center;color:#666;margin-bottom:4px}');
-      w.document.write('.so-label{font-size:16px;font-weight:900;text-align:center;color:#1e40af;margin-bottom:8px}');
-      w.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
-      w.document.write('.sz{font-weight:700;font-size:10px}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}');
-      w.document.write('</style></head><body>');
-      sourcePOs.forEach((sp,spi)=>{
-        w.document.write('<div class="label-page">');
-        w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
-        w.document.write('<div class="po">'+poId+'</div>');
-        if(boxLabel)w.document.write('<div class="box-label">'+boxLabel+'</div>');
-        w.document.write('<div class="so-label">'+sp.so_id+(sp.customer?' — '+sp.customer:'')+'</div>');
-        w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-        sp.items.forEach(it=>{
-          const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
-          const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-          w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td class="sz">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>');
-        });
-        w.document.write('</tbody></table>');
-        const spQty=sp.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">BOX TOTAL: '+spQty+' units</div>');
-        w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Box '+(spi+1)+' of '+sourcePOs.length+' · '+poId+'</div>');
-        w.document.write('</div>');
-      });
-      w.document.write('</body></html>');w.document.close();
-      setTimeout(()=>w.print(),400);
+      const n=(sourcePOs||[]).length;
+      printQrLabels((sourcePOs||[]).map((sp,i)=>({
+        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),
+        subtitle:[sp.so_id,n>1?('Box '+(i+1)+' of '+n):''].filter(Boolean).join(' · '),
+        note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(sp.items),
+        codeSub:_recvUnits(sp.items)+' units · scan to open '+poId
+      })));
     };
 
     return(<>
@@ -11710,7 +11677,7 @@ export default function App(){
         const _printOnePO=(srcPoId)=>{
           const sp=isBatch?(batchMatch.source_pos||[]).find(s=>(s.po_id||'')===srcPoId):null;
           if(sp){printBatchSeparateLabels([sp],sp.po_id||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(sp.po_id||poId))}
-          else{const labelItems=poItems.filter(it=>(it.srcPoId||'')===srcPoId).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));printLabel(labelItems.length?labelItems:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes})),srcPoId||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(srcPoId||poId))}
+          else{const labelItems=poItems.filter(it=>(it.srcPoId||'')===srcPoId).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes,customer:it.customer,soId:it.soId}));printLabel(labelItems.length?labelItems:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes,customer:it.customer,soId:it.soId})),srcPoId||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(srcPoId||poId))}
         };
         const submittedInfo=batchMatch;
         const statusBadge=submittedInfo?.status==='received'?'badge-green':'badge-amber';
@@ -11802,7 +11769,7 @@ export default function App(){
                   printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVING — '+new Date().toLocaleDateString());
                   nf('🖨️ '+batchMatch.source_pos.length+' separate labels printed for '+poId);
                 } else {
-                  const labelItems=poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));
+                  const labelItems=poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes,customer:it.customer,soId:it.soId}));
                   printLabel(labelItems,poId,'RECEIVING — '+new Date().toLocaleDateString());
                   nf('🖨️ Label printed for '+poId);
                 }
@@ -11864,7 +11831,7 @@ export default function App(){
                   if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
                   } else {
-                    const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes}));
+                    const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes,customer:it2.customer,soId:it2.soId}));
                     printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
@@ -17855,6 +17822,12 @@ export default function App(){
                     <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
                     <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
                     <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                      {/* 4×6 box label — IDs this (possibly combined) box for the deco/ship hand-off; QR opens the IF. */}
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}} disabled={boxUnits===0} title="Print 4×6 box label" onClick={()=>{
+                        const _sb=shipDest==='ship_customer'?{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'}:shipDest==='ship_deco'?{text:'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''),color:'#d97706',bg:'#fffbeb'}:null;
+                        const _items=(box.items||[]).map(it2=>{const sz=Object.entries(it2.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it2.sku||'')+' '+(it2.name||'')).trim(),detail:[(it2.color&&it2.color!=='—')?it2.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
+                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
+                      }}>🖨️ Label</button>
                       {boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                         onClick={()=>{const b=[...boxes];b.splice(bi,1);setBoxes(b)}}>×</button>}
                     </div>
@@ -18375,50 +18348,19 @@ export default function App(){
                     addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
                     nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
                     notifyDecoReady(_decoReady);
-                    // Auto-print 4x6 label on receive (same as IF pull label)
-                    const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
-                    const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
+                    // Auto-print 4×6 landscape label(s) on receive — shared renderer.
+                    // Batch → one page per source PO (each its own customer + items);
+                    // otherwise a single label for what just landed in this box.
+                    const _scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
+                    const _rDate=new Date().toLocaleDateString();
+                    const _mkItems=(arr)=>(arr||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
+                    const _pName=(sid,fb)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fb||''};
                     if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
-                      const w2=window.open('','_blank','width=400,height=600');if(w2){
-                        w2.document.write('<html><head><title>Box Labels — '+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:0}');
-                        w2.document.write('.label-page{padding:12px;width:3.6in;page-break-after:always}.label-page:last-child{page-break-after:auto}');
-                        w2.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
-                        w2.document.write('.so-label{font-size:16px;font-weight:900;text-align:center;color:#1e40af;margin-bottom:8px}');
-                        w2.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
-                        w2.document.write('.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
-                        batchMatch.source_pos.forEach((sp,spi)=>{
-                          w2.document.write('<div class="label-page">');
-                          w2.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
-                          w2.document.write('<div class="po">'+poId+'</div>');
-                          w2.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:4px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
-                          w2.document.write('<div class="so-label">'+sp.so_id+(sp.customer?' — '+sp.customer:'')+'</div>');
-                          w2.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-                          sp.items.forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                            w2.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
-                          w2.document.write('</tbody></table>');
-                          const spQty=sp.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-                          w2.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">BOX TOTAL: '+spQty+' units</div>');
-                          w2.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Box '+(spi+1)+' of '+batchMatch.source_pos.length+' · '+poId+'</div>');
-                          w2.document.write('</div>');
-                        });
-                        w2.document.write('</body></html>');w2.document.close();setTimeout(()=>w2.print(),400);
-                      }
+                      const n=batchMatch.source_pos.length;
+                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
-                      const w=window.open('','_blank','width=400,height=600');if(w){
-                        w.document.write('<html><head><title>'+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
-                        w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
-                        w.document.write('<div class="po">'+poId+'</div>');
-                        w.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:6px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
-                        if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
-                        w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-                        // Show what was JUST received in this box, not the whole PO
-                        (justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}))).forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                          w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
-                        w.document.write('</tbody></table>');
-                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">RECEIVED THIS BOX: '+totalQtyReceived+' units</div>');
-                        w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
-                        w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
-                      }
+                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
+                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(soIds.length===1?soIds[0]:'',custNames.length===1?custNames[0]:''),subtitle:(soIds.length===1?soIds[0]:'')||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -18846,6 +18788,13 @@ export default function App(){
                   <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
                   <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                    {/* 4×6 box label for a combined (multi-order) box — QR opens the order; complements the carrier label. */}
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}} disabled={boxUnits===0} title="Print 4×6 box label" onClick={()=>{
+                      const _sos=[...new Set((box.items||[]).map(it=>it.soId).filter(Boolean))];
+                      const _scanId=_sos[0]||[...shipModal.grp.soIds][0]||'';
+                      const _items=(box.items||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
+                      printQrLabel({code:_scanId||('BOX '+(bi+1)),qrData:_scanId?(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_scanId)):'',program:shipModal.grp.cName||'',subtitle:[(_sos.join(', ')||[...shipModal.grp.soIds].join(', ')),'Box '+(bi+1)+' of '+shipModal.boxes.length].filter(Boolean).join(' · '),shipBadge:{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'},items:_items,codeSub:boxUnits+' units · scan to open order'});
+                    }}>🖨️ Label</button>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
                       <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight===''||box.weight===undefined?'':box.weight} style={{width:60,fontSize:11,padding:'3px 6px'}}

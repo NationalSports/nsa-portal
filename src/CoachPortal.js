@@ -1527,12 +1527,15 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   const[ocrResults,setOcrResults]=useState([]);// extracted PO numbers from OCR
   const ocrBusyRef=useRef(false);
   const canvasRef=useRef(null);
+  const[torchOn,setTorchOn]=useState(false);const[torchOk,setTorchOk]=useState(false);// phone flashlight (warehouse aisles are dim)
 
   const startCamera=async()=>{
     setError(null);setOcrResults([]);setOcrStatus('');
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
       streamRef.current=stream;
+      // Torch is only exposed on a live track on some phones — probe once we have the stream.
+      try{const _trk=stream.getVideoTracks&&stream.getVideoTracks()[0];const _caps=_trk&&_trk.getCapabilities&&_trk.getCapabilities();setTorchOk(!!(_caps&&_caps.torch))}catch(e){setTorchOk(false)}
       const v=videoRef.current;
       if(v){
         v.srcObject=stream;
@@ -1562,7 +1565,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
       const barcodes=await detectorRef.current.detect(videoRef.current);
       if(barcodes.length>0){
         const val=barcodes[0].rawValue;
-        if(val){stopCamera();onScan(val);return}
+        if(val){try{navigator.vibrate&&navigator.vibrate(120)}catch(e){}stopCamera();onScan(val);return}
       }
     }catch(err){if(err?.name!=='InvalidStateError')console.warn('[BarcodeScanner] detect error:',err?.message||err)}
     requestAnimationFrame(()=>setTimeout(scanLoop,150));
@@ -1609,11 +1612,16 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     ocrBusyRef.current=false;
   };
 
+  // Toggle the phone flashlight on the live video track (no-op where unsupported).
+  const toggleTorch=async()=>{
+    try{const track=streamRef.current&&streamRef.current.getVideoTracks&&streamRef.current.getVideoTracks()[0];if(!track)return;const next=!torchOn;await track.applyConstraints({advanced:[{torch:next}]});setTorchOn(next)}catch(e){setTorchOk(false)}
+  };
+
   const stopCamera=()=>{
     scanningRef.current=false;
     if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
     if(videoRef.current){videoRef.current.srcObject=null}
-    setActive(false);setOcrStatus('');setOcrResults([]);
+    setActive(false);setOcrStatus('');setOcrResults([]);setTorchOn(false);setTorchOk(false);
   };
 
   // Cleanup on unmount
@@ -1644,7 +1652,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     </div>
     {/* Single video element always in DOM so ref/stream survive re-renders */}
     <div style={{position:'relative',background:'#000',display:active?'block':'none'}}>
-      <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
+      <video ref={videoRef} style={{width:'100%',maxHeight:'58vh',minHeight:240,objectFit:'cover',display:'block',background:'#000'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
         <div style={{width:scanMode==='text'?280:200,height:scanMode==='text'?160:200,
@@ -1655,10 +1663,11 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         {scanMode==='text'?'Point camera at PO label, then tap Capture':'Point camera at barcode or QR code'}
       </div>
       {scanMode==='text'&&<button onClick={runOCR} disabled={ocrBusyRef.current}
-        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50)',background:ocrBusyRef.current?'#475569':'#f59e0b',
+        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',background:ocrBusyRef.current?'#475569':'#f59e0b',
           color:ocrBusyRef.current?'#94a3b8':'#000',border:'none',borderRadius:8,padding:'6px 24px',cursor:ocrBusyRef.current?'default':'pointer',fontSize:13,fontWeight:700}}>
         {ocrBusyRef.current?'Reading...':'Capture & Read'}
       </button>}
+      {torchOk&&<button onClick={toggleTorch} title="Toggle flashlight" style={{position:'absolute',top:8,left:8,background:torchOn?'#fde68a':'rgba(0,0,0,0.6)',border:'none',color:torchOn?'#000':'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12,fontWeight:700}}>🔦 {torchOn?'On':'Off'}</button>}
       <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
     </div>
     {/* OCR results */}
