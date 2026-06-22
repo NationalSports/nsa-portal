@@ -17666,6 +17666,7 @@ export default function App(){
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
       ...(cu.role==='warehouse'?[{id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'}]:[]),
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
+      {id:'reconcile',label:'Boxes / Reconcile',icon:'🧮',count:whBoxes.filter(b=>b.status!=='voided'&&b.status!=='combined').length,color:'#0e7490'},
     ];
 
     return(<>
@@ -20509,6 +20510,73 @@ export default function App(){
           <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>{/* effect persists empty list to app_state */}
         </div>}
       </>})()}
+
+      {/* ── BOXES / RECONCILE ── box overlay vs on-hand inventory ── */}
+      {whTab==='reconcile'&&(()=>{
+        // product._inv is the source of truth. Stock boxes are a location overlay: they record
+        // where units physically sit. Reconcile per SKU/size: boxed (active stock boxes) vs on-hand.
+        // Over-tracked (boxed > on-hand) is the actionable discrepancy; loose (on-hand not boxed)
+        // is expected while box tracking is being adopted.
+        const active=whBoxes.filter(b=>b.status!=='voided'&&b.status!=='combined');
+        const activeStock=active.filter(b=>b.kind==='stock');
+        const boxed={};const boxIdsBySku={};
+        activeStock.forEach(b=>{(b.contents||[]).forEach(c=>{const sku=c.sku;if(!sku)return;boxed[sku]=boxed[sku]||{};Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){boxed[sku][sz]=(boxed[sku][sz]||0)+v;(boxIdsBySku[sku]=boxIdsBySku[sku]||new Set()).add(b.id)}})})});
+        const sq=(whSearch||'').toLowerCase();
+        let rows=Object.keys(boxed).map(sku=>{
+          const p=prod.find(pp=>pp.sku===sku);const inv=p?._inv||{};
+          const allSz=[...new Set([...Object.keys(boxed[sku]),...Object.keys(inv)])].filter(sz=>(boxed[sku][sz]||0)>0||(inv[sz]||0)>0);
+          let over=0,loose=0,boxedTotal=0;
+          const cells=allSz.map(sz=>{const bq=boxed[sku][sz]||0;const oh=inv[sz]||0;const d=bq-oh;if(d>0)over+=d;else if(d<0)loose+=-d;boxedTotal+=bq;return{sz,bq,oh,d}});
+          return{sku,name:p?.name||'',color:p?.color||'',cells,over,loose,boxedTotal,boxIds:[...(boxIdsBySku[sku]||[])]};
+        });
+        if(sq)rows=rows.filter(r=>[r.sku,r.name,r.color].filter(Boolean).some(v=>v.toLowerCase().includes(sq)));
+        rows.sort((a,b)=>(b.over-a.over)||(a.sku||'').localeCompare(b.sku||''));
+        const discrepancies=rows.filter(r=>r.over>0);
+        const totalOver=discrepancies.reduce((a,r)=>a+r.over,0);
+        const totalBoxedUnits=activeStock.reduce((a,b)=>a+boxUnits(b),0);
+        const emptyBoxes=active.filter(b=>boxUnits(b)===0);
+        const byKind=k=>active.filter(b=>b.kind===k);
+        return<>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14}}>
+            <div className="stat-card" style={{borderLeft:'3px solid #0e7490'}}><div className="stat-label">Active stock boxes</div><div className="stat-value" style={{color:'#0e7490'}}>{activeStock.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{totalBoxedUnits} units tracked</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Fulfillment boxes</div><div className="stat-value" style={{color:'#166534'}}>{byKind('fulfillment').length}</div><div style={{fontSize:10,color:'#94a3b8'}}>staged for ship/deco</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid '+(discrepancies.length?'#dc2626':'#16a34a')}}><div className="stat-label">Over-tracked SKUs</div><div className="stat-value" style={{color:discrepancies.length?'#dc2626':'#16a34a'}}>{discrepancies.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{totalOver} units over on-hand</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Empty boxes</div><div className="stat-value" style={{color:'#64748b'}}>{emptyBoxes.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>depleted / unused</div></div>
+          </div>
+          <div style={{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 12px'}}>
+            <strong>Box overlay vs on-hand inventory.</strong> Stock boxes record where units physically sit; on-hand <code>_inv</code> is the source of truth for how many you have.
+            <span style={{color:'#b91c1c',fontWeight:700}}> Over-tracked</span> = boxes claim more than on-hand (investigate: double-count, or stock left a box without scan-out).
+            <span style={{color:'#0e7490',fontWeight:700}}> Loose</span> = on-hand not yet in a box (expected while rolling out box tracking).
+          </div>
+          {rows.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No stock boxes yet — receive a PO to create one.</div>:
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+            <div style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',background:'#f8fafc',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>
+              <div>SKU</div><div>Sizes (boxed / on-hand)</div><div style={{textAlign:'right'}}>Boxed</div><div style={{textAlign:'right'}}>Status</div>
+            </div>
+            {rows.map((r,ri)=>(
+              <div key={r.sku} style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',borderTop:'1px solid #f1f5f9',background:r.over>0?'#fef2f2':ri%2?'#fff':'#fafbfc',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,fontFamily:'monospace',fontSize:12}}>{r.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{[r.name,r.color&&r.color!=='—'?r.color:''].filter(Boolean).join(' · ')}</div>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3}}>{r.boxIds.map(id=><button key={id} type="button" onClick={()=>handleScanResult(id)} style={{cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',borderRadius:5,padding:'0 5px',fontSize:10,fontFamily:'monospace',color:'#475569'}}>{id}</button>)}</div>
+                </div>
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{r.cells.map(c=>(
+                  <span key={c.sz} style={{fontSize:11,padding:'2px 6px',borderRadius:5,fontWeight:700,background:c.d>0?'#fee2e2':c.d<0?'#ecfeff':'#dcfce7',color:c.d>0?'#b91c1c':c.d<0?'#0e7490':'#166534'}} title={c.d>0?(c.d+' over on-hand'):c.d<0?(-c.d+' on-hand not boxed'):'reconciled'}>{c.sz} {c.bq}/{c.oh}</span>
+                ))}</div>
+                <div style={{textAlign:'right',fontWeight:700}}>{r.boxedTotal}</div>
+                <div style={{textAlign:'right',fontWeight:700,fontSize:11,color:r.over>0?'#b91c1c':r.loose>0?'#0e7490':'#16a34a'}}>{r.over>0?('⚠ +'+r.over):r.loose>0?('◦ '+r.loose):'✓'}</div>
+              </div>
+            ))}
+          </div>}
+          <div style={{marginTop:18,fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Active boxes ({active.length})</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {active.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No active boxes.</div>:
+              active.slice().sort((a,b)=>(a.id||'').localeCompare(b.id||'')).map(b=>{const u=boxUnits(b);const kc={stock:'#0e7490',fulfillment:'#166534',consolidation:'#7c3aed',receiving:'#c2410c'}[b.kind]||'#475569';
+                return<button key={b.id} type="button" onClick={()=>handleScanResult(b.id)} title={(b.kind||'box')+' · '+(b.status||'staged')} style={{cursor:'pointer',border:'1px solid #e2e8f0',borderLeft:'3px solid '+kc,background:'#fff',borderRadius:6,padding:'4px 8px',fontSize:11,textAlign:'left'}}>
+                  <div style={{fontFamily:'monospace',fontWeight:700,color:kc}}>{b.id}</div>
+                  <div style={{fontSize:10,color:'#94a3b8'}}>{u} unit{u!==1?'s':''}{b.status&&b.status!=='staged'?' · '+b.status:''}</div>
+                </button>;})}
+          </div>
+        </>;
+      })()}
     </>}
     </>);
   };
