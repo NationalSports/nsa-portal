@@ -23932,17 +23932,23 @@ export default function App(){
       });
     };
 
-    // A bill is ready to push to the portal when it has either an auto-matched PO or a
-    // complete manual decoration target (SO + existing po_line, or SO + item for create).
-    const _billIsReadyToPush=b=>{
-      if(!b||!b.selected||b.portalStatus||b.reviewLater)return false;// "look at later" bills sit in limbo
-      const p=b.parsed;if(!p)return false;
+    // Selection-agnostic: does this parsed bill have a valid push target (auto-matched PO or a
+    // complete manual decoration target)? Used by the live review triage below.
+    const _billHasTarget=p=>{
+      if(!p)return false;
       if(p.matchedPOSource)return true;
       const t=p._manualTarget;
       if(!t||!t.soId||p.kind!=='decoration')return false;
       if(t.mode==='existing')return !!t.decoPoId;
       if(t.mode==='create')return true;// applies to SO — no per-item pick required
       return false;
+    };
+
+    // A bill is ready to push to the portal when it's selected, not already pushed/parked, and
+    // has a target (auto-matched PO or a complete manual decoration target).
+    const _billIsReadyToPush=b=>{
+      if(!b||!b.selected||b.portalStatus||b.reviewLater)return false;// "look at later" bills sit in limbo
+      return _billHasTarget(b.parsed);
     };
 
     // Toggle a bill's "look at later" flag. These bills are parked in limbo — neither pushed to the
@@ -24099,7 +24105,11 @@ export default function App(){
       // parsed size doesn't line up with any target row. One-size goods (OSFA hats, bags) often get
       // a stray digit read as their "size" (e.g. IU2788 parsed as size "5" vs the OSFA on the PO),
       // which used to surface as a false "no match" even though the SKU clearly ties to the PO.
-      let sameSkuSize=size?sameSku.filter(it=>(it.size||'').toUpperCase()===size):sameSku;
+      // Compare by canonical size so vendor label drift lines up: shoe half-sizes "9-"/"10-" vs the
+      // PO's "9.5"/"10.5", adidas "OSFM" vs "OSFA", "MED" vs "M" — otherwise every half-size row
+      // fell through to the SKU-only fallback and mis-displayed as the first size with "(verify)".
+      const canonSize=_canonBillSize(size);
+      let sameSkuSize=size?sameSku.filter(it=>{const ts=(it.size||'').toUpperCase();return ts===size||_canonBillSize(ts)===canonSize}):sameSku;
       if(sameSkuSize.length===0)sameSkuSize=sameSku;
       let candidates=sameSkuSize;
       if(billColor&&sameSkuSize.some(c=>c.color)){
@@ -24514,6 +24524,21 @@ export default function App(){
       if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
       errs.push(..._billOverBillingErrors(p));
       return errs;
+    };
+
+    // Live triage for a bill sitting in the review list — surfaced immediately, before any push.
+    // Returns null for bills already pushed/parked (out of the running); otherwise flags whether the
+    // bill "matches up perfectly" (has a target AND no duplicate/over-billing problems). issue=true is
+    // anything that doesn't: no PO match, or a blocking problem. Warnings are advisory, not blocking.
+    const _billTriage=b=>{
+      if(!b||b.portalStatus==='success'||b.reviewLater)return null;
+      const p=b.parsed;
+      const matched=_billHasTarget(p);
+      const errs=matched?_validateBillForPush(p):[];
+      const issue=!matched||errs.length>0;
+      const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
+        :(errs.length?errs.join(' · '):'');
+      return{matched,errs,issue,reason};
     };
 
     // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
@@ -25622,6 +25647,27 @@ export default function App(){
 
         {/* Review parsed bills */}
         {billImport.step==='review'&&<>
+          {/* Live triage — surfaces issues the moment bills are parsed, with a one-click way to park
+              everything that doesn't match up perfectly under "Look at later". */}
+          {(()=>{
+            const triaged=billImport.parsed.map(b=>({b,t:_billTriage(b)})).filter(x=>x.t);
+            const issues=triaged.filter(x=>x.t.issue).map(x=>x.b);
+            const clean=triaged.filter(x=>!x.t.issue).length;
+            if(!triaged.length)return null;// all pushed/parked
+            if(!issues.length)return <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,fontWeight:700,color:'#166534'}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
+            return <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'10px 14px',marginBottom:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+              <span style={{fontSize:18}}>⚠️</span>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{issues.length} of {triaged.length} bill{triaged.length===1?'':'s'} don&rsquo;t match up cleanly</div>
+                <div style={{fontSize:11,color:'#92400e',marginTop:2}}>No PO match, a duplicate doc&nbsp;#, or billing more than was ordered.{clean>0?' '+clean+' match cleanly and can still be pushed.':''}</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#f59e0b',borderColor:'#f59e0b',whiteSpace:'nowrap'}}
+                title="Move every bill that doesn't match perfectly to Look at later, so you can push the clean ones now"
+                onClick={()=>{const ids=issues.map(b=>b.id);_parkBillsForLater(ids);nf(ids.length+' bill'+(ids.length===1?'':'s')+' moved to Look at later')}}>
+                🕒 Move {issues.length} to Look at later
+              </button>
+            </div>;
+          })()}
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
@@ -25638,7 +25684,8 @@ export default function App(){
           {billImport.parsed.map((b,bi)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
-            return<div key={bi} className="card" style={{marginBottom:12,border:b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
+            const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
+            return<div key={bi} className="card" style={{marginBottom:12,border:b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':tri&&tri.issue?'2px solid #f59e0b':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
               <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.reviewLater?'#fffbeb':b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
                 {!b.qbStatus&&!b.reviewLater&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
@@ -25649,6 +25696,7 @@ export default function App(){
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
+                {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
                 {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Look at later</span>}
                 {!b.qbStatus&&!b.portalStatus&&<button onClick={()=>_setBillReviewLater(b.id,!b.reviewLater)}
@@ -25658,6 +25706,14 @@ export default function App(){
                   {b.reviewLater?'↩ Un-flag':'🕒 Look at later'}</button>}
               </div>
               <div className="card-body" style={{padding:0}}>
+                {/* Issue banner — surfaces blocking problems (duplicate doc#, over-billing) immediately */}
+                {tri&&tri.errs.length>0&&<div style={{padding:'8px 14px',background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>
+                  <div style={{fontSize:11,fontWeight:800,color:'#b91c1c',marginBottom:2,display:'flex',alignItems:'center',gap:6,justifyContent:'space-between'}}>
+                    <span>⚠️ Won&rsquo;t push cleanly:</span>
+                    {!b.qbStatus&&!b.portalStatus&&!b.reviewLater&&<button onClick={()=>_setBillReviewLater(b.id,true)} style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>🕒 Look at later</button>}
+                  </div>
+                  {tri.errs.map((e,ei)=><div key={ei} style={{fontSize:11,color:'#b91c1c'}}>&bull; {e}</div>)}
+                </div>}
                 {/* PO Match banner */}
                 {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
                   <span style={{fontSize:14}}>&#128279;</span>
