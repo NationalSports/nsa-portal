@@ -189,69 +189,104 @@ function ProductPicker({ value, sku, productName, onPick }) {
 }
 
 // ─── Shared kit-items table editor (used by catalog + new-session) ────────────
-// Add/remove rows, name them, set color, attach SKUs per category (Youth/Women's/Adult).
+// Add/remove rows, name them, set color, attach SKUs. Every item carries an
+// Adult SKU by default; Youth and Women's are optional and added per item only
+// when it actually splits that way (jerseys, shorts). Single-SKU pieces like a
+// backpack stay clean with just the one product. The roster's size dropdowns and
+// inventory lookup resolve a player's SKU by their category, falling back to the
+// Adult product whenever a Youth/Women's variant isn't set — so an Adult-only
+// item still works for every player.
+function KitItemRow({ ki, idx, patchItem, removeItem }) {
+  const hasYouth = !!(ki.product_youth_id || ki.sku_youth);
+  const hasWomens = !!(ki.product_womens_id || ki.sku_womens);
+  const [showYouth, setShowYouth] = useState(hasYouth);
+  const [showWomens, setShowWomens] = useState(hasWomens);
+
+  const pickAdult = (p) => patchItem(idx, p
+    ? { product_id: p.id, sku: p.sku, product_name: p.name }
+    : { product_id: '', sku: '', product_name: '' });
+  const pickYouth = (p) => patchItem(idx, p
+    ? { product_youth_id: p.id, sku_youth: p.sku, product_youth_name: p.name }
+    : { product_youth_id: '', sku_youth: '', product_youth_name: '' });
+  const pickWomens = (p) => patchItem(idx, p
+    ? { product_womens_id: p.id, sku_womens: p.sku, product_womens_name: p.name }
+    : { product_womens_id: '', sku_womens: '', product_womens_name: '' });
+
+  const variant = (label, color, picker, onRemove) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 50, flexShrink: 0, fontSize: 9.5, fontWeight: 800, letterSpacing: 0.3, textTransform: 'uppercase', color }}>{label}</span>
+      {picker}
+      {onRemove && <button type="button" onClick={onRemove} title="Remove this size group"
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button>}
+    </div>
+  );
+  const addBtn = (label, onClick) => (
+    <button type="button" onClick={onClick}
+      style={{ padding: '2px 9px', borderRadius: 999, border: '1px dashed #cbd5e1', background: '#fff', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', color: '#475569' }}>+ {label}</button>
+  );
+
+  return (
+    <tr style={{ borderTop: '1px solid #f1f5f9', verticalAlign: 'top' }}>
+      <td style={{ padding: '8px 6px' }}>
+        <input value={ki.label || ''} placeholder="e.g. Jersey" onChange={e => patchItem(idx, { label: e.target.value })}
+          style={{ border: 'none', fontSize: 12, fontWeight: 600, outline: 'none', minWidth: 100 }} />
+      </td>
+      <td style={{ padding: '8px 6px', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{ki.slot}</td>
+      <td style={{ padding: '8px 6px' }}>
+        <input value={ki.color || ''} placeholder="e.g. White" onChange={e => patchItem(idx, { color: e.target.value })}
+          style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '3px 6px', width: 78, outline: 'none' }} />
+      </td>
+      <td style={{ padding: '8px 6px', minWidth: 280 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {variant('Adult', '#0b1220', <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={pickAdult} />)}
+          {showYouth && variant('Youth', '#b45309', <ProductPicker value={ki.product_youth_id} sku={ki.sku_youth} productName={ki.product_youth_name} onPick={pickYouth} />, () => { pickYouth(null); setShowYouth(false); })}
+          {showWomens && variant("Women's", '#9d174d', <ProductPicker value={ki.product_womens_id} sku={ki.sku_womens} productName={ki.product_womens_name} onPick={pickWomens} />, () => { pickWomens(null); setShowWomens(false); })}
+          {(!showYouth || !showWomens) && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 1 }}>
+              {!showYouth && addBtn('Youth', () => setShowYouth(true))}
+              {!showWomens && addBtn("Women's", () => setShowWomens(true))}
+            </div>
+          )}
+        </div>
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+        <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => patchItem(idx, { qty: parseInt(e.target.value) || 1 })}
+          style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+        <input type="checkbox" checked={!!ki.takes_number} onChange={e => patchItem(idx, { takes_number: e.target.checked })} />
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+        <input type="checkbox" checked={!!ki.gk_only} onChange={e => patchItem(idx, { gk_only: e.target.checked })} />
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+        <input type="checkbox" checked={!!ki.sock} onChange={e => patchItem(idx, { sock: e.target.checked })} />
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+        <button type="button" onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
+      </td>
+    </tr>
+  );
+}
+
 function KitItemsTableEditor({ items, setItems }) {
   const patchItem = (idx, patch) => setItems(p => p.map((it, i) => i === idx ? { ...it, ...patch } : it));
   const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', color: '', qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' }]);
   const removeItem = (idx) => setItems(p => p.filter((_, i) => i !== idx));
-  const onPickYouth = (idx) => (p) => patchItem(idx, p
-    ? { product_youth_id: p.id, sku_youth: p.sku, product_youth_name: p.name }
-    : { product_youth_id: '', sku_youth: '', product_youth_name: '' });
-  const onPickWomens = (idx) => (p) => patchItem(idx, p
-    ? { product_womens_id: p.id, sku_womens: p.sku, product_womens_name: p.name }
-    : { product_womens_id: '', sku_womens: '', product_womens_name: '' });
-  const onPickAdult = (idx) => (p) => patchItem(idx, p
-    ? { product_id: p.id, sku: p.sku, product_name: p.name }
-    : { product_id: '', sku: '', product_name: '' });
 
   return (
     <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflowX: 'auto', marginBottom: 20 }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 900 }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
         <thead>
           <tr style={{ background: '#f8fafc' }}>
-            {['Item', 'Slot key', 'Color', 'Youth SKU (YM)', "Women's SKU (WM)", 'Adult SKU (AM)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+            {['Item', 'Slot key', 'Color', 'Products / SKU', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
               <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {items.map((ki, idx) => (
-            <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
-              <td style={{ padding: '4px 6px' }}>
-                <input value={ki.label || ''} placeholder="e.g. Jersey" onChange={e => patchItem(idx, { label: e.target.value })}
-                  style={{ border: 'none', fontSize: 12, outline: 'none', minWidth: 100 }} />
-              </td>
-              <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>{ki.slot}</td>
-              <td style={{ padding: '4px 6px' }}>
-                <input value={ki.color || ''} placeholder="e.g. White" onChange={e => patchItem(idx, { color: e.target.value })}
-                  style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '3px 6px', width: 78, outline: 'none' }} />
-              </td>
-              <td style={{ padding: '4px 6px' }}>
-                <ProductPicker value={ki.product_youth_id} sku={ki.sku_youth} productName={ki.product_youth_name} onPick={onPickYouth(idx)} />
-              </td>
-              <td style={{ padding: '4px 6px' }}>
-                <ProductPicker value={ki.product_womens_id} sku={ki.sku_womens} productName={ki.product_womens_name} onPick={onPickWomens(idx)} />
-              </td>
-              <td style={{ padding: '4px 6px' }}>
-                <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={onPickAdult(idx)} />
-              </td>
-              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => patchItem(idx, { qty: parseInt(e.target.value) || 1 })}
-                  style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
-              </td>
-              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                <input type="checkbox" checked={!!ki.takes_number} onChange={e => patchItem(idx, { takes_number: e.target.checked })} />
-              </td>
-              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                <input type="checkbox" checked={!!ki.gk_only} onChange={e => patchItem(idx, { gk_only: e.target.checked })} />
-              </td>
-              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                <input type="checkbox" checked={!!ki.sock} onChange={e => patchItem(idx, { sock: e.target.checked })} />
-              </td>
-              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                <button type="button" onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
-              </td>
-            </tr>
+            <KitItemRow key={ki.slot} ki={ki} idx={idx} patchItem={patchItem} removeItem={removeItem} />
           ))}
         </tbody>
       </table>
@@ -307,7 +342,7 @@ function ItemCatalogManager({ customer, onClose }) {
           <button onClick={() => onClose && onClose(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
         </div>
         <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 16 }}>
-          Load the kit pieces this account can order. Attach a <b>product (SKU)</b> to each so coaches see live size availability. Coaches pick from these when building their teams' kits.
+          Load the kit pieces this account can order. Each item takes an <b>Adult SKU</b> by default — add a <b>Youth</b> or <b>Women's</b> SKU only when the item splits that way. Link a real product so coaches see live size availability; single-SKU pieces like a backpack just need the one. Coaches pick from these when building their teams' kits.
         </div>
         {loading ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : (
           <KitItemsTableEditor items={items} setItems={setItems} />
@@ -1155,6 +1190,12 @@ export function RosterOrdersStaff({ customer, nf }) {
   const [leadInvite, setLeadInvite] = useState({ open: false, email: '', name: '', sending: false, done: '' });
   const [openSession, setOpenSession] = useState(null);
   const [coaches, setCoaches] = useState([]); // account-level coach access list
+  const [catalog, setCatalog] = useState(null); // the customer's item catalog (for the on-page summary)
+
+  const loadCatalog = useCallback(async () => {
+    if (!customer?.id) return;
+    setCatalog(await fetchCatalog(customer.id));
+  }, [customer?.id]);
 
   const loadCoaches = useCallback(async () => {
     if (!customer?.id) return;
@@ -1190,9 +1231,10 @@ export function RosterOrdersStaff({ customer, nf }) {
         .eq('customer_id', customer.id).order('created_at', { ascending: false });
       if (!cancelled) { setSessions(data || []); setLoading(false); }
       loadCoaches();
+      loadCatalog();
     })();
     return () => { cancelled = true; };
-  }, [customer?.id, loadCoaches]);
+  }, [customer?.id, loadCoaches, loadCatalog]);
 
   const onCreated = (sess) => {
     setSessions(prev => [sess, ...prev]);
@@ -1230,6 +1272,37 @@ export function RosterOrdersStaff({ customer, nf }) {
           </button>
         </div>
       </div>
+
+      {catalog && Array.isArray(catalog.items) && catalog.items.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, border: '1px solid #e2e8f0', borderRadius: 12, padding: '11px 14px', marginBottom: 16, background: '#fff' }}>
+          <div style={{ fontSize: 18 }}>🧩</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: '#0b1220' }}>
+              Item catalog · {catalog.items.length} item{catalog.items.length === 1 ? '' : 's'}
+              <span style={{ fontWeight: 600, color: '#64748b' }}>
+                {' · '}{catalog.items.filter(it => it.product_id || it.product_youth_id || it.product_womens_id).length} linked to live inventory
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {catalog.items.slice(0, 10).map((it, i) => {
+                const linked = !!(it.product_id || it.product_youth_id || it.product_womens_id);
+                return (
+                  <span key={i} title={linked ? 'SKU linked — live availability shows' : 'No SKU yet — link one in Manage items'}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 999, padding: '1px 8px' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: linked ? '#16a34a' : '#cbd5e1' }} />
+                    {it.label || 'Untitled'}
+                  </span>
+                );
+              })}
+              {catalog.items.length > 10 && <span style={{ alignSelf: 'center' }}>+{catalog.items.length - 10} more</span>}
+            </div>
+          </div>
+          <button onClick={() => setShowCatalog(true)}
+            style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer', color: '#0b1220', whiteSpace: 'nowrap' }}>
+            Edit catalog
+          </button>
+        </div>
+      )}
 
       {leadInvite.open && (
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 16, background: '#f8fafc' }}>
@@ -1306,7 +1379,7 @@ export function RosterOrdersStaff({ customer, nf }) {
         </div>
       )}
       {showCreate && <CreateSessionModal customer={customer} onCreated={onCreated} onClose={() => setShowCreate(false)} />}
-      {showCatalog && <ItemCatalogManager customer={customer} onClose={() => setShowCatalog(false)} />}
+      {showCatalog && <ItemCatalogManager customer={customer} onClose={() => { setShowCatalog(false); loadCatalog(); }} />}
     </div>
   );
 }
