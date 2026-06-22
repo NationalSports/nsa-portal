@@ -2299,12 +2299,14 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
 // so the guide doubles as a live progress checklist (great for training on the
 // Orange Lutheran Football demo store).
 //
-// To illustrate a step with a real screenshot, add `shot: '<image url>'` to it
-// (host the PNG on Cloudinary like the rest of the app) — the GuidePanel renders
-// it automatically. Left off here until captured from the live builder.
+// Each step's `shot` is a screenshot of that page, captured from the live Orange
+// Lutheran Football demo store and hosted on Cloudinary (like the rest of the
+// app); the GuidePanel renders it automatically. To refresh one, recapture the
+// page and replace its URL.
 const GUIDE_STEPS = [
   { id: 'setup', n: 1, title: 'Store setup', icon: '⚙️', target: 'settings',
     where: 'Header → ⚙ Settings → “1 · Setup”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144718/nsa-store-guide/step-1-setup.png',
     blurb: 'Link the team and set the store’s name, web address, dates and ordering rules.',
     todo: [
       'Link the customer (team/club) first — it unlocks the art library',
@@ -2317,6 +2319,7 @@ const GUIDE_STEPS = [
     done: (s) => !!s.customer_id && !!s.name && !!s.slug },
   { id: 'branding', n: 2, title: 'Delivery & branding', icon: '🎨', target: 'settings',
     where: 'Header → ⚙ Settings → “2 · Delivery & branding”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144719/nsa-store-guide/step-2-branding.png',
     blurb: 'Choose how orders are delivered and give the store its team look.',
     todo: [
       'Delivery: ship to each home, or bulk-deliver to the team',
@@ -2327,6 +2330,7 @@ const GUIDE_STEPS = [
     done: (s) => !!s.logo_url },
   { id: 'catalog', n: 3, title: 'Add items', icon: '🛍️', target: 'catalog',
     where: 'Catalog tab → “Add items”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144721/nsa-store-guide/step-3-catalog.png',
     blurb: 'Build the product line — browse the catalog, import a list, start from a template, or build with AI.',
     todo: [
       'Add items: Browse products / Import list / Add template / Build with AI',
@@ -2337,6 +2341,7 @@ const GUIDE_STEPS = [
     done: (s, d) => (d.catalog || []).length > 0 },
   { id: 'art', n: 4, title: 'Art & logos', icon: '🖼️', target: 'art',
     where: 'Art & Logos tab',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144722/nsa-store-guide/step-4-art.png',
     blurb: 'Place the team logos and decorations on the gear, and build mockups.',
     todo: [
       'Add team logos to the store art library',
@@ -2346,6 +2351,7 @@ const GUIDE_STEPS = [
     done: (s, d) => (s.store_art || []).length > 0 || (d.catalog || []).some((c) => (c.decorations || []).length) },
   { id: 'launch', n: 5, title: 'Launch the store', icon: '🚀', target: 'launch',
     where: 'Header → 🚀 Launch store',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144723/nsa-store-guide/step-5-launch.png',
     blurb: 'Preview the storefront, then open it for shoppers and share the link.',
     todo: [
       'Click “↗ View storefront” to preview it',
@@ -2355,6 +2361,7 @@ const GUIDE_STEPS = [
     done: (s) => s.status === 'open' || s.status === 'closed' },
   { id: 'operate', n: 6, title: 'Orders & fulfillment', icon: '📦', target: 'orders',
     where: 'Orders tab (after launch)',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144724/nsa-store-guide/step-6-orders.png',
     blurb: 'Watch orders come in, batch them into a Sales Order, and track fulfillment.',
     todo: [
       'Review orders as they arrive',
