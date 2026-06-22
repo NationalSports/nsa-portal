@@ -3914,6 +3914,7 @@ export default function App(){
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[whBoxes,setWhBoxes]=useState([]);// warehouse box records (overlay; loaded from `boxes` table — [] if table absent)
+  const[boxModal,setBoxModal]=useState(null);// box currently open in the Box Action modal (a scanned BX plate, survivor-resolved)
   const[assignedTodos,setAssignedTodos]=useState([]);
   // When each OMG store was first brought into the portal, keyed by store id:
   // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
@@ -4983,6 +4984,37 @@ export default function App(){
       saveBox({id,kind:'stock',po_id:poId||null,so_id:so_id||(soIds.length===1?soIds[0]:null),source_refs:poId?[{type:'PO',id:poId}]:[],contents,status:'staged'});
       return id;
     }catch(e){/* overlay box is best-effort */return null}
+  };
+  // ── Box Action helpers (used by the Box Action modal) ──
+  // Total units across a box's contents.
+  const boxUnits=(b)=>(b?.contents||[]).reduce((a,c)=>a+Object.values(c.sizes||{}).reduce((x,v)=>x+(v||0),0),0);
+  // Persist a status change and keep the open modal in sync.
+  const setBoxStatus=(b,status)=>{if(!b)return;saveBox({id:b.id,status});setBoxModal({...b,status})};
+  // Reprint a box's 4×6 plate (QR → ?scan=BX-####), using the shared label renderer.
+  const printBoxLabel=(b)=>{if(!b)return;
+    const items=(b.contents||[]).map(c=>{const sz=Object.entries(c.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((c.sku||'')+' '+(c.name||'')).trim(),detail:[(c.color&&c.color!=='—')?c.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
+    const refs=[b.if_id,b.so_id,b.po_id].filter(Boolean).join(' · ');
+    printQrLabel({code:b.id,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(b.id),subtitle:refs,note:(b.kind||'box').toUpperCase()+(b.status&&b.status!=='staged'?' · '+b.status.toUpperCase():''),items,codeSub:boxUnits(b)+' units · scan box'});
+  };
+  // Combine a box into another plate: append src contents into the target, dedupe source_refs,
+  // then mark src combined (merged_into=target). Overlay-only; never touches _inv. Follows the
+  // target through its own merge chain so a stale plate still resolves to the live survivor.
+  const combineBox=(src,targetRaw)=>{
+    const targetId=(targetRaw||'').trim().toUpperCase();
+    if(!src||!targetId)return;
+    if(!targetId.startsWith('BX-')){nf('Enter a box plate like BX-2001','warn');return}
+    if(targetId===(src.id||'').toUpperCase()){nf('Cannot combine a box into itself','warn');return}
+    let tgt=whBoxes.find(b=>(b.id||'').toUpperCase()===targetId);
+    let guard=0;while(tgt&&tgt.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===tgt.merged_into);if(!nx)break;tgt=nx}
+    if(!tgt){nf('Box '+targetId+' not found','warn');return}
+    const refKey=r=>(r.type||'')+':'+(r.id||'');
+    const mergedRefs=[...(tgt.source_refs||[])];const seen=new Set(mergedRefs.map(refKey));
+    [...(src.source_refs||[]),...(src.if_id?[{type:'IF',id:src.if_id}]:[]),...(src.po_id?[{type:'PO',id:src.po_id}]:[])].forEach(r=>{if(r.id&&!seen.has(refKey(r))){seen.add(refKey(r));mergedRefs.push(r)}});
+    const newTgt={...tgt,contents:[...(tgt.contents||[]),...(src.contents||[])],source_refs:mergedRefs};
+    saveBox(newTgt);
+    saveBox({id:src.id,status:'combined',merged_into:tgt.id,contents:[]});
+    nf('Combined '+src.id+' → '+tgt.id);
+    setBoxModal(newTgt);
   };
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
@@ -30651,15 +30683,16 @@ export default function App(){
     // Also handle JSON-encoded QR data (legacy format)
     try{const j=JSON.parse(scanVal);if(j.id)scanVal=j.id}catch{}
     let upper=scanVal.toUpperCase();
-    // Box plate (BX-####): resolve the box (following a combined plate to its survivor) and
-    // route to its IF/SO/PO. (The full Box Action modal lands in the next increment.)
+    // Box plate (BX-####): resolve the box (following a combined plate to its live survivor)
+    // and open the Box Action modal — a global overlay with contents + actions (open linked
+    // IF/SO/PO, print, mark shipped/staged, void, combine). Works from any page.
     if(upper.startsWith('BX-')){
       let bx=whBoxes.find(b=>(b.id||'').toUpperCase()===upper);
       let guard=0;while(bx&&bx.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===bx.merged_into);if(!nx)break;bx=nx}
       if(!bx){nf('Box "'+scanVal+'" not found','warn');return}
-      nf('Scanned box '+bx.id+(bx.if_id?(' → '+bx.if_id):''));
-      scanVal=bx.if_id||bx.so_id||bx.po_id||'';upper=scanVal.toUpperCase();
-      if(!scanVal){setPg('warehouse');return}
+      setBoxModal(bx);
+      nf('Scanned box '+bx.id+((bx.id||'').toUpperCase()!==upper?' (survivor of '+scanVal+')':''));
+      return;
     }
     // Check if it's an Item Fulfillment (IF-XXXX)
     if(upper.startsWith('IF-')){
@@ -31429,6 +31462,51 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
+
+    {/* BOX ACTION MODAL — opened by scanning a BX-#### plate (global overlay; works from any page) */}
+    {boxModal&&(()=>{const b=boxModal;const units=boxUnits(b);
+      const kindColors={stock:{bg:'#eff6ff',fg:'#1e40af'},fulfillment:{bg:'#f0fdf4',fg:'#166534'},consolidation:{bg:'#faf5ff',fg:'#7c3aed'},receiving:{bg:'#fff7ed',fg:'#c2410c'}};
+      const statusColors={staged:{bg:'#f1f5f9',fg:'#475569'},at_deco:{bg:'#fff7ed',fg:'#c2410c'},shipped:{bg:'#ecfdf5',fg:'#047857'},combined:{bg:'#faf5ff',fg:'#7c3aed'},voided:{bg:'#fef2f2',fg:'#b91c1c'}};
+      const kc=kindColors[b.kind]||{bg:'#f1f5f9',fg:'#475569'};const sc=statusColors[b.status]||{bg:'#f1f5f9',fg:'#475569'};
+      const open=(ref)=>{if(!ref)return;setBoxModal(null);setScanModalOpen(false);handleScanResult(ref)};
+      const isLocked=b.status==='combined'||b.status==='voided';
+      return <div className="modal-overlay" onClick={()=>setBoxModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+            <span style={{fontSize:20,fontWeight:800,fontFamily:'monospace'}}>{b.id}</span>
+            <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6,background:kc.bg,color:kc.fg,textTransform:'uppercase'}}>{b.kind||'box'}</span>
+            <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6,background:sc.bg,color:sc.fg,textTransform:'uppercase'}}>{b.status||'staged'}</span>
+          </div>
+          <button onClick={()=>setBoxModal(null)} style={{background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:22,lineHeight:1}}>×</button>
+        </div>
+        <div style={{padding:'14px 20px',maxHeight:'58vh',overflowY:'auto'}}>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+            {b.if_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.if_id)}>Open {b.if_id}</button>}
+            {b.so_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.so_id)}>Open {b.so_id}</button>}
+            {b.po_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.po_id)}>Open {b.po_id}</button>}
+            {b.merged_into&&<button className="btn btn-sm btn-secondary" onClick={()=>handleScanResult(b.merged_into)}>→ Survivor {b.merged_into}</button>}
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>CONTENTS · {units} unit{units!==1?'s':''}</div>
+          {(b.contents||[]).length===0?<div style={{fontSize:13,color:'#94a3b8',fontStyle:'italic',padding:'8px 0'}}>Empty box.</div>:
+            (b.contents||[]).map((c,ci)=>{const sz=Object.entries(c.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);
+              return <div key={ci} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'6px 0',borderTop:ci?'1px solid #f1f5f9':'none'}}>
+                <div><div style={{fontWeight:700}}>{[c.sku,c.name].filter(Boolean).join(' ')}</div><div style={{fontSize:11,color:'#64748b'}}>{[c.color&&c.color!=='—'?c.color:'',c.so_id||'',c.if_id||''].filter(Boolean).join(' · ')}</div></div>
+                <div style={{textAlign:'right',whiteSpace:'nowrap'}}><div style={{fontWeight:700}}>{q}</div><div style={{fontSize:11,color:'#64748b'}}>{sz.map(([s,v])=>s+':'+v).join('  ')}</div></div>
+              </div>;})}
+          {b.bin&&<div style={{marginTop:10,fontSize:12,color:'#475569'}}><strong>Bin:</strong> {b.bin}</div>}
+          {b.notes&&<div style={{marginTop:4,fontSize:12,color:'#475569'}}><strong>Notes:</strong> {b.notes}</div>}
+        </div>
+        <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+          <button className="btn btn-sm btn-secondary" onClick={()=>printBoxLabel(b)}>🖨️ Print 4×6</button>
+          {!isLocked&&<button className="btn btn-sm btn-secondary" onClick={()=>{const t=window.prompt('Combine '+b.id+' into which box plate? (e.g. BX-2001)');if(t)combineBox(b,t)}}>Combine into…</button>}
+          <div style={{marginLeft:'auto',display:'flex',gap:8,flexWrap:'wrap'}}>
+            {!isLocked&&b.status!=='staged'&&<button className="btn btn-sm btn-secondary" onClick={()=>setBoxStatus(b,'staged')}>Mark Staged</button>}
+            {!isLocked&&b.status!=='shipped'&&<button className="btn btn-sm btn-primary" onClick={()=>setBoxStatus(b,'shipped')}>Mark Shipped</button>}
+            {b.status==='voided'?<button className="btn btn-sm btn-secondary" onClick={()=>setBoxStatus(b,'staged')}>Restore</button>:
+              (b.status!=='combined'&&<button className="btn btn-sm btn-secondary" style={{color:'#b91c1c'}} onClick={()=>{if(window.confirm('Void '+b.id+'? It will be excluded from reconciliation.'))setBoxStatus(b,'voided')}}>Void</button>)}
+          </div>
+        </div>
+      </div></div>;})()}
   </div>);
 }
 
