@@ -6597,8 +6597,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
       const pendingBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchKey);
       const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
-      const poItems=vItems.map(it=>{const openSizes=openSizesFor(it);
+      // Each open SO line for this vendor, with its remaining per-size quantities.
+      const _poLinesRaw=vItems.map(it=>{const openSizes=openSizesFor(it);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
+      // Collapse lines that are the SAME orderable garment so a blank bought for several
+      // decorations shows as ONE PO line (entered/ordered together) while each decoration's SO
+      // line keeps its own PO + receiving record (quantities are split back on submit). Key on
+      // SKU+color; Momentec carries a design-specific order SKU (_mt_style/_mt_color) the vendor
+      // treats as distinct, so those never merge even when the base SKU/color match.
+      const _SZ_ORDER=['XS','S','M','L','XL','2XL','3XL','4XL'];
+      const _openMapOf=osz=>{const m={};osz.forEach(([sz,v])=>{m[sz]=v});return m};
+      const _grpKeyOf=it=>[it.sku||'',it.color||'',it._mt_style||'',it._mt_color||''].join('|');
+      const _grpMap=new Map();
+      _poLinesRaw.forEach(it=>{const k=_grpKeyOf(it);if(!_grpMap.has(k))_grpMap.set(k,[]);_grpMap.get(k).push(it)});
+      const poItems=[..._grpMap.values()].map(members=>{
+        const head=members[0];
+        const memberInfo=members.map(m=>({...m,_openMap:_openMapOf(m.openSizes),_soQty:Object.values(safeSizes(m)).reduce((a,v)=>a+safeNum(v),0)||safeNum(m.est_qty)}));
+        if(members.length===1)return{...head,members:memberInfo,_soQty:memberInfo[0]._soQty};
+        const sizeTot={};members.forEach(m=>m.openSizes.forEach(([sz,v])=>{sizeTot[sz]=(sizeTot[sz]||0)+v}));
+        const openSizes=Object.entries(sizeTot).filter(([,v])=>v>0).sort((a,b)=>{const ia=_SZ_ORDER.indexOf(a[0]),ib=_SZ_ORDER.indexOf(b[0]);return(ia===-1?99:ia)-(ib===-1?99:ib)});
+        return{...head,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0),members:memberInfo,_soQty:memberInfo.reduce((a,m)=>a+m._soQty,0)};
+      });
       // Live PO totals — inputs are uncontrolled (defaultValue), so read the
       // DOM when present and fall back to the rendered defaults otherwise.
       // poCalcTick re-renders on input so the displayed totals stay in sync.
@@ -6607,6 +6626,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
       const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawC=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
+      // Split a collapsed group's entered per-size qtys back across its member SO lines, filling each
+      // member up to its own open qty (in line order); any surplus beyond total open lands on the first
+      // member so nothing entered is dropped. Returns [{member,sizes}]. Single-line groups pass through.
+      const _splitGroupToMembers=(grp,vi)=>{
+        const members=grp.members||[grp];
+        const alloc=members.map(()=>({}));
+        grp.openSizes.forEach(([sz,def])=>{let qty=_poQtyVal(vi,sz,def);if(!(qty>0))return;
+          for(let mi=0;mi<members.length&&qty>0;mi++){const cap=(members[mi]._openMap||{})[sz]||0;const take=Math.min(qty,cap);if(take>0){alloc[mi][sz]=take;qty-=take}}
+          if(qty>0)alloc[0][sz]=(alloc[0][sz]||0)+qty;});
+        return members.map((m,mi)=>({member:m,sizes:alloc[mi]}));
+      };
+      // The per-size unit price the PO form is showing for a group (size-upcharge inputs when present,
+      // else the single Price/Unit input), read live from the DOM. Shared by both submit paths.
+      const _groupPriceMap=(grp,vi,fallbackCost)=>{
+        const sizePriceEls=grp.openSizes.map(([sz])=>document.getElementById('po-price-'+vi+'-'+sz));
+        const hasSizePrices=sizePriceEls.some(el=>el);
+        const price={};
+        if(hasSizePrices){grp.openSizes.forEach(([sz],i)=>{const el=sizePriceEls[i];price[sz]=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:safeNum(grp._sizeCosts?.[sz])||fallbackCost})}
+        else{const el=document.getElementById('po-price-'+vi);const single=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:fallbackCost;grp.openSizes.forEach(([sz])=>{price[sz]=single})}
+        return{hasSizePrices,price};
+      };
       // Inline Deco PO — built in the SAME modal & save as the product PO so the rep never loses the
       // in-progress PO form (qtys/prices live in uncontrolled inputs and die if we swap modals).
       // Items offered mirror the standalone deco form (every SO item with sized qty); all start
@@ -6618,7 +6658,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
       // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
       // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
-      const podPoSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx));
+      const podPoSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)));
       const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podPoSel.has(idx);
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
       const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
@@ -6723,7 +6763,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(addrs[0]?.id||'warehouse'):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
             dsSub='Ships direct to school/decorator — warehouse will NOT receive or count this in'/>
-          {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
+          {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
             // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
             // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
             // vendorInv (e.g. SanMar getPricing), so catalog-added items still render per-size inputs and capture the upcharge.
@@ -6734,8 +6774,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const hasSizeUpcharges=distinctPrices.size>1;
             return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
-                <div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{collapsed?it.name.split(' - ')[0]:it.name}</strong> — {it.color}{collapsed&&<span title="Same blank ordered for multiple decorations — combined into one PO line; each decoration keeps its own receiving record" style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',border:'1px solid #e9d5ff',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🔗 {it.members.length} decorations combined</span>}</div>
                 <div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
+              {collapsed&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8,marginLeft:24}}>{it.members.map((m,mi)=><span key={mi} style={{fontSize:11,color:'#6b7280',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 8px'}}>{m.name}<span style={{color:'#94a3b8'}}> · {m.totalOpen} open</span></span>)}</div>}
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:64}}>PO Qty:</span>
                 {it.openSizes.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
@@ -6773,33 +6814,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build batch PO entry
             const isDropShip=poDropShip;
             const batchItems=[];let totalCost=0;
-            poItems.forEach((pit,vi)=>{
+            poItems.forEach((grp,vi)=>{
               if(poExcluded[vi])return;
-              const sizes={};
-              pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);sizes[sz]=el?parseInt(el.value)||0:v});
-              const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
-              const batchCatProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
-              const fallbackCost=safeNum(batchCatProd?.nsa_cost??pit.nsa_cost);
+              const batchCatProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
+              const fallbackCost=safeNum(batchCatProd?.nsa_cost??grp.nsa_cost);
               // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
-              const sizePriceEls=pit.openSizes.map(([sz])=>document.getElementById('po-price-'+vi+'-'+sz));
-              const hasSizePrices=sizePriceEls.some(el=>el);
-              const sizeCosts={};let batchUnitCost=0;let batchLineTotal=0;
-              if(hasSizePrices){
-                pit.openSizes.forEach(([sz],i)=>{const el=sizePriceEls[i];const p=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:safeNum(pit._sizeCosts?.[sz])||fallbackCost;sizeCosts[sz]=p;batchLineTotal+=(sizes[sz]||0)*p});
-                batchUnitCost=qty>0?Math.round((batchLineTotal/qty)*100)/100:fallbackCost;
-              }else{
-                const batchPriceEl=document.getElementById('po-price-'+vi);
-                batchUnitCost=batchPriceEl?parseFloat(String(batchPriceEl.value).replace(/[$,\s]/g,''))||0:fallbackCost;
-                batchLineTotal=qty*batchUnitCost;
-              }
-              totalCost+=batchLineTotal;
-              const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx,
-                // Carry Momentec order-SKU fields through so a batched Momentec PO can resolve
-                // each line's design.colorCode.size SKU at submit time (buildMomentecOrderLines).
-                ...(pit._mt_skus?{_mt_style:pit._mt_style,_mt_color:pit._mt_color,_mt_sku:pit._mt_sku,_mt_skus:pit._mt_skus}:{})};
-              if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
-              if(isDropShip)bItem.drop_ship=true;
-              batchItems.push(bItem);
+              const {hasSizePrices,price}=_groupPriceMap(grp,vi,fallbackCost);
+              // One blank, possibly several decorations: split the entered qtys back per SO line so each
+              // decoration keeps its own batch line + receiving record (the collapse is entry-only).
+              _splitGroupToMembers(grp,vi).forEach(({member,sizes})=>{
+                const qty=Object.values(sizes).reduce((a,v)=>a+v,0);if(qty<=0)return;
+                const sizeCosts={};let batchLineTotal=0;
+                Object.entries(sizes).forEach(([sz,v])=>{const p=safeNum(price[sz])||fallbackCost;sizeCosts[sz]=p;batchLineTotal+=v*p});
+                const batchUnitCost=qty>0?Math.round((batchLineTotal/qty)*100)/100:fallbackCost;
+                totalCost+=batchLineTotal;
+                const bItem={sku:member.sku,name:member.name,color:member.color,sizes,qty,unit_cost:batchUnitCost,item_idx:member._idx,
+                  // Carry Momentec order-SKU fields through so a batched Momentec PO can resolve
+                  // each line's design.colorCode.size SKU at submit time (buildMomentecOrderLines).
+                  ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})};
+                if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
+                if(isDropShip)bItem.drop_ship=true;
+                batchItems.push(bItem);
+              });
             });
             const bpId='BPO '+Date.now();
             const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
@@ -6854,49 +6890,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Save PO lines back to order items (immutable)
           const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
           const newPoLines=[];// {lineIdx,poIdx} pairs for the just-created PO so we can auto-open the modal
-          poItems.forEach((pit,vi)=>{
+          poItems.forEach((grp,vi)=>{
             if(poExcluded[vi])return;
-            const idx=pit._idx;if(idx==null)return;
-            const catProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
-            const fallbackCost=safeNum(catProd?.nsa_cost??pit.nsa_cost);
-            // Read PO qtys first so we can weight per-size prices
-            const lineSizes={};pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);lineSizes[sz]=el?parseInt(el.value)||0:v});
-            const lineQty=Object.values(lineSizes).reduce((a,v)=>a+v,0);
+            const catProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
+            const fallbackCost=safeNum(catProd?.nsa_cost??grp.nsa_cost);
             // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
-            const sizePriceEls=pit.openSizes.map(([sz])=>document.getElementById('po-price-'+vi+'-'+sz));
-            const hasSizePrices=sizePriceEls.some(el=>el);
-            const sizeCosts={};let unitCostVal=0;
-            if(hasSizePrices){
-              let lineTotal=0;
-              pit.openSizes.forEach(([sz],i)=>{const el=sizePriceEls[i];const p=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:safeNum(pit._sizeCosts?.[sz])||fallbackCost;sizeCosts[sz]=p;lineTotal+=(lineSizes[sz]||0)*p});
-              unitCostVal=lineQty>0?Math.round((lineTotal/lineQty)*100)/100:fallbackCost;
-            }else{
-              const priceEl=document.getElementById('po-price-'+vi);
-              unitCostVal=priceEl?parseFloat(String(priceEl.value).replace(/[$,\s]/g,''))||0:fallbackCost;
-            }
-            const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[],unit_cost:unitCostVal};
-            if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)poLine._size_costs=sizeCosts;
-            if(preexistingPO)poLine.preexisting=true;
-            if(isDropShip)poLine.drop_ship=true;
-            Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
-            const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
-            if(hasQty){
-              // Re-applying the same preexisting PO to an item (matched case/space-insensitively) should
-              // grow the existing line, not append a second one — appending splits the PO so its size
-              // totals stop reconciling with the SO. Only fold into a compatible line (same drop-ship
-              // mode, not batch-queued); adding ordered units doesn't disturb existing receipts/bills.
-              const mergeIdx=preexistingPO?updatedItems[idx].po_lines.findIndex(pl=>_poNorm(pl.po_id)===_poNorm(effectivePoId)&&!!pl.drop_ship===!!isDropShip&&pl.status!=='queued'):-1;
-              if(mergeIdx>=0){
-                const ex={...updatedItems[idx].po_lines[mergeIdx]};
-                Object.entries(lineSizes).forEach(([sz,v])=>{if(v>0)ex[sz]=safeNum(ex[sz])+v});
-                if(ex.unit_cost==null&&unitCostVal)ex.unit_cost=unitCostVal;
-                updatedItems[idx].po_lines=updatedItems[idx].po_lines.map((p,j)=>j===mergeIdx?ex:p);
-                newPoLines.push({lineIdx:idx,poIdx:mergeIdx});
-              }else{
-                updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
-                newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
+            const {hasSizePrices,price}=_groupPriceMap(grp,vi,fallbackCost);
+            // One blank, possibly several decorations: split the entered qtys back per SO line so each
+            // decoration keeps its own PO + receiving record (the collapse is entry-only).
+            _splitGroupToMembers(grp,vi).forEach(({member,sizes:lineSizes})=>{
+              const idx=member._idx;if(idx==null)return;
+              const lineQty=Object.values(lineSizes).reduce((a,v)=>a+v,0);if(lineQty<=0)return;
+              const sizeCosts={};let lineTotal=0;
+              Object.entries(lineSizes).forEach(([sz,v])=>{const p=safeNum(price[sz])||fallbackCost;sizeCosts[sz]=p;lineTotal+=v*p});
+              const unitCostVal=lineQty>0?Math.round((lineTotal/lineQty)*100)/100:fallbackCost;
+              const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[],unit_cost:unitCostVal};
+              if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)poLine._size_costs=sizeCosts;
+              if(preexistingPO)poLine.preexisting=true;
+              if(isDropShip)poLine.drop_ship=true;
+              Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
+              const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
+              if(hasQty){
+                // Re-applying the same preexisting PO to an item (matched case/space-insensitively) should
+                // grow the existing line, not append a second one — appending splits the PO so its size
+                // totals stop reconciling with the SO. Only fold into a compatible line (same drop-ship
+                // mode, not batch-queued); adding ordered units doesn't disturb existing receipts/bills.
+                const mergeIdx=preexistingPO?updatedItems[idx].po_lines.findIndex(pl=>_poNorm(pl.po_id)===_poNorm(effectivePoId)&&!!pl.drop_ship===!!isDropShip&&pl.status!=='queued'):-1;
+                if(mergeIdx>=0){
+                  const ex={...updatedItems[idx].po_lines[mergeIdx]};
+                  Object.entries(lineSizes).forEach(([sz,v])=>{if(v>0)ex[sz]=safeNum(ex[sz])+v});
+                  if(ex.unit_cost==null&&unitCostVal)ex.unit_cost=unitCostVal;
+                  updatedItems[idx].po_lines=updatedItems[idx].po_lines.map((p,j)=>j===mergeIdx?ex:p);
+                  newPoLines.push({lineIdx:idx,poIdx:mergeIdx});
+                }else{
+                  updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                  newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
+                }
               }
-            }
+            });
           });
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
           const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
