@@ -118,10 +118,18 @@ function buildHtml({ store, order, items, portal, testFor }) {
   const primary = store.primary_color || '#0b1f3a';
   const link = `${portal}/shop/order/${order.status_token}`;
   const testBanner = testFor ? `<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin:0 0 14px;font-size:13px;font-weight:600">⚠️ TEST EMAIL — in production this would go to <b>${testFor}</b>. No real parent was emailed.</div>` : '';
-  const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
+  // Static assets (the NSA logo) must load from the Netlify-hosted app. The
+  // marketing domain (nationalsportsapparel.com) 200-proxies SPA *routes* but
+  // 404s static files like PNGs (see netlify.toml), so deriving the logo URL
+  // from `portal` breaks the logo whenever PORTAL_PUBLIC_URL is that domain.
+  const assetBase = (process.env.PORTAL_ASSET_URL || process.env.PUBLIC_URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+  const nsaLogo = `${assetBase}/NEW%20NSA%20Logo%20on%20white.png`;
   const rows = items.map((i) => {
+    // alt = the product name so the row still reads sensibly when a mail client
+    // blocks or can't load remote images (otherwise it's just a blank gray box).
+    const alt = (i.name || i.sku || 'Item').replace(/"/g, '&quot;');
     const img = i.image_url
-      ? `<td style="width:52px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${i.image_url}" width="44" height="44" style="width:44px;height:44px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
+      ? `<td style="width:52px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${i.image_url}" width="44" height="44" alt="${alt}" style="width:44px;height:44px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
       : `<td style="width:52px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
     const det = [i.color, i.size && `Size ${i.size}`, `Qty ${i.qty || 1}`, i.player_number && `#${i.player_number}`].filter(Boolean).join(' · ');
     return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td></tr>`;
@@ -136,6 +144,7 @@ function buildHtml({ store, order, items, portal, testFor }) {
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:24px">
       ${testBanner}
       <p style="margin:0 0 14px">Hi ${order.buyer_name || 'there'}, good news — we’ve received your order${order.omg_order_number ? ` (#${order.omg_order_number})` : ''} and started getting it ready. You can follow every step — received, in production, shipped — from the link below.</p>
+      <p style="margin:0 0 14px">Please expect your order to ship in <b>about 4 weeks</b>.</p>
       <div style="text-align:center;margin:22px 0">
         <a href="${link}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:14px 32px;border-radius:9px;font-weight:800;font-size:16px">Track your order →</a>
       </div>
