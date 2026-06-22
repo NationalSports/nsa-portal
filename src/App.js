@@ -11642,18 +11642,20 @@ export default function App(){
     const _recvOne=(arr,key)=>{const s=[...new Set((arr||[]).map(x=>x[key]).filter(Boolean))];return s.length===1?s[0]:''};
     // Full program name = the SO's customer name (PO lines only carry the short alpha_tag); fall back to the tag.
     const _recvName=(soId,fallback)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fallback||''};
+    // Sales rep for the SO (customer's primary rep, else the SO creator), first name only.
+    const _recvRep=(soId)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
     const _recvNoteStyle=(boxLabel)=>/received/i.test(boxLabel||'')?'color:#166534':'color:#475569';
     // Single 4×6 — a non-batch PO, or one source PO pulled out of a batch.
     const printLabel=(items,poId,boxLabel)=>{
       const soId=_recvOne(items,'soId');
-      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
+      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),rep:_recvRep(soId),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
     };
     // One 4×6 page per source PO in a batch — each box carries its own
     // customer + items, but all scan back to the same parent PO.
     const printBatchSeparateLabels=(sourcePOs,poId,boxLabel)=>{
       const n=(sourcePOs||[]).length;
       printQrLabels((sourcePOs||[]).map((sp,i)=>({
-        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),
+        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),rep:_recvRep(sp.so_id),
         subtitle:[sp.so_id,n>1?('Box '+(i+1)+' of '+n):''].filter(Boolean).join(' · '),
         note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(sp.items),
         codeSub:_recvUnits(sp.items)+' units · scan to open '+poId
@@ -17747,7 +17749,7 @@ export default function App(){
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
-                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
                           printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
@@ -17823,7 +17825,7 @@ export default function App(){
                   color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
                   bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
                 };
-                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
+                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
                 return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge,title:t.cName||t.soId,subtitle:t.soId,totalUnits:grandNeed,items:pickItems.map(pi=>({sku:pi.sku||'',name:pi.name||'',color:pi.color||'',units:pi.needsPull,sizes:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
@@ -17852,7 +17854,7 @@ export default function App(){
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}} disabled={boxUnits===0} title="Print 4×6 box label" onClick={()=>{
                         const _sb=shipDest==='ship_customer'?{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'}:shipDest==='ship_deco'?{text:'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''),color:'#d97706',bg:'#fffbeb'}:null;
                         const _items=(box.items||[]).map(it2=>{const sz=Object.entries(it2.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it2.sku||'')+' '+(it2.name||'')).trim(),detail:[(it2.color&&it2.color!=='—')?it2.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
-                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
+                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',rep:t.rep&&t.rep!=='—'?'Rep: '+t.rep:'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
                       }}>🖨️ Label</button>
                       {boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                         onClick={()=>{const b=[...boxes];b.splice(bi,1);setBoxes(b)}}>×</button>}
@@ -18381,12 +18383,14 @@ export default function App(){
                     const _rDate=new Date().toLocaleDateString();
                     const _mkItems=(arr)=>(arr||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
                     const _pName=(sid,fb)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fb||''};
+                    const _pRep=(sid)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
                     if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                       const n=batchMatch.source_pos.length;
-                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
+                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
                       const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(soIds.length===1?soIds[0]:'',custNames.length===1?custNames[0]:''),subtitle:(soIds.length===1?soIds[0]:'')||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      const _sid=soIds.length===1?soIds[0]:'';
+                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -18819,7 +18823,8 @@ export default function App(){
                       const _sos=[...new Set((box.items||[]).map(it=>it.soId).filter(Boolean))];
                       const _scanId=_sos[0]||[...shipModal.grp.soIds][0]||'';
                       const _items=(box.items||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
-                      printQrLabel({code:_scanId||('BOX '+(bi+1)),qrData:_scanId?(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_scanId)):'',program:shipModal.grp.cName||'',subtitle:[(_sos.join(', ')||[...shipModal.grp.soIds].join(', ')),'Box '+(bi+1)+' of '+shipModal.boxes.length].filter(Boolean).join(' · '),shipBadge:{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'},items:_items,codeSub:boxUnits+' units · scan to open order'});
+                      const _bso=_scanId&&sos.find(s=>s.id===_scanId);const _bcc=_bso&&cust.find(x=>x.id===_bso.customer_id);const _br=REPS.find(rr=>rr.id===((_bcc&&_bcc.primary_rep_id)||(_bso&&_bso.created_by)));const _bRep=_br&&_br.name?'Rep: '+_br.name.split(' ')[0]:'';
+                      printQrLabel({code:_scanId||('BOX '+(bi+1)),qrData:_scanId?(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_scanId)):'',program:shipModal.grp.cName||'',rep:_bRep,subtitle:[(_sos.join(', ')||[...shipModal.grp.soIds].join(', ')),'Box '+(bi+1)+' of '+shipModal.boxes.length].filter(Boolean).join(' · '),shipBadge:{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'},items:_items,codeSub:boxUnits+' units · scan to open order'});
                     }}>🖨️ Label</button>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
