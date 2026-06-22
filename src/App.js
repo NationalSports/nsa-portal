@@ -4970,6 +4970,20 @@ export default function App(){
   const nextBoxId=()=>{const mx=whBoxes.reduce((m,b)=>{const n=parseInt(String(b.id).replace(/^BX-/i,''),10);return Number.isFinite(n)&&n>m?n:m},2000);return 'BX-'+(mx+1)};
   // Upsert a box into state; the effect above persists it. Best-effort by design (never in a critical path).
   const saveBox=(box)=>{const ts=new Date().toISOString();setWhBoxes(prev=>{const i=prev.findIndex(b=>b.id===box.id);if(i>=0){const c=[...prev];c[i]={...c[i],...box,updated_at:ts};return c}return[...prev,{status:'staged',contents:[],source_refs:[],created_by:cu?.id,created_at:ts,updated_at:ts,...box}]})};
+  // Record one STOCK box per receive action (overlay): capture exactly the SKUs/sizes that just
+  // landed, each content line keeping its own so_id so SO-earmarked goods stay attributable. Mirrors
+  // the box-on-pull path; best-effort (wrapped in try/catch, never blocks the receive or touches _inv).
+  // `lines` is [{sku,name,color,so_id|soId,sizes:{}}]; returns the minted BX plate (or null if empty).
+  const recordReceiveBox=(lines,{poId,so_id}={})=>{
+    try{
+      const contents=(lines||[]).map(r=>{const sizes={};Object.entries(r.sizes||{}).forEach(([sz,v])=>{if((v||0)>0)sizes[sz]=v});return{sku:r.sku||'',name:r.name||'',color:r.color||'',so_id:r.so_id||r.soId||null,if_id:null,sizes}}).filter(l=>Object.keys(l.sizes).length>0);
+      if(contents.length===0)return null;
+      const soIds=[...new Set(contents.map(c=>c.so_id).filter(Boolean))];
+      const id=nextBoxId();
+      saveBox({id,kind:'stock',po_id:poId||null,so_id:so_id||(soIds.length===1?soIds[0]:null),source_refs:poId?[{type:'PO',id:poId}]:[],contents,status:'staged'});
+      return id;
+    }catch(e){/* overlay box is best-effort */return null}
+  };
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
@@ -11833,6 +11847,9 @@ export default function App(){
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
+                  // Accumulate exactly what's received this action (per line, with so_id) so we can
+                  // record a stock box overlay after the commit — mirrors the warehouse receive path.
+                  const _jr=[];
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -11854,6 +11871,7 @@ export default function App(){
                         const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
+                        if(_rcvd>0)_jr.push({sku:it.sku,name:it.name,color:it.color,so_id:soId,sizes:rcv});
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -11862,6 +11880,8 @@ export default function App(){
                     _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
                     savSO({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                   });
+                  // Stock-box overlay for this receive (best-effort; record only, label unchanged here).
+                  recordReceiveBox(_jr,{poId});
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   notifyDecoReady(_decoReady);
                   // Print label(s) after receiving — separate per source PO for batches
@@ -18389,6 +18409,11 @@ export default function App(){
                     addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
                     nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
                     notifyDecoReady(_decoReady);
+                    // Box-on-receive (overlay): one stock box capturing exactly what just landed this
+                    // action (each content line keeps its own so_id). Best-effort — see recordReceiveBox.
+                    // Batch multi-source receives still record one box per action; per-physical-box
+                    // plating on the batch label is a future refinement.
+                    const _recvBoxId=recordReceiveBox(justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered})),{poId});
                     // Auto-print 4×6 landscape label(s) on receive — shared renderer.
                     // Batch → one page per source PO (each its own customer + items);
                     // otherwise a single label for what just landed in this box.
@@ -18403,7 +18428,10 @@ export default function App(){
                     } else {
                       const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      // When a stock box was minted, the label IS that box (QR + big code → BX plate,
+                      // mirroring the pull label); the PO drops into the subtitle. Otherwise scan → PO.
+                      const _bxScan=_recvBoxId?(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_recvBoxId)):_scanUrl;
+                      printQrLabel({code:_recvBoxId||poId,qrData:_bxScan,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_recvBoxId?[_sid,poId].filter(Boolean).join(' · '):(_sid||vendorName||''),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to '+(_recvBoxId?'open box':'open PO')});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
