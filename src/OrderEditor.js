@@ -962,7 +962,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
   const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
   React.useEffect(()=>{
-    const doAutoSave=()=>{if(dirtyRef2.current&&oRef.current){onSaveRef.current(oRef.current);dirtyRef2.current=false;setDirty(false)}};
+    const doAutoSave=()=>{
+      let cur=oRef.current;if(!cur)return;
+      // Fold in text from inputs that commit on blur (memo/PO #) but may not have blurred yet —
+      // covers a tab crash / version-reload firing while a field is still focused.
+      const m=memoInputRef.current;if(m&&m.value!==(cur.memo||''))cur={...cur,memo:m.value};
+      const p=poInputRef.current;if(p&&p.value!==(cur.po_number||''))cur={...cur,po_number:p.value};
+      if(!dirtyRef2.current&&cur===oRef.current)return;
+      if(cur!==oRef.current)setO(cur);
+      onSaveRef.current(cur);dirtyRef2.current=false;setDirty(false);
+    };
     const iv=setInterval(doAutoSave,30000);
     const handleUnload=()=>doAutoSave();
     window.addEventListener('beforeunload',handleUnload);
