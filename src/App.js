@@ -23796,6 +23796,8 @@ export default function App(){
       const myToken=++_billParseToken.current;// supersedes any prior in-flight parse; Cancel bumps this too
       setBillImport(x=>({...x,uploading:true,step:'parsing',progress:{current:0,total:files.length,name:''}}));
       const results=[];
+      const seenDocs=new Set();// doc#s taken in this parse — drop intra-batch repeats
+      const skippedDups=[];// doc#s dropped as duplicates (already on the Portal, or repeated here)
       let idx=0;
       for(let fi=0;fi<files.length;fi++){
         if(_billParseToken.current!==myToken)return;// cancelled / superseded — bail without clobbering state
@@ -23808,6 +23810,11 @@ export default function App(){
           const bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
           for(let bi=0;bi<bills.length;bi++){
             const parsed=bills[bi];
+            // Duplicate doc# already pushed to the Portal (or repeated within this upload): don't bring
+            // it in at all. It's already applied, so re-importing only surfaces phantom over-billing.
+            const dn=(parsed.doc_number||'').trim().toLowerCase();
+            if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);continue}
+            if(dn)seenDocs.add(dn);
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
             results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
             idx++;
@@ -23819,12 +23826,19 @@ export default function App(){
         }
       }
       if(_billParseToken.current!==myToken)return;// cancelled while the last file was parsing
+      const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
+      if(!results.length){
+        // Nothing new came in (all duplicates and/or unreadable) — don't drop into an empty review.
+        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
+        nf(skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':'No bills could be parsed',skippedDups.length?'success':'error');
+        return;
+      }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
-      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
