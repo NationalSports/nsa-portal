@@ -22520,6 +22520,7 @@ export default function App(){
   const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
+  const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -23991,12 +23992,11 @@ export default function App(){
       return _billHasTarget(b.parsed);
     };
 
-    // Toggle a bill's "look at later" flag. These bills are parked in limbo — neither pushed to the
-    // Portal nor to QuickBooks — so the team can come back to ones with no-match / parse problems.
-    // Flagging clears its push selection; the flag persists in the saved Bill History.
+    // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
+    // it (also pulling it out of the review list if it's still there); val=false resolves/un-parks it.
     const _setBillReviewLater=(billId,val)=>{
-      setBillImport(x=>({...x,parsed:x.parsed.map(p=>p.id===billId?{...p,reviewLater:val,selected:val?false:p.selected}:p)}));
-      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      setBillImport(x=>({...x,parsed:val?x.parsed.filter(p=>p.id!==billId):x.parsed.map(p=>p.id===billId?{...p,reviewLater:false}:p)}));
+      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val,reviewLaterAt:val?Date.now():sb.reviewLaterAt}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
     };
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
@@ -24601,10 +24601,21 @@ export default function App(){
 
     // Park a set of bills (by id) under "Look at later" in one pass — clears their push
     // selection and persists the flag to saved history. Batched version of _setBillReviewLater.
-    const _parkBillsForLater=(billIds)=>{
-      const ids=new Set(billIds);
-      setBillImport(x=>({...x,parsed:x.parsed.map(p=>ids.has(p.id)?{...p,reviewLater:true,selected:false}:p)}));
-      setSavedBills(prev=>{const updated=prev.map(sb=>ids.has(sb.id)?{...sb,reviewLater:true}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+    // Park bills under "Look at later". Takes the live bill objects (so in-review edits are captured),
+    // REMOVES them from the review list — so they can't be pushed to QB/Portal by accident — and
+    // persists their parsed data + flag to saved history. reviewLaterAt drives the "recently moved"
+    // highlight and sort on the Look at Later page.
+    const _parkBillsForLater=(bills)=>{
+      const arr=(bills||[]).filter(Boolean);
+      if(!arr.length)return;
+      const ids=new Set(arr.map(b=>b.id));const ts=Date.now();
+      setBillImport(x=>({...x,parsed:x.parsed.filter(p=>!ids.has(p.id))}));
+      setSavedBills(prev=>{
+        const byId={};arr.forEach(b=>byId[b.id]=b);
+        let updated=prev.map(sb=>{if(!ids.has(sb.id))return sb;const b=byId[sb.id];return{...sb,reviewLater:true,reviewLaterAt:ts,parsed:{...(b.parsed||sb.parsed),rawText:undefined},portalStatus:b.portalStatus||sb.portalStatus}});
+        arr.forEach(b=>{if(!prev.some(sb=>sb.id===b.id))updated=[{id:b.id,file:b.file,parsed:{...b.parsed,rawText:undefined},uploadedAt:b.uploadedAt,uploadedTs:b.uploadedTs,reviewLater:true,reviewLaterAt:ts,qbStatus:null,portalStatus:b.portalStatus||null},...updated]});
+        _lsSet('nsa_saved_bills',JSON.stringify(updated));return updated;
+      });
     };
 
     // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
@@ -24626,7 +24637,7 @@ export default function App(){
     const _pushCleanParkProblems=()=>{
       const m=billPushModal;if(!m)return;
       const applied=m.cleanBills.length?_applyBillsToPortal(m.cleanBills):0;
-      if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill.id));
+      if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill));
       setBillPushModal(null);
       const parts=[];
       if(applied)parts.push(applied+' matched bill(s) pushed');
@@ -25617,6 +25628,14 @@ export default function App(){
 
       {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
       {impTab==='bills'&&<>
+        {/* Sub-tabs: the import/review flow vs the built-out Look at Later workspace */}
+        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;return<div style={{display:'flex',gap:6,marginBottom:14,borderBottom:'1px solid #e2e8f0',paddingBottom:10}}>
+          {[['import','📥 Import & Review'],['later','🕒 Look at Later'+(parked?' ('+parked+')':'')]].map(([id,label])=>
+            <button key={id} onClick={()=>setBillView(id)} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
+              border:'1px solid '+(billView===id?(id==='later'?'#f59e0b':'#7c3aed'):'#e2e8f0'),
+              background:billView===id?(id==='later'?'#f59e0b':'#7c3aed'):'#fff',color:billView===id?'#fff':'#475569'}}>{label}</button>)}
+        </div>;})()}
+        {billView==='import'&&<>
         {/* QB Connection Status Banner */}
         <div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:10,
           background:qbConfig.connected?'#f0fdf4':'#fef3c7',border:'1px solid '+(qbConfig.connected?'#bbf7d0':'#fde68a')}}>
@@ -25703,7 +25722,7 @@ export default function App(){
               </div>
               <button className="btn btn-primary" style={{background:'#f59e0b',borderColor:'#f59e0b',whiteSpace:'nowrap'}}
                 title="Move every bill that doesn't match perfectly to Look at later, so you can push the clean ones now"
-                onClick={()=>{const ids=issues.map(b=>b.id);_parkBillsForLater(ids);nf(ids.length+' bill'+(ids.length===1?'':'s')+' moved to Look at later')}}>
+                onClick={()=>{const n=issues.length;_parkBillsForLater(issues);nf(n+' bill'+(n===1?'':'s')+' moved to Look at Later — find them under the Look at Later tab')}}>
                 🕒 Move {issues.length} to Look at later
               </button>
             </div>;
@@ -25725,13 +25744,14 @@ export default function App(){
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
-            return<div key={bi} className="card" style={{marginBottom:12,border:b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':tri&&tri.issue?'2px solid #f59e0b':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
-              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.reviewLater?'#fffbeb':b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
-                {!b.qbStatus&&!b.reviewLater&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
+            const portalPushed=b.portalStatus==='success';
+            return<div key={bi} className="card" style={{marginBottom:12,border:portalPushed?'2px solid #16a34a':b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':tri&&tri.issue?'2px solid #f59e0b':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:portalPushed?'#f0fdf4':b.reviewLater?'#fffbeb':b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
+                {!b.qbStatus&&!b.reviewLater&&!portalPushed&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
                 {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
                 <h2 style={{margin:0,flex:1}}>{b.file}</h2>
-                {b.portalStatus==='success'&&<span style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>&#10003; Portal</span>}
+                {portalPushed&&<span style={{fontSize:11,fontWeight:800,color:'#fff',background:'#16a34a',padding:'3px 10px',borderRadius:12,display:'inline-flex',alignItems:'center',gap:4}}>&#10003; Pushed to Portal</span>}
                 {b.portalMsg&&b.portalStatus==='error'&&<span style={{fontSize:11,fontWeight:600,color:'#dc2626'}}>{b.portalMsg}</span>}
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
@@ -25739,18 +25759,17 @@ export default function App(){
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
                 {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Look at later</span>}
-                {!b.qbStatus&&!b.portalStatus&&<button onClick={()=>_setBillReviewLater(b.id,!b.reviewLater)}
-                  title={b.reviewLater?'Take out of limbo and make it pushable again':'Park this bill in limbo — skip it for now, find it later under "Look at later"'}
-                  style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,
-                    background:b.reviewLater?'#fff':'#fffbeb',border:'1px solid '+(b.reviewLater?'#cbd5e1':'#fbbf24'),color:b.reviewLater?'#475569':'#b45309'}}>
-                  {b.reviewLater?'↩ Un-flag':'🕒 Look at later'}</button>}
+                {!b.qbStatus&&!portalPushed&&<button onClick={()=>{_parkBillsForLater([b]);nf('Moved to Look at Later')}}
+                  title='Move this bill to the Look at Later tab and out of this list (so it can&apos;t be pushed to QB by accident)'
+                  style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>
+                  🕒 Look at later</button>}
               </div>
               <div className="card-body" style={{padding:0}}>
                 {/* Issue banner — surfaces blocking problems (duplicate doc#, over-billing) immediately */}
                 {tri&&tri.errs.length>0&&<div style={{padding:'8px 14px',background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>
                   <div style={{fontSize:11,fontWeight:800,color:'#b91c1c',marginBottom:2,display:'flex',alignItems:'center',gap:6,justifyContent:'space-between'}}>
                     <span>⚠️ Won&rsquo;t push cleanly:</span>
-                    {!b.qbStatus&&!b.portalStatus&&!b.reviewLater&&<button onClick={()=>_setBillReviewLater(b.id,true)} style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>🕒 Look at later</button>}
+                    {!b.qbStatus&&!portalPushed&&<button onClick={()=>{_parkBillsForLater([b]);nf('Moved to Look at Later')}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>🕒 Look at later</button>}
                   </div>
                   {tri.errs.map((e,ei)=><div key={ei} style={{fontSize:11,color:'#b91c1c'}}>&bull; {e}</div>)}
                 </div>}
@@ -26122,6 +26141,86 @@ export default function App(){
             </table>
           </div>
         </div>;})()}
+        </>}
+
+        {/* ── Look at Later — built-out workspace for parked bills (out of the import list) ── */}
+        {billView==='later'&&(()=>{
+          const _billTs=sb=>{const t=sb.uploadedTs||Date.parse(sb.uploadedAt||'');return Number.isFinite(t)?t:0};
+          const _timeOk=sb=>{
+            if(billHistTime==='all')return true;
+            const t=_billTs(sb);if(!t)return false;
+            if(billHistTime==='today'){const d=new Date();d.setHours(0,0,0,0);return t>=d.getTime()}
+            const days=billHistTime==='7d'?7:billHistTime==='30d'?30:0;
+            return days?(Date.now()-t)<=days*86400000:true;
+          };
+          const _vendorOf=sb=>(sb.parsed?.vendor||sb.parsed?.supplier||'').trim();
+          const parked=savedBills.filter(sb=>sb.reviewLater);
+          const vendors=[...new Set(parked.map(_vendorOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+          const rows=parked.filter(sb=>(billHistVendor==='all'||_vendorOf(sb)===billHistVendor)&&_timeOk(sb)).sort((a,b)=>(b.reviewLaterAt||0)-(a.reviewLaterAt||0));
+          const recentCut=Date.now()-60*60*1000;// "recently moved" = parked within the last hour
+          const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
+          const selStyle={fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
+          const fmtAgo=ts=>{if(!ts)return'';const m=Math.round((Date.now()-ts)/60000);if(m<1)return'just now';if(m<60)return m+'m ago';if(m<1440)return Math.round(m/60)+'h ago';return new Date(ts).toLocaleDateString()};
+          return <div className="card">
+            <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',background:'#fffbeb'}}>
+              <h2 style={{margin:0,color:'#b45309',display:'flex',alignItems:'center',gap:8}}>🕒 Look at Later <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>({parked.length})</span></h2>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginLeft:'auto',flexWrap:'wrap'}}>
+                <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={selStyle} title="Filter by vendor">
+                  <option value="all">All vendors</option>
+                  {vendors.map(v=><option key={v} value={v}>{v}</option>)}
+                </select>
+                <select value={billHistTime} onChange={e=>setBillHistTime(e.target.value)} style={selStyle} title="Filter by upload time">
+                  <option value="all">All time</option><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
+                </select>
+                {filtersActive&&<button onClick={()=>{setBillHistVendor('all');setBillHistTime('all')}} style={{...selStyle,cursor:'pointer',color:'#64748b'}}>Clear filters</button>}
+              </div>
+            </div>
+            <div className="card-body" style={{padding:14}}>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Bills parked here are out of the import list and won&rsquo;t be pushed to QuickBooks or the Portal until you act on them. Re-open one to fix &amp; push, or resolve it once it&rsquo;s handled.</div>
+              {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later. Bills you move from the review screen show up here.'}</div>
+              :rows.map(sb=>{
+                const p=sb.parsed||{};
+                const matched=_billHasTarget(p);
+                const errs=matched?_validateBillForPush(p):[];
+                const clean=matched&&errs.length===0;
+                const reasons=matched?errs:(p.po_number?['No PO match for '+p.po_number]:['No PO number on the bill']);
+                const recent=(sb.reviewLaterAt||0)>=recentCut;
+                const vend=_vendorOf(sb);
+                return <div key={sb.id} style={{border:'1px solid '+(recent?'#fbbf24':'#e2e8f0'),borderLeft:'4px solid '+(clean?'#16a34a':'#f59e0b'),borderRadius:8,padding:'10px 14px',marginBottom:10,background:recent?'#fffdf5':'#fff'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:700,fontSize:13}}>{p.doc_number?'Doc #'+p.doc_number:(sb.file||'Bill')}</span>
+                    {recent&&<span style={{fontSize:9,fontWeight:800,color:'#b45309',background:'#fef3c7',border:'1px solid #fbbf24',borderRadius:10,padding:'1px 8px'}}>✨ Just moved{sb.reviewLaterAt?' · '+fmtAgo(sb.reviewLaterAt):''}</span>}
+                    {clean
+                      ?<span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',borderRadius:10,padding:'1px 8px'}}>✓ Looks resolved — ready to push</span>
+                      :<span style={{fontSize:9,fontWeight:800,color:'#b91c1c',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,padding:'1px 8px'}}>⚠️ {reasons.length} issue{reasons.length>1?'s':''}</span>}
+                    {sb.portalStatus==='success'&&<span style={{fontSize:9,fontWeight:800,color:'#fff',background:'#16a34a',borderRadius:10,padding:'1px 8px'}}>✓ Pushed to Portal</span>}
+                    <span style={{marginLeft:'auto',fontSize:11,color:'#94a3b8'}}>{sb.uploadedAt||''}</span>
+                  </div>
+                  <div style={{fontSize:11,color:'#475569',marginTop:4,display:'flex',gap:10,flexWrap:'wrap'}}>
+                    {p.po_number&&<span>PO <b style={{color:'#7c3aed'}}>{p.po_number}</b></span>}
+                    {vend&&<span>{vend}</span>}
+                    {p.doc_total?<span>Total <b style={{color:'#166534'}}>${Number(p.doc_total).toFixed(2)}</b></span>:null}
+                    {p.freight?<span>Freight ${Number(p.freight).toFixed(2)}</span>:null}
+                    {p.items?.length?<span>{p.items.length} item{p.items.length>1?'s':''}</span>:null}
+                    <span style={{color:'#94a3b8',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</span>
+                  </div>
+                  {!clean&&<ul style={{margin:'6px 0 0',paddingLeft:18}}>{reasons.map((r,ri)=><li key={ri} style={{fontSize:11,color:'#b45309'}}>{r}</li>)}</ul>}
+                  <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+                    <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
+                      title="Pull this bill back into the review list so you can fix and push it"
+                      onClick={()=>{setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),{...sb,selected:true,reviewLater:false,portalStatus:sb.portalStatus||null,qbStatus:null}]}));setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});setBillView('import');nf('Moved back to Import & Review')}}>📤 Move back to Review</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                      title="Mark handled — remove from Look at Later (kept in Bill History)"
+                      onClick={()=>{_setBillReviewLater(sb.id,false);nf('Resolved — removed from Look at Later')}}>✓ Resolve</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fecaca'}}
+                      title="Delete this bill from history entirely"
+                      onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u})}}}>🗑</button>
+                  </div>
+                </div>;
+              })}
+            </div>
+          </div>;
+        })()}
 
         {/* Push-problems dialog — styled replacement for the old browser confirm. Push the exact-match
             bills and park the flagged ones under "Look at later", or override and push everything. */}
