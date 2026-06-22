@@ -532,101 +532,127 @@ export function labelWeightLbs(items, store = {}, weightByPid = {}) {
   return Number(store && store.label_weight_lbs) || 1;
 }
 
-export const printQrLabel=({id,qrData,lines,shipBadge})=>{
-  const w=window.open('','_blank','width=420,height=620');if(!w)return;
-  const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');
-  const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
-  const badgeHtml=shipBadge?`<div class="ship" style="border-color:${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'}">${shipBadge.text}</div>`:'';
-  const linesHtml=safeLines.map(l=>{
-    const cls=l.cls?' class="'+l.cls+'"':'';
-    const style=l.style?' style="'+l.style+'"':'';
-    return '<p'+cls+style+'>'+l.text+'</p>';
-  }).join('');
-  const html=`<!doctype html><html><head><title>${id||'Label'}</title>
-<style>
-  @page{size:4in 6in;margin:0.15in}
-  @media print{html,body{width:3.7in}}
+// ── 4×6 QR LABELS (landscape thermal) ──
+// One shared renderer for every warehouse 4×6: receiving, item fulfillment,
+// box / deco hand-off. Print stock is LANDSCAPE 6in × 4in (@page below pins it
+// so the browser targets the label, not Letter). Layout priority, top→bottom:
+//   1) PROGRAM (team) name — biggest
+//   2) the ITEMS in the box
+//   3) the scan CODE (IF# / PO#) + QR at the foot
+// Callers pass either the legacy {id,qrData,lines,shipBadge} shape — lines
+// tagged cls:'team'→program, 'so'→subtitle, 'sku'/'sz'/plain→items, 'sub'→note
+// — or explicit {program,subtitle,items,note,code,codeSub} which wins over lines.
+const _LABEL_CSS=`
+  @page{size:6in 4in;margin:0}
+  @media print{html,body{width:6in;height:4in}}
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0;font-family:Helvetica,Arial,sans-serif;color:#0f172a}
-  body{padding:6px 8px;width:3.7in}
-  .qr-wrap{text-align:center;margin-bottom:6px}
-  .qr-wrap img{width:1.9in;height:1.9in;display:block;margin:0 auto;image-rendering:pixelated}
-  h1{font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center}
-  .sub{font-size:11px;color:#475569;text-align:center;margin:0 0 8px}
-  p{margin:3px 0;font-size:13px;line-height:1.25}
-  .team{font-size:22px;font-weight:900;text-align:center;margin:2px 0 0;line-height:1.15}
-  .so{font-size:12px;font-weight:500;color:#475569;text-align:center;margin:0 0 8px}
-  .sku{font-size:15px;font-weight:800}
-  .sz{font-size:18px;font-weight:800;letter-spacing:0.5px}
-  .ship{padding:6px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:13px;text-align:center;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-  .muted{color:#64748b;font-size:11px}
-  strong{font-weight:700}
-</style>
-</head><body>
-  <div class="qr-wrap"><img id="qr" src="${qrSrc}" alt="${id||''}"/></div>
-  <h1>${id||''}</h1>
-  ${badgeHtml}
-  ${linesHtml}
-<script>
-  var printed=false;
-  function go(){if(printed)return;printed=true;setTimeout(function(){window.focus();window.print();},80);}
-  var img=document.getElementById('qr');
-  if(img){if(img.complete&&img.naturalWidth>0){go();}else{img.addEventListener('load',go);img.addEventListener('error',go);}}
-  // Safety fallback: print after 3s even if the image never loads.
-  setTimeout(go,3000);
-</script>
-</body></html>`;
+  html,body{margin:0;padding:0;font-family:Helvetica,Arial,sans-serif;color:#0f172a;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .page{width:6in;height:4in;padding:0.16in 0.22in;display:flex;flex-direction:column;overflow:hidden;page-break-after:always}
+  .page:last-child{page-break-after:auto}
+  .hdr{flex:0 0 auto;text-align:center}
+  .program{font-size:30px;font-weight:900;line-height:1.03;letter-spacing:-0.4px;word-break:break-word}
+  .subtitle{font-size:13px;font-weight:600;color:#475569;margin-top:2px}
+  .badge{display:inline-block;margin-top:5px;padding:3px 12px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px}
+  .note{font-size:12px;font-weight:800;margin-top:3px}
+  .items{flex:1 1 auto;min-height:0;margin-top:6px;border-top:1.5px solid #cbd5e1;padding-top:5px;overflow:hidden}
+  .item{margin-bottom:4px}
+  .item-title{font-size:14px;font-weight:800;line-height:1.15}
+  .item-detail{font-size:11.5px;font-weight:500;color:#475569}
+  .item-sz{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:800;letter-spacing:0.3px}
+  .foot{flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-top:1.5px solid #cbd5e1;padding-top:5px;margin-top:4px}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:24px;font-weight:900;letter-spacing:1px;line-height:1}
+  .code-sub{font-size:10px;color:#64748b;font-weight:600;margin-top:3px;text-transform:uppercase;letter-spacing:0.5px}
+  .qr{flex:0 0 auto;text-align:right}
+  .qr img{width:1.18in;height:1.18in;display:block;image-rendering:pixelated}
+`;
+// Wait for every QR image to finish loading before printing (a stacked
+// multi-label job has one <img> per page), with a safety timeout so a slow/
+// failed QR never wedges the print dialog.
+const _LABEL_PRINT_JS=`
+  var imgs=[].slice.call(document.images),done=0,printed=false;
+  function go(){if(printed)return;printed=true;setTimeout(function(){try{window.focus()}catch(e){}window.print();},90);}
+  function tick(){if(++done>=imgs.length)go();}
+  if(!imgs.length){go();}else{imgs.forEach(function(im){if(im.complete&&im.naturalWidth>0){tick();}else{im.addEventListener('load',tick);im.addEventListener('error',tick);}});}
+  setTimeout(go,4000);
+`;
+const _qrImgSrc=(label,size)=>'https://api.qrserver.com/v1/create-qr-code/?size='+(size||'360x360')+'&margin=4&data='+encodeURIComponent((label&&(label.qrData||label.id))||'');
+// Resolve a label's display zones from either explicit fields or legacy `lines`.
+const _labelZones=(label={})=>{
+  if(label.items||label.program||label.subtitle){
+    return {program:label.program||'',subtitle:label.subtitle||'',notes:label.note?[{text:label.note,style:label.noteStyle||''}]:[],items:label.items||[],code:label.code||label.id||''};
+  }
+  const norm=(label.lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
+  let program='',subtitle='';const notes=[],items=[];let cur=null;
+  norm.forEach(l=>{const t=l.text==null?'':l.text,cls=l.cls||'';
+    if(cls==='team'&&!program){program=t;return}
+    if(cls==='so'&&!subtitle){subtitle=t;return}
+    if(cls==='sku'){cur={title:t,detail:'',sizes:''};items.push(cur);return}
+    if(cls==='sz'){if(cur){cur.sizes=cur.sizes?cur.sizes+'  '+t:t}else{cur={title:'',detail:'',sizes:t};items.push(cur)}return}
+    if(cls==='sub'){notes.push({text:t,style:l.style||''});return}
+    if(cur){cur.detail=cur.detail?cur.detail+' · '+t:t}else{notes.push({text:t,style:l.style||''})}
+  });
+  return {program,subtitle,notes,items,code:label.code||label.id||''};
+};
+const _labelPageHtml=(label={})=>{
+  const z=_labelZones(label);
+  const head=z.program||z.code||'';
+  const footCode=z.program?z.code:'';// don't repeat the code when it's already the big header
+  const sb=label.shipBadge;
+  const badge=sb&&sb.text?`<div class="badge" style="border-color:${sb.color||'#d97706'};color:${sb.color||'#92400e'};background:${sb.bg||'#fffbeb'}">${sb.text}</div>`:'';
+  const notesHtml=(z.notes||[]).map(n=>`<div class="note" style="${n.style||'color:#166534'}">${n.text}</div>`).join('');
+  const itemsHtml=(z.items||[]).map(it=>`<div class="item"><div class="item-title">${it.title||''}${it.detail?` <span class="item-detail">${it.detail}</span>`:''}</div>${it.sizes?`<div class="item-sz">${it.sizes}</div>`:''}</div>`).join('');
+  return `<div class="page"><div class="hdr"><div class="program">${head}</div>${z.subtitle?`<div class="subtitle">${z.subtitle}</div>`:''}${badge}${notesHtml}</div>`
+    +`<div class="items">${itemsHtml}</div>`
+    +`<div class="foot"><div>${footCode?`<div class="code">${footCode}</div>`:''}${label.codeSub?`<div class="code-sub">${label.codeSub}</div>`:''}</div>`
+    +`<div class="qr"><img src="${_qrImgSrc(label)}" alt="${z.code}"/></div></div>`;
+};
+// Print one or more 4×6 landscape labels in a single job — one page per label.
+export const printQrLabels=(labels)=>{
+  const list=(labels||[]).filter(Boolean);if(!list.length)return;
+  const w=window.open('','_blank','width=760,height=560');if(!w)return;
+  const title=(list[0].code||list[0].id||'Label')+(list.length>1?(' +'+(list.length-1)):'');
+  const html=`<!doctype html><html><head><title>${title}</title><style>${_LABEL_CSS}</style></head><body>`
+    +list.map(_labelPageHtml).join('')
+    +`<script>${_LABEL_PRINT_JS}</script></body></html>`;
   w.document.write(html);w.document.close();
 };
-// Generate the same 4x6 QR label as `printQrLabel` and trigger a PDF download
-// via html2pdf. The QR image is fetched and inlined as a data URL so
-// html2canvas doesn't get blocked by api.qrserver.com's CORS headers — without
-// this, the PDF comes out blank because the cross-origin image taints the
-// canvas during capture.
-export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
-  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=4&data='+encodeURIComponent(qrData||id||'');
-  let qrSrc=qrUrl;
+export const printQrLabel=(label)=>printQrLabels([label]);
+// PDF twin of `printQrLabel` — same landscape 6×4 layout, saved as a file. The
+// QR is fetched and inlined as a data URL so html2canvas isn't blocked by
+// api.qrserver.com's CORS headers (a cross-origin image taints the canvas and
+// the PDF comes out blank). html2pdf is imported on demand (it's warmed in
+// App.js); a bare reference here was an unbound ReferenceError.
+export const downloadQrLabel=async(label={})=>{
+  const z=_labelZones(label);
+  let qrSrc=_qrImgSrc(label,'600x600');
   try{
-    const resp=await fetch(qrUrl);
-    if(resp.ok){
-      const blob=await resp.blob();
-      qrSrc=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)});
-    }
-  }catch(e){/* fall back to direct URL; canvas may still taint but try anyway */}
-  const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
-  const badgeHtml=shipBadge?`<div style="border:2px solid ${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:13px;text-align:center;padding:6px 8px;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact">${shipBadge.text}</div>`:'';
-  const linesHtml=safeLines.map(l=>{
-    const c=l.cls;
-    let style='margin:3px 0;line-height:1.25;';
-    if(c==='team')style='margin:2px 0 0;line-height:1.15;font-size:22px;font-weight:900;text-align:center;';
-    else if(c==='so')style='margin:0 0 8px;line-height:1.2;font-size:12px;font-weight:500;color:#475569;text-align:center;';
-    else if(c==='sku')style+='font-size:15px;font-weight:800;';
-    else if(c==='sz')style+='font-size:18px;font-weight:800;letter-spacing:0.5px;';
-    else if(c==='sub')style+='font-size:11px;color:#475569;text-align:center;';
-    else if(c==='muted')style+='color:#64748b;font-size:11px;';
-    else style+='font-size:13px;';
-    return '<p style="'+style+(l.style||'')+'">'+l.text+'</p>';
-  }).join('');
-  // Use the same off-screen container pattern as the other working PDF
-  // generators here: position:absolute (not fixed) with no negative z-index,
-  // and render from an inner div. A fixed-position element parked at
-  // left:-10000px gives html2canvas a bounding box entirely outside the
-  // viewport, so it captures an empty region and the PDF comes out blank.
+    const resp=await fetch(qrSrc);
+    if(resp.ok){const blob=await resp.blob();qrSrc=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)})}
+  }catch(e){/* fall back to direct URL */}
+  const sb=label.shipBadge;
+  const head=z.program||z.code||'';
+  const footCode=z.program?z.code:'';
+  const badge=sb&&sb.text?`<div style="display:inline-block;margin-top:5px;padding:3px 12px;border:2px solid ${sb.color||'#d97706'};color:${sb.color||'#92400e'};background:${sb.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:12px">${sb.text}</div>`:'';
+  const notesHtml=(z.notes||[]).map(n=>`<div style="font-size:12px;font-weight:800;margin-top:3px;${n.style||'color:#166534'}">${n.text}</div>`).join('');
+  const itemsHtml=(z.items||[]).map(it=>`<div style="margin-bottom:4px"><div style="font-size:14px;font-weight:800;line-height:1.15">${it.title||''}${it.detail?` <span style="font-size:11.5px;font-weight:500;color:#475569">${it.detail}</span>`:''}</div>${it.sizes?`<div style="font-family:monospace;font-size:13px;font-weight:800">${it.sizes}</div>`:''}</div>`).join('');
+  // Off-screen container at position:absolute;left:-9999px (not fixed, no
+  // negative z-index) so html2canvas captures the real box, not a blank region.
   const container=document.createElement('div');
-  container.style.cssText='position:absolute;left:-9999px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box';
-  const bodyDiv=document.createElement('div');
-  bodyDiv.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" alt="${id||''}" style="width:180px;height:180px;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
-  container.appendChild(bodyDiv);
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:576px;background:#fff';// 6in @96dpi
+  const page=document.createElement('div');
+  page.style.cssText='width:576px;height:384px;padding:16px 22px;box-sizing:border-box;font-family:Helvetica,Arial,sans-serif;color:#0f172a;display:flex;flex-direction:column;overflow:hidden';
+  page.innerHTML=`<div style="text-align:center;flex:0 0 auto"><div style="font-size:30px;font-weight:900;line-height:1.03;word-break:break-word">${head}</div>${z.subtitle?`<div style="font-size:13px;font-weight:600;color:#475569;margin-top:2px">${z.subtitle}</div>`:''}${badge}${notesHtml}</div>`
+    +`<div style="flex:1 1 auto;min-height:0;margin-top:6px;border-top:1.5px solid #cbd5e1;padding-top:5px;overflow:hidden">${itemsHtml}</div>`
+    +`<div style="flex:0 0 auto;display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-top:1.5px solid #cbd5e1;padding-top:5px;margin-top:4px"><div>${footCode?`<div style="font-family:monospace;font-size:24px;font-weight:900;letter-spacing:1px">${footCode}</div>`:''}${label.codeSub?`<div style="font-size:10px;color:#64748b;font-weight:600;margin-top:3px">${label.codeSub}</div>`:''}</div><div><img src="${qrSrc}" style="width:113px;height:113px;display:block;image-rendering:pixelated"/></div></div>`;
+  container.appendChild(page);
   document.body.appendChild(container);
-  const fname=String(id||'label').replace(/[^a-z0-9._-]+/gi,'_')+'.pdf';
+  const fname=String(label.code||label.id||'label').replace(/[^a-z0-9._-]+/gi,'_')+'.pdf';
   try{
-    // Wait for the image inside the container to actually finish loading
-    const imgEl=container.querySelector('img');
-    if(imgEl&&!(imgEl.complete&&imgEl.naturalWidth>0)){
-      await new Promise(resolve=>{imgEl.onload=resolve;imgEl.onerror=resolve;setTimeout(resolve,3000)});
-    }
-    await new Promise(r=>setTimeout(r,500));
-    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(bodyDiv).save();
+    const imgEl=page.querySelector('img');
+    if(imgEl&&!(imgEl.complete&&imgEl.naturalWidth>0)){await new Promise(resolve=>{imgEl.onload=resolve;imgEl.onerror=resolve;setTimeout(resolve,3000)})}
+    await new Promise(r=>setTimeout(r,400));
+    const html2pdf=(await import('html2pdf.js')).default;
+    await html2pdf().set({margin:0,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[6,4],orientation:'landscape'}}).from(page).save();
   }finally{
     document.body.removeChild(container);
   }

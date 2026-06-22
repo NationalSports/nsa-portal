@@ -10119,7 +10119,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {shipments.length>0&&<>
             <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Shipment history:</div>
             {shipments.map((sh,si)=>{
-              const shQrData=JSON.stringify({type:'PO_RECV',id:po.po_id,shipment:si+1,so:o.id,sku:item?.sku,date:sh.date});
+              // Encode a ?scan= URL (not raw JSON) so a phone's native camera — not just the in-app scanner — opens this PO.
+              const shQrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
               const isEditing=editPO._editShipIdx===si;
               const shSzKeys=szKeys.filter(sz=>sh[sz]);
               // The whole receipt: a multi-item receive appends one shipment entry per line, all with
@@ -10143,13 +10144,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
                 printQrLabel({
-                  id:po.po_id+' — Shipment #'+(si+1),
+                  id:po.po_id,
                   qrData:shQrData,
                   lines:[
-                    {text:'Received: '+sh.date,cls:'sub'},
-                    {text:o.id+' — '+(cust?.name||'')},
-                    {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')},
-                    {text:szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join(' &nbsp; '),cls:'sz'},
+                    {text:(cust?.name||o.id),cls:'team'},
+                    {text:o.id+' — Shipment #'+(si+1),cls:'so'},
+                    {text:'Received: '+sh.date,cls:'sub',style:'color:#166534;font-weight:800;'},
+                    {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},
+                    {text:(item?.color||'')+' — '+szKeys.filter(sz=>sh[sz]).reduce((a,sz)=>a+(sh[sz]||0),0)+' units'},
+                    {text:szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join('  '),cls:'sz'},
                   ]
                 });
               }}>🖨️</button>
@@ -10325,10 +10328,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
               const lines=[
-                {text:o.id+' — '+(cust?.name||''),cls:'sub'},
-                {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')},
-                {text:totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')},
-                {text:'Ordered: '+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; '),cls:'sz'},
+                {text:(cust?.name||o.id),cls:'team'},
+                {text:o.id,cls:'so'},
+                {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},
+                {text:(item?.color||'')+' — '+totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')},
+                {text:'Ordered: '+szKeys.map(sz=>sz+': '+po[sz]).join('  '),cls:'sz'},
               ];
               if(totalReceived>0)lines.push({text:'Received: '+szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+': '+getRcvd(sz)).join(' &nbsp; '),cls:'sz',style:'color:#166534'});
               if(totalOpen>0)lines.push({text:'Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; '),cls:'sz',style:'color:#b45309'});
