@@ -3,7 +3,9 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './lib/supabase';
 
 // ─── Size lists ───────────────────────────────────────────────────────────────
-const SZ_STANDARD = ['YXS','YS','YM','YL','YXL','2XS','XS','S','M','L','XL','2XL','3XL','OSFA'];
+const SZ_YOUTH = ['YXS','YS','YM','YL','YXL'];
+const SZ_ADULT = ['2XS','XS','S','M','L','XL','2XL','3XL','OSFA'];
+const SZ_STANDARD = [...SZ_YOUTH, ...SZ_ADULT];
 const SZ_SOCKS = ['3XS','2XS','XS','Youth Sleeves','Small','Medium','Large'];
 const STATUS_LABELS = { draft:'Draft', open:'Open', submitted:'Submitted', processing:'Processing', fulfilled:'Fulfilled' };
 const STATUS_COLORS = { draft:'#94a3b8', open:'#2563eb', submitted:'#7c3aed', processing:'#d97706', fulfilled:'#15803d' };
@@ -11,10 +13,10 @@ const STATUS_COLORS = { draft:'#94a3b8', open:'#2563eb', submitted:'#7c3aed', pr
 // ─── Inventory hook (product_inventory + inventory_unified) ───────────────────
 function useKitInventory(items) {
   const [inv, setInv] = useState({});
-  const pidKey = (items || []).map(i => i.product_id).filter(Boolean).join(',');
+  const pidKey = (items || []).flatMap(i => [i.product_id, i.product_youth_id, i.product_womens_id]).filter(Boolean).join(',');
 
   useEffect(() => {
-    const productIds = (items || []).map(i => i.product_id).filter(Boolean);
+    const productIds = [...new Set((items || []).flatMap(i => [i.product_id, i.product_youth_id, i.product_womens_id]).filter(Boolean))];
     if (!productIds.length) return;
     let cancelled = false;
     (async () => {
@@ -78,18 +80,18 @@ const _dotColor = (avail, incoming) =>
 // Default Encinitas-style kit — used to seed a brand-new item catalog so staff
 // have a starting point to attach product IDs to.
 const DEFAULT_KIT = [
-  { slot: 'jersey_white', label: 'Jersey (White)', takes_number: true, qty: 1, product_id: '' },
-  { slot: 'jersey_navy', label: 'Jersey (Navy)', takes_number: true, qty: 1, product_id: '' },
-  { slot: 'shorts', label: 'Shorts', qty: 2, product_id: '' },
-  { slot: 'training_shirt', label: 'Training Shirt', qty: 2, product_id: '' },
-  { slot: 'game_day_shirt', label: 'Game Day Shirt', takes_number: true, qty: 1, product_id: '' },
-  { slot: 'socks', label: 'Socks', qty: 2, product_id: '', sock: true },
-  { slot: 'jacket', label: 'Jacket', optional: true, qty: 1, product_id: '' },
-  { slot: 'pants', label: 'Pants', optional: true, qty: 1, product_id: '' },
-  { slot: 'backpack', label: 'Backpack', optional: true, qty: 1, product_id: '' },
-  { slot: 'keeper_jersey', label: 'Keeper Jersey', gk_only: true, optional: true, qty: 1, product_id: '' },
-  { slot: 'keeper_shorts', label: 'Keeper Shorts', gk_only: true, optional: true, qty: 1, product_id: '' },
-  { slot: 'keeper_socks', label: 'Keeper Socks', gk_only: true, optional: true, qty: 1, product_id: '', sock: true },
+  { slot: 'jersey_white', label: 'Jersey (White)', color: '', takes_number: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'jersey_navy', label: 'Jersey (Navy)', color: '', takes_number: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'shorts', label: 'Shorts', color: '', qty: 2, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'training_shirt', label: 'Training Shirt', color: '', qty: 2, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'game_day_shirt', label: 'Game Day Shirt', color: '', takes_number: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'socks', label: 'Socks', color: '', qty: 2, product_id: '', product_youth_id: '', product_womens_id: '', sock: true },
+  { slot: 'jacket', label: 'Jacket', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'pants', label: 'Pants', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'backpack', label: 'Backpack', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'keeper_jersey', label: 'Keeper Jersey', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'keeper_shorts', label: 'Keeper Shorts', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'keeper_socks', label: 'Keeper Socks', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '', sock: true },
 ];
 
 // A session's working kit: its own kit_items wins; otherwise fall back to the
@@ -187,22 +189,28 @@ function ProductPicker({ value, sku, productName, onPick }) {
 }
 
 // ─── Shared kit-items table editor (used by catalog + new-session) ────────────
-// Add/remove rows, name them, attach a SKU via ProductPicker, set qty/#/GK/sock.
+// Add/remove rows, name them, set color, attach SKUs per category (Youth/Women's/Adult).
 function KitItemsTableEditor({ items, setItems }) {
   const patchItem = (idx, patch) => setItems(p => p.map((it, i) => i === idx ? { ...it, ...patch } : it));
-  const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', qty: 1, product_id: '' }]);
+  const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', color: '', qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' }]);
   const removeItem = (idx) => setItems(p => p.filter((_, i) => i !== idx));
-  const onPick = (idx) => (p) => patchItem(idx, p
+  const onPickYouth = (idx) => (p) => patchItem(idx, p
+    ? { product_youth_id: p.id, sku_youth: p.sku, product_youth_name: p.name }
+    : { product_youth_id: '', sku_youth: '', product_youth_name: '' });
+  const onPickWomens = (idx) => (p) => patchItem(idx, p
+    ? { product_womens_id: p.id, sku_womens: p.sku, product_womens_name: p.name }
+    : { product_womens_id: '', sku_womens: '', product_womens_name: '' });
+  const onPickAdult = (idx) => (p) => patchItem(idx, p
     ? { product_id: p.id, sku: p.sku, product_name: p.name }
     : { product_id: '', sku: '', product_name: '' });
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'visible', marginBottom: 20 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflowX: 'auto', marginBottom: 20 }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 900 }}>
         <thead>
           <tr style={{ background: '#f8fafc' }}>
-            {['Item', 'Slot key', 'Linked product (SKU)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
-              <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b' }}>{h}</th>
+            {['Item', 'Slot key', 'Color', 'Youth SKU (YM)', "Women's SKU (WM)", 'Adult SKU (AM)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+              <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -210,12 +218,22 @@ function KitItemsTableEditor({ items, setItems }) {
           {items.map((ki, idx) => (
             <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
               <td style={{ padding: '4px 6px' }}>
-                <input value={ki.label || ''} placeholder="e.g. Socks" onChange={e => patchItem(idx, { label: e.target.value })}
-                  style={{ border: 'none', fontSize: 12, width: '100%', outline: 'none', minWidth: 110 }} />
+                <input value={ki.label || ''} placeholder="e.g. Jersey" onChange={e => patchItem(idx, { label: e.target.value })}
+                  style={{ border: 'none', fontSize: 12, outline: 'none', minWidth: 100 }} />
               </td>
-              <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{ki.slot}</td>
+              <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>{ki.slot}</td>
               <td style={{ padding: '4px 6px' }}>
-                <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={onPick(idx)} />
+                <input value={ki.color || ''} placeholder="e.g. White" onChange={e => patchItem(idx, { color: e.target.value })}
+                  style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '3px 6px', width: 78, outline: 'none' }} />
+              </td>
+              <td style={{ padding: '4px 6px' }}>
+                <ProductPicker value={ki.product_youth_id} sku={ki.sku_youth} productName={ki.product_youth_name} onPick={onPickYouth(idx)} />
+              </td>
+              <td style={{ padding: '4px 6px' }}>
+                <ProductPicker value={ki.product_womens_id} sku={ki.sku_womens} productName={ki.product_womens_name} onPick={onPickWomens(idx)} />
+              </td>
+              <td style={{ padding: '4px 6px' }}>
+                <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={onPickAdult(idx)} />
               </td>
               <td style={{ padding: '4px 6px', textAlign: 'center' }}>
                 <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => patchItem(idx, { qty: parseInt(e.target.value) || 1 })}
@@ -283,7 +301,7 @@ function ItemCatalogManager({ customer, onClose }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
-      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 760, margin: '0 16px 40px' }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 1040, margin: '0 16px 40px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900, color: '#0b1220' }}>Item Catalog — {customer.name}</h2>
           <button onClick={() => onClose && onClose(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
@@ -329,12 +347,16 @@ function KitItemsBar({ session, catalog, onChange, readOnly }) {
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
         {items.length === 0 && <span style={{ fontSize: 12, color: '#94a3b8' }}>No items yet — add the gear this order needs.</span>}
-        {items.map(it => (
-          <span key={it.slot} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, color: '#0b1220' }}>
-            {it.label}{it.product_id ? <span title="linked to inventory" style={{ width: 6, height: 6, borderRadius: '50%', background: '#15803d' }} /> : <span title="no product linked — no availability" style={{ width: 6, height: 6, borderRadius: '50%', background: '#cbd5e1' }} />}
-            {!readOnly && <button onClick={() => removeItem(it.slot)} disabled={busy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
-          </span>
-        ))}
+        {items.map(it => {
+          const hasProduct = !!(it.product_id || it.product_youth_id || it.product_womens_id);
+          return (
+            <span key={it.slot} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, color: '#0b1220' }}>
+              {it.label}{it.color ? <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>{it.color}</span> : null}
+              {hasProduct ? <span title="linked to inventory" style={{ width: 6, height: 6, borderRadius: '50%', background: '#15803d' }} /> : <span title="no product linked — no availability" style={{ width: 6, height: 6, borderRadius: '50%', background: '#cbd5e1' }} />}
+              {!readOnly && <button onClick={() => removeItem(it.slot)} disabled={busy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
+            </span>
+          );
+        })}
       </div>
       {!readOnly && (
         <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -360,7 +382,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   const [players, setPlayers] = useState([]);
   const [sizes, setSizes] = useState({});
   const [loading, setLoading] = useState(true);
-  const [addRow, setAddRow] = useState({ first_name: '', last_name: '', jersey_number: '', is_gk: false });
+  const [addRow, setAddRow] = useState({ first_name: '', last_name: '', jersey_number: '', is_gk: false, category: '' });
   const [addingRow, setAddingRow] = useState(false);
   const [lockLoading, setLockLoading] = useState(false);
   const [isLocked, setIsLocked] = useState(team?.locked || false);
@@ -419,17 +441,18 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   }, []);
 
   const addPlayer = async () => {
-    const { first_name, last_name, jersey_number, is_gk } = addRow;
+    const { first_name, last_name, jersey_number, is_gk, category } = addRow;
     if (!first_name.trim() && !last_name.trim()) return;
     setAddingRow(true);
     const { data, error } = await supabase.from('roster_players').insert({
       team_id: team.id, first_name: first_name.trim(), last_name: last_name.trim(),
       jersey_number: jersey_number.trim(), is_gk, sort_order: players.length,
+      category: category || null,
     }).select().single();
     setAddingRow(false);
     if (!error && data) {
       setPlayers(prev => [...prev, data]);
-      setAddRow({ first_name: '', last_name: '', jersey_number: '', is_gk: false });
+      setAddRow({ first_name: '', last_name: '', jersey_number: '', is_gk: false, category: '' });
     }
   };
 
@@ -459,8 +482,13 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
 
   const sizeCell = (player, ki) => {
     const val = (sizes[player.id] || {})[ki.slot] || '-';
-    const stock = ki.product_id ? getStock(ki.product_id, val) : null;
-    const sizeList = ki.sock ? SZ_SOCKS : SZ_STANDARD;
+    const cat = player.category || 'AM';
+    const productId =
+      cat === 'YM' && ki.product_youth_id ? ki.product_youth_id :
+      cat === 'WM' && ki.product_womens_id ? ki.product_womens_id :
+      ki.product_id;
+    const stock = productId ? getStock(productId, val) : null;
+    const sizeList = ki.sock ? SZ_SOCKS : cat === 'YM' ? SZ_YOUTH : SZ_ADULT;
     return (
       <td key={ki.slot} style={{ padding: '4px 5px', textAlign: 'center', whiteSpace: 'nowrap',
         background: ki.gk_only ? '#f0f9ff' : 'transparent' }}>
@@ -472,7 +500,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
               <option value="-">—</option>
               {sizeList.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            {stock && val !== '-' && (
+            {stock && val !== '-' && productId && (
               <span style={{ width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
                 marginLeft: 3, background: _dotColor(stock.avail, stock.incoming),
                 verticalAlign: 'middle' }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
@@ -510,6 +538,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
               <th style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, minWidth: 80 }}>First</th>
               <th style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, minWidth: 80 }}>Last</th>
               <th style={{ padding: '8px 6px', textAlign: 'center', fontSize: 11, fontWeight: 700, minWidth: 36 }}>#</th>
+              <th style={{ padding: '8px 5px', textAlign: 'center', fontSize: 11, fontWeight: 700, minWidth: 46 }} title="Youth / Women's / Adult">Cat</th>
               {mainItems.map(ki => (
                 <th key={ki.slot} style={{ padding: '8px 6px', textAlign: 'center', fontSize: 10, fontWeight: 700, minWidth: 72, lineHeight: 1.2, maxWidth: 90 }}>
                   {ki.label}
@@ -538,6 +567,19 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                   <td style={{ padding: '5px 6px', textAlign: 'center' }}>
                     {editable ? cellInput(player.id, 'jersey_number', player.jersey_number, { placeholder: '#', width: 36, center: true })
                       : <span style={{ fontWeight: 700 }}>{player.jersey_number || '—'}</span>}
+                  </td>
+                  <td style={{ padding: '5px 5px', textAlign: 'center' }}>
+                    {editable ? (
+                      <select value={player.category || ''} onChange={e => { updatePlayer(player.id, 'category', e.target.value || null); savePlayer(player.id, 'category', e.target.value || null); }}
+                        style={{ fontSize: 11, border: '1px solid #e2e8f0', borderRadius: 4, background: '#fff', padding: '1px 2px', cursor: 'pointer' }}>
+                        <option value="">AM</option>
+                        <option value="YM">YM</option>
+                        <option value="WM">WM</option>
+                        <option value="AM">AM</option>
+                      </select>
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#64748b' }}>{player.category || 'AM'}</span>
+                    )}
                   </td>
                   {mainItems.map(ki => sizeCell(player, ki))}
                   {hasGK && gkItems.map(ki => {
@@ -569,6 +611,15 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                 <td style={{ padding: '5px 6px', textAlign: 'center' }}>
                   <input value={addRow.jersey_number} placeholder="#" onChange={e => setAddRow(r => ({ ...r, jersey_number: e.target.value }))}
                     style={{ width: 36, textAlign: 'center', border: 'none', background: 'transparent', fontSize: 12.5, outline: 'none' }} />
+                </td>
+                <td style={{ padding: '5px 5px', textAlign: 'center' }}>
+                  <select value={addRow.category} onChange={e => setAddRow(r => ({ ...r, category: e.target.value }))}
+                    style={{ fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer' }}>
+                    <option value="">AM</option>
+                    <option value="YM">YM</option>
+                    <option value="WM">WM</option>
+                    <option value="AM">AM</option>
+                  </select>
                 </td>
                 {kitItems.map(ki => <td key={ki.slot}></td>)}
                 <td style={{ padding: '4px 6px' }}>
@@ -634,33 +685,41 @@ function RosterTotals({ session, teams, kitTemplate }) {
     return () => { cancelled = true; };
   }, [teams, session?.id]);
 
-  // Aggregate: for each kit slot, for each size, list of players and count
+  // Aggregate: for each kit slot, split by player category (YM/WM/AM) then size
   const totals = useMemo(() => {
     const result = {};
     kitItems.forEach(ki => {
-      const bySz = {};
+      const byCat = {};
       allPlayers.forEach(p => {
         if (ki.gk_only && !p.is_gk) return;
         const sz = (allSizes[p.id] || {})[ki.slot];
         if (!sz || sz === '-') return;
-        if (!bySz[sz]) bySz[sz] = [];
-        bySz[sz].push(p);
+        const cat = p.category || 'AM';
+        if (!byCat[cat]) byCat[cat] = {};
+        if (!byCat[cat][sz]) byCat[cat][sz] = [];
+        byCat[cat][sz].push(p);
       });
-      result[ki.slot] = bySz;
+      result[ki.slot] = byCat;
     });
     return result;
   }, [kitItems, allPlayers, allSizes]);
 
   const exportCSV = () => {
-    const rows = [['Item', 'Size', 'Count', 'Players', 'Available', 'Incoming', 'ETA']];
+    const rows = [['Item', 'Color', 'Category', 'Size', 'Count', 'Players', 'Available', 'Incoming', 'ETA']];
     kitItems.forEach(ki => {
-      const bySz = totals[ki.slot] || {};
-      const sizeKeys = [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]);
-      sizeKeys.forEach(sz => {
-        const ps = bySz[sz] || [];
-        const stock = ki.product_id ? getStock(ki.product_id, sz) : { avail: 0, incoming: 0, eta: null };
-        const playerStr = ps.map(p => `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${p.first_name || ''} ${p.last_name || ''}`.trim()).join('; ');
-        rows.push([ki.label, sz, ps.length, playerStr, stock.avail, stock.incoming, stock.eta || '']);
+      const byCat = totals[ki.slot] || {};
+      ['YM', 'WM', 'AM'].forEach(cat => {
+        const bySz = byCat[cat] || {};
+        const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id) :
+                          cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+        const sizeKeys = [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]);
+        sizeKeys.forEach(sz => {
+          const ps = bySz[sz] || [];
+          if (!ps.length) return;
+          const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
+          const playerStr = ps.map(p => `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${p.first_name || ''} ${p.last_name || ''}`.trim()).join('; ');
+          rows.push([ki.label, ki.color || '', cat, sz, ps.length, playerStr, stock.avail, stock.incoming, stock.eta || '']);
+        });
       });
     });
     const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -704,105 +763,123 @@ function RosterTotals({ session, teams, kitTemplate }) {
 
       {/* Per-item sections */}
       {kitItems.map(ki => {
-        const bySz = totals[ki.slot] || {};
-        const sizeKeys = [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]);
-        const totalUnits = sizeKeys.reduce((a, s) => a + (bySz[s]?.length || 0) * (ki.qty || 1), 0);
-        if (!sizeKeys.length) return null;
+        const byCat = totals[ki.slot] || {};
+        const CAT_LABELS = { YM: 'Youth (YM)', WM: "Women's (WM)", AM: 'Adult (AM)' };
+        const getProductId = (cat) =>
+          cat === 'YM' ? (ki.product_youth_id || ki.product_id) :
+          cat === 'WM' ? (ki.product_womens_id || ki.product_id) :
+          ki.product_id;
+        const activeCats = ['YM', 'WM', 'AM'].filter(cat => Object.keys(byCat[cat] || {}).length > 0);
+        if (!activeCats.length) return null;
+        const totalUnits = activeCats.reduce((sum, cat) => {
+          const bySz = byCat[cat] || {};
+          return sum + Object.values(bySz).reduce((a, ps) => a + ps.length * (ki.qty || 1), 0);
+        }, 0);
+
         return (
           <div key={ki.slot} style={{ marginBottom: 20, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
             {/* Item header */}
             <div style={{ background: '#0b1220', color: '#fff', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ fontWeight: 800, fontSize: 13 }}>{ki.label}</div>
+              {ki.color && <span style={{ fontSize: 10, opacity: 0.75, background: 'rgba(255,255,255,.12)', borderRadius: 4, padding: '2px 7px' }}>{ki.color}</span>}
               {ki.takes_number && <span style={{ fontSize: 10, opacity: 0.7, fontWeight: 400 }}>w/ number</span>}
               {ki.qty > 1 && <span style={{ fontSize: 10, opacity: 0.7 }}>×{ki.qty} per player</span>}
               <div style={{ marginLeft: 'auto', fontWeight: 700, fontSize: 13 }}>{totalUnits} units total</div>
             </div>
 
-            {/* Size rows */}
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-              <thead>
-                <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                  <th style={{ padding: '6px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Size</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Need</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#64748b' }}>Players</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 100 }}>Available</th>
-                  <th style={{ padding: '6px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 120 }}>Incoming</th>
-                  <th style={{ padding: '6px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sizeKeys.map((sz, szIdx) => {
-                  const ps = bySz[sz] || [];
-                  const need = ps.length * (ki.qty || 1);
-                  const stock = ki.product_id ? getStock(ki.product_id, sz) : { avail: 0, incoming: 0, eta: null };
-                  const { avail, incoming, eta } = stock;
-                  const statusColor = !ki.product_id ? '#94a3b8' :
-                    avail >= need ? '#15803d' :
-                    (avail + incoming) >= need ? '#b45309' : '#dc2626';
-                  const statusLabel = !ki.product_id ? '—' :
-                    avail >= need ? '✅ Can fill' :
-                    (avail + incoming) >= need ? `🟡 Short ${need - avail} now` :
-                    `🔴 Short ${need - avail - incoming}`;
-                  const expandKey = ki.slot + '|' + sz;
-                  const isExpanded = expanded[expandKey];
-
-                  return (
-                    <React.Fragment key={sz}>
-                      <tr style={{ borderTop: szIdx > 0 ? '1px solid #f1f5f9' : 'none', background: szIdx % 2 === 0 ? '#fff' : '#fafafa' }}>
-                        <td style={{ padding: '7px 14px', fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{sz}</td>
-                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#0b1220' }}>{need}</td>
-                        <td style={{ padding: '7px 10px' }}>
-                          <button onClick={() => setExpanded(e => ({ ...e, [expandKey]: !isExpanded }))}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11.5, color: '#3b82f6', padding: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span style={{ transform: isExpanded ? 'rotate(90deg)' : 'none', display: 'inline-block', transition: 'transform .15s', fontSize: 9 }}>▶</span>
-                            {ps.slice(0, 3).map(p => {
-                              const num = p.jersey_number ? `#${p.jersey_number} ` : '';
-                              const name = [p.first_name, p.last_name].filter(Boolean).join(' ');
-                              return num + name;
-                            }).join(', ')}{ps.length > 3 ? ` + ${ps.length - 3} more` : ''}
-                          </button>
-                        </td>
-                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, color: avail >= need ? '#15803d' : avail > 0 ? '#b45309' : '#94a3b8', fontSize: 13 }}>
-                          {ki.product_id ? avail.toLocaleString() : '—'}
-                        </td>
-                        <td style={{ padding: '7px 14px', textAlign: 'right', fontSize: 12, color: incoming > 0 ? '#1e40af' : '#94a3b8' }}>
-                          {ki.product_id ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${eta}` : ''}` : '—') : '—'}
-                        </td>
-                        <td style={{ padding: '7px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: statusColor, whiteSpace: 'nowrap' }}>
-                          {statusLabel}
-                        </td>
+            {activeCats.map(cat => {
+              const bySz = byCat[cat] || {};
+              const productId = getProductId(cat);
+              const sizeKeys = [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]);
+              return (
+                <React.Fragment key={cat}>
+                  {activeCats.length > 1 && (
+                    <div style={{ background: '#f1f5f9', padding: '5px 14px', fontSize: 11, fontWeight: 700, color: '#374151', borderTop: '1px solid #e2e8f0' }}>
+                      {CAT_LABELS[cat]}
+                    </div>
+                  )}
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                    <thead>
+                      <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                        <th style={{ padding: '6px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Size</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Need</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#64748b' }}>Players</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 100 }}>Available</th>
+                        <th style={{ padding: '6px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#64748b', width: 120 }}>Incoming</th>
+                        <th style={{ padding: '6px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#64748b', width: 60 }}>Status</th>
                       </tr>
-                      {isExpanded && (
-                        <tr style={{ background: '#f0f9ff', borderTop: '1px solid #e0f2fe' }}>
-                          <td colSpan={6} style={{ padding: '8px 20px 10px' }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                              {ps.length} player{ps.length !== 1 ? 's' : ''} needing {sz} {ki.label}
-                            </div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
-                              {ps.map(p => (
-                                <span key={p.id} style={{ fontSize: 12, color: '#0b1220' }}>
-                                  {p.jersey_number ? <b>#{p.jersey_number}</b> : null}
-                                  {p.jersey_number ? ' ' : ''}{[p.first_name, p.last_name].filter(Boolean).join(' ') || '—'}
-                                  <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 4 }}>({teamMap[p.team_id] || 'Unknown team'})</span>
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc' }}>
-                  <td colSpan={2} style={{ padding: '6px 14px', fontWeight: 800, fontSize: 12, color: '#64748b', textAlign: 'right' }}>
-                    Total: {totalUnits} units
-                  </td>
-                  <td colSpan={4}></td>
-                </tr>
-              </tfoot>
-            </table>
+                    </thead>
+                    <tbody>
+                      {sizeKeys.map((sz, szIdx) => {
+                        const ps = bySz[sz] || [];
+                        const need = ps.length * (ki.qty || 1);
+                        const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
+                        const { avail, incoming, eta } = stock;
+                        const statusColor = !productId ? '#94a3b8' :
+                          avail >= need ? '#15803d' :
+                          (avail + incoming) >= need ? '#b45309' : '#dc2626';
+                        const statusLabel = !productId ? '—' :
+                          avail >= need ? '✅ Can fill' :
+                          (avail + incoming) >= need ? `🟡 Short ${need - avail} now` :
+                          `🔴 Short ${need - avail - incoming}`;
+                        const expandKey = ki.slot + '|' + cat + '|' + sz;
+                        const isExpanded = expanded[expandKey];
+
+                        return (
+                          <React.Fragment key={sz}>
+                            <tr style={{ borderTop: szIdx > 0 ? '1px solid #f1f5f9' : 'none', background: szIdx % 2 === 0 ? '#fff' : '#fafafa' }}>
+                              <td style={{ padding: '7px 14px', fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{sz}</td>
+                              <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#0b1220' }}>{need}</td>
+                              <td style={{ padding: '7px 10px' }}>
+                                <button onClick={() => setExpanded(e => ({ ...e, [expandKey]: !isExpanded }))}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11.5, color: '#3b82f6', padding: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <span style={{ transform: isExpanded ? 'rotate(90deg)' : 'none', display: 'inline-block', transition: 'transform .15s', fontSize: 9 }}>▶</span>
+                                  {ps.slice(0, 3).map(p => {
+                                    const num = p.jersey_number ? `#${p.jersey_number} ` : '';
+                                    const name = [p.first_name, p.last_name].filter(Boolean).join(' ');
+                                    return num + name;
+                                  }).join(', ')}{ps.length > 3 ? ` + ${ps.length - 3} more` : ''}
+                                </button>
+                              </td>
+                              <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, color: avail >= need ? '#15803d' : avail > 0 ? '#b45309' : '#94a3b8', fontSize: 13 }}>
+                                {productId ? avail.toLocaleString() : '—'}
+                              </td>
+                              <td style={{ padding: '7px 14px', textAlign: 'right', fontSize: 12, color: incoming > 0 ? '#1e40af' : '#94a3b8' }}>
+                                {productId ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${eta}` : ''}` : '—') : '—'}
+                              </td>
+                              <td style={{ padding: '7px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: statusColor, whiteSpace: 'nowrap' }}>
+                                {statusLabel}
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr style={{ background: '#f0f9ff', borderTop: '1px solid #e0f2fe' }}>
+                                <td colSpan={6} style={{ padding: '8px 20px 10px' }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                                    {ps.length} player{ps.length !== 1 ? 's' : ''} needing {sz} {ki.label}
+                                  </div>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                                    {ps.map(p => (
+                                      <span key={p.id} style={{ fontSize: 12, color: '#0b1220' }}>
+                                        {p.jersey_number ? <b>#{p.jersey_number}</b> : null}
+                                        {p.jersey_number ? ' ' : ''}{[p.first_name, p.last_name].filter(Boolean).join(' ') || '—'}
+                                        <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 4 }}>({teamMap[p.team_id] || 'Unknown team'})</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </React.Fragment>
+              );
+            })}
+            <div style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc', padding: '6px 14px', textAlign: 'right', fontWeight: 800, fontSize: 12, color: '#64748b' }}>
+              Total: {totalUnits} units
+            </div>
           </div>
         );
       })}
@@ -1035,7 +1112,7 @@ function CreateSessionModal({ customer, onCreated, onClose }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
-      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 760, margin: '0 16px 40px' }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 1040, margin: '0 16px 40px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900, color: '#0b1220' }}>New Roster Order Session</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
