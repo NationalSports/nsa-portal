@@ -1154,6 +1154,17 @@ export function RosterOrdersStaff({ customer, nf }) {
   const [showCatalog, setShowCatalog] = useState(false);
   const [leadInvite, setLeadInvite] = useState({ open: false, email: '', name: '', sending: false, done: '' });
   const [openSession, setOpenSession] = useState(null);
+  const [coaches, setCoaches] = useState([]); // account-level coach access list
+
+  const loadCoaches = useCallback(async () => {
+    if (!customer?.id) return;
+    const { data } = await supabase.from('coach_customer_access')
+      .select('coach_id, role, created_at, coach_accounts(email, name, status)')
+      .eq('customer_id', customer.id);
+    setCoaches((data || [])
+      .map(r => ({ id: r.coach_id, role: r.role, created_at: r.created_at, ...(r.coach_accounts || {}) }))
+      .sort((a, b) => (a.name || a.email || '').localeCompare(b.name || b.email || '')));
+  }, [customer?.id]);
 
   const sendLeadInvite = async () => {
     const email = (leadInvite.email || '').trim();
@@ -1161,6 +1172,13 @@ export function RosterOrdersStaff({ customer, nf }) {
     setLeadInvite(p => ({ ...p, sending: true, done: '' }));
     const { ok } = await inviteRosterCoach({ email, name: (leadInvite.name || '').trim(), customerId: customer.id, teamLabel: customer.name });
     setLeadInvite({ open: true, email: '', name: '', sending: false, done: ok ? `Invited ${email} ✓` : 'Could not invite — check email service config.' });
+    if (ok) loadCoaches();
+  };
+
+  const removeCoach = async (coachId) => {
+    if (!window.confirm('Remove this coach’s access to this account? Their team roster assignments stay intact.')) return;
+    setCoaches(prev => prev.filter(c => c.id !== coachId));
+    await supabase.from('coach_customer_access').delete().eq('coach_id', coachId).eq('customer_id', customer.id);
   };
 
   useEffect(() => {
@@ -1171,9 +1189,10 @@ export function RosterOrdersStaff({ customer, nf }) {
       const { data } = await supabase.from('roster_order_sessions').select('*')
         .eq('customer_id', customer.id).order('created_at', { ascending: false });
       if (!cancelled) { setSessions(data || []); setLoading(false); }
+      loadCoaches();
     })();
     return () => { cancelled = true; };
-  }, [customer?.id]);
+  }, [customer?.id, loadCoaches]);
 
   const onCreated = (sess) => {
     setSessions(prev => [sess, ...prev]);
@@ -1229,6 +1248,25 @@ export function RosterOrdersStaff({ customer, nf }) {
               {leadInvite.sending ? 'Sending…' : 'Invite & email'}
             </button>
             {leadInvite.done && <span style={{ fontSize: 12, color: leadInvite.done.includes('✓') ? '#15803d' : '#dc2626' }}>{leadInvite.done}</span>}
+          </div>
+        </div>
+      )}
+
+      {coaches.length > 0 && (
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            Coaches with access ({coaches.length})
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {coaches.map(c => (
+              <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 999, padding: '5px 6px 5px 12px', fontSize: 12.5 }}>
+                <span style={{ fontWeight: 700, color: '#0b1220' }}>{c.name || c.email}</span>
+                {c.name && <span style={{ color: '#94a3b8' }}>{c.email}</span>}
+                {c.status && c.status !== 'active' && <span style={{ fontSize: 10, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 999, padding: '1px 7px', fontWeight: 700 }}>{c.status}</span>}
+                <button onClick={() => removeCoach(c.id)} title="Remove access"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15, lineHeight: 1, padding: '0 2px' }}>×</button>
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -1295,8 +1333,17 @@ export function RosterOrdersCoach({ customer }) {
     if (!user?.email) { setCoach(null); setLoading(false); return; }
     const { data: c } = await supabase.from('coach_accounts').select('id,email,name,customer_id')
       .ilike('email', user.email).maybeSingle();
-    // Must be a coach belonging to this customer to manage its rosters.
-    if (!c?.id || (c.customer_id && c.customer_id !== customer.id)) { setCoach(null); setLoading(false); return; }
+    if (!c?.id) { setCoach(null); setLoading(false); return; }
+    // Access to this account: an explicit coach_customer_access grant, the legacy
+    // single customer_id match, or a null customer_id (global). A coach can work
+    // with several clubs, so coach_accounts.customer_id alone isn't enough.
+    let hasAccess = !c.customer_id || c.customer_id === customer.id;
+    if (!hasAccess) {
+      const { data: acc } = await supabase.from('coach_customer_access')
+        .select('customer_id').eq('coach_id', c.id).eq('customer_id', customer.id).maybeSingle();
+      hasAccess = !!acc;
+    }
+    if (!hasAccess) { setCoach(null); setLoading(false); return; }
     setCoach(c);
     const [{ data: ss }, cat] = await Promise.all([
       supabase.from('roster_order_sessions').select('*')

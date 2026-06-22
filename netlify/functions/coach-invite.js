@@ -33,6 +33,14 @@ async function provisionRosterCoach({ email, name, customerId, teamId, role }) {
     if (ce) return { error: ce.message };
     coachId = created?.id;
   }
+  // Grant account-level access (many-to-many; a coach can belong to several
+  // clubs). This is what makes "Add coach" stick even when the email already
+  // exists under another customer — coach_accounts.customer_id is single-valued
+  // and may point elsewhere, so access lives in coach_customer_access.
+  if (coachId && customerId) {
+    await admin.from('coach_customer_access')
+      .upsert({ coach_id: coachId, customer_id: customerId, role: role || 'editor' }, { onConflict: 'coach_id,customer_id' });
+  }
   if (coachId && teamId) {
     await admin.from('roster_team_coaches')
       .upsert({ team_id: teamId, coach_id: coachId, role: role || 'editor' }, { onConflict: 'team_id,coach_id' });
