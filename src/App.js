@@ -2723,18 +2723,54 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
 // ── PDF.js Setup (for NetSuite PDF import) ──
 const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
 let _pdfjsLoaded=false;
+let _pdfjsLoadPromise=null;
+// Load pdf.js from the CDN. Hardened against the "Parsing PDFs… forever" freeze:
+//  • a throw inside script.onload (e.g. the pdfjsLib global is missing) now REJECTS instead of
+//    leaving the promise unsettled — the old onload accessed window.pdfjsLib.GlobalWorkerOptions
+//    with no guard, so if that threw, neither resolve nor reject ever ran and every caller hung,
+//  • a 30s watchdog rejects if the script never fires load or error (offline / blocked CDN),
+//  • concurrent callers share one in-flight promise (and one <script>); a failed load clears the
+//    cache so a later attempt can retry.
 const loadPdfJs=()=>{
-  if(_pdfjsLoaded)return Promise.resolve();
-  return new Promise((resolve,reject)=>{
-    if(window.pdfjsLib){_pdfjsLoaded=true;resolve();return}
+  if(_pdfjsLoaded&&window.pdfjsLib)return Promise.resolve();
+  if(_pdfjsLoadPromise)return _pdfjsLoadPromise;
+  _pdfjsLoadPromise=new Promise((resolve,reject)=>{
+    let timer=null;
+    const finish=(err)=>{
+      if(timer){clearTimeout(timer);timer=null}
+      if(err){_pdfjsLoadPromise=null;reject(err)}else{_pdfjsLoaded=true;resolve()}
+    };
+    if(window.pdfjsLib){
+      try{window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js'}catch(e){/* already configured */}
+      finish();return;
+    }
+    timer=setTimeout(()=>finish(new Error('PDF.js failed to load (timed out after 30s) — check your network connection and retry')),30000);
     const script=document.createElement('script');
     script.src=PDFJS_CDN+'/pdf.min.js';
-    script.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js';_pdfjsLoaded=true;resolve()};
-    script.onerror=()=>reject(new Error('Failed to load PDF.js'));
+    script.onload=()=>{try{
+      if(!window.pdfjsLib)throw new Error('PDF.js loaded but the pdfjsLib global is missing');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js';
+      finish();
+    }catch(e){finish(e)}};
+    script.onerror=()=>finish(new Error('Failed to load PDF.js from the CDN'));
     document.head.appendChild(script);
   });
+  return _pdfjsLoadPromise;
 };
-const extractPdfText=async(file)=>{
+// Reject (instead of hanging forever) if a promise doesn't settle within `ms`. Used to bound PDF
+// text extraction so one corrupt / encrypted / scanned-image / huge file can't freeze the whole
+// import on "Parsing PDFs…". Note: this lets the UI recover; any orphaned pdf.js work is harmless.
+const _withTimeout=(promise,ms,msg)=>{
+  let t=null;
+  const timeout=new Promise((_,reject)=>{t=setTimeout(()=>reject(new Error(msg||('Timed out after '+ms+'ms'))),ms)});
+  return Promise.race([promise,timeout]).finally(()=>{if(t)clearTimeout(t)});
+};
+const extractPdfText=async(file,opts={})=>{
+  // Bound the whole extraction so a corrupt / encrypted / scanned / huge PDF can't hang the
+  // import on "Parsing PDFs…" forever — pdf.js getDocument()/getTextContent() can otherwise
+  // never settle, and an await that never settles can't be caught by the caller's try/catch.
+  const timeoutMs=opts.timeoutMs||60000;
+  const _extract=async()=>{
   await loadPdfJs();
   const ab=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
@@ -2776,6 +2812,8 @@ const extractPdfText=async(file)=>{
     fullText+=pageText+'\n';
   }
   return{fullText,pages};
+  };
+  return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
 };
 // ── OMG financial report parsers (work on text from OCR OR a PDF printout) ──
 const _omgAmt=(s)=>{const m=String(s).replace(/[(),]/g,'').match(/-?[\d.]+/);return m?parseFloat(m[0])||0:0;};
@@ -22489,6 +22527,7 @@ export default function App(){
   const[impVendor,setImpVendor]=useState('');// default vendor_id for product import
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
+  const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
   const[billHistFilter,setBillHistFilter]=useState('all');// Bill History view: all | review | notpushed | pushed
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
@@ -23789,11 +23828,17 @@ export default function App(){
 
     // Process multiple bill PDFs — each file may contain multiple invoices
     const processBillPdfs=async(files)=>{
-      setBillImport(x=>({...x,uploading:true,step:'parsing'}));
+      if(!files||!files.length)return;
+      const myToken=++_billParseToken.current;// supersedes any prior in-flight parse; Cancel bumps this too
+      setBillImport(x=>({...x,uploading:true,step:'parsing',progress:{current:0,total:files.length,name:''}}));
       const results=[];
       let idx=0;
       for(let fi=0;fi<files.length;fi++){
+        if(_billParseToken.current!==myToken)return;// cancelled / superseded — bail without clobbering state
         const file=files[fi];
+        // Surface which file is in flight so a slow or stuck one is visible instead of an opaque spinner.
+        setBillImport(x=>({...x,progress:{current:fi+1,total:files.length,name:file.name}}));
+        await new Promise(r=>setTimeout(r,0));// let React paint the progress before the heavy work
         try{
           const{fullText:text,pages}=await extractPdfText(file);
           const bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
@@ -23804,15 +23849,18 @@ export default function App(){
             idx++;
           }
         }catch(e){
+          // A failed/timed-out file no longer freezes the batch — it lands in review with a warning.
           results.push({id:'BILL-'+Date.now()+'-'+idx,file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,si_upcharge:0,warnings:['PDF read failed: '+e.message],rawText:''},selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
           idx++;
         }
       }
-      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
+      if(_billParseToken.current!==myToken)return;// cancelled while the last file was parsing
+      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
-      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)');
+      const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
+      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
     };
 
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
@@ -25839,6 +25887,15 @@ export default function App(){
           <div style={{fontSize:36,marginBottom:8}}>&#8987;</div>
           <div style={{fontSize:16,fontWeight:700,color:'#7c3aed'}}>Parsing PDFs...</div>
           <div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>Extracting text and detecting bill data</div>
+          {billImport.progress&&billImport.progress.total>0&&<>
+            <div style={{fontSize:12,color:'#475569',marginTop:10,fontWeight:600}}>File {billImport.progress.current} of {billImport.progress.total}{billImport.progress.name?' — '+billImport.progress.name:''}</div>
+            <div style={{height:6,background:'#ede9fe',borderRadius:3,marginTop:8,maxWidth:320,marginLeft:'auto',marginRight:'auto',overflow:'hidden'}}>
+              <div style={{height:'100%',width:Math.round((billImport.progress.current/billImport.progress.total)*100)+'%',background:'#7c3aed',transition:'width 0.2s'}}/>
+            </div>
+          </>}
+          <div style={{marginTop:16}}>
+            <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{_billParseToken.current++;setBillImport(x=>({...x,step:'upload',uploading:false,progress:null}))}}>Cancel</button>
+          </div>
         </div></div>}
 
         {/* Saved Bills History */}
