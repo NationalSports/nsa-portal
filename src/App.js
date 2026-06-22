@@ -22491,6 +22491,9 @@ export default function App(){
   const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
   const[billHistFilter,setBillHistFilter]=useState('all');// Bill History view: all | review | notpushed | pushed
+  const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
+  const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
+  const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -23806,22 +23809,49 @@ export default function App(){
           for(let bi=0;bi<bills.length;bi++){
             const parsed=bills[bi];
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
-            results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
+            results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
             idx++;
           }
         }catch(e){
           // A failed/timed-out file no longer freezes the batch — it lands in review with a warning.
-          results.push({id:'BILL-'+Date.now()+'-'+idx,file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,si_upcharge:0,warnings:['PDF read failed: '+e.message],rawText:''},selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
+          results.push({id:'BILL-'+Date.now()+'-'+idx,file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,si_upcharge:0,warnings:['PDF read failed: '+e.message],rawText:''},selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
           idx++;
         }
       }
       if(_billParseToken.current!==myToken)return;// cancelled while the last file was parsing
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
       // Auto-save to history
-      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
+      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
       nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+    };
+
+    // ── Bill size-label alignment ──────────────────────────────────────────────
+    // Vendor invoices don't always label a size the way the order does: adidas bills
+    // one-size goods as "OSFM" while the PO carries "OSFA", and our parser writes shoe
+    // half-sizes as "8-"/"10-" where POs store "8.5"/"10.5". Left unmapped these read as
+    // a phantom 0 ordered ("billing 350 exceeds 0 ordered"), falsely blocking the push and
+    // splitting billed qty onto a junk size key. _alignSize maps a bill's raw size onto the
+    // matching key actually present on the target so ordered/billed line up.
+    const _canonBillSize=raw=>{
+      if(raw==null)return raw;
+      const s=String(raw).trim();
+      const dash=s.match(/^(\d{1,2})[-–]$/);// "8-" → "8.5" (parser's half-size shorthand)
+      if(dash)return dash[1]+'.5';
+      return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
+    };
+    // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
+    const _poLineSizeKeys=po=>Object.keys(po||{}).filter(k=>typeof po[k]==='number'&&k!=='unit_cost'&&k!=='qty'&&!k.startsWith('_'));
+    // Resolve a raw bill size to the key used on a target. Prefers an exact label match,
+    // then a canonical-size match, and finally falls back to the canonical label (which
+    // legitimately reads 0 when the target never ordered that size — a real over-bill).
+    const _alignSize=(raw,sizeKeys)=>{
+      if(raw==null||raw==='')return raw;
+      if(sizeKeys&&sizeKeys.includes(raw))return raw;
+      const canon=_canonBillSize(raw);
+      if(sizeKeys){const hit=sizeKeys.find(k=>k===canon||_canonBillSize(k)===canon);if(hit)return hit}
+      return canon;
     };
 
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
@@ -23875,7 +23905,8 @@ export default function App(){
               if(pid!==poLc&&!pid.startsWith(poLc))return po;
               const existingBilled=po.billed||{};
               const newBilled={...existingBilled};
-              Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const _pk=_poLineSizeKeys(po);
+              Object.entries(itemBilled).forEach(([sz,qty])=>{const k=_alignSize(sz,_pk);newBilled[k]=(newBilled[k]||0)+qty});
               const trackNums=[...(po.tracking_numbers||[])];
               if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
               // Split cost proportionally by PO qty for this item vs total qty for this SKU
@@ -24181,20 +24212,23 @@ export default function App(){
           let cands=lines.filter(l=>(!al.so_id||l.soId===al.so_id)&&l.sku===sku);
           if(!cands.length)return;
           if(color){const exact=cands.filter(l=>l.color===color);if(exact.length)cands=exact}
+          // Align the bill's size label to the linked po_lines' canonical key (OSFM→OSFA, 8-→8.5)
+          // so capacity and billed land on the size the order actually carries, not a phantom 0.
+          const asz=_alignSize(al.size,[...new Set(cands.flatMap(l=>_poLineSizeKeys(l.pl)))]);
           let rem=al.qty;const pours=[];
           cands.forEach(l=>{
             if(rem<=0)return;
-            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+al.size;
-            const cap=Math.max(0,safeNum(l.pl[al.size])-safeNum((l.pl.billed||{})[al.size])-(poured[k]||0));
+            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+asz;
+            const cap=Math.max(0,safeNum(l.pl[asz])-safeNum((l.pl.billed||{})[asz])-(poured[k]||0));
             const take=Math.min(rem,cap);
             if(take>0){poured[k]=(poured[k]||0)+take;pours.push({l,qty:take});rem-=take}
           });
           // Out of room = over-billing on a real size: keep SO totals reconciled with the batch
           // record by dumping the remainder on the last poured (or first) line — same as the so_po
           // path allows. A size no linked line ordered stays batch-level instead (junk vendor size).
-          if(rem>0&&cands.some(l=>safeNum(l.pl[al.size])>0)){
+          if(rem>0&&cands.some(l=>safeNum(l.pl[asz])>0)){
             const l=pours.length?pours[pours.length-1].l:cands[0];
-            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+al.size;poured[k]=(poured[k]||0)+rem;
+            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+asz;poured[k]=(poured[k]||0)+rem;
             const pe=pours.find(p=>p.l===l);if(pe)pe.qty+=rem;else pours.push({l,qty:rem});rem=0}
           // Prorate the alloc's cost by poured share; remainder lands on the last pour.
           let costApplied=0;
@@ -24203,7 +24237,7 @@ export default function App(){
             costApplied+=share;
             const t=(touched[p.l.soId]=touched[p.l.soId]||{});
             const e=(t[p.l.ii+'|'+p.l.pi]=t[p.l.ii+'|'+p.l.pi]||{sizes:{},cost:0});
-            e.sizes[al.size]=(e.sizes[al.size]||0)+p.qty;e.cost=Math.round((e.cost+share)*100)/100;
+            e.sizes[asz]=(e.sizes[asz]||0)+p.qty;e.cost=Math.round((e.cost+share)*100)/100;
           });
         });
         const touchedIds=new Set([...Object.keys(touched),...Object.keys(fBySO).filter(sid=>safeNum(fBySO[sid])>0)]);
@@ -24336,7 +24370,8 @@ export default function App(){
           if(!batchSoIds.length)(sb.source_pos||[]).forEach(sp=>{if(sp.so_id)batchSoIds.push(sp.so_id)});
           const existingBilled=sb.billed||{};
           const newBilled={...existingBilled};
-          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const _bk=[...new Set((sb.source_pos||[]).flatMap(sp=>(sp.items||[]).flatMap(it=>Object.keys(it.sizes||{}))))];
+          Object.entries(billedSizes).forEach(([sz,qty])=>{const k=_alignSize(sz,_bk);newBilled[k]=(newBilled[k]||0)+qty});
           const trackNums=[...(sb.tracking_numbers||[])];
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
@@ -24358,7 +24393,8 @@ export default function App(){
           if(po.id!==poId)return po;
           const existingBilled=po.billed||{};
           const newBilled={...existingBilled};
-          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const _ik=[...new Set((po.items||[]).flatMap(it=>Object.keys(it.sizes||{})))];
+          Object.entries(billedSizes).forEach(([sz,qty])=>{const k=_alignSize(sz,_ik);newBilled[k]=(newBilled[k]||0)+qty});
           const trackNums=[...(po.tracking_numbers||[])];
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...po,billed:newBilled,tracking_numbers:trackNums};
@@ -24431,16 +24467,20 @@ export default function App(){
       const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty)o[it.size]=(o[it.size]||0)+safeNum(it.qty)});return o};
       if(p.matchedPOSource==='batch'&&p.matchedPO){
         const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
+        const _bk=[...new Set((sb.source_pos||[]).flatMap(sp=>(sp.items||[]).flatMap(it=>Object.keys(it.sizes||{}))))];
         Object.entries(addBySize()).forEach(([size,add])=>{
-          let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
-          const billed=safeNum((sb.billed||{})[size]);
+          const k=_alignSize(size,_bk);
+          let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])}));
+          const billed=safeNum((sb.billed||{})[k]);
           if(billed+add>ordered)errs.push((sb.po_number||'Batch')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
         });
       }else if(p.matchedPOSource==='inv_po'&&p.matchedPO){
         const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
+        const _ik=[...new Set((po.items||[]).flatMap(it=>Object.keys(it.sizes||{})))];
         Object.entries(addBySize()).forEach(([size,add])=>{
-          let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])});
-          const billed=safeNum((po.billed||{})[size]);
+          const k=_alignSize(size,_ik);
+          let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])});
+          const billed=safeNum((po.billed||{})[k]);
           if(billed+add>ordered)errs.push((po.po_number||'PO')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
         });
       }else if(p.matchedPOSource==='so_po'&&p.matchedPO&&safeNum(p.freight)>0){
@@ -24455,8 +24495,10 @@ export default function App(){
             (it.po_lines||[]).forEach(po=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return;
+              const _pk=_poLineSizeKeys(po);
               Object.entries(adds).forEach(([size,add])=>{
-                const ordered=safeNum(po[size]);const billed=safeNum((po.billed||{})[size]);
+                const k=_alignSize(size,_pk);
+                const ordered=safeNum(po[k]);const billed=safeNum((po.billed||{})[k]);
                 if(billed+add>ordered)errs.push(it.sku+' '+size+' on '+(po.po_id||so.id)+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
               });
             });
@@ -24474,20 +24516,11 @@ export default function App(){
       return errs;
     };
 
-    // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
-    const pushBillsToPortal=(force)=>{
-      const selected=billImport.parsed.filter(_billIsReadyToPush);
-      if(!selected.length){nf('No matched bills selected to push','error');return}
-      if(force!==true){
-        const problems=[];
-        selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problems.push((b.parsed.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'))+':\n  • '+errs.join('\n  • '))});
-        if(problems.length){
-          const ok=window.confirm('Cannot push — problem(s) found:\n\n'+problems.join('\n\n')+'\n\nPush anyway (override)?');
-          if(!ok){nf('Push cancelled — '+problems.length+' bill(s) have problems','error');return}
-        }
-      }
+    // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
+    // direct push and the "push matched only" path from the problems modal. Returns # applied.
+    const _applyBillsToPortal=(bills)=>{
       let applied=0;
-      selected.forEach(b=>{
+      bills.forEach(b=>{
         try{
           applyBillToSO(b.parsed);
           b.portalStatus='success';b.portalMsg='Applied to SO';
@@ -24497,9 +24530,52 @@ export default function App(){
         }
       });
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
-      // Update localStorage history
-      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=selected.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      return applied;
+    };
+
+    // Park a set of bills (by id) under "Look at later" in one pass — clears their push
+    // selection and persists the flag to saved history. Batched version of _setBillReviewLater.
+    const _parkBillsForLater=(billIds)=>{
+      const ids=new Set(billIds);
+      setBillImport(x=>({...x,parsed:x.parsed.map(p=>ids.has(p.id)?{...p,reviewLater:true,selected:false}:p)}));
+      setSavedBills(prev=>{const updated=prev.map(sb=>ids.has(sb.id)?{...sb,reviewLater:true}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+    };
+
+    // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
+    // When some selected bills have problems, open the styled review dialog instead of a
+    // browser confirm so the user can push the clean ones and park the rest for later.
+    const pushBillsToPortal=(force)=>{
+      const selected=billImport.parsed.filter(_billIsReadyToPush);
+      if(!selected.length){nf('No matched bills selected to push','error');return}
+      if(force!==true){
+        const cleanBills=[],problemBills=[];
+        selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problemBills.push({bill:b,errs});else cleanBills.push(b)});
+        if(problemBills.length){setBillPushModal({cleanBills,problemBills});return;}
+      }
+      const applied=_applyBillsToPortal(selected);
       nf(applied+' bill(s) pushed to portal');
+    };
+
+    // Problems-modal action: push the exact-match bills and move the flagged ones to "Look at later".
+    const _pushCleanParkProblems=()=>{
+      const m=billPushModal;if(!m)return;
+      const applied=m.cleanBills.length?_applyBillsToPortal(m.cleanBills):0;
+      if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill.id));
+      setBillPushModal(null);
+      const parts=[];
+      if(applied)parts.push(applied+' matched bill(s) pushed');
+      if(m.problemBills.length)parts.push(m.problemBills.length+' moved to Look at later');
+      nf(parts.join(' · ')||'Nothing to push');
+    };
+
+    // Problems-modal action: override and push everything, problems included.
+    const _pushAllOverride=()=>{
+      const m=billPushModal;if(!m)return;
+      const all=[...m.cleanBills,...m.problemBills.map(p=>p.bill)];
+      const applied=_applyBillsToPortal(all);
+      setBillPushModal(null);
+      nf(applied+' bill(s) pushed to portal (override)');
     };
 
     // Push bills to QuickBooks
@@ -25859,19 +25935,62 @@ export default function App(){
           </div>
         </div></div>}
 
-        {/* Saved Bills History */}
-        {savedBills.length>0&&<div className="card" style={{marginTop:16}}>
+        {/* Saved Bills History — also the "Look at later" workspace (status + vendor + time filters) */}
+        {savedBills.length>0&&(()=>{
+          // Vendor + time scope; the status chips below count within this scope so "Look at later (n)"
+          // reflects the filters in view. uploadedTs is the reliable sort key; older rows fall back to
+          // parsing the human uploadedAt string.
+          const _billTs=sb=>{const t=sb.uploadedTs||Date.parse(sb.uploadedAt||'');return Number.isFinite(t)?t:0};
+          const _timeOk=sb=>{
+            if(billHistTime==='all')return true;
+            const t=_billTs(sb);if(!t)return false;
+            if(billHistTime==='today'){const d=new Date();d.setHours(0,0,0,0);return t>=d.getTime()}
+            const days=billHistTime==='7d'?7:billHistTime==='30d'?30:0;
+            return days?(Date.now()-t)<=days*86400000:true;
+          };
+          const _vendorOf=sb=>(sb.parsed?.vendor||sb.parsed?.supplier||'').trim();
+          const _vendorOk=sb=>billHistVendor==='all'||_vendorOf(sb)===billHistVendor;
+          const scoped=savedBills.filter(sb=>_timeOk(sb)&&_vendorOk(sb));
+          const vendors=[...new Set(savedBills.map(_vendorOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+          const rl=scoped.filter(b=>b.reviewLater).length;
+          const pushed=scoped.filter(b=>b.qbStatus==='success'||b.portalStatus==='success').length;
+          const np=scoped.filter(b=>!b.reviewLater&&b.qbStatus!=='success'&&b.portalStatus!=='success').length;
+          const rows=scoped.filter(sb=>{
+            if(billHistFilter==='review')return sb.reviewLater;
+            if(billHistFilter==='pushed')return sb.qbStatus==='success'||sb.portalStatus==='success';
+            if(billHistFilter==='notpushed')return !sb.reviewLater&&sb.qbStatus!=='success'&&sb.portalStatus!=='success';
+            return true;
+          });
+          const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
+          const selStyle={fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
+          return<div className="card" style={{marginTop:16}}>
           <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <h2 style={{margin:0}}>Bill History</h2>
-            {(()=>{const rl=savedBills.filter(b=>b.reviewLater).length;const pushed=savedBills.filter(b=>b.qbStatus==='success'||b.portalStatus==='success').length;const np=savedBills.filter(b=>!b.reviewLater&&b.qbStatus!=='success'&&b.portalStatus!=='success').length;
+            {(()=>{
               const chip=(key,label,n,activeColor)=><button key={key} onClick={()=>setBillHistFilter(key)} style={{fontSize:10,padding:'3px 10px',borderRadius:12,cursor:'pointer',fontWeight:700,border:'1px solid '+(billHistFilter===key?activeColor:'#e2e8f0'),background:billHistFilter===key?activeColor:'#fff',color:billHistFilter===key?'#fff':'#475569'}}>{label} ({n})</button>;
               return<div style={{display:'flex',gap:6,flex:1,flexWrap:'wrap'}}>
-                {chip('all','All',savedBills.length,'#475569')}
+                {chip('all','All',scoped.length,'#475569')}
                 {chip('review','🕒 Look at later',rl,'#f59e0b')}
                 {chip('notpushed','Not pushed',np,'#64748b')}
                 {chip('pushed','Pushed',pushed,'#16a34a')}
               </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
+            {/* Vendor + time filters — apply to every status view, handy for the Look at later list */}
+            <div style={{display:'flex',gap:8,alignItems:'center',width:'100%',flexWrap:'wrap',marginTop:2}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.4}}>Filter</span>
+              <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={{...selStyle,maxWidth:220}} title="Filter bills by vendor">
+                <option value="all">All vendors</option>
+                {vendors.map(v=><option key={v} value={v}>{v}</option>)}
+              </select>
+              <select value={billHistTime} onChange={e=>setBillHistTime(e.target.value)} style={selStyle} title="Filter bills by upload time">
+                <option value="all">All time</option>
+                <option value="today">Today</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+              </select>
+              {filtersActive&&<button onClick={()=>{setBillHistVendor('all');setBillHistTime('all')}} style={{fontSize:10,padding:'3px 8px',borderRadius:6,cursor:'pointer',border:'1px solid #e2e8f0',background:'#fff',color:'#64748b',fontWeight:600}}>Clear filters</button>}
+              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{rows.length} shown</span>
+            </div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
             <table style={{fontSize:11,width:'100%'}}>
@@ -25886,12 +26005,9 @@ export default function App(){
                 <th style={{textAlign:'center',padding:'8px 12px'}}>Look at later</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>Uploaded</th>
               </tr></thead>
-              <tbody>{savedBills.filter(sb=>{
-                if(billHistFilter==='review')return sb.reviewLater;
-                if(billHistFilter==='pushed')return sb.qbStatus==='success'||sb.portalStatus==='success';
-                if(billHistFilter==='notpushed')return !sb.reviewLater&&sb.qbStatus!=='success'&&sb.portalStatus!=='success';
-                return true;
-              }).map((sb,si)=><tr key={sb.id||si} style={{borderBottom:'1px solid #f1f5f9',background:sb.reviewLater?'#fffbeb':sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
+              <tbody>{rows.length===0
+                ?<tr><td colSpan={9} style={{padding:'18px 12px',textAlign:'center',color:'#94a3b8',fontSize:12}}>No bills match these filters.</td></tr>
+                :rows.map((sb,si)=><tr key={sb.id||si} style={{borderBottom:'1px solid #f1f5f9',background:sb.reviewLater?'#fffbeb':sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
                 <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
                 <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
                 <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
@@ -25909,7 +26025,46 @@ export default function App(){
               </tr>)}</tbody>
             </table>
           </div>
-        </div>}
+        </div>;})()}
+
+        {/* Push-problems dialog — styled replacement for the old browser confirm. Push the exact-match
+            bills and park the flagged ones under "Look at later", or override and push everything. */}
+        {billPushModal&&(()=>{
+          const m=billPushModal;const nClean=m.cleanBills.length,nProb=m.problemBills.length;
+          const _lbl=b=>(b.parsed?.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'));
+          const _vend=b=>(b.parsed?.vendor||b.parsed?.supplier||'');
+          return<div className="modal-overlay" style={{zIndex:1200}} onClick={()=>setBillPushModal(null)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+              <div className="modal-header" style={{background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                <h2 style={{margin:0,display:'flex',alignItems:'center',gap:8,color:'#b45309'}}>⚠️ {nProb} bill{nProb===1?'':'s'} need{nProb===1?'s':''} a look</h2>
+                <button className="modal-close" onClick={()=>setBillPushModal(null)}>×</button>
+              </div>
+              <div className="modal-body">
+                <div style={{fontSize:12,color:'#475569',marginBottom:14,lineHeight:1.5}}>A few bills couldn't be matched cleanly — a duplicate doc&nbsp;# or billing more than was ordered. Push the ones that matched exactly and park the rest under <b>🕒 Look at later</b>, or override and push everything.</div>
+                {nClean>0&&<div style={{marginBottom:nProb?14:0,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8}}>
+                  <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:6}}>✅ {nClean} matched exactly — will push</div>
+                  {m.cleanBills.map(b=><div key={b.id} style={{fontSize:11,color:'#15803d',padding:'2px 0'}}>{_lbl(b)}{b.parsed?.po_number?' · PO '+b.parsed.po_number:''}{_vend(b)?' · '+_vend(b):''}</div>)}
+                </div>}
+                {nProb>0&&<div style={{padding:'10px 12px',background:'#fff',border:'1px solid #fde68a',borderRadius:8}}>
+                  <div style={{fontSize:12,fontWeight:800,color:'#b45309',marginBottom:8}}>🕒 {nProb} with problems — will move to Look at later</div>
+                  {m.problemBills.map(({bill,errs})=><div key={bill.id} style={{paddingBottom:8,marginBottom:8,borderBottom:'1px solid #fef3c7'}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{_lbl(bill)}{_vend(bill)?' · '+_vend(bill):''}</div>
+                    <ul style={{margin:'4px 0 0',paddingLeft:18}}>{errs.map((e,i)=><li key={i} style={{fontSize:11,color:'#b45309'}}>{e}</li>)}</ul>
+                  </div>)}
+                </div>}
+              </div>
+              <div className="modal-footer" style={{flexWrap:'wrap',justifyContent:'space-between',gap:8}}>
+                <button className="btn btn-secondary" style={{fontSize:11,color:'#b45309',borderColor:'#fcd34d'}} onClick={_pushAllOverride} title="Apply every selected bill anyway, problems included">Push all anyway (override)</button>
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn btn-secondary" onClick={()=>setBillPushModal(null)}>Cancel</button>
+                  <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={_pushCleanParkProblems}>
+                    {nClean>0?'Push '+nClean+' · park '+nProb+' for later':'Move '+nProb+' to Look at later'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
       </>}
 
       {/* INVENTORY CSV UPLOAD TAB */}
