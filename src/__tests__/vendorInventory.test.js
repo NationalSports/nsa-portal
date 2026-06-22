@@ -20,6 +20,7 @@ describe('vendorInvSource', () => {
     expect(vendorInvSource({ api_provider: 'sanmar' })).toBe('sm');
     expect(vendorInvSource({ api_provider: 'momentec' })).toBe('mt');
     expect(vendorInvSource({ api_provider: 'richardson' })).toBe('rs');
+    expect(vendorInvSource({ api_provider: 'champro' })).toBe('cp');
   });
 
   test('falls back to vendor name when api_provider is absent', () => {
@@ -28,6 +29,9 @@ describe('vendorInvSource', () => {
     expect(vendorInvSource({ name: 'Momentec' })).toBe('mt');
     expect(vendorInvSource({ name: 'Richardson' })).toBe('rs');
     expect(vendorInvSource({ name: 'Adidas' })).toBe('adidas');
+    // Champro vendor row carries name only (api_provider is null), so the name match matters.
+    expect(vendorInvSource({ name: 'Champro' })).toBe('cp');
+    expect(vendorInvSource({ name: 'Champro', api_provider: null })).toBe('cp');
   });
 
   test('Richardson brand resolves even without a vendor record', () => {

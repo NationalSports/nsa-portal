@@ -1286,6 +1286,63 @@ const testMomentecConnection = async () => {
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
 };
 
+// ─── Champro API Integration (via Netlify proxy — REST/JSON) ───
+// Requires CHAMPRO_API_KEY in Netlify env vars (the per-customer "API Customer Key").
+// Champro also restricts by source IP, so the proxy's egress IP must be allowlisted on
+// the Champro Account & Contact Info page. The proxy injects the key server-side, so
+// callers never see it. Docs: https://api.champrosports.com/ — see docs/CHAMPRO_API_SETUP.md.
+const champroApiCall = async (path, options = {}, _retries = 0) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/champro-proxy?path=${encodeURIComponent(path)}`;
+    const response = await authFetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
+    });
+    if (!response.ok) {
+      // Champro rate-limits aggressively (429). Back off and retry a few times before giving up.
+      if ((response.status === 429 || response.status === 503) && _retries < 3) {
+        const delay = (2 ** _retries) * 1000;
+        console.warn(`[Champro] ${response.status} on ${path}, retrying in ${delay}ms (attempt ${_retries + 1}/3)`);
+        await new Promise(r => setTimeout(r, delay));
+        return champroApiCall(path, options, _retries + 1);
+      }
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `Champro API error: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('[Champro] API response:', path, data);
+    return data;
+  } catch (error) { console.error('[Champro] API call failed:', path, error); throw error; }
+};
+
+// ProductInfo — expands a ProductMaster (our catalog SKU, e.g. "BS25Y") into its
+// size/color-specific SKUs ({ SKU, Configuration, Fabric, Color, Size }) plus MOQ and
+// available lead times. The proxy injects APICustomerKey, so callers pass only the master.
+const champroGetProductInfo = async (productMaster) => {
+  const data = await champroApiCall(`/api/Order/ProductInfo?ProductMaster=${encodeURIComponent(productMaster)}`);
+  // Plain-text diagnostic so the key field is readable in the console without expanding the object.
+  const skus = data && data.ProductSKUs;
+  console.log(`[Champro] ProductInfo ${productMaster} → ProductSKUs:`, Array.isArray(skus) ? `${skus.length} item(s)` : skus);
+  return data;
+};
+
+// Inventory — per-warehouse on-hand for a set of size/color-specific SKUs. Champro keys
+// inventory by the full SKU (e.g. "BS25YGRBM"), so resolve those from ProductInfo first.
+// Returns { SessionID, Inventory:[{ ItemID, SKU, MORE_EXPECTED_ON, Warehouses:[{ WarehouseLocation, Quantity }] }], ErrorMessages }.
+const champroGetInventory = async (skus) =>
+  champroApiCall('/api/Order/Inventory', {
+    method: 'POST',
+    body: JSON.stringify({ Orders: [{ OrderItems: (skus || []).map((s) => ({ SKU: s })) }] }),
+  });
+
+const testChamproConnection = async () => {
+  try { await champroGetProductInfo('BS25Y'); console.log('[Champro] Connection test successful'); return true; }
+  catch (error) { console.error('[Champro] Connection test failed:', error); return false; }
+};
+
 // ─── Cross-vendor SKU resolver (for order import fallback) ───
 // Given a style/SKU not found in the local catalog, query SanMar, S&S, and
 // Momentec in parallel and return the most complete normalized match, or null.
@@ -1447,4 +1504,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, champroApiCall, champroGetProductInfo, champroGetInventory, testChamproConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
