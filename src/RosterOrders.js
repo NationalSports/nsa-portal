@@ -125,6 +125,125 @@ async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, r
   }
 }
 
+// ─── Product picker — typeahead search of products in the system ──────────────
+// Attaches a real product (SKU) to a kit item so inventory/availability resolves.
+function ProductPicker({ value, sku, productName, onPick }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setResults([]); setSearching(false); return; }
+    let cancelled = false;
+    setSearching(true);
+    const safe = term.replace(/[%,()]/g, ' '); // keep the PostgREST or-filter well-formed
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from('products')
+        .select('id,sku,name,color,brand,category')
+        .or('is_active.is.null,is_active.eq.true')
+        .or(`sku.ilike.%${safe}%,name.ilike.%${safe}%`)
+        .limit(20);
+      if (!cancelled) { setResults(data || []); setSearching(false); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q]);
+
+  if (value && !open) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, padding: '2px 8px', fontSize: 11, maxWidth: 220, overflow: 'hidden' }}>
+          <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#047857' }}>{sku || value}</span>
+          {productName && <span style={{ color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{productName}</span>}
+        </span>
+        <button type="button" onClick={() => { setOpen(true); setQ(''); }} title="Change" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', fontSize: 11, padding: 0 }}>change</button>
+        <button type="button" onClick={() => onPick(null)} title="Unlink" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 13, padding: 0 }}>×</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative', minWidth: 180 }}>
+      <input autoFocus={open} value={q} placeholder="search SKU or name…" onChange={e => setQ(e.target.value)}
+        style={{ width: '100%', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 11.5, padding: '4px 7px', outline: 'none' }} />
+      {q.trim().length >= 2 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 3, maxHeight: 240, overflowY: 'auto', boxShadow: '0 8px 24px rgba(15,23,42,.14)' }}>
+          {searching && <div style={{ padding: '8px 10px', fontSize: 11.5, color: '#94a3b8' }}>Searching…</div>}
+          {!searching && results.length === 0 && <div style={{ padding: '8px 10px', fontSize: 11.5, color: '#94a3b8' }}>No products found.</div>}
+          {results.map(p => (
+            <button type="button" key={p.id}
+              onClick={() => { onPick(p); setOpen(false); setQ(''); setResults([]); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', padding: '6px 10px' }}>
+              <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 11.5, color: '#0b1220' }}>{p.sku}</span>
+              <span style={{ fontSize: 11.5, color: '#475569' }}> · {p.name}{p.color ? ` (${p.color})` : ''}</span>
+              {p.brand && <span style={{ fontSize: 10, color: '#94a3b8' }}> · {p.brand}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Shared kit-items table editor (used by catalog + new-session) ────────────
+// Add/remove rows, name them, attach a SKU via ProductPicker, set qty/#/GK/sock.
+function KitItemsTableEditor({ items, setItems }) {
+  const patchItem = (idx, patch) => setItems(p => p.map((it, i) => i === idx ? { ...it, ...patch } : it));
+  const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', qty: 1, product_id: '' }]);
+  const removeItem = (idx) => setItems(p => p.filter((_, i) => i !== idx));
+  const onPick = (idx) => (p) => patchItem(idx, p
+    ? { product_id: p.id, sku: p.sku, product_name: p.name }
+    : { product_id: '', sku: '', product_name: '' });
+
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'visible', marginBottom: 20 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: '#f8fafc' }}>
+            {['Item', 'Slot key', 'Linked product (SKU)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+              <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((ki, idx) => (
+            <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
+              <td style={{ padding: '4px 6px' }}>
+                <input value={ki.label || ''} placeholder="e.g. Socks" onChange={e => patchItem(idx, { label: e.target.value })}
+                  style={{ border: 'none', fontSize: 12, width: '100%', outline: 'none', minWidth: 110 }} />
+              </td>
+              <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{ki.slot}</td>
+              <td style={{ padding: '4px 6px' }}>
+                <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={onPick(idx)} />
+              </td>
+              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => patchItem(idx, { qty: parseInt(e.target.value) || 1 })}
+                  style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
+              </td>
+              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                <input type="checkbox" checked={!!ki.takes_number} onChange={e => patchItem(idx, { takes_number: e.target.checked })} />
+              </td>
+              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                <input type="checkbox" checked={!!ki.gk_only} onChange={e => patchItem(idx, { gk_only: e.target.checked })} />
+              </td>
+              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                <input type="checkbox" checked={!!ki.sock} onChange={e => patchItem(idx, { sock: e.target.checked })} />
+              </td>
+              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                <button type="button" onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+        <button type="button" onClick={addItem} style={{ padding: '5px 12px', borderRadius: 7, border: '1px dashed #cbd5e1', background: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#374151' }}>+ Add item</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Item Catalog manager (staff) ─────────────────────────────────────────────
 // NSA loads the available kit pieces here and links each to a product (SKU) so
 // live inventory/availability works. Coaches then add these items to their kits.
@@ -145,10 +264,6 @@ function ItemCatalogManager({ customer, onClose }) {
     })();
     return () => { cancelled = true; };
   }, [customer.id]);
-
-  const updateItem = (i, f, v) => setItems(p => p.map((it, idx) => idx === i ? { ...it, [f]: v } : it));
-  const addItem = () => setItems(p => [...p, { slot: 'item_' + Math.random().toString(36).slice(2, 7), label: '', qty: 1, product_id: '' }]);
-  const removeItem = (i) => setItems(p => p.filter((_, idx) => idx !== i));
 
   const save = async () => {
     setSaving(true);
@@ -174,54 +289,10 @@ function ItemCatalogManager({ customer, onClose }) {
           <button onClick={() => onClose && onClose(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
         </div>
         <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 16 }}>
-          Load the kit pieces this account can order. Paste a <b>Product ID</b> on each so coaches see live size availability. Coaches pick from these when building their teams' kits.
+          Load the kit pieces this account can order. Attach a <b>product (SKU)</b> to each so coaches see live size availability. Coaches pick from these when building their teams' kits.
         </div>
         {loading ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : (
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: '#f8fafc' }}>
-                  {['Item', 'Slot key', 'Product ID (links inventory)', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
-                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((ki, idx) => (
-                  <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '4px 6px' }}>
-                      <input value={ki.label || ''} placeholder="e.g. Socks" onChange={e => updateItem(idx, 'label', e.target.value)}
-                        style={{ border: 'none', fontSize: 12, width: '100%', outline: 'none', minWidth: 110 }} />
-                    </td>
-                    <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{ki.slot}</td>
-                    <td style={{ padding: '4px 6px' }}>
-                      <input value={ki.product_id || ''} placeholder="paste product ID" onChange={e => updateItem(idx, 'product_id', e.target.value)}
-                        style={{ border: 'none', fontSize: 11, width: '100%', outline: 'none', fontFamily: 'monospace', color: '#1e40af', minWidth: 140 }} />
-                    </td>
-                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                      <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => updateItem(idx, 'qty', parseInt(e.target.value) || 1)}
-                        style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
-                    </td>
-                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                      <input type="checkbox" checked={!!ki.takes_number} onChange={e => updateItem(idx, 'takes_number', e.target.checked)} />
-                    </td>
-                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                      <input type="checkbox" checked={!!ki.gk_only} onChange={e => updateItem(idx, 'gk_only', e.target.checked)} />
-                    </td>
-                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                      <input type="checkbox" checked={!!ki.sock} onChange={e => updateItem(idx, 'sock', e.target.checked)} />
-                    </td>
-                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                      <button onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-              <button onClick={addItem} style={{ padding: '5px 12px', borderRadius: 7, border: '1px dashed #cbd5e1', background: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#374151' }}>+ Add item</button>
-            </div>
-          </div>
+          <KitItemsTableEditor items={items} setItems={setItems} />
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={() => onClose && onClose(false)} style={{ padding: '8px 20px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
@@ -962,13 +1033,9 @@ function CreateSessionModal({ customer, onCreated, onClose }) {
     } catch (e) { console.error(e); setSaving(false); }
   };
 
-  const updateItem = (idx, field, val) => {
-    setKitItems(prev => prev.map((it, i) => i === idx ? { ...it, [field]: val } : it));
-  };
-
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
-      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 700, margin: '0 16px 40px' }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 760, margin: '0 16px 40px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900, color: '#0b1220' }}>New Roster Order Session</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
@@ -986,44 +1053,10 @@ function CreateSessionModal({ customer, onCreated, onClose }) {
             </div>
           ))}
         </div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Kit items</div>
-        <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: 20 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: '#f8fafc' }}>
-                {['Label','Slot key','Product ID (optional)','Qty','#?','GK only'].map(h => (
-                  <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {kitItems.map((ki, idx) => (
-                <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9' }}>
-                  <td style={{ padding: '4px 6px' }}>
-                    <input value={ki.label} onChange={e => updateItem(idx, 'label', e.target.value)}
-                      style={{ border: 'none', fontSize: 12, width: '100%', outline: 'none' }} />
-                  </td>
-                  <td style={{ padding: '4px 6px', fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{ki.slot}</td>
-                  <td style={{ padding: '4px 6px' }}>
-                    <input value={ki.product_id} placeholder="paste product ID"
-                      onChange={e => updateItem(idx, 'product_id', e.target.value)}
-                      style={{ border: 'none', fontSize: 11, width: '100%', outline: 'none', fontFamily: 'monospace', color: '#1e40af' }} />
-                  </td>
-                  <td style={{ padding: '4px 6px', width: 36, textAlign: 'center' }}>
-                    <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => updateItem(idx, 'qty', parseInt(e.target.value) || 1)}
-                      style={{ width: 36, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
-                  </td>
-                  <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                    <input type="checkbox" checked={!!ki.takes_number} onChange={e => updateItem(idx, 'takes_number', e.target.checked)} />
-                  </td>
-                  <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                    <input type="checkbox" checked={!!ki.gk_only} onChange={e => updateItem(idx, 'gk_only', e.target.checked)} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Kit items <span style={{ textTransform: 'none', fontWeight: 400, color: '#94a3b8' }}>— add rows and attach a SKU so coaches see live availability</span>
         </div>
+        <KitItemsTableEditor items={kitItems} setItems={setKitItems} />
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={onClose} style={{ padding: '8px 20px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
           <button onClick={save} disabled={saving || !form.name.trim()}
