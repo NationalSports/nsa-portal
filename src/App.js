@@ -23887,8 +23887,11 @@ export default function App(){
     const _canonBillSize=raw=>{
       if(raw==null)return raw;
       const s=String(raw).trim();
-      const dash=s.match(/^(\d{1,2})[-–]$/);// "8-" → "8.5" (parser's half-size shorthand)
-      if(dash)return dash[1]+'.5';
+      // Half-size shorthand → "N.5". Vendors/orders write the same half a few ways: the parser's
+      // "8-"/"10-", adidas' "11½" symbol, or "11 1/2". Reconcile them all so e.g. a bill's "11-"
+      // lines up with a PO's "11½" instead of reading as a phantom 0 ordered.
+      const half=s.match(/^(\d{1,2})\s*(?:[-–]|½|1\/2)$/);
+      if(half)return half[1]+'.5';
       return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
     };
     // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
