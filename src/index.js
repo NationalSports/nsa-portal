@@ -46,6 +46,14 @@ const isTeamStores = _path === '/team-stores' || _path === '/team-stores/';
 // App short-circuits these to its own landing page BEFORE any login gate, so
 // they must load App directly rather than the pre-auth gate below.
 const isAuthFlow = _path === '/auth/setup' || _path === '/auth/reset';
+// Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
+// site at /coach. It's login-free: App short-circuits to the read-only
+// CoachPortal for this param (data via anon RLS), so like the auth flows it must
+// load App directly and skip the staff login gate. Without this it falls through
+// to MainApp → LoginGate, which is exactly what a coach (or the /coach iframe,
+// with no staff session) hits.
+const _portalParam = (() => { try { return new URLSearchParams(window.location.search).get('portal'); } catch { return null; } })();
+const isCoachPortal = (_path === '/' || _path === '') && !!_portalParam;
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -162,7 +170,7 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow
+        : isAuthFlow || isCoachPortal
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>
