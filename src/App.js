@@ -7769,15 +7769,17 @@ export default function App(){
       // Rep delivery todos — notify rep when jobs complete
       if(so.ship_preference==='rep_delivery'){
         safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
-          todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units',so,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
+          const dkey='job|'+j.id;if((so.delivered||{})[dkey])return;
+          todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units',so,deliverKey:dkey,units:j.total_units,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
         });
         // No-deco items fully pulled
-        safeItems(so).forEach(it=>{
+        safeItems(so).forEach((it,ii)=>{
           if((!it.decorations?.length||it.no_deco)){
+            const dkey='nd|'+ii;if((so.delivered||{})[dkey])return;
             const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
             const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
             const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
-            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id+' · '+tot+' units',so,action:'Pick up & deliver',role:'sales',date:so.updated_at});
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id+' · '+tot+' units',so,deliverKey:dkey,units:tot,action:'Pick up & deliver',role:'sales',date:so.updated_at});
           }
         });
       }
@@ -7899,6 +7901,7 @@ export default function App(){
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
       if(t.dismissKey){/* explicit stable key set at creation — keep it */}
       else if(t.est)t.dismissKey=t.type+':'+(t.updateReqId||t.est.id);
+      else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
       else t.dismissKey=t.type+':'+t.msg.slice(0,40);
@@ -7942,6 +7945,19 @@ export default function App(){
       nf('Task completed!')
     };
     const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
+    // Rep-delivery: mark a "Pick up & deliver" to-do delivered straight from the dashboard. Mirrors the
+    // warehouse Deliver tab (so.delivered[dkey]) so the item drops off every delivery list and persists.
+    // Shows a success banner; the to-do regenerates without this item once sos state updates.
+    const _repDeliver=(t)=>{
+      const so=t.so;if(!so||!t.deliverKey)return;
+      const c=cust.find(x=>x.id===so.customer_id);
+      if((so.delivered||{})[t.deliverKey]){nf('Already marked delivered');return}
+      if(!window.confirm('Mark '+so.id+(c?.name?' — '+c.name:'')+' delivered? This clears it from your delivery list.'))return;
+      const ts=new Date().toISOString();
+      savSO({...so,delivered:{...(so.delivered||{}),[t.deliverKey]:{at:ts,by:cu?.id||'sales'}},updated_at:ts});
+      addWhAction({type:'delivered',soId:so.id,customer:c?.name||'',name:(t.msg||'').replace(/^[^\w]*/,''),qty:t.units||0,by:cu?.id||'sales'});
+      nf('✅ '+so.id+(c?.name?' — '+c.name:'')+' marked delivered');
+    };
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
@@ -8087,7 +8103,7 @@ export default function App(){
                 <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
                 {[1,3,5,7].map(d=><button key={d} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={e=>{e.stopPropagation();snoozeTodo(t,d)}}>{d}d</button>)}
               </div>:<button style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(t.dismissKey)}}>💤 Snooze</button>):
-              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>}
+              (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
             </div>)}
           </div>)})()}
         </div></div>
@@ -8199,7 +8215,7 @@ export default function App(){
                 <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
                 {[1,3,5,7].map(d=><button key={d} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={e=>{e.stopPropagation();snoozeTodo(t,d)}}>{d}d</button>)}
               </div>:<button style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(t.dismissKey)}}>💤 Snooze</button>):
-              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>}
+              (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
             </div>)}
           </div>)})()}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
@@ -10423,14 +10439,16 @@ export default function App(){
         if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date,so,action:'Confirm Order',role:'sales',date:so.created_at})}
       if(so.ship_preference==='rep_delivery'){
         safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
-          todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
+          const dkey='job|'+j.id;if((so.delivered||{})[dkey])return;
+          todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id,so,deliverKey:dkey,units:j.total_units,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
         });
-        safeItems(so).forEach(it=>{
+        safeItems(so).forEach((it,ii)=>{
           if((!it.decorations?.length||it.no_deco)){
+            const dkey='nd|'+ii;if((so.delivered||{})[dkey])return;
             const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
             const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
             const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
-            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales',date:so.updated_at});
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id,so,deliverKey:dkey,units:tot,action:'Pick up & deliver',role:'sales',date:so.updated_at});
           }
         });
       }
@@ -10475,6 +10493,7 @@ export default function App(){
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
       if(t.est)t.dismissKey=t.type+':'+t.est.id;
+      else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
       else t.dismissKey=t.type+':'+t.msg.slice(0,40);
@@ -10792,7 +10811,14 @@ export default function App(){
         </div>;
       })()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
-        {kanbanCols.map(col=>{const colJobs=clusterLinked(col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id));
+        {kanbanCols.map(col=>{
+          // The Completed column holds jobs that are done decorating but not yet shipped — they stay
+          // parked here until the next step (ShipStation marks them 'shipped' and they fall off the
+          // board). The default "Active" filter strips completed from byStatus, which would leave this
+          // column perpetually empty, so source it from roleFiltered (still excludes shipped + honors
+          // rep/deco/decorator filters). Focus filters (In Process, Done, etc.) still scope via byStatus.
+          const colSrc=col.id==='completed'&&prodStatF==='active'?roleFiltered:byStatus;
+          const colJobs=clusterLinked(col.filter?colSrc.filter(col.filter):colSrc.filter(j=>j.prod_status===col.id));
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
             <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
               <div style={{width:8,height:8,borderRadius:8,background:col.color}}/>

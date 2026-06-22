@@ -1462,6 +1462,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
   const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Far-account ship default — when this SO has no delivery method chosen yet and the account's
+  // shipping ZIP is more than 100 mi from our office (Orange, CA 92865), pre-fill "Wait to Ship
+  // Complete" so we don't run repeated long-haul partial shipments. The rep can still change it;
+  // nearby accounts stay blank so the rep is forced to pick one. Skips already-complete orders and
+  // loads the zipcodes table on demand to keep its ~1MB dataset out of the main bundle.
+  useEffect(()=>{
+    if(!isSO||o.ship_preference||o.status==='complete')return;
+    const custZip=String(cust?.shipping_zip||cust?.billing_zip||'').trim().slice(0,5);
+    const officeZip=String(_ci?.zip||'92865').trim().slice(0,5);
+    if(!/^\d{5}$/.test(custZip)||!/^\d{5}$/.test(officeZip))return;
+    let cancelled=false;
+    import('zipcodes').then(m=>{
+      const zc=m.default||m;
+      const miles=zc.distance(officeZip,custZip);
+      if(!cancelled&&typeof miles==='number'&&miles>100){
+        sv('ship_preference','wait_complete');
+        if(nf)nf('📦 '+(cust?.name||'Account')+' is ~'+Math.round(miles)+' mi from the office — defaulted to "Wait to Ship Complete"');
+      }
+    }).catch(()=>{});
+    return()=>{cancelled=true};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[isSO,cust?.id,cust?.shipping_zip,cust?.billing_zip,o.ship_preference,o.status]);
   // AU footwear gets 5% less discount than apparel (school pays more for shoes).
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
@@ -3154,10 +3176,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>})()}
       {isSO&&<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
         <div>
-          <label className="form-label" style={{fontSize:11}}>Ship Preference</label>
-          <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>* required — select one</span>}</label>
+          <div style={{display:'flex',gap:3,flexWrap:'wrap',padding:!o.ship_preference?4:0,borderRadius:6,border:!o.ship_preference?'1px solid #fca5a5':'none',background:!o.ship_preference?'#fef2f2':'transparent'}}>
             {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'deliver_on_date',l:'Deliver on Date',icon:'🗓️',desc:'Warehouse delivers on a specific date — appears on Delivery tab when due'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
-              const cur=(o.ship_preference||'ship_as_ready')===sp.v;
+              // No silent default — the rep must explicitly pick how the order reaches the customer
+              // (accounts 100+ mi away are pre-filled to "Wait to Ship Complete" by the effect above).
+              const cur=o.ship_preference===sp.v;
               return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
                 style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
                 onClick={()=>sv('ship_preference',sp.v)}>{sp.icon} {sp.l}</button>})}
