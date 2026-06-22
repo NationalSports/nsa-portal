@@ -958,7 +958,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Auto-save: persist dirty changes every 30s to prevent data loss on timeout/crash
   // NOTE: does NOT save on unmount — user may have chosen "Leave without saving" via Back button
   // Uses refs for onSave/o/dirty because onSave is an inline arrow (recreated every parent render)
-  const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);
+  const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);const memoInputRef=useRef(null);const poInputRef=useRef(null);
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
   const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
   React.useEffect(()=>{
@@ -2759,9 +2759,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>})()}
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
-        <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" value={o.memo} onChange={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
-        {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" value={o.po_number||''} onChange={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
-        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={o.default_markup} onChange={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(o).map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
+        <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
+        {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
+        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
         {isSO&&<div style={{width:120}}>
           <label className="form-label">Order Type</label>
           <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
@@ -2777,19 +2777,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>}
         {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
           <label className="form-label">Alert Days</label>
-          <input className="form-input" type="number" min="60" max="180" value={o.booking_alert_days||100} onChange={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
+          <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
         </div>}
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
-          if(!o.memo?.trim()){nf('Memo is required','error');return}
-          const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+          const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
+          if(!curMemo){nf('Memo is required','error');return}
+          const curPO=isSO?(poInputRef.current?.value??o.po_number??''):o.po_number;
+          const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
+          const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Add at least one item with quantities','error');return}
           const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
-          onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
+          if(saveO!==o)setO(saveO);
+          onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
