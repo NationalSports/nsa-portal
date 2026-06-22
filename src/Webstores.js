@@ -2385,23 +2385,28 @@ function useGuidePref(key, def) {
 // live done/next state and a “Go” button that jumps to the right place.
 function StoreGuideOverview({ store, detail = {}, onGoStep }) {
   const [open, setOpen] = useGuidePref('wsGuideOverview', true);
+  const [fullOpen, setFullOpen] = useState(false);
   const states = GUIDE_STEPS.map((st) => ({ st, done: !!st.done(store, detail) }));
   const doneCount = states.filter((x) => x.done).length;
   const nextId = (states.find((x) => !x.done) || {}).st?.id;
   const pct = Math.round((doneCount / GUIDE_STEPS.length) * 100);
   return (
+    <>
     <div className="card" style={{ marginBottom: 12, border: '1px solid #dbe3f4', overflow: 'hidden' }}>
-      <button type="button" onClick={() => setOpen(!open)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', background: `linear-gradient(120deg, ${GUIDE_INK}, ${shadeHex(GUIDE_INK, -22)})`, border: 'none', cursor: 'pointer', color: '#fff', textAlign: 'left' }}>
-        <span style={{ fontSize: 18 }}>🧭</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 14.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Store build guide</div>
-          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.8)', marginTop: 1 }}>{doneCount} of {GUIDE_STEPS.length} steps done — a teaching walkthrough for building this store</div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 84, height: 6, borderRadius: 999, background: 'rgba(255,255,255,.25)', overflow: 'hidden' }}><div style={{ width: pct + '%', height: '100%', background: '#4ade80' }} /></div>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>{open ? '▲' : '▼'}</span>
-        </div>
-      </button>
+      <div style={{ display: 'flex', alignItems: 'stretch', background: `linear-gradient(120deg, ${GUIDE_INK}, ${shadeHex(GUIDE_INK, -22)})`, color: '#fff' }}>
+        <button type="button" onClick={() => setOpen(!open)} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', textAlign: 'left' }}>
+          <span style={{ fontSize: 18 }}>🧭</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 14.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Store build guide</div>
+            <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.8)', marginTop: 1 }}>{doneCount} of {GUIDE_STEPS.length} steps done — a teaching walkthrough for building this store</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 84, height: 6, borderRadius: 999, background: 'rgba(255,255,255,.25)', overflow: 'hidden' }}><div style={{ width: pct + '%', height: '100%', background: '#4ade80' }} /></div>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{open ? '▲' : '▼'}</span>
+          </div>
+        </button>
+        <button type="button" onClick={() => setFullOpen(true)} title="Open the full step-by-step guide" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7, padding: '0 15px', background: 'rgba(255,255,255,.14)', border: 'none', borderLeft: '1px solid rgba(255,255,255,.22)', cursor: 'pointer', color: '#fff', fontWeight: 800, fontSize: 12.5, whiteSpace: 'nowrap' }}>📖 Full guide</button>
+      </div>
       {open && (
         <div style={{ padding: 10, display: 'grid', gap: 8 }}>
           {states.map(({ st, done }) => {
@@ -2424,6 +2429,66 @@ function StoreGuideOverview({ store, detail = {}, onGoStep }) {
           })}
         </div>
       )}
+    </div>
+    {fullOpen && <StoreGuideFull store={store} detail={detail} onGoStep={onGoStep} onClose={() => setFullOpen(false)} />}
+    </>
+  );
+}
+
+// Full step-by-step walkthrough for a store's main page — every step in detail
+// (what to do, the example screenshot, and where to do it) in one scrollable
+// guide with a jump-to button per step. Driven by the same GUIDE_STEPS as the
+// overview checklist and the per-page panels.
+function StoreGuideFull({ store, detail = {}, onGoStep, onClose }) {
+  const states = GUIDE_STEPS.map((st) => ({ st, done: !!st.done(store, detail) }));
+  const doneCount = states.filter((x) => x.done).length;
+  const nextId = (states.find((x) => !x.done) || {}).st?.id;
+  const go = (id) => { onClose(); onGoStep(id); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 780, margin: 'auto', maxHeight: 'calc(100vh - 80px)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <span style={{ fontSize: 20 }}>🧭</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 16, textTransform: 'uppercase', letterSpacing: '.03em', color: GUIDE_INK }}>Store build guide</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Full step-by-step for {store.name} · {doneCount} of {GUIDE_STEPS.length} done</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 18, display: 'grid', gap: 16, overflowY: 'auto' }}>
+          {states.map(({ st, done }) => {
+            const isNext = st.id === nextId;
+            return (
+              <div key={st.id} style={{ border: `1px solid ${isNext ? '#c7d2fe' : '#eef0f3'}`, borderRadius: 12, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 14px', background: done ? '#f6fbf7' : isNext ? '#f5f8ff' : '#fafbfc', borderBottom: '1px solid #eef0f3' }}>
+                  <div style={{ width: 28, height: 28, flexShrink: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, color: '#fff', background: done ? GUIDE_GREEN : isNext ? GUIDE_INK : '#cbd5e1' }}>{done ? '✓' : st.n}</div>
+                  <div style={{ flex: 1, minWidth: 0, fontWeight: 800, fontSize: 15, color: '#1e293b' }}>{st.icon} Step {st.n}: {st.title}
+                    {done ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: GUIDE_GREEN, background: '#dcfce7', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em', verticalAlign: 'middle' }}>Done</span>
+                      : isNext ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: GUIDE_INK, background: '#e0e7ff', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em', verticalAlign: 'middle' }}>Do next</span> : null}
+                  </div>
+                  <button type="button" className="btn btn-sm" onClick={() => go(st.id)} style={{ flexShrink: 0, background: GUIDE_INK, color: '#fff', fontWeight: 700, border: 'none' }}>{done ? 'Review' : 'Go'} →</button>
+                </div>
+                <div style={{ padding: '12px 14px' }}>
+                  <div style={{ fontSize: 13, color: '#475569', marginBottom: 9 }}>{st.blurb}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>What to do</div>
+                  <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 5 }}>
+                    {st.todo.map((t, i) => (
+                      <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: '#334155' }}>
+                        <span style={{ color: GUIDE_INK, fontWeight: 900, lineHeight: 1.4 }}>›</span><span>{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {st.shot && <img src={st.shot} alt={`${st.title} — example`} loading="lazy" style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)' }} />}
+                  <div style={{ fontSize: 11.5, color: '#94a3b8', fontFamily: 'monospace', marginTop: 10 }}>{st.where}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }
