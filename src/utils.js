@@ -554,7 +554,8 @@ const _LABEL_CSS=`
   .subtitle{font-size:22px;font-weight:700;line-height:1.1;text-align:center;margin:0}
   .program{font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
-  .note{font-size:11px;font-weight:800;text-align:center;margin:3px 0 0}
+  .meta{font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3}
+  .meta .mcode{font-weight:700;color:#334155}
   .items{margin-top:8px}
   .item{margin-bottom:6px;text-align:center}
   .item-title{font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word}
@@ -594,15 +595,24 @@ const _labelPageHtml=(label={})=>{
   const z=_labelZones(label);
   const sb=label.shipBadge;
   const badge=sb&&sb.text?`<div class="badge" style="border-color:${sb.color||'#d97706'};color:${sb.color||'#92400e'};background:${sb.bg||'#fffbeb'}">${sb.text}</div>`:'';
-  const notesHtml=(z.notes||[]).map(n=>`<div class="note" style="${n.style||'color:#166534'}">${n.text}</div>`).join('');
+  // The scan code (IF#/PO#) is secondary: it rides on the meta line with the
+  // status note (e.g. "IF-1005 · PULLED — 6/16/2026"). Only when there's no
+  // prominent header at all (program + SO# both blank, e.g. a stock PO) does
+  // the code get promoted to its own big line so the label isn't headerless.
+  const hasHeader=!!(z.program||z.subtitle);
+  const bigCode=(!hasHeader&&z.code)?z.code:'';
+  const metaParts=[];
+  if(!bigCode&&z.code)metaParts.push(`<span class="mcode">${z.code}</span>`);
+  (z.notes||[]).forEach(n=>metaParts.push(`<span style="${n.style||'color:#166534'}">${n.text}</span>`));
+  const metaHtml=metaParts.length?`<div class="meta">${metaParts.join(' · ')}</div>`:'';
   const itemsHtml=(z.items||[]).map(it=>`<div class="item"><div class="item-title">${it.title||''}</div>${it.detail?`<div class="item-detail">${it.detail}</div>`:''}${it.sizes?`<div class="item-sz">${it.sizes}</div>`:''}</div>`).join('');
   return `<div class="page">`
     +`<div class="qr"><img src="${_qrImgSrc(label)}" alt="${z.code}"/></div>`
-    +(z.code?`<div class="code">${z.code}</div>`:'')
+    +(bigCode?`<div class="code">${bigCode}</div>`:'')
     +(z.subtitle?`<div class="subtitle">${z.subtitle}</div>`:'')
     +(z.program?`<div class="program">${z.program}</div>`:'')
     +badge
-    +notesHtml
+    +metaHtml
     +`<div class="items">${itemsHtml}</div>`
     +(label.codeSub?`<div class="foot-note">${label.codeSub}</div>`:'')
     +`</div>`;
@@ -632,7 +642,12 @@ export const downloadQrLabel=async(label={})=>{
   }catch(e){/* fall back to direct URL */}
   const sb=label.shipBadge;
   const badge=sb&&sb.text?`<div style="display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid ${sb.color||'#d97706'};color:${sb.color||'#92400e'};background:${sb.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:12px;text-align:center">${sb.text}</div>`:'';
-  const notesHtml=(z.notes||[]).map(n=>`<div style="font-size:11px;font-weight:800;text-align:center;margin:3px 0 0;${n.style||'color:#166534'}">${n.text}</div>`).join('');
+  const hasHeader=!!(z.program||z.subtitle);
+  const bigCode=(!hasHeader&&z.code)?z.code:'';
+  const metaParts=[];
+  if(!bigCode&&z.code)metaParts.push(`<span style="font-weight:700;color:#334155">${z.code}</span>`);
+  (z.notes||[]).forEach(n=>metaParts.push(`<span style="${n.style||'color:#166534'}">${n.text}</span>`));
+  const metaHtml=metaParts.length?`<div style="font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3">${metaParts.join(' · ')}</div>`:'';
   const itemsHtml=(z.items||[]).map(it=>`<div style="margin-bottom:6px;text-align:center"><div style="font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:2px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px">${it.sizes}</div>`:''}</div>`).join('');
   // Off-screen container at position:absolute;left:-9999px (not fixed, no
   // negative z-index) so html2canvas captures the real box, not a blank region.
@@ -641,10 +656,10 @@ export const downloadQrLabel=async(label={})=>{
   const page=document.createElement('div');
   page.style.cssText='width:360px;padding:8px 12px;box-sizing:border-box;font-family:Helvetica,Arial,sans-serif;color:#0f172a';
   page.innerHTML=`<div style="text-align:center;margin-bottom:2px"><img src="${qrSrc}" style="width:125px;height:125px;display:inline-block;image-rendering:pixelated"/></div>`
-    +(z.code?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${z.code}</div>`:'')
+    +(bigCode?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${bigCode}</div>`:'')
     +(z.subtitle?`<div style="font-size:22px;font-weight:700;line-height:1.1;text-align:center">${z.subtitle}</div>`:'')
     +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
-    +badge+notesHtml
+    +badge+metaHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`
     +(label.codeSub?`<div style="font-size:10px;color:#64748b;font-weight:600;text-align:center;margin-top:8px">${label.codeSub}</div>`:'');
   container.appendChild(page);
