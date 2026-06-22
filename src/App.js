@@ -10792,7 +10792,14 @@ export default function App(){
         </div>;
       })()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
-        {kanbanCols.map(col=>{const colJobs=clusterLinked(col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id));
+        {kanbanCols.map(col=>{
+          // The Completed column holds jobs that are done decorating but not yet shipped — they stay
+          // parked here until the next step (ShipStation marks them 'shipped' and they fall off the
+          // board). The default "Active" filter strips completed from byStatus, which would leave this
+          // column perpetually empty, so source it from roleFiltered (still excludes shipped + honors
+          // rep/deco/decorator filters). Focus filters (In Process, Done, etc.) still scope via byStatus.
+          const colSrc=col.id==='completed'&&prodStatF==='active'?roleFiltered:byStatus;
+          const colJobs=clusterLinked(col.filter?colSrc.filter(col.filter):colSrc.filter(j=>j.prod_status===col.id));
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
             <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
               <div style={{width:8,height:8,borderRadius:8,background:col.color}}/>
