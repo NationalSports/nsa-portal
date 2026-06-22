@@ -23895,6 +23895,18 @@ export default function App(){
       return canon;
     };
 
+    // Match a bill line's SKU to an order item. Normally exact SKU equality, but special-order /
+    // custom items carry a placeholder SKU ("CUSTOM") with the real vendor style number in the product
+    // name (e.g. "Ultraboost Cleat - KI3709"), so we also accept the bill SKU as a whole token in the
+    // item's name — otherwise the bill's real style number reads as a false "no match".
+    const _billSkuMatchesItem=(billSku,item)=>{
+      const bs=(billSku||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      if(!bs)return false;
+      if((item?.sku||'').toUpperCase().replace(/[^A-Z0-9]/g,'')===bs)return true;
+      if(bs.length<4)return false;// too short to safely token-match inside a name
+      return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
+    };
+
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
     // Helper: apply freight from a bill to one or more SOs by ID
     const _applyFreightToSOs=(bill,soIds)=>{
@@ -23903,6 +23915,10 @@ export default function App(){
       const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
       const billedBySku={};const costBySku={};
       bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
+      // Resolve each SO item to the bill SKU that covers it — handles CUSTOM-placeholder items whose
+      // real style number lives in the product name — so billed qty/cost land on the right line.
+      const _billSkus=Object.keys(costBySku);
+      const _resolveSku=it=>{const sk=(it.sku||'').toUpperCase();if(costBySku.hasOwnProperty(sk))return sk;return _billSkus.find(bs=>_billSkuMatchesItem(bs,it))||sk;};
       // Split freight evenly across matched SOs
       const perSOFreight=Math.round(billFreight/soIds.length*100)/100;
       setSOs(prev=>{
@@ -23916,7 +23932,7 @@ export default function App(){
           (s.items||[]).forEach(it=>{
             const hasPO=it.po_lines?.some(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
             if(!hasPO)return;
-            const sk=(it.sku||'').toUpperCase();
+            const sk=_resolveSku(it);
             if(!costBySku.hasOwnProperty(sk))return;// skip items not on the bill
             const poQty=it.po_lines.filter(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)}).reduce((a,po)=>a+Object.entries(po).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost'&&!k.startsWith('_')).reduce((a2,[,v])=>a2+v,0),0);
             skuPOQty[sk]=(skuPOQty[sk]||0)+poQty;
@@ -23926,7 +23942,7 @@ export default function App(){
           const updatedItems=(s.items||[]).map(it=>{
             const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
             if(!matchPO)return it;
-            const itemSku=(it.sku||'').toUpperCase();
+            const itemSku=_resolveSku(it);
             // Only apply cost/billed data for items whose SKU is actually on the bill
             if(!costBySku.hasOwnProperty(itemSku)){
               // Still apply tracking numbers even if item isn't on this bill
@@ -24138,8 +24154,9 @@ export default function App(){
       const size=(bl.size||'').toUpperCase();
       const billColor=norm(bl.color);
       const indexed=items.map((it,ti)=>({...it,_idx:ti}));
-      // The SKU must exist on the target at all — otherwise it's a genuine no-match.
-      const sameSku=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
+      // The SKU must exist on the target at all — otherwise it's a genuine no-match. Custom/special
+      // items keep a placeholder SKU with the real style number in the name, so match either.
+      const sameSku=indexed.filter(it=>_billSkuMatchesItem(sku,it));
       if(sameSku.length===0)return null;
       // Prefer an exact SKU+size hit. Fall back to SKU-only when the bill line has no size OR the
       // parsed size doesn't line up with any target row. One-size goods (OSFA hats, bags) often get
@@ -24541,7 +24558,8 @@ export default function App(){
           const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
           const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();(addBySku[sk]=addBySku[sk]||{})[it.size]=(addBySku[sk][it.size]||0)+safeNum(it.qty)}});
           (so.items||[]).forEach(it=>{
-            const adds=addBySku[(it.sku||'').toUpperCase()];if(!adds)return;
+            const _bsk=Object.keys(addBySku).find(bs=>_billSkuMatchesItem(bs,it));
+            const adds=_bsk?addBySku[_bsk]:null;if(!adds)return;
             (it.po_lines||[]).forEach(po=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return;
