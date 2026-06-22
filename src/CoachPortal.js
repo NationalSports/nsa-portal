@@ -11,6 +11,7 @@ import { supabase } from './lib/supabase';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
+import { RosterOrdersCoach } from './RosterOrders';
 
 // The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
@@ -1418,6 +1419,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         {/* Team store — read-only order tracking for the coach */}
         <CoachStore customer={customer} />
+
+        {/* Roster orders — spreadsheet-style kit ordering per team */}
+        <RosterOrdersCoach customer={customer} />
 
         {/* Shop & order — invite-gated live-look + order building */}
         {(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
