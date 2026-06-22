@@ -551,7 +551,7 @@ const _LABEL_CSS=`
   .qr{text-align:center;margin-bottom:2px}
   .qr img{width:1.3in;height:1.3in;display:inline-block;image-rendering:pixelated}
   .code{font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0}
-  .subtitle{font-size:22px;font-weight:700;line-height:1.1;text-align:center;margin:0}
+  .subtitle{font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0}
   .program{font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
   .meta{font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3}
@@ -657,7 +657,7 @@ export const downloadQrLabel=async(label={})=>{
   page.style.cssText='width:360px;padding:8px 12px;box-sizing:border-box;font-family:Helvetica,Arial,sans-serif;color:#0f172a';
   page.innerHTML=`<div style="text-align:center;margin-bottom:2px"><img src="${qrSrc}" style="width:125px;height:125px;display:inline-block;image-rendering:pixelated"/></div>`
     +(bigCode?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${bigCode}</div>`:'')
-    +(z.subtitle?`<div style="font-size:22px;font-weight:700;line-height:1.1;text-align:center">${z.subtitle}</div>`:'')
+    +(z.subtitle?`<div style="font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0">${z.subtitle}</div>`:'')
     +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
     +badge+metaHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`
