@@ -323,6 +323,38 @@ async function fetchAllPages(buildQuery) {
 // on-demand search effect. No cost columns: this renders on a public storefront.
 const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
 
+// Live per-size availability for a set of product SKUs (inventory_unified) and a
+// set of product ids (product_inventory = NSA in-house stock). Both feeds are
+// read in URL-safe chunks: a single PostgREST .in() list of more than a few
+// hundred values builds a request URL the Supabase gateway rejects outright with
+// a bare 400 "Bad Request" — which is exactly what took LiveLook down once the
+// featured set grew large. Splitting into batches of 400 (fetched in waves of 6)
+// keeps every request well under the URL limit no matter how big the catalog or
+// the featured/teaser set gets. Shared by both load phases and on-demand search.
+const INV_SELECT = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced';
+const chunkArr = (arr, n) =>
+  Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
+async function fetchInventory(skus, ids, isAlive = () => true) {
+  const waves = async (batches, buildReq) => {
+    const rows = [];
+    for (let w = 0; w < batches.length; w += 6) {
+      if (!isAlive()) return rows;
+      const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
+      for (const r of res) { if (r.error) throw r.error; rows.push(...(r.data || [])); }
+    }
+    return rows;
+  };
+  const [inv, ih] = await Promise.all([
+    waves(chunkArr(skus, 400), (batch) =>
+      supabase.from('inventory_unified').select(INV_SELECT)
+        .in('sku', batch).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
+    waves(chunkArr(ids, 400), (batch) =>
+      supabase.from('product_inventory').select('product_id,size,quantity')
+        .in('product_id', batch).gt('quantity', 0).limit(2000)),
+  ]);
+  return { inv, ih };
+}
+
 function buildStyles(prods, inv, inHouseRows, opts = {}) {
   const bySku = {};
   let synced = null;
@@ -1682,18 +1714,11 @@ export default function AdidasInventory() {
         const prods = [...(featRes.data || []), ...quickResults.flatMap((r) => r.data || [])];
         const skus  = [...new Set(prods.map((p) => p.sku))];
         const ids   = [...new Set(prods.map((p) => p.id))];
-        const [invRes, ihRes] = await Promise.all([
-          supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(20000),
-          supabase.from('product_inventory')
-            .select('product_id,size,quantity')
-            .in('product_id', ids).gt('quantity', 0).limit(5000),
-        ]);
+        // Chunked so the SKU/id .in() lists can't overflow the gateway URL limit
+        // (a large featured + teaser set previously 400'd here and broke LiveLook).
+        const { inv, ih } = await fetchInventory(skus, ids, () => alive);
         if (!alive) return;
-        if (invRes.error) throw invRes.error;
-        if (ihRes.error) throw ihRes.error;
-        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || [], { groups: groupsData });
+        const { grouped, synced } = buildStyles(prods, inv, ih, { groups: groupsData });
         if (!alive) return;
         setStyles(grouped);
         setLastSynced(synced);
@@ -1718,35 +1743,7 @@ export default function AdidasInventory() {
           const allSkus = [...new Set(allProds.map((p) => p.sku))];
           const allIds  = [...new Set(allProds.map((p) => p.id))];
 
-          // Chunk into groups of 400 to stay within PostgREST URL limits.
-          const chunks = (arr, n) =>
-            Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
-          const skuBatches = chunks(allSkus, 400);
-          const idBatches  = chunks(allIds,  400);
-
-          // Fetch all batches in waves of 6 (mirrors fetchAllPages concurrency).
-          const wavesFetch = async (batches, buildReq) => {
-            const rows = [];
-            for (let w = 0; w < batches.length; w += 6) {
-              if (!alive) return rows;
-              const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
-              for (const r of res) {
-                if (r.error) throw r.error;
-                rows.push(...(r.data || []));
-              }
-            }
-            return rows;
-          };
-
-          const [allInv, allIh] = await Promise.all([
-            wavesFetch(skuBatches, (skus) =>
-              supabase.from('inventory_unified')
-                .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-                .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
-            wavesFetch(idBatches, (ids) =>
-              supabase.from('product_inventory')
-                .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000)),
-          ]);
+          const { inv: allInv, ih: allIh } = await fetchInventory(allSkus, allIds, () => alive);
           if (!alive) return;
 
           const full = buildStyles(allProds, allInv, allIh, { groups: groupsData });
@@ -1797,16 +1794,10 @@ export default function AdidasInventory() {
         if (!prods || !prods.length) { setSearchExtra([]); return; }
         const skus = [...new Set(prods.map((p) => p.sku))];
         const ids  = [...new Set(prods.map((p) => p.id))];
-        const [invRes, ihRes] = await Promise.all([
-          supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000),
-          supabase.from('product_inventory')
-            .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000),
-        ]);
+        const { inv, ih } = await fetchInventory(skus, ids, () => alive);
         if (!alive) return;
         // keepAllMomentec: don't drop non-featured Momentec from search results.
-        const { grouped } = buildStyles(prods, invRes.data || [], ihRes.data || [], { keepAllMomentec: true, groups: productGroups });
+        const { grouped } = buildStyles(prods, inv, ih, { keepAllMomentec: true, groups: productGroups });
         setSearchExtra(grouped);
       } catch (e) {
         if (alive) { console.warn('[livelook] search failed:', (e && e.message) || e); setSearchExtra([]); }
