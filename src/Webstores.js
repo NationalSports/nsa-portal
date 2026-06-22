@@ -1574,8 +1574,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.`;
 
-    const soId = onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
-    if (!soId) { flash('Could not create Sales Order'); return; }
+    // await — onCreateSO now persists the SO and only resolves an id once it's
+    // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
+    if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     const { error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]);
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
     else flash(`Created ${soId} · linked ${open.length} orders`);
