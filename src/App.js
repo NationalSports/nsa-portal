@@ -6359,7 +6359,7 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=({customer_id,memo,production_notes,items,webstore_id,art_files})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -6367,6 +6367,18 @@ export default function App(){
       ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
+    // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
+    // the caller (webstore batch) immediately tags orders with this so_id, so the
+    // SO row must exist first or those orders get orphaned to a non-existent SO
+    // (and then excluded from re-batching). If the save fails, roll the optimistic
+    // row back and return null so the caller leaves the orders unbatched.
+    let ok=false;
+    try{ ok=await _dbSaveSO(newSO); }catch(e){ console.error('[Webstore] SO save threw:',e); ok=false; }
+    if(!ok){
+      setSOs(prev=>prev.filter(s=>s.id!==id));
+      nf('Could not save Sales Order '+id+' — orders were NOT batched. Please try again.','error');
+      return null;
+    }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
     nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
