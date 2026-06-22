@@ -5016,6 +5016,39 @@ export default function App(){
     nf('Combined '+src.id+' → '+tgt.id);
     setBoxModal(newTgt);
   };
+  // Active stock boxes (not voided/combined) currently holding a SKU, with the per-size quantities
+  // they hold. Powers the pull-screen "which stock box holds this" hint. Color match is lenient:
+  // SKU is the key; a differing non-'—' color excludes (handles same-SKU/different-color cases).
+  const stockBoxesForSku=(sku,color)=>{
+    if(!sku)return[];const out=[];
+    (whBoxes||[]).forEach(b=>{
+      if(b.kind!=='stock'||b.status==='voided'||b.status==='combined')return;
+      const sizes={};let any=false;
+      (b.contents||[]).forEach(c=>{if((c.sku||'')!==sku)return;if(color&&color!=='—'&&c.color&&c.color!=='—'&&c.color!==color)return;Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){sizes[sz]=(sizes[sz]||0)+v;any=true}})});
+      if(any)out.push({id:b.id,bin:b.bin,sizes,total:Object.values(sizes).reduce((a,v)=>a+v,0)});
+    });
+    return out.sort((a,b)=>(a.id||'').localeCompare(b.id||''));
+  };
+  // Scan-out: when a pull is confirmed, deplete matching stock boxes by exactly what was pulled —
+  // units move out of stock and into the new fulfillment box (overlay bookkeeping; never touches
+  // _inv). Prefers boxes earmarked for the same SO, then oldest. Works on a local copy so several
+  // sizes/lines deplete consistently before persisting (React state won't flush mid-tick).
+  const depleteStockForPull=(contents,soId)=>{
+    try{
+      const work={};const get=id=>{if(!(id in work)){const b=(whBoxes||[]).find(x=>x.id===id);work[id]=b?{...b,contents:(b.contents||[]).map(c=>({...c,sizes:{...(c.sizes||{})}}))}:null}return work[id]};
+      const stockList=(whBoxes||[]).filter(b=>b.kind==='stock'&&b.status!=='voided'&&b.status!=='combined');
+      (contents||[]).forEach(line=>{const sku=line.sku;if(!sku)return;
+        Object.entries(line.sizes||{}).forEach(([sz,qtyRaw])=>{let remaining=qtyRaw||0;if(remaining<=0)return;
+          const cands=stockList.filter(b=>(b.contents||[]).some(c=>c.sku===sku&&((c.sizes||{})[sz]||0)>0))
+            .sort((a,b)=>{const ae=a.so_id===soId?0:1,be=b.so_id===soId?0:1;if(ae!==be)return ae-be;return String(a.created_at||a.id).localeCompare(String(b.created_at||b.id))});
+          for(const cand of cands){if(remaining<=0)break;const wb=get(cand.id);if(!wb)continue;
+            for(const c of wb.contents){if(remaining<=0)break;if(c.sku!==sku)continue;const have=c.sizes[sz]||0;if(have<=0)continue;const take=Math.min(have,remaining);c.sizes[sz]=have-take;if(c.sizes[sz]<=0)delete c.sizes[sz];remaining-=take}
+          }
+        });
+      });
+      Object.values(work).forEach(wb=>{if(!wb)return;const pruned=wb.contents.filter(c=>Object.keys(c.sizes||{}).length>0);saveBox({id:wb.id,contents:pruned})});
+    }catch(e){/* scan-out depletion is best-effort */}
+  };
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
@@ -17729,6 +17762,7 @@ export default function App(){
                         Need to pull: <strong style={{color:'#d97706'}}>{pi.needsPull} units</strong>
                         {' · '}Total ordered: {pi.totalOrdered}{' · '}Already pulled: {pi.totalPulled}
                       </div>
+                      {(()=>{const sb=stockBoxesForSku(pi.sku,pi.color);if(!sb.length)return null;return <div style={{marginTop:4,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}><span style={{fontSize:11,fontWeight:700,color:'#0e7490'}}>📦 Stock box{sb.length>1?'es':''}:</span>{sb.map(s=><button key={s.id} type="button" onClick={()=>handleScanResult(s.id)} title="Open this box" style={{cursor:'pointer',border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',borderRadius:6,padding:'1px 7px',fontWeight:700,fontFamily:'monospace',fontSize:11}}>{s.id}{s.bin?(' · '+s.bin):''} <span style={{fontWeight:600}}>({Object.entries(s.sizes).map(([sz,v])=>sz+':'+v).join(' ')})</span></button>)}</div>;})()}
                     </div>
                   </div>
                   <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
@@ -17813,6 +17847,8 @@ export default function App(){
                           const boxId=nextBoxId();
                           const boxContents=pulledItemsForLabel.map(({pi,qtys})=>{const sizes={};pi.szKeys.forEach(sz=>{if((qtys[sz]||0)>0)sizes[sz]=qtys[sz]});return{sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes}});
                           saveBox({id:boxId,kind:'fulfillment',if_id:pickIdToUse,so_id:t.soId,source_refs:[{type:'IF',id:pickIdToUse}],contents:boxContents,status:'staged'});
+                          // Scan-out: deplete the stock box(es) these units came from (overlay only).
+                          depleteStockForPull(boxContents,t.soId);
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
                           const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:pickIdToUse+' · PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
