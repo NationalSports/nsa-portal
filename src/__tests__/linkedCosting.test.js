@@ -46,6 +46,19 @@ describe('linkedArtCostQty — combines tier qty across manually-linked jobs', (
     expect(linkedArtCostQty(orderA, { af1: 8 }, [orderA])).toEqual({});
   });
 
+  // Real-world guard (SO-1288/1289): "MC Crest Football" exists as BOTH a screen print and an
+  // embroidery. If a rep loosely links by name, a screen-print volume must NOT pool with the
+  // embroidery one — different process, different price function.
+  test('pools only within the same deco_type, even under one link_group', () => {
+    const spOrder = { id: 'SO-1288', jobs: [{ id: 'jSP', link_group: 'lgX', art_file_id: 'afSP', deco_type: 'screen_print', total_units: 15 }] };
+    const mixedOrder = { id: 'SO-1289', jobs: [
+      { id: 'jSP2', link_group: 'lgX', art_file_id: 'afSP2', deco_type: 'screen_print', total_units: 114 },
+      { id: 'jEMB', link_group: 'lgX', art_file_id: 'afEMB', deco_type: 'embroidery', total_units: 114 },
+    ] };
+    // afSP combines with the sibling screen-print (114) only — the 114 embroidery units are excluded.
+    expect(linkedArtCostQty(spOrder, { afSP: 15 }, [spOrder, mixedOrder])).toEqual({ afSP: 129 });
+  });
+
   test('falls back to the job total_units when the art is not in the local qty map', () => {
     expect(linkedArtCostQty(orderA, {}, [orderA, orderB])).toEqual({ af1: 16 });
   });

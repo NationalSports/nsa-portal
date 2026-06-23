@@ -123,7 +123,10 @@ function _dPInner(d,q,artFiles,cq){
 // Manual links only — auto-matched same-art jobs stay production suggestions and never move
 // costing until a rep confirms the link (which is also what makes them run together on the
 // board). Revenue/sell is intentionally untouched: the customer price stays per-order, and a
-// rep can hand-lower the sale price if they want to pass the saving on.
+// rep can hand-lower the sale price if they want to pass the saving on. Siblings are pooled only
+// within the SAME deco_type (process) — a link group can legitimately span differently-named art
+// that shares a screen, but a screen-print volume must never pool with an embroidery one even if
+// a rep loosely links them by name.
 //
 // Returns { art_file_id -> combinedTierQty }, with an entry only when a real cross-order linked
 // sibling exists; callers fall back to the per-order qty for everything else.
@@ -135,9 +138,9 @@ export const linkedArtCostQty=(order,localArtQty,allOrders)=>{
     let extra=0;
     (allOrders||[]).forEach(s=>{
       if(!s||s.id===order.id)return;
-      safeJobs(s).forEach(jj=>{if(jj&&jj.link_group&&jj.link_group===j.link_group)extra+=safeNum(jj.total_units)});
+      safeJobs(s).forEach(jj=>{if(jj&&jj.link_group&&jj.link_group===j.link_group&&jj.deco_type===j.deco_type)extra+=safeNum(jj.total_units)});
     });
-    if(extra<=0)return; // no sibling actually linked on another order → no combine
+    if(extra<=0)return; // no same-process sibling actually linked on another order → no combine
     const local=safeNum(localArtQty&&localArtQty[j.art_file_id])||safeNum(j.total_units);
     const combined=local+extra;
     if(combined>(out[j.art_file_id]||0))out[j.art_file_id]=combined;
