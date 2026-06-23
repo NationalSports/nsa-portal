@@ -23866,12 +23866,13 @@ export default function App(){
     // Non-matching/over-billing bills just stay flagged for manual review — nothing is
     // applied here; that only happens when staff click "Push to Portal".
     const _finishBillReview=(results,opts={})=>{
-      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed'}=opts;
+      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed',extraNote=''}=opts;
       const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
       if(!results.length){
-        // Nothing new came in (all duplicates and/or unreadable) — don't drop into an empty review.
+        // Nothing new came in (all duplicates/scanned/unreadable) — don't drop into an empty review.
         setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
-        nf(skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':'No bills could be parsed',skippedDups.length?'success':'error');
+        const base=skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':(extraNote?'Nothing new to import':'No bills could be parsed');
+        nf(base+extraNote,(skippedDups.length||extraNote)?'success':'error');
         return;
       }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
@@ -23879,7 +23880,7 @@ export default function App(){
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
-      nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+extraNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
       _aiReconcilePass(results);
     };
 
@@ -23932,8 +23933,10 @@ export default function App(){
       let docs=[];
       try{
         // active=true → only documents SI hasn't been told we've imported. lines=true →
-        // EDI per-size line items (scanned docs come back header-only and get flagged).
-        docs=await sportsLinkGetDocuments({active:true,lines:true,...filters});
+        // per-size line items. excludeScannedDocuments=true → only EDI documents with real
+        // line data (adidas, SanMar, Agron, …); scanned/OCR documents (e.g. S&S Activewear)
+        // carry no usable lines and stay on the manual PDF parse flow below.
+        docs=await sportsLinkGetDocuments({active:true,lines:true,excludeScannedDocuments:true,...filters});
       }catch(e){
         setBillImport(x=>({...x,uploading:false}));
         nf('Sports Inc pull failed: '+(e.message||'connection error'),'error');
@@ -23944,9 +23947,13 @@ export default function App(){
         nf('No new Sports Inc documents found (nothing active in the Invoice Center)','success');
         return;
       }
-      const seenDocs=new Set();const skippedDups=[];const results=[];let idx=0;
+      const seenDocs=new Set();const skippedDups=[];const results=[];let scanned=0;let idx=0;
       docs.forEach(doc=>{
         let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
+        // Belt-and-suspenders: skip any scanned/"SEE VENDOR INVOICE FOR DETAIL" doc that slips
+        // past excludeScannedDocuments — no usable SKU/qty can't fill the Billed tracking, so
+        // leave it for the manual PDF parse instead of cluttering review with an empty bill.
+        if(!parsed.has_usable_lines){scanned++;return}
         const dn=(parsed.doc_number||'').trim().toLowerCase();
         if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
@@ -23954,7 +23961,8 @@ export default function App(){
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
         idx++;
       });
-      _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled'});
+      const extraNote=scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'';
+      _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -25863,7 +25871,7 @@ export default function App(){
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed supplier bills straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Other suppliers still come in as PDFs.</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Scanned/OCR documents (e.g. S&amp;S Activewear) are left for the manual PDF parse below.</div>
               </div>
               <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
                 onClick={()=>pullFromSportsInc()}>

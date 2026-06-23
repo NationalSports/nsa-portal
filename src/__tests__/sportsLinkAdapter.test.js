@@ -47,6 +47,7 @@ describe('mapSportsLinkDocToBill', () => {
     expect(b.kind).toBe('goods');
     expect(b.source).toBe('sportsinc');
     expect(b.has_lines).toBe(true);
+    expect(b.has_usable_lines).toBe(true);
     expect(b.warnings).toHaveLength(0);
   });
 
@@ -62,7 +63,19 @@ describe('mapSportsLinkDocToBill', () => {
     const b = mapSportsLinkDocToBill({ ...ediDoc, lines: [] });
     expect(b.items).toHaveLength(0);
     expect(b.has_lines).toBe(false);
-    expect(b.warnings.join(' ')).toMatch(/no line detail/i);
+    expect(b.has_usable_lines).toBe(false);
+    expect(b.warnings.join(' ')).toMatch(/line detail/i);
+  });
+
+  test('treats a "SEE VENDOR INVOICE FOR DETAIL" placeholder line as unusable (S&S OCR case)', () => {
+    // Real shape of a scanned S&S Activewear document: one zero-qty placeholder line.
+    const scanned = { ...ediDoc, supplier: 'S AND S ACTIVEWEAR', lines: [
+      { supplierItemNumber: '', quantityShipped: 0, quantityOrdered: 0, netPrice: 0, extension: 0, description: 'SEE VENDOR INVOICE FOR DETAIL.' },
+    ] };
+    const b = mapSportsLinkDocToBill(scanned);
+    expect(b.has_lines).toBe(true);          // a line array exists…
+    expect(b.has_usable_lines).toBe(false);  // …but nothing usable for size-level billing
+    expect(b.warnings.join(' ')).toMatch(/manual PDF parse/i);
   });
 
   test('flags a credit memo', () => {

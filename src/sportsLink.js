@@ -73,8 +73,13 @@ export const mapSportsLinkDocToBill = (doc) => {
   // the PDF parser stored (the supplier's invoice number) so the PDF→API cutover never
   // re-bills an invoice. siDocNumber is kept separately as SI's stable document key.
   const supplierDocNumber = String(doc.supplierDocNumber || '').trim();
+  // "Usable" = at least one line with a real SKU and a shipped qty. Scanned/OCR documents
+  // (e.g. S&S Activewear) come through with a single zero-qty "SEE VENDOR INVOICE FOR DETAIL"
+  // placeholder line that can't populate the size-level Billed tracking — those are left for
+  // the manual PDF parse, so flag them and let the caller skip them.
+  const hasUsableLines = items.some((it) => it.sku && it.qty > 0);
   const warnings = [];
-  if (!items.length) warnings.push('No line detail (scanned/OCR document) — size-level billed not available; verify against the PDF');
+  if (!hasUsableLines) warnings.push('No usable line detail (scanned/OCR document) — size-level billed not available; left for the manual PDF parse');
   if (doc.isCredit) warnings.push('Credit memo (isCredit) — applies as a negative; review before pushing');
   return {
     po_number: String(doc.poNumber || '').trim(),
@@ -93,6 +98,7 @@ export const mapSportsLinkDocToBill = (doc) => {
     doc_total: _siNum(doc.docTotal),
     is_credit: !!doc.isCredit,
     has_lines: items.length > 0,
+    has_usable_lines: hasUsableLines,
     carrier: String(doc.carrier || '').trim(),
     items,
     kind: 'goods',
