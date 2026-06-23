@@ -3665,7 +3665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       return null})()}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong></span>
+                    <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}</span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
                     {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}
                     <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
@@ -3698,7 +3698,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(()=>{const m=(deco.front_and_back?2:1)*(deco.reversible?2:1);return <span style={{fontSize:11,color:filledNums>0?'#166534':'#64748b',fontWeight:filledNums>0?600:400}}>{filledNums}/{qty} assigned{m>1?' (×'+m+')':''}</span>})()}
                 {filledNums===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>or Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.num_qty||''} placeholder="—" onChange={e=>uD(idx,di,'num_qty',parseInt(e.target.value)||0)}/></span>}
                 <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                  <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong></span>
+                  <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}</span>
                   <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
                   {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}
                   <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
@@ -5174,8 +5174,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             const artF=af.find(a=>a.id===d.art_file_id);
             const gkey=(d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco'));
-            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[]});
+            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
             g.expected+=decoCostAt(d,qty,af,cq,costArtQty);g.qty+=eqD;
+            if(d.art_file_id&&costArtQty[d.art_file_id]>0)g.combQty=Math.max(g.combQty,costArtQty[d.art_file_id]);
             if(it.sku&&!g.skus.includes(it.sku))g.skus.push(it.sku);
           });
         });
@@ -5184,7 +5185,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const exp=Math.round(g.expected*100)/100;
           costLines.push({category:'In-House Deco',sku:'',
             name:g.name+(g.skus.length?` · ${g.skus.length} item${g.skus.length>1?'s':''}: ${g.skus.join(', ')}`:''),
-            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true});
+            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
         });
         // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
         // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
@@ -5281,7 +5282,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                   background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
                   color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
-                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}</td>
+                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>

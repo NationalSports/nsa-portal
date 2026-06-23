@@ -15856,6 +15856,8 @@ export default function App(){
         const c=cust.find(x=>x.id===inv.customer_id);
         const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so?.created_by));
         const gp=calcGP(inv);
+        // GP cost reflects a shared screen run across manually-linked jobs on other SOs.
+        const _combLinked=!!so&&Object.keys(linkedArtCostQty(so,{},sos)).length>0;
         const invDate=parseDate(inv.date);
         const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):(inv.updated_at?parseDate(inv.updated_at):invDate);
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
@@ -15869,7 +15871,7 @@ export default function App(){
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        return{inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,repId:(c?.primary_rep_id||so?.created_by)};
+        return{inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:(c?.primary_rep_id||so?.created_by)};
       });
     };
 
@@ -16054,7 +16056,7 @@ export default function App(){
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${l.gp.rev.toLocaleString()}</td>
-              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}{l.linked&&<span title="Cost reflects one shared screen run across manually-linked jobs on other sales orders — not billed twice. The customer invoice is unaffected." style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString()}</td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'\u2014'}d</span></td>
