@@ -11777,13 +11777,13 @@ export default function App(){
               const _multi=_soGs.length>1;
               return _soGs.map(g=><React.Fragment key={g.soId}>
                 {_multi&&<tr style={{background:'#eff6ff'}}><td colSpan={10} style={{padding:'6px 14px',fontSize:11,fontWeight:800,color:'#1e40af',borderTop:'2px solid #bfdbfe',borderBottom:'2px solid #bfdbfe',letterSpacing:0.2}}>
-                  {g.soId}<span style={{fontWeight:500,color:'#3b82f6',marginLeft:8}}>{g.customer}</span>
+                  <span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===g.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{g.soId}</span><span style={{fontWeight:500,color:'#3b82f6',marginLeft:8}}>{g.customer}</span>
                   <span style={{marginLeft:10,fontWeight:500,color:'#94a3b8'}}>{g.items.length} item{g.items.length!==1?'s':''} · {g.items.reduce((a,it)=>a+it.qty,0)} units</span>
                 </td></tr>}
                 {g.items.map((it)=>{const i=it._oi;const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
                   return<tr key={i} id={'po-recv-row-'+i} style={_multi?{background:'#f8fbff'}:undefined}>
                     <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
-                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId||'—'}</td>
+                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId?<span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===it.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(it.srcPoId);setPg('orders')}}}>{it.srcPoId}</span>:'—'}</td>
                     <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                     <td style={{fontSize:12}}>{it.name}</td>
                     <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
@@ -11801,12 +11801,12 @@ export default function App(){
               <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>AFFECTS SALES ORDERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
-                  return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer}</span></span>})}
+                  return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sid);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer}</span></span>})}
               </div>
               {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>
-                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace'}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
+                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace',cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sp.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(sp.po_id);setPg('orders')}}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
               </div></>}
             </div>
           </div>
