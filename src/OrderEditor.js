@@ -3544,9 +3544,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>,document.body)})()}
         {/* FULFILLMENT LINES */}
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
-          {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';
+          {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';const pkQty=Object.entries(pk).reduce((a,[k,v])=>typeof v==='number'?a+v:a,0);const isShortPull=st==='pulled'&&pkQty===0;
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>openPickModal(pk.pick_id,idx,pi)} title="Click to edit">{pk.pick_id||'PICK'}:</span>
+              <span style={{fontSize:10,fontWeight:700,width:46,color:isShortPull?'#92400e':st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>openPickModal(pk.pick_id,idx,pi)} title="Click to edit">{pk.pick_id||'PICK'}:</span>
               <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
               {szs.map(sz=>{const v=pk[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
@@ -3554,7 +3554,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   color:st==='pulled'?'#166534':st==='pick'?'#92400e':'#64748b'}}>{v}</div>})}
               </div>
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
-                background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                background:isShortPull?'#fef3c7':st==='pulled'?'#dcfce7':'#fef3c7',color:isShortPull?'#92400e':st==='pulled'?'#166534':'#92400e'}}>{isShortPull?'⚠ Short Pull':st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
               {pk.ship_dest&&pk.ship_dest!=='in_house'&&<span style={{fontSize:8,padding:'2px 5px',borderRadius:4,fontWeight:700,
                 background:pk.ship_dest==='ship_customer'?'#dbeafe':'#ede9fe',color:pk.ship_dest==='ship_customer'?'#1e40af':'#6d28d9'}}>
                 {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
@@ -9754,6 +9754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       const grandTotal=itemInfos.reduce((a,x)=>a+x.total,0);
       const overallStatus=picks.every(p=>p.pick.status==='pulled')?'pulled':'pick';
+      const isShortPullIF=overallStatus==='pulled'&&grandTotal===0;
       // SO items not already on this pick that still have open units (ordered − picked − PO-committed),
       // so the user can grow the pick from the order side. Mirrors the "Create IF" availability check.
       const onPickIdxs=new Set(picks.map(p=>p.lineIdx));
@@ -9785,7 +9786,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
       <div className="modal-header"><h2>Pick — {pickId}{itemInfos.length>1?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{itemInfos.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span className={`badge ${overallStatus==='pulled'?'badge-green':'badge-amber'}`}>{overallStatus==='pulled'?'Pulled':'Needs Pull'}</span>
+          <span className={`badge ${isShortPullIF?'badge-amber':overallStatus==='pulled'?'badge-green':'badge-amber'}`}>{isShortPullIF?'⚠ Short Pull':overallStatus==='pulled'?'Pulled':'Needs Pull'}</span>
           <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
         </div></div>
       <div className="modal-body">
