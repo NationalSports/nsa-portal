@@ -1387,13 +1387,28 @@ export function RosterOrdersStaff({ customer, nf }) {
 // ─── Coach sign-in card ───────────────────────────────────────────────────────
 // Shown inside CoachPortal when the coach isn't authenticated. Reads ?signin=
 // from the URL so the invite email can pre-fill the address. Sends a Supabase
-// OTP magic link that redirects back to the same portal URL.
-function CoachSignInCard() {
+// OTP magic link that redirects back to the same portal URL. Also teases any
+// open roster orders (anon-readable) so a coach sees evidence one is waiting
+// BEFORE signing in — the roster itself stays gated until they authenticate.
+function CoachSignInCard({ customer }) {
   const preEmail = (() => {
     try { return new URLSearchParams(window.location.search).get('signin') || ''; } catch { return ''; }
   })();
   const [email, setEmail] = useState(preEmail);
   const [state, setState] = useState('idle'); // idle | sending | sent | error
+  const [pending, setPending] = useState([]); // open sessions awaiting (teaser)
+
+  useEffect(() => {
+    if (!customer?.id) return;
+    let cancel = false;
+    (async () => {
+      const { data } = await supabase.from('roster_order_sessions')
+        .select('id,name,season').eq('customer_id', customer.id).neq('status', 'draft')
+        .order('created_at', { ascending: false });
+      if (!cancel) setPending(data || []);
+    })();
+    return () => { cancel = true; };
+  }, [customer?.id]);
 
   const send = async () => {
     const em = email.trim();
@@ -1417,7 +1432,15 @@ function CoachSignInCard() {
   return (
     <div style={{ marginTop: 16, padding: 16, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc' }}>
       <div style={{ fontSize: 12.5, fontWeight: 800, color: '#0b1220', marginBottom: 4 }}>📋 Coach sign in — Roster Orders</div>
-      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Sign in with your email to access your team's roster orders, fill in player sizes, and view the buy-sheet.</div>
+      {pending.length > 0 ? (
+        <div style={{ fontSize: 12, color: '#0b1220', marginBottom: 12 }}>
+          You have <strong>{pending.length} roster order{pending.length === 1 ? '' : 's'}</strong> to fill out
+          {pending.length <= 3 && <span style={{ color: '#64748b' }}> — {pending.map(s => s.name).filter(Boolean).join(', ')}</span>}.
+          {' '}Sign in with your email to add player sizes &amp; numbers.
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Sign in with your email to access your team's roster orders, fill in player sizes, and view the buy-sheet.</div>
+      )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <input
           type="email" value={email} placeholder="your@email.com"
@@ -1543,7 +1566,7 @@ export function RosterOrdersCoach({ customer }) {
   };
 
   if (loading) return null;
-  if (!coach) return <CoachSignInCard />;
+  if (!coach) return <CoachSignInCard customer={customer} />;
 
 
   const kitFor = (session) => ({ items: effectiveKit(session, catalog) });
