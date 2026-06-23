@@ -24719,6 +24719,90 @@ export default function App(){
       for(const b of targets){try{await _runAiBillMatch(b)}catch(e){/* leave flagged */}}
     };
 
+    // ── AI "find the PO" — for bills that did NOT auto-match ────────────────────
+    // On-demand pass for a bill whose PO number isn't in the system: hand Claude a
+    // pre-narrowed set of open orders and let it pick the one this bill belongs to
+    // and map the lines. We DON'T apply anything automatically — the pick seeds the
+    // existing manual-match wizard, and the human confirms the push.
+
+    // The closed set the find-PO pass chooses from: open orders that plausibly relate
+    // to this bill. We reuse the manual-match candidates, pre-narrow by SKU overlap
+    // (the strongest signal, and exactly "match items against open POs"), fall back to
+    // SKU-token/vendor hits, then cap the list so the AI payload stays small. Returns
+    // the SAME candidate objects the wizard uses, so a pick can seed it directly.
+    const _billCandidateOrders=(p,limit=12)=>{
+      if(!p)return[];
+      const all=_buildMatchCandidates();
+      if(!all.length)return[];
+      const billSkus=[...new Set((p.items||[]).map(it=>(it.sku||'').toUpperCase()).filter(Boolean))];
+      const vend=(p.vendor||p.supplier||'').toLowerCase().trim();
+      const scored=all.map(c=>{
+        const cs=new Set((c.items||[]).map(it=>(it.sku||'').toUpperCase()));
+        let score=0;billSkus.forEach(s=>{if(cs.has(s))score+=1});// exact SKU overlap
+        if(!score&&billSkus.length){// placeholder/near-variant: token match against item names
+          if((c.items||[]).some(it=>billSkus.some(bs=>_billSkuMatchesItem(bs,{sku:it.sku,name:it.name}))))score+=0.5;
+        }
+        if(vend&&(c.sub||'').toLowerCase().includes(vend))score+=0.25;// vendor tie-breaker
+        return{c,score};
+      }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+      return scored.slice(0,limit).map(x=>x.c);
+    };
+
+    // Run the find-PO pass for one unmatched bill. Best-effort: any failure leaves the
+    // bill flagged exactly as before. On success it stores a suggestion on the wrapper
+    // (_aiFoundPO) for the card to surface — it does not touch the bill's lines.
+    const _runAiBillFindPO=async(bill)=>{
+      const p=bill?.parsed;
+      if(!p)return{ok:false,error:'No bill'};
+      if(!supabase)return{ok:false,error:'Supabase not configured'};
+      if(_billHasTarget(p))return{ok:false,error:'Already matched to a PO'};
+      const cands=_billCandidateOrders(p);
+      if(!cands.length){
+        setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:'No open order shares a SKU with this bill'}:b)}));
+        return{ok:false,error:'No candidate orders'};
+      }
+      const payload={
+        mode:'find_po',
+        bill:{doc_number:p.doc_number,po_number:p.po_number,vendor:p.vendor||p.supplier||'',
+          items:(p.items||[]).map((it,i)=>({idx:i,sku:it.sku||'',size:it.size||'',qty:safeNum(it.qty),unit_price:safeNum(it.unit_price),name:it.desc||it.name||''}))},
+        candidates:cands.map(c=>({id:c.id,kind:c.kind,label:c.label,vendor:c.sub||'',
+          items:(c.items||[]).map((it,ti)=>({idx:ti,sku:it.sku||'',name:it.name||'',size:it.size||'',qty:safeNum(it.qty),color:it.color||''}))})),
+      };
+      setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:true,_aiError:null,_aiFoundPO:null}:b)}));
+      let d;
+      try{d=await invokeEdgeFn(supabase,'ai-bill-matcher',payload)}
+      catch(e){d={ok:false,error:e.message}}
+      if(!d?.ok){
+        setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:d?.error||'AI match failed'}:b)}));
+        return{ok:false,error:d?.error||'AI match failed'};
+      }
+      const chosen=d.chosen_id!=null?cands.find(c=>String(c.id)===String(d.chosen_id)&&(!d.chosen_kind||c.kind===d.chosen_kind))||cands.find(c=>String(c.id)===String(d.chosen_id)):null;
+      if(!chosen){
+        setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:null,_aiFoundPO:{none:true,confidence:d.confidence||'low',reason:d.reason||''}}:b)}));
+        return{ok:true,found:false};
+      }
+      // Translate the AI's line mappings into the wizard's shape: {billIdx:{target_idx,allocated_qty,ambiguous|skipped}}.
+      const mappings={};
+      (d.mappings||[]).forEach(m=>{
+        if(!m||typeof m.idx!=='number')return;
+        if(m.target_idx==null||m.target_idx<0||m.target_idx>=(chosen.items||[]).length){mappings[m.idx]={skipped:true};return}
+        const bl=(p.items||[])[m.idx]||{};
+        mappings[m.idx]={target_idx:m.target_idx,allocated_qty:safeNum(m.allocated_qty)||safeNum(bl.qty),ambiguous:m.confidence!=='high'};
+      });
+      setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:null,
+        _aiFoundPO:{id:chosen.id,kind:chosen.kind,label:chosen.label,confidence:d.confidence||'medium',reason:d.reason||'',target:chosen,mappings}}:b)}));
+      return{ok:true,found:true,chosen:chosen.label};
+    };
+
+    // Accept an AI PO suggestion: open the existing manual-match wizard with the chosen
+    // order pre-selected and the line mappings pre-filled, so the human reviews and
+    // confirms through the same tested apply path (nothing is written until "Confirm").
+    const _applyAiFoundPO=(bill)=>{
+      const fp=bill?._aiFoundPO;
+      if(!fp||fp.none||!fp.target)return;
+      setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiFoundPO:null,parsed:{...b.parsed,_wizard:{open:true,query:'',target:fp.target,mappings:fp.mappings||{}}}}:b)}));
+    };
+
     // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
     // direct push and the "push matched only" path from the problems modal. Returns # applied.
     const _applyBillsToPortal=(bills)=>{
@@ -25903,7 +25987,7 @@ export default function App(){
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
                 {b._aiRunning&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>✨ AI checking…</span>}
-                {!b._aiRunning&&b._aiMatched&&(!tri||!tri.issue)&&<span title={b._aiChangedCount?b._aiChangedCount+' line(s) aligned to the order':'AI confirmed the lines match'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700,border:'1px solid #c4b5fd'}}>✨ AI-matched{b._aiChangedCount?' · '+b._aiChangedCount+' fixed':''}</span>}
+                {!b._aiRunning&&bill._aiMatched&&(!tri||!tri.issue)&&<span title={bill._aiChangedCount?bill._aiChangedCount+' line(s) aligned to the order':'AI confirmed the lines match'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700,border:'1px solid #c4b5fd'}}>✨ AI-matched{bill._aiChangedCount?' · '+bill._aiChangedCount+' fixed':''}</span>}
                 {!b._aiRunning&&!portalPushed&&!b.qbStatus&&tri&&tri.issue&&_billNeedsAi(bill)&&<button onClick={()=>_runAiBillMatch(b)} title="Ask AI to align this bill's sizes/SKUs to the matched order" style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#7c3aed',border:'1px solid #7c3aed',color:'#fff'}}>✨ {b._aiTried?'Re-run AI':'Try AI match'}</button>}
                 {b._aiError&&!b._aiRunning&&<span title={b._aiError} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:600,border:'1px solid #fecaca'}}>✨ AI: {b._aiError.length>32?b._aiError.slice(0,32)+'…':b._aiError}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
@@ -25924,7 +26008,7 @@ export default function App(){
                 </div>}
                 {/* AI reconciliation banner — shows the size/SKU label fixes Claude applied
                     against the matched order, so the change is auditable before pushing. */}
-                {b._aiMatched&&(()=>{
+                {bill._aiMatched&&(()=>{
                   const changed=(bill.items||[]).map((it,ii)=>({it,ii})).filter(({it})=>it._aiRaw&&((it._aiRaw.sku||'')!==(it.sku||'')||(it._aiRaw.size||'')!==(it.size||'')));
                   if(!changed.length)return <div style={{padding:'6px 14px',background:'#f5f3ff',borderBottom:'1px solid #ddd6fe',fontSize:11,color:'#6d28d9',fontWeight:600}}>✨ AI checked these lines against {bill.po_number||'the order'} — already a clean match, nothing to fix.</div>;
                   return <div style={{padding:'8px 14px',background:'#f5f3ff',borderBottom:'1px solid #ddd6fe'}}>
@@ -26093,10 +26177,34 @@ export default function App(){
                   const w=bill._wizard;
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
-                    return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:10}}>
-                      <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
-                      <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                        onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                    const fp=b._aiFoundPO;
+                    return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
+                      {/* AI "find the PO" suggestion — Claude picked an open order this bill likely
+                          belongs to. "Review & apply" opens the manual wizard pre-filled; nothing is
+                          written until the human confirms there. */}
+                      {fp&&!fp.none&&<div style={{marginBottom:10,padding:'8px 10px',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:6}}>
+                        <div style={{fontSize:12,fontWeight:800,color:'#6d28d9',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                          ✨ AI match: <span style={{color:'#4c1d95'}}>{fp.label}</span>
+                          <span style={{fontSize:9,padding:'1px 6px',borderRadius:10,fontWeight:700,background:fp.confidence==='high'?'#dcfce7':fp.confidence==='medium'?'#fef9c3':'#fee2e2',color:fp.confidence==='high'?'#166534':fp.confidence==='medium'?'#854d0e':'#991b1b'}}>{fp.confidence} confidence</span>
+                        </div>
+                        {fp.reason&&<div style={{fontSize:11,color:'#6d28d9',marginTop:3}}>{fp.reason}</div>}
+                        <div style={{display:'flex',gap:8,marginTop:8}}>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}} onClick={()=>_applyAiFoundPO(b)}>Review &amp; apply →</button>
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map((pp,i)=>i===bi?{...pp,_aiFoundPO:null}:pp)}))}>Dismiss</button>
+                        </div>
+                      </div>}
+                      {fp&&fp.none&&<div style={{marginBottom:10,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+                        ✨ AI couldn’t confidently match this to an open PO{fp.reason?' — '+fp.reason:'.'} Try matching manually.
+                      </div>}
+                      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                        <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                        <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                          onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                        {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
+                          :!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
+                            title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
+                            onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiTried?'Re-run AI':'Find PO with AI'}</button>}
+                      </div>
                     </div>;
                   }
                   const candidates=_buildMatchCandidates();
