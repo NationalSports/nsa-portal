@@ -2435,6 +2435,11 @@ const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toL
 const _retryNet=async(fn,tries=3)=>{let last;for(let i=0;i<tries;i++){try{const r=await fn();if(r&&r.error&&_isNetErr(r.error)){last={error:r.error};if(i<tries-1){await new Promise(res=>setTimeout(res,400*Math.pow(3,i)));continue}}return r}catch(e){last=e;if(!_isNetErr(e)||i===tries-1)throw e;await new Promise(res=>setTimeout(res,400*Math.pow(3,i)))}}throw last};
 // Legacy compat — keep old _dbSave for team_members and other simple tables. Retries transient network errors.
 const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'})).then(r=>{if(r&&r.error)console.error('[DB] save '+table+':', r.error.message)}).catch(e=>{console.error('[DB] save '+table+':', e.message||e)}) };
+// Boxes persist through the generic _dbSave upsert, which — like a PostgREST bulk upsert — needs
+// every row in a batch to share the same columns. Box objects legitimately vary (a fulfillment box
+// has if_id but no po_id; a freshly-minted box lacks the nullable columns a DB-loaded one carries),
+// so normalize each to the full, fixed column set before saving. NOT-NULL columns get safe defaults.
+const _boxRow = (b) => ({ id:b.id, kind:b.kind||'fulfillment', contents:b.contents||[], source_refs:b.source_refs||[], so_id:b.so_id??null, if_id:b.if_id??null, po_id:b.po_id??null, status:b.status||'staged', merged_into:b.merged_into??null, bin:b.bin??null, weight:b.weight??null, dimensions:b.dimensions??null, notes:b.notes??null, created_by:b.created_by??null, created_at:b.created_at??null, updated_at:b.updated_at??null });
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -4966,7 +4971,7 @@ export default function App(){
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
   // Warehouse boxes auto-save (overlay model — purely additive; mirrors the rep-CSR diff-save)
-  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.boxes||[];const changed=whBoxes.filter(b=>{const old=snap.find(p=>p.id===b.id);return!old||JSON.stringify(old)!==JSON.stringify(b)});if(changed.length)_dbSave('boxes',changed);_dbSnap.current.boxes=whBoxes},[whBoxes]);
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.boxes||[];const changed=whBoxes.filter(b=>{const old=snap.find(p=>p.id===b.id);return!old||JSON.stringify(old)!==JSON.stringify(b)});if(changed.length)_dbSave('boxes',changed.map(_boxRow));_dbSnap.current.boxes=whBoxes},[whBoxes]);
   // Mint the next BX-#### plate (max existing + 1, base 2000). Mirrors nextEstId.
   const nextBoxId=()=>{const mx=whBoxes.reduce((m,b)=>{const n=parseInt(String(b.id).replace(/^BX-/i,''),10);return Number.isFinite(n)&&n>m?n:m},2000);return 'BX-'+(mx+1)};
   // Upsert a box into state; the effect above persists it. Best-effort by design (never in a critical path).
@@ -5007,6 +5012,7 @@ export default function App(){
     let tgt=whBoxes.find(b=>(b.id||'').toUpperCase()===targetId);
     let guard=0;while(tgt&&tgt.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===tgt.merged_into);if(!nx)break;tgt=nx}
     if(!tgt){nf('Box '+targetId+' not found','warn');return}
+    if(tgt.status==='voided'){nf('Box '+tgt.id+' is voided — restore it first','warn');return}
     const refKey=r=>(r.type||'')+':'+(r.id||'');
     const mergedRefs=[...(tgt.source_refs||[])];const seen=new Set(mergedRefs.map(refKey));
     [...(src.source_refs||[]),...(src.if_id?[{type:'IF',id:src.if_id}]:[]),...(src.po_id?[{type:'PO',id:src.po_id}]:[])].forEach(r=>{if(r.id&&!seen.has(refKey(r))){seen.add(refKey(r));mergedRefs.push(r)}});
@@ -5036,13 +5042,16 @@ export default function App(){
   const depleteStockForPull=(contents,soId)=>{
     try{
       const work={};const get=id=>{if(!(id in work)){const b=(whBoxes||[]).find(x=>x.id===id);work[id]=b?{...b,contents:(b.contents||[]).map(c=>({...c,sizes:{...(c.sizes||{})}}))}:null}return work[id]};
+      // Lenient color match (mirrors the hint/reconcile): a differing non-'—' color excludes, so a
+      // mixed-color stock box depletes the right colorway and won't show a phantom reconcile delta.
+      const colorOk=(a,b)=>!(a&&a!=='—'&&b&&b!=='—'&&a!==b);
       const stockList=(whBoxes||[]).filter(b=>b.kind==='stock'&&b.status!=='voided'&&b.status!=='combined');
-      (contents||[]).forEach(line=>{const sku=line.sku;if(!sku)return;
+      (contents||[]).forEach(line=>{const sku=line.sku;if(!sku)return;const col=line.color;
         Object.entries(line.sizes||{}).forEach(([sz,qtyRaw])=>{let remaining=qtyRaw||0;if(remaining<=0)return;
-          const cands=stockList.filter(b=>(b.contents||[]).some(c=>c.sku===sku&&((c.sizes||{})[sz]||0)>0))
+          const cands=stockList.filter(b=>(b.contents||[]).some(c=>c.sku===sku&&colorOk(c.color,col)&&((c.sizes||{})[sz]||0)>0))
             .sort((a,b)=>{const ae=a.so_id===soId?0:1,be=b.so_id===soId?0:1;if(ae!==be)return ae-be;return String(a.created_at||a.id).localeCompare(String(b.created_at||b.id))});
           for(const cand of cands){if(remaining<=0)break;const wb=get(cand.id);if(!wb)continue;
-            for(const c of wb.contents){if(remaining<=0)break;if(c.sku!==sku)continue;const have=c.sizes[sz]||0;if(have<=0)continue;const take=Math.min(have,remaining);c.sizes[sz]=have-take;if(c.sizes[sz]<=0)delete c.sizes[sz];remaining-=take}
+            for(const c of wb.contents){if(remaining<=0)break;if(c.sku!==sku||!colorOk(c.color,col))continue;const have=c.sizes[sz]||0;if(have<=0)continue;const take=Math.min(have,remaining);c.sizes[sz]=have-take;if(c.sizes[sz]<=0)delete c.sizes[sz];remaining-=take}
           }
         });
       });
@@ -20519,15 +20528,19 @@ export default function App(){
         // is expected while box tracking is being adopted.
         const active=whBoxes.filter(b=>b.status!=='voided'&&b.status!=='combined');
         const activeStock=active.filter(b=>b.kind==='stock');
-        const boxed={};const boxIdsBySku={};
-        activeStock.forEach(b=>{(b.contents||[]).forEach(c=>{const sku=c.sku;if(!sku)return;boxed[sku]=boxed[sku]||{};Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){boxed[sku][sz]=(boxed[sku][sz]||0)+v;(boxIdsBySku[sku]=boxIdsBySku[sku]||new Set()).add(b.id)}})})});
+        // Aggregate active stock-box contents by SKU + color — a SKU can repeat across colorways,
+        // each its own product with its own _inv — tracking which boxes hold each.
+        const agg={};// key -> {sku,color,sizes:{},boxIds:Set}
+        activeStock.forEach(b=>{(b.contents||[]).forEach(c=>{const sku=c.sku;if(!sku)return;const color=(c.color&&c.color!=='—')?c.color:'';const key=sku+'|||'+color;const e=agg[key]||(agg[key]={sku,color,sizes:{},boxIds:new Set()});Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){e.sizes[sz]=(e.sizes[sz]||0)+v;e.boxIds.add(b.id)}})})});
         const sq=(whSearch||'').toLowerCase();
-        let rows=Object.keys(boxed).map(sku=>{
-          const p=prod.find(pp=>pp.sku===sku);const inv=p?._inv||{};
-          const allSz=[...new Set([...Object.keys(boxed[sku]),...Object.keys(inv)])].filter(sz=>(boxed[sku][sz]||0)>0||(inv[sz]||0)>0);
+        let rows=Object.values(agg).map(e=>{
+          // Match the product by SKU + color; fall back to SKU-only when color is absent/ambiguous.
+          const p=(e.color&&prod.find(pp=>pp.sku===e.sku&&(pp.color||'')===e.color))||prod.find(pp=>pp.sku===e.sku);
+          const inv=p?._inv||{};
+          const allSz=[...new Set([...Object.keys(e.sizes),...Object.keys(inv)])].filter(sz=>(e.sizes[sz]||0)>0||(inv[sz]||0)>0);
           let over=0,loose=0,boxedTotal=0;
-          const cells=allSz.map(sz=>{const bq=boxed[sku][sz]||0;const oh=inv[sz]||0;const d=bq-oh;if(d>0)over+=d;else if(d<0)loose+=-d;boxedTotal+=bq;return{sz,bq,oh,d}});
-          return{sku,name:p?.name||'',color:p?.color||'',cells,over,loose,boxedTotal,boxIds:[...(boxIdsBySku[sku]||[])]};
+          const cells=allSz.map(sz=>{const bq=e.sizes[sz]||0;const oh=inv[sz]||0;const d=bq-oh;if(d>0)over+=d;else if(d<0)loose+=-d;boxedTotal+=bq;return{sz,bq,oh,d}});
+          return{sku:e.sku,name:p?.name||'',color:e.color||p?.color||'',cells,over,loose,boxedTotal,boxIds:[...e.boxIds]};
         });
         if(sq)rows=rows.filter(r=>[r.sku,r.name,r.color].filter(Boolean).some(v=>v.toLowerCase().includes(sq)));
         rows.sort((a,b)=>(b.over-a.over)||(a.sku||'').localeCompare(b.sku||''));
@@ -20554,7 +20567,7 @@ export default function App(){
               <div>SKU</div><div>Sizes (boxed / on-hand)</div><div style={{textAlign:'right'}}>Boxed</div><div style={{textAlign:'right'}}>Status</div>
             </div>
             {rows.map((r,ri)=>(
-              <div key={r.sku} style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',borderTop:'1px solid #f1f5f9',background:r.over>0?'#fef2f2':ri%2?'#fff':'#fafbfc',alignItems:'center'}}>
+              <div key={r.sku+'|'+(r.color||'')} style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',borderTop:'1px solid #f1f5f9',background:r.over>0?'#fef2f2':ri%2?'#fff':'#fafbfc',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontFamily:'monospace',fontSize:12}}>{r.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{[r.name,r.color&&r.color!=='—'?r.color:''].filter(Boolean).join(' · ')}</div>
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3}}>{r.boxIds.map(id=><button key={id} type="button" onClick={()=>handleScanResult(id)} style={{cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',borderRadius:5,padding:'0 5px',fontSize:10,fontFamily:'monospace',color:'#475569'}}>{id}</button>)}</div>
                 </div>
