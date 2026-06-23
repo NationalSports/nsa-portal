@@ -23876,6 +23876,10 @@ export default function App(){
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
       nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      // Quietly reconcile any matched-but-mismatched bills with an AI pass (size/SKU
+      // label alignment against the order). Non-blocking; bills that can't be resolved
+      // just stay flagged. No-PO-match bills are skipped — they're for "Look at later".
+      _aiReconcilePass(results);
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -24614,6 +24618,105 @@ export default function App(){
       const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
         :(errs.length?errs.join(' · '):'');
       return{matched,errs,issue,reason};
+    };
+
+    // ── AI bill reconciliation ─────────────────────────────────────────────────
+    // For bills that matched a PO but whose lines don't reconcile (vendor size/SKU
+    // quirks the deterministic normalizer can't catch — "3XLT", placeholder SKUs),
+    // hand Claude the bill lines + the matched order's REAL lines and let it map
+    // each bill line onto the order's actual SKU + size bucket. Scope is deliberate:
+    // matched + non-duplicate bills only. No-PO-match bills are never sent — they
+    // stay parked for "Look at later". AI proposes, the human still confirms the push.
+
+    // The closed set the reconciler maps onto: the matched order's lines (SKU + name +
+    // ordered size buckets). Only sources that carry size buckets — SO item PO lines
+    // and inventory POs. Returns null when there's nothing with sizes to reconcile.
+    const _billOrderContext=p=>{
+      if(!p)return null;
+      const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+      if(p.matchedPOSource==='so_po'&&p.matchedPO){
+        const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
+        if(!so)return null;
+        const lines=[];
+        (so.items||[]).forEach(it=>{
+          const pls=(it.po_lines||[]).filter(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
+          if(!pls.length)return;
+          const sizes={};
+          pls.forEach(po=>_poLineSizeKeys(po).forEach(k=>{sizes[k]=(sizes[k]||0)+safeNum(po[k])}));
+          if(Object.keys(sizes).length)lines.push({sku:it.sku||'',name:it.name||'',sizes});
+        });
+        return lines.length?{label:(p.matchedPO.po_id||so.id),lines}:null;
+      }
+      if(p.matchedPOSource==='inv_po'&&p.matchedPO){
+        const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
+        const lines=(po.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',sizes:{...(it.sizes||{})}})).filter(l=>Object.keys(l.sizes).length);
+        return lines.length?{label:(po.po_number||'PO'),lines}:null;
+      }
+      return null;// batch / so_deco_po carry no size buckets — nothing to reconcile
+    };
+
+    // Bills the AI pass is allowed to touch: matched a PO, not a duplicate, have an
+    // order context with sizes, AND currently fail over-billing (a real mismatch to
+    // fix). Clean bills are left alone — no point spending a call to confirm a match.
+    const _billNeedsAi=p=>!!p&&_billHasTarget(p)&&!_docAlreadyApplied(p.doc_number)&&!!_billOrderContext(p)&&_billOverBillingErrors(p).length>0;
+
+    // Apply Claude's mapping onto the bill's lines in place: rewrite sku/size to the
+    // order's labels (keeping the raw value in _aiRaw for display), so the existing
+    // deterministic pipeline — _alignSize, over-billing, apply — then just lines up.
+    const _applyAiMappings=(p,mappings)=>{
+      if(!p||!Array.isArray(mappings))return p;
+      const byIdx={};mappings.forEach(m=>{if(m&&typeof m.idx==='number')byIdx[m.idx]=m});
+      let changed=0;
+      const items=(p.items||[]).map((it,i)=>{
+        const m=byIdx[i];if(!m||(m.order_sku==null&&m.order_size==null))return it;
+        const next={...it};
+        if(!next._aiRaw)next._aiRaw={sku:it.sku,size:it.size};
+        if(m.order_sku!=null)next.sku=m.order_sku;
+        if(m.order_size!=null)next.size=m.order_size;
+        next._aiConfidence=m.confidence;next._aiReason=m.reason||'';
+        if((m.order_sku!=null&&m.order_sku!==(it.sku||''))||(m.order_size!=null&&m.order_size!==(it.size||'')))changed++;
+        return next;
+      });
+      return{...p,items,_aiMatched:true,_aiChangedCount:changed};
+    };
+
+    // Run the reconciliation pass for one bill. Best-effort: any failure leaves the
+    // bill flagged exactly as before (graceful if the edge function isn't deployed).
+    const _runAiBillMatch=async(bill)=>{
+      const p=bill?.parsed;
+      if(!p)return{ok:false,error:'No bill'};
+      if(!supabase)return{ok:false,error:'Supabase not configured'};
+      if(!_billHasTarget(p))return{ok:false,error:'No PO match — left for Look at Later'};
+      if(_docAlreadyApplied(p.doc_number))return{ok:false,error:'Duplicate doc#'};
+      const ctx=_billOrderContext(p);
+      if(!ctx)return{ok:false,error:'No order lines to reconcile against'};
+      const payload={
+        bill:{doc_number:p.doc_number,po_number:p.po_number,vendor:p.vendor||p.supplier||'',
+          items:(p.items||[]).map((it,i)=>({idx:i,sku:it.sku||'',size:it.size||'',qty:safeNum(it.qty),unit_price:safeNum(it.unit_price),name:it.desc||it.name||''}))},
+        order:ctx,
+      };
+      setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:true,_aiError:null}:b)}));
+      let d;
+      try{d=await invokeEdgeFn(supabase,'ai-bill-matcher',payload)}
+      catch(e){d={ok:false,error:e.message}}
+      if(!d?.ok){
+        setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:d?.error||'AI match failed'}:b)}));
+        return{ok:false,error:d?.error||'AI match failed'};
+      }
+      const newParsed=_applyAiMappings(p,d.mappings);
+      setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,parsed:newParsed,_aiRunning:false,_aiTried:true,_aiError:null}:b)}));
+      // Mirror the reconciled lines into saved history so a re-open keeps the fix.
+      setSavedBills(prev=>{const u=prev.map(sb=>sb.id===bill.id?{...sb,parsed:{...newParsed,rawText:undefined}}:sb);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+      return{ok:true,changed:newParsed._aiChangedCount||0};
+    };
+
+    // Sweep a freshly-imported batch: reconcile every qualifying bill, one at a time
+    // (sequential keeps us under the API rate limit). Fire-and-forget from import.
+    const _aiReconcilePass=async(bills)=>{
+      if(!supabase)return;
+      const targets=(bills||[]).filter(b=>_billNeedsAi(b?.parsed));
+      if(!targets.length)return;
+      for(const b of targets){try{await _runAiBillMatch(b)}catch(e){/* leave flagged */}}
     };
 
     // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
@@ -25747,19 +25850,26 @@ export default function App(){
             const triaged=billImport.parsed.map(b=>({b,t:_billTriage(b)})).filter(x=>x.t);
             const issues=triaged.filter(x=>x.t.issue).map(x=>x.b);
             const clean=triaged.filter(x=>!x.t.issue).length;
+            const aiRunning=billImport.parsed.filter(b=>b._aiRunning).length;
+            const aiable=issues.filter(b=>!b._aiRunning&&_billNeedsAi(b.parsed));// matched + mismatched → AI can try
             if(!triaged.length)return null;// all pushed/parked
-            if(!issues.length)return <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,fontWeight:700,color:'#166534'}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
+            if(!issues.length&&!aiRunning)return <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,fontWeight:700,color:'#166534'}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
             return <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'10px 14px',marginBottom:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
-              <span style={{fontSize:18}}>⚠️</span>
+              <span style={{fontSize:18}}>{aiRunning?'✨':'⚠️'}</span>
               <div style={{flex:1,minWidth:200}}>
-                <div style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{issues.length} of {triaged.length} bill{triaged.length===1?'':'s'} don&rsquo;t match up cleanly</div>
-                <div style={{fontSize:11,color:'#92400e',marginTop:2}}>No PO match, a duplicate doc&nbsp;#, or billing more than was ordered.{clean>0?' '+clean+' match cleanly and can still be pushed.':''}</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{aiRunning>0&&issues.length===0?'AI is reconciling '+aiRunning+' bill'+(aiRunning===1?'':'s')+'…':issues.length+' of '+triaged.length+' bill'+(triaged.length===1?'':'s')+' don’t match up cleanly'}</div>
+                <div style={{fontSize:11,color:'#92400e',marginTop:2}}>{aiRunning>0?'✨ Checking matched bills against their orders — size/SKU label fixes apply automatically.':'No PO match, a duplicate doc #, or billing more than was ordered.'}{clean>0?' '+clean+' match cleanly and can still be pushed.':''}</div>
               </div>
-              <button className="btn btn-primary" style={{background:'#f59e0b',borderColor:'#f59e0b',whiteSpace:'nowrap'}}
+              {aiable.length>0&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed',whiteSpace:'nowrap'}}
+                title="Ask AI to reconcile the bills that matched a PO but whose sizes/SKUs don't line up (vendor label quirks). It only touches matched, non-duplicate bills."
+                onClick={()=>{aiable.forEach(b=>_runAiBillMatch(b));nf('Running AI match on '+aiable.length+' bill'+(aiable.length===1?'':'s')+'…')}}>
+                ✨ AI-match {aiable.length}
+              </button>}
+              {issues.length>0&&<button className="btn btn-primary" style={{background:'#f59e0b',borderColor:'#f59e0b',whiteSpace:'nowrap'}}
                 title="Move every bill that doesn't match perfectly to Look at later, so you can push the clean ones now"
                 onClick={()=>{const n=issues.length;_parkBillsForLater(issues);nf(n+' bill'+(n===1?'':'s')+' moved to Look at Later — find them under the Look at Later tab')}}>
                 🕒 Move {issues.length} to Look at later
-              </button>
+              </button>}
             </div>;
           })()}
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
@@ -25792,6 +25902,10 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
+                {b._aiRunning&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>✨ AI checking…</span>}
+                {!b._aiRunning&&b._aiMatched&&(!tri||!tri.issue)&&<span title={b._aiChangedCount?b._aiChangedCount+' line(s) aligned to the order':'AI confirmed the lines match'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700,border:'1px solid #c4b5fd'}}>✨ AI-matched{b._aiChangedCount?' · '+b._aiChangedCount+' fixed':''}</span>}
+                {!b._aiRunning&&!portalPushed&&!b.qbStatus&&tri&&tri.issue&&_billNeedsAi(bill)&&<button onClick={()=>_runAiBillMatch(b)} title="Ask AI to align this bill's sizes/SKUs to the matched order" style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#7c3aed',border:'1px solid #7c3aed',color:'#fff'}}>✨ {b._aiTried?'Re-run AI':'Try AI match'}</button>}
+                {b._aiError&&!b._aiRunning&&<span title={b._aiError} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:600,border:'1px solid #fecaca'}}>✨ AI: {b._aiError.length>32?b._aiError.slice(0,32)+'…':b._aiError}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
                 {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Look at later</span>}
                 {!b.qbStatus&&!portalPushed&&<button onClick={()=>{_parkBillsForLater([b]);nf('Moved to Look at Later')}}
@@ -25808,6 +25922,23 @@ export default function App(){
                   </div>
                   {tri.errs.map((e,ei)=><div key={ei} style={{fontSize:11,color:'#b91c1c'}}>&bull; {e}</div>)}
                 </div>}
+                {/* AI reconciliation banner — shows the size/SKU label fixes Claude applied
+                    against the matched order, so the change is auditable before pushing. */}
+                {b._aiMatched&&(()=>{
+                  const changed=(bill.items||[]).map((it,ii)=>({it,ii})).filter(({it})=>it._aiRaw&&((it._aiRaw.sku||'')!==(it.sku||'')||(it._aiRaw.size||'')!==(it.size||'')));
+                  if(!changed.length)return <div style={{padding:'6px 14px',background:'#f5f3ff',borderBottom:'1px solid #ddd6fe',fontSize:11,color:'#6d28d9',fontWeight:600}}>✨ AI checked these lines against {bill.po_number||'the order'} — already a clean match, nothing to fix.</div>;
+                  return <div style={{padding:'8px 14px',background:'#f5f3ff',borderBottom:'1px solid #ddd6fe'}}>
+                    <div style={{fontSize:11,fontWeight:800,color:'#6d28d9',marginBottom:3}}>✨ AI aligned {changed.length} line{changed.length>1?'s':''} to {bill.po_number||'the matched order'}:</div>
+                    {changed.map(({it,ii})=><div key={ii} style={{fontSize:11,color:'#5b21b6',display:'flex',gap:6,flexWrap:'wrap'}}>
+                      <span>&bull;</span>
+                      <span>{it._aiRaw.sku!==it.sku?<><b>{it._aiRaw.sku||'∅'}</b>→<b>{it.sku}</b></>:it.sku}{' '}
+                        {it._aiRaw.size!==it.size?<>size <b>"{it._aiRaw.size||'∅'}"</b>→<b>"{it.size}"</b></>:<>size {it.size}</>}</span>
+                      {it._aiReason&&<span style={{color:'#7c3aed',opacity:0.85}}>— {it._aiReason}</span>}
+                      {it._aiConfidence&&it._aiConfidence!=='high'&&<span style={{fontSize:9,padding:'0 5px',borderRadius:8,background:it._aiConfidence==='low'?'#fef2f2':'#fffbeb',color:it._aiConfidence==='low'?'#b91c1c':'#b45309',fontWeight:700,alignSelf:'center'}}>{it._aiConfidence} confidence</span>}
+                    </div>)}
+                    <div style={{fontSize:10,color:'#7c3aed',marginTop:3,opacity:0.8}}>Review and push as usual — AI never pushes on its own.</div>
+                  </div>;
+                })()}
                 {/* PO Match banner */}
                 {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
                   <span style={{fontSize:14}}>&#128279;</span>
