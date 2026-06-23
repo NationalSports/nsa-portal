@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
@@ -2444,11 +2445,12 @@ function ShotImage({ src, alt }) {
     <>
       <img src={src} alt={alt} loading="lazy" title="Click to enlarge" onClick={() => setZoom(true)}
         style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)', cursor: 'zoom-in', display: 'block' }} />
-      {zoom && (
-        <div onClick={() => setZoom(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.82)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
+      {zoom && createPortal(
+        <div onClick={() => setZoom(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.82)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
           <img src={src} alt={alt} style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 10, boxShadow: '0 24px 70px rgba(0,0,0,.55)' }} />
           <button type="button" onClick={() => setZoom(false)} aria-label="Close" style={{ position: 'absolute', top: 16, right: 20, width: 40, height: 40, borderRadius: 999, border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 24, lineHeight: 1, cursor: 'pointer' }}>×</button>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
