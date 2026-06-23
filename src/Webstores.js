@@ -2435,6 +2435,25 @@ function StoreGuideOverview({ store, detail = {}, onGoStep }) {
   );
 }
 
+// A guide screenshot a rep can click to enlarge. Inline it looks like before;
+// clicking opens a full-size lightbox above everything (incl. the Full-guide
+// modal). Click anywhere or × to dismiss.
+function ShotImage({ src, alt }) {
+  const [zoom, setZoom] = useState(false);
+  return (
+    <>
+      <img src={src} alt={alt} loading="lazy" title="Click to enlarge" onClick={() => setZoom(true)}
+        style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)', cursor: 'zoom-in', display: 'block' }} />
+      {zoom && (
+        <div onClick={() => setZoom(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.82)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
+          <img src={src} alt={alt} style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 10, boxShadow: '0 24px 70px rgba(0,0,0,.55)' }} />
+          <button type="button" onClick={() => setZoom(false)} aria-label="Close" style={{ position: 'absolute', top: 16, right: 20, width: 40, height: 40, borderRadius: 999, border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 24, lineHeight: 1, cursor: 'pointer' }}>×</button>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Full step-by-step walkthrough for a store's main page — every step in detail
 // (what to do, the example screenshot, and where to do it) in one scrollable
 // guide with a jump-to button per step. Driven by the same GUIDE_STEPS as the
@@ -2478,7 +2497,7 @@ function StoreGuideFull({ store, detail = {}, onGoStep, onClose }) {
                       </li>
                     ))}
                   </ul>
-                  {st.shot && <img src={st.shot} alt={`${st.title} — example`} loading="lazy" style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)' }} />}
+                  {st.shot && <ShotImage src={st.shot} alt={`${st.title} — example`} />}
                   <div style={{ fontSize: 11.5, color: '#94a3b8', fontFamily: 'monospace', marginTop: 10 }}>{st.where}</div>
                 </div>
               </div>
@@ -2530,8 +2549,7 @@ function GuidePanel({ stepId, store, detail = {}, onGoStep, scopeIds }) {
             </li>
           ))}
         </ul>
-        {step.shot && <img src={step.shot} alt={`${step.title} — example`} loading="lazy"
-          style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)' }} />}
+        {step.shot && <ShotImage src={step.shot} alt={`${step.title} — example`} />}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 13, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11.5, color: '#94a3b8', fontFamily: 'monospace' }}>{step.where}</span>
           <div style={{ display: 'flex', gap: 8 }}>
