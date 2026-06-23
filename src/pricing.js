@@ -1,6 +1,6 @@
 /* eslint-disable */
 import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
-import { safeNum } from './safeHelpers';
+import { safeNum, safeJobs } from './safeHelpers';
 
 // ── Utility helpers ──
 export const rQ=v=>Math.round(v*4)/4;
@@ -111,6 +111,54 @@ function _dPInner(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// ── Combined costing for linked jobs that share a screen ──
+// When a rep MANUALLY links jobs that carry the same artwork (so_jobs.link_group), they run
+// on one screen / digitized setup instead of recreating it per sales order — so the decoration
+// cost (a volume-tiered, in-house cost with no PO behind it) shouldn't be paid in full on each
+// order. This returns the COMBINED decoration tier quantity per art file for `order`: its own
+// art qty plus the units of every sibling job that shares the same link_group on OTHER orders.
+// Feeding that combined qty into dP() prices the per-piece cost at the true combined volume, so
+// the setup isn't double-charged and tiny linked runs clear the small-run minimum together.
+//
+// Manual links only — auto-matched same-art jobs stay production suggestions and never move
+// costing until a rep confirms the link (which is also what makes them run together on the
+// board). Revenue/sell is intentionally untouched: the customer price stays per-order, and a
+// rep can hand-lower the sale price if they want to pass the saving on. Siblings are pooled only
+// within the SAME deco_type (process) — a link group can legitimately span differently-named art
+// that shares a screen, but a screen-print volume must never pool with an embroidery one even if
+// a rep loosely links them by name.
+//
+// Returns { art_file_id -> combinedTierQty }, with an entry only when a real cross-order linked
+// sibling exists; callers fall back to the per-order qty for everything else.
+export const linkedArtCostQty=(order,localArtQty,allOrders)=>{
+  const out={};
+  const jobs=safeJobs(order).filter(j=>j&&j.link_group&&j.art_file_id);
+  if(!jobs.length)return out;
+  jobs.forEach(j=>{
+    let extra=0;
+    (allOrders||[]).forEach(s=>{
+      if(!s||s.id===order.id)return;
+      safeJobs(s).forEach(jj=>{if(jj&&jj.link_group&&jj.link_group===j.link_group&&jj.deco_type===j.deco_type)extra+=safeNum(jj.total_units)});
+    });
+    if(extra<=0)return; // no same-process sibling actually linked on another order → no combine
+    const local=safeNum(localArtQty&&localArtQty[j.art_file_id])||safeNum(j.total_units);
+    const combined=local+extra;
+    if(combined>(out[j.art_file_id]||0))out[j.art_file_id]=combined;
+  });
+  return out;
+};
+
+// Cost contribution of a single decoration, pricing shared-screen art at the combined linked-job
+// tier qty (from linkedArtCostQty) when it beats the per-order qty. Mirrors the `eq * dp.cost`
+// term every cost walk already uses, but on the combined volume. Sell is never combined here —
+// callers keep their own dP(...).sell for revenue so the customer price is unchanged.
+export const decoCostAt=(d,q,af,localCq,combinedQty)=>{
+  const cc=(d&&d.kind==='art'&&d.art_file_id&&combinedQty&&combinedQty[d.art_file_id]>localCq)?combinedQty[d.art_file_id]:localCq;
+  const dp=dP(d,q,af,cc);
+  const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);
+  return eq*safeNum(dp.cost);
+};
+
 // ── calcOrderTotals — single source of truth for order/estimate/SO totals ──
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the
 // editor agree. Returns { rev, ship, tax, grand }.
@@ -155,11 +203,14 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
 // Mirrors calcOrderTotals' revenue walk and adds a parallel cost walk (catalog/size
 // cost + deco cost). Lighter than the Reports page (which prefers actual PO costs) — a
 // reasonable at-a-glance gross margin. Returns { rev, cost, margin, pct }.
-export const calcOrderMargin=(o)=>{
+export const calcOrderMargin=(o,allOrders)=>{
   if(!o)return{rev:0,cost:0,margin:0,pct:0};
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
   items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
+  // Combined deco-cost tier qty for manually-linked jobs sharing a screen across orders. Empty
+  // (no combine) when allOrders is omitted, so existing single-arg callers are unchanged.
+  const comb=linkedArtCostQty(o,artQty,allOrders);
   let rev=0,cost=0;
   items.forEach(it=>{
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
@@ -171,7 +222,7 @@ export const calcOrderMargin=(o)=>{
     }
     if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
     else{cost+=q*_sNum(it.nsa_cost)}
-    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=eq*_sNum(dp.cost)})
+    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=decoCostAt(d,q,af,cq,comb)})
   });
   // SO-level decoration POs (outside-deco + Topstar) are a real cost the customer is billed for.
   // calcTotals and the Reports page already count these; include them here too so the dashboard
