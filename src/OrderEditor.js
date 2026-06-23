@@ -13,7 +13,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
-import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced } from './pricing';
+import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -2092,6 +2092,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
+  // Combined deco COST tier qty for manually-linked jobs that share a screen across orders
+  // (so_jobs.link_group). Lowers the rep's cost/margin so one shared setup isn't paid twice;
+  // the customer sell price is untouched (rep can hand-lower it to pass the saving on).
+  const costArtQty=useMemo(()=>linkedArtCostQty(o,artQty,allOrders),[o,artQty,allOrders]);
+  const _costCombined=Object.keys(costArtQty).length>0;
   const totals=useMemo(()=>{
     // PO size-key exclusion list — matches the per-PO modal so we count only true size qty fields.
     const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
@@ -2111,7 +2116,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
     else{cost+=q*safeNum(it.nsa_cost)}
-    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=decoCostAt(d,q,af,cq,costArtQty)});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -2132,7 +2137,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const actualShipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0));
     const inboundFreight=safeNum(o._inbound_freight||0);
     cost+=actualShipCost+inboundFreight;
-    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
+    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -2141,10 +2146,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
       if(it.is_promo){
         if(!it.is_free_promo){promoRev+=q*safeNum(it.unit_sell);promoCost+=q*safeNum(it.nsa_cost);origPromoRev+=q*safeNum(it._pre_promo_sell||it.unit_sell);}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);promoCost+=eq*dp.cost;origPromoRev+=eq*dp.sell});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);promoCost+=decoCostAt(d,q,af,cq,costArtQty);origPromoRev+=eq*dp.sell});
       }else{
         if(!it.is_free_promo){normalRev+=q*safeNum(it.unit_sell);normalCost+=q*safeNum(it.nsa_cost);}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;normalCost+=eq*dp.cost});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;normalCost+=decoCostAt(d,q,af,cq,costArtQty)});
       }});
     // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
     const origTotalRev=origPromoRev+normalRev;
@@ -2156,7 +2161,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const promoCredit=safeItems(o).reduce((a,it)=>a+safeNum(it._promo_credit),0);
     const promoAmount=promoRev+promoShip+promoCredit;const customerPays=normalRev+normalShip+normalTax;
     return{promoRev,promoCost,promoShip,promoAmount,promoCredit,normalRev,normalCost,normalShip,normalTax,customerPays};
-  },[o,artQty,cust,af]); // eslint-disable-line
+  },[o,artQty,cust,af,costArtQty]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job
@@ -2745,7 +2750,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
@@ -3240,9 +3245,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
       const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
-      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=eq*dp.cost;dR+=dr;dC+=dc;
+      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=decoCostAt(d,qty,af,cq,costArtQty);dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position)+(d.reversible?' (Rev)':''):'Numbers @ '+d.position+(d.front_and_back?' (F+B)':'')+(d.reversible?' (Rev)':'');
-        decoBreak.push({label,sell:pds,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
+        decoBreak.push({label,sell:pds,cost:eq>0?dc/eq:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
       const pRev=(()=>{if(item._sizeSells&&szQty>0){let r=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)r+=n*(item._sizeSells[sz]||item.unit_sell)});return r}return qty*item.unit_sell})();
       // Topstar digitizing/vector lines bill the customer (unit_sell) but carry their cost on the
       // linked decoration PO (so.deco_pos), not nsa_cost — so the line would otherwise read $0 cost
@@ -7789,6 +7794,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {confirmed.length>0&&<div style={{marginBottom:6}}>
                       <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
                         <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
+                        {costArtQty[j.art_file_id]>0&&<span title="Decoration cost is priced once across these linked jobs at the combined volume — the screen/setup isn't billed twice. The customer sale price is unchanged; lower it manually if you want to pass the saving on." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534'}}>💰 cost combined · {costArtQty[j.art_file_id]} u run</span>}
                       </div>
                       {confirmed.map(m=>memberRow(m,<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title="Remove this manual link" onClick={()=>unlinkMember(m)}>Unlink</button>))}
                     </div>}
