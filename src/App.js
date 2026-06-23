@@ -23886,7 +23886,11 @@ export default function App(){
     // matching key actually present on the target so ordered/billed line up.
     const _canonBillSize=raw=>{
       if(raw==null)return raw;
-      const s=String(raw).trim();
+      let s=String(raw).trim();
+      // Drop a trailing inseam/length spec so apparel sizes line up: adidas bills volleyball shorts as
+      // "XS3\""/"S 3\"" (a 3-inch inseam) where the order carries plain "XS"/"S".
+      const noInseam=s.replace(/\s*\d+\s*["”″]\s*$/,'').trim();
+      if(noInseam)s=noInseam;
       // Half-size shorthand → "N.5". Vendors/orders write the same half a few ways: the parser's
       // "8-"/"10-", adidas' "11½" symbol, or "11 1/2". Reconcile them all so e.g. a bill's "11-"
       // lines up with a PO's "11½" instead of reading as a phantom 0 ordered.
