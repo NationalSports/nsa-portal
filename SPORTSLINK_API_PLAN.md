@@ -335,3 +335,46 @@ patterns already in the repo (six vendor proxies, daily cron/background pairs,
 `verifyUser` gating). The billing brain — matching, reconciliation, the Billed
 tracking writes — is **reused untouched**, so the part that matters most to your
 books behaves exactly as it does today, only fed automatically.
+
+---
+
+## Phase 0 — Live API validation log (2026-06-23)
+
+Validated the issued dealer key against `GET dealers/documents/` (read-only — no
+document statuses were changed).
+
+- **Connection:** ✅ 200 OK. The account holds **28,857 documents**.
+- **Coverage is the whole distributor-routed book, not just "Sports Inc."** A
+  200-doc sample spanned **21 suppliers**: ADIDAS US TEAM SERVICES (~66%), SANMAR,
+  S&S ACTIVEWEAR, AUGUSTA SPORTSWEAR, AGRON, STAHLS, RICHARDSON, AVERY DENNISON,
+  CHAMPRO, MV SPORT, UNDER ARMOUR, MOLTEN, RAWLINGS… One API covers a large
+  majority of supplier bills.
+- **Line-item detail:** ✅ **200/200 (100%)** carried `lines` — size-level Billed
+  tracking can auto-populate for essentially all bills. (The "scanned docs have no
+  lines" caveat barely bit in recent data; confirm it holds for older docs — email.)
+- **Cost tie-out:** ✅ `merchandiseTotal + freightAmount + siUpcharge == docTotal`
+  on every non-credit doc. `siUpcharge` is a small SI fee (~0.8%);
+  `svcHandleCharge`/`salesTax` absent in the sample. The adapter maps these exactly.
+- **Document identity:** `siDocNumber` = 8-digit stable SI key; `supplierDocNumber`
+  = the supplier's invoice number (our dedup key). Confirmed distinct.
+- **PO format:** free-text with the real PO embedded amid prefixes/suffixes and
+  inconsistent spacing — `PO 3332 CIVB`, `PO8602 CSFB REP`, `DPO 3239 TLL`,
+  `NSA 4519`, `PO8635EXPRESSMM`, `3177 OLUSPL`. The PDF parser stores this **same**
+  string (`App.js:23470`) and matching normalizes whitespace on both sides, so API
+  bills match **at parity** with PDFs. ~0.5% had a blank PO (Sports Inc's own
+  service charges — no PO; these correctly fall to manual review).
+- **Per-supplier line quality** (drives how often auto-match needs help):
+  - **adidas** — clean: `supplierItemNumber` + `upc` + `size` (color in description).
+  - **SanMar** — clean: `supplierItemNumber` + `size` + `color` (no upc).
+  - **S&S Activewear** — weak: empty `supplierItemNumber`, no `size`/`color` →
+    leans on AI reconcile / manual match.
+  - **Richardson** — style in `supplierItemNumber` (size embedded), `upc`, no size.
+- **Credits (`isCredit`)** come back **already negative** (e.g. merch −13.12,
+  docTotal −28.35) and may print "SEE VENDOR INVOICE FOR DETAIL" with a
+  zero-extension line. The adapter passes negatives through and flags credits for
+  manual review; the line-vs-merch mismatch is expected on these.
+
+**Verdict:** viable and high-coverage. Manual-confirm + AI reconcile is the right
+posture given the per-supplier line variance. Remaining unknowns are confirmation
+items (older-doc line coverage, exact credit convention, historical-flag etiquette,
+timing/DST, rate limits) — see the questions sent to Sports Inc.
