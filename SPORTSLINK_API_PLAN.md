@@ -349,9 +349,13 @@ document statuses were changed).
   S&S ACTIVEWEAR, AUGUSTA SPORTSWEAR, AGRON, STAHLS, RICHARDSON, AVERY DENNISON,
   CHAMPRO, MV SPORT, UNDER ARMOUR, MOLTEN, RAWLINGS… One API covers a large
   majority of supplier bills.
-- **Line-item detail:** ✅ **200/200 (100%)** carried `lines` — size-level Billed
-  tracking can auto-populate for essentially all bills. (The "scanned docs have no
-  lines" caveat barely bit in recent data; confirm it holds for older docs — email.)
+- **Line-item detail (EDI vs scanned):** every doc carries a `lines` array, but
+  scanned/OCR documents put a single zero-qty `SEE VENDOR INVOICE FOR DETAIL`
+  placeholder there instead of real lines. The real split shows in `totalCount`:
+  **23,299 EDI documents** (with usable lines) of **28,857 total** (~81% EDI,
+  ~19% scanned). The pull uses **`excludeScannedDocuments=true`** so only the EDI
+  docs come in; scanned ones (notably **S&S Activewear**) stay on the manual PDF
+  parse — per team workflow.
 - **Cost tie-out:** ✅ `merchandiseTotal + freightAmount + siUpcharge == docTotal`
   on every non-credit doc. `siUpcharge` is a small SI fee (~0.8%);
   `svcHandleCharge`/`salesTax` absent in the sample. The adapter maps these exactly.
