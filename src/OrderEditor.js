@@ -1471,13 +1471,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
   const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Delivery method ("How is this order getting to the customer?") is purely a warehouse instruction.
+  // When every live line ships direct to the customer — each item is on a drop-ship PO and/or decorated
+  // out of house, with nothing received in-house or pulled from our stock — no goods route through the
+  // warehouse, so the selector is unnecessary and is replaced by a note (and the far-account default
+  // below is skipped). The "decorated out of house" test mirrors the sentOutside check used for jobs.
+  const allShipDirect=useMemo(()=>{
+    if(!isSO)return false;
+    const live=safeItems(o).map((it,idx)=>({it,idx})).filter(({it})=>(Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty))>0);
+    if(live.length===0)return false;
+    return live.every(({it,idx})=>{
+      // In-house garment PO (received & counted in) or any stock pick (pulled from our shelves) → the
+      // warehouse handles this item, so a delivery method is still needed.
+      if(safePOs(it).some(po=>po&&po.po_type!=='outside_deco'&&po.drop_ship!==true))return false;
+      if(safePicks(it).length>0)return false;
+      // Otherwise it ships direct iff it's on a drop-ship PO or is decorated out of house.
+      const dropShip=safePOs(it).some(po=>po&&po.drop_ship===true);
+      const outOfHouse=safeDecos(it).some(d=>d&&d.kind==='outside_deco')||(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')||(o.deco_pos||[]).some(dp=>(dp.item_idxs||[]).includes(idx));
+      return dropShip||outOfHouse;
+    });
+  },[isSO,o]);
   // Far-account ship default — when this SO has no delivery method chosen yet and the account's
   // shipping ZIP is more than 100 mi from our office (Orange, CA 92865), pre-fill "Wait to Ship
   // Complete" so we don't run repeated long-haul partial shipments. The rep can still change it;
   // nearby accounts stay blank so the rep is forced to pick one. Skips already-complete orders and
   // loads the zipcodes table on demand to keep its ~1MB dataset out of the main bundle.
   useEffect(()=>{
-    if(!isSO||o.ship_preference||o.status==='complete')return;
+    if(!isSO||o.ship_preference||o.status==='complete'||allShipDirect)return;
     const custZip=String(cust?.shipping_zip||cust?.billing_zip||'').trim().slice(0,5);
     const officeZip=String(_ci?.zip||'92865').trim().slice(0,5);
     if(!/^\d{5}$/.test(custZip)||!/^\d{5}$/.test(officeZip))return;
@@ -1492,7 +1512,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }).catch(()=>{});
     return()=>{cancelled=true};
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[isSO,cust?.id,cust?.shipping_zip,cust?.billing_zip,o.ship_preference,o.status]);
+  },[isSO,cust?.id,cust?.shipping_zip,cust?.billing_zip,o.ship_preference,o.status,allShipDirect]);
   // AU footwear gets 5% less discount than apparel (school pays more for shoes).
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
@@ -3187,7 +3207,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {stLabels[sf]||sf}</span>})}
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
-      {isSO&&<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+      {isSO&&(allShipDirect?(
+        <div style={{marginTop:10}}>
+          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?</label>
+          <div style={{marginTop:2,display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px'}}>✅ Not needed — all items ship direct to the customer</div>
+        </div>
+      ):(<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
         <div>
           <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>* required — select one</span>}</label>
           <div style={{display:'flex',gap:3,flexWrap:'wrap',padding:!o.ship_preference?4:0,borderRadius:6,border:!o.ship_preference?'1px solid #fca5a5':'none',background:!o.ship_preference?'#fef2f2':'transparent'}}>
@@ -3208,7 +3233,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <label className="form-label" style={{fontSize:11}}>Deliver Date</label>
           <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
         </div>}
-      </div>}
+      </div>))}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
