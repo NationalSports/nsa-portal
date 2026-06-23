@@ -46,6 +46,87 @@ export const _siSupplierKey = (name) => String(name || '').toUpperCase().replace
 // Unknown suppliers default to 'OCR' (treat as manual until a real line comes through).
 export const siSupplierMethod = (name) => (SI_EDI_SUPPLIERS.has(_siSupplierKey(name)) ? 'EDI' : 'OCR');
 
+// ── PO matching (Sports Inc bills) ───────────────────────────────────────────
+// Sports Inc PO strings are free-text: a numeric core plus a customer alpha tag and
+// noise — "PO 3332 CIVB", "DPO 3239 TLL", "NSA 4519", "PO8635EXPRESSMM", "3177 OLUSPL".
+// The alpha tag is the customer's alpha_tag (CIVB → Civica HS Basketball), so decoding
+// core + tags lets the matcher triangulate a portal PO on several signals — robust to
+// the typo'd/blank PO numbers salespeople leave. The bill is presumed source of truth,
+// so a strong customer + supplier + line match wins even when the PO number is off.
+
+// PO prefixes / common noise that are never a customer alpha tag.
+const _SI_PO_STOPWORDS = new Set(['PO', 'DPO', 'NSA', 'REP', 'EXP', 'EXPRESS', 'RUSH', 'RE', 'REORDER', 'SO', 'MM']);
+
+export const parseSiPoString = (poNumber) => {
+  const raw = String(poNumber || '').trim();
+  const upper = raw.toUpperCase();
+  const coreMatch = upper.match(/\d{3,6}/);           // the actual PO number
+  const core = coreMatch ? coreMatch[0] : '';
+  const tokens = upper.replace(/\d+/g, ' ').split(/[^A-Z]+/).filter(Boolean);
+  const tags = tokens.filter((t) => t.length >= 2 && !_SI_PO_STOPWORDS.has(t));
+  return { raw, core, tags };
+};
+
+// Portal vs. old-system discriminator. Every portal PO puts a SPACE after the "PO"
+// prefix ("PO 3545"); the legacy NetSuite system runs them together ("PO3454"). A
+// no-space PO is therefore pre-portal — it belongs in NetSuite → QuickBooks, not the
+// portal Billed tracking. Verified against live data: "PO + space" bills hit a portal
+// PO 97% of the time, while "PO no-space" only collide coincidentally (a different
+// customer's PO #), so we route those straight to Outside-of-Portal and never try to
+// apply them. Returns 'portal' | 'old' | 'unknown' (non-PO-prefixed → let the matcher decide).
+export const siPoOrigin = (poNumber) => {
+  const raw = String(poNumber || '').trim();
+  if (/^D?PO\s+\d/i.test(raw)) return 'portal';
+  if (/^D?PO\d/i.test(raw)) return 'old';
+  return 'unknown';
+};
+
+const _skuKey = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+// Score a bill against one portal PO candidate. Higher = better.
+// candidate: { po_id, po_core, vendor, customer_alpha_tag, customer_name, skus:[], so_id }
+// Returns { score, confidence, method, reasons:[] }.
+export const scoreSiPoMatch = (parsedBill, candidate) => {
+  const reasons = [];
+  let score = 0;
+  const { core, tags } = parseSiPoString(parsedBill.po_number);
+  const candCore = String(candidate.po_core || '').replace(/\D/g, '');
+  const coreHit = !!(core && candCore && core === candCore);
+  if (coreHit) { score += 50; reasons.push('PO #' + core); }
+
+  const candTag = _skuKey(candidate.customer_alpha_tag);
+  const tagHit = !!(candTag && tags.some((t) => _skuKey(t) === candTag));
+  if (tagHit) { score += 35; reasons.push('customer ' + candTag); }
+
+  const supKey = _siSupplierKey(parsedBill.supplier);
+  const venKey = _siSupplierKey(candidate.vendor);
+  if (supKey && venKey && (supKey === venKey || supKey.includes(venKey) || venKey.includes(supKey))) {
+    score += 15; reasons.push('supplier');
+  }
+
+  const candSkus = new Set((candidate.skus || []).map(_skuKey).filter(Boolean));
+  const billSkus = [...new Set((parsedBill.items || []).map((it) => _skuKey(it.sku)).filter(Boolean))];
+  let skuHits = 0;
+  if (candSkus.size && billSkus.length) {
+    skuHits = billSkus.filter((s) => candSkus.has(s)).length;
+    if (skuHits) { score += Math.min(30, skuHits * 10); reasons.push(skuHits + ' SKU' + (skuHits > 1 ? 's' : '')); }
+  }
+
+  let confidence = 'none';
+  if (score >= 70) confidence = 'high';
+  else if (score >= 45) confidence = 'medium';
+  else if (score > 0) confidence = 'low';
+  const method = coreHit ? 'po_core' : tagHit ? 'alpha_tag' : skuHits ? 'lines' : 'none';
+  return { score, confidence, method, reasons };
+};
+
+// Rank portal PO candidates for a bill, best first (only positive-scoring ones).
+export const rankSiPoCandidates = (parsedBill, candidates) =>
+  (candidates || [])
+    .map((c) => ({ candidate: c, ...scoreSiPoMatch(parsedBill, c) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+
 // Build the dealers/documents query string from a filters object. `lines` defaults
 // to true so EDI documents bring their per-size line items (scanned/OCR documents
 // carry none — see has_lines on the mapped bill).
@@ -116,6 +197,7 @@ export const mapSportsLinkDocToBill = (doc) => {
     ship_date: _siDate(doc.shipDate),
     supplier: String(doc.supplier || '').trim(),
     supplier_method: supplierMethod,                  // 'EDI' | 'OCR' — expected method (context/flagging)
+    po_origin: siPoOrigin(doc.poNumber),              // 'portal' | 'old' | 'unknown' (space-after-PO rule)
     source_type: hasUsableLines ? 'edi' : 'scanned',  // actual route: approve-flow vs manual worklist
     vendor: '',
     tracking: String(doc.trackingNumber || '').trim(),

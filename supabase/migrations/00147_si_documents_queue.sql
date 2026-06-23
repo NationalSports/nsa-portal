@@ -33,6 +33,18 @@ create table if not exists public.si_documents (
   supplier_method     text,                                   -- 'EDI' | 'OCR' expected (National Sports supplier list)
   source_type         text        not null default 'edi',   -- actual route: 'edi' (usable lines) | 'scanned' (manual)
   raw                 jsonb,                                  -- full API document (re-map / audit)
+  -- Matching (alpha-tag / multi-signal matcher; cached so the shared queue renders fast).
+  -- SI PO strings carry a numeric core + the customer alpha_tag ("PO 3332 CIVB" = PO 3332,
+  -- Civica HS Basketball), so we triangulate on PO# + customer + supplier + SKUs.
+  matched_po_id       text,                                   -- portal PO id this bill matched / was assigned
+  matched_so_id       text,                                   -- the sales order
+  match_confidence    text,                                   -- 'high' | 'medium' | 'low' | 'none'
+  match_method        text,                                   -- 'po_core' | 'alpha_tag' | 'lines' | 'ai' | 'manual'
+  match_reason        text,                                   -- human-readable explanation
+  -- Bill-as-source-of-truth: when the bill disagrees with the portal PO, flag it (the bill is
+  -- presumed right) so accounting can correct the order rather than bend the bill to a bad PO.
+  has_discrepancy     boolean     not null default false,
+  discrepancy         jsonb,                                  -- [{sku,size,billed,ordered,kind}] deltas
   -- Lifecycle:
   --   matched + edi:     pending        → approved     | ignored
   --   matched + scanned: manual_pending → manual_done  | ignored

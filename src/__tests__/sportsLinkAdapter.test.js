@@ -4,7 +4,8 @@
 // existing match / review / AI-reconcile / push-to-Billed-tracking pipeline can consume
 // API documents with no downstream changes. These lock in the field mapping, the
 // EDI-vs-scanned distinction, and credit handling.
-const { mapSportsLinkDocToBill, buildSportsLinkDocsQuery, _siDate, siSupplierMethod } = require('../sportsLink');
+const { mapSportsLinkDocToBill, buildSportsLinkDocsQuery, _siDate, siSupplierMethod,
+  parseSiPoString, scoreSiPoMatch, rankSiPoCandidates, siPoOrigin } = require('../sportsLink');
 
 const ediDoc = {
   poNumber: 'PO4133',
@@ -161,5 +162,71 @@ describe('siSupplierMethod', () => {
     expect(siSupplierMethod('UNDER ARMOUR')).toBe('OCR'); // not on the EDI list
     expect(siSupplierMethod('Some New Vendor LLC')).toBe('OCR');
     expect(siSupplierMethod('')).toBe('OCR');
+  });
+});
+
+describe('parseSiPoString', () => {
+  test('decodes core PO number + customer alpha tags from real bill PO strings', () => {
+    expect(parseSiPoString('PO 3332 CIVB')).toMatchObject({ core: '3332', tags: ['CIVB'] });
+    expect(parseSiPoString('DPO 3239 TLL')).toMatchObject({ core: '3239', tags: ['TLL'] });
+    expect(parseSiPoString('NSA 4519')).toMatchObject({ core: '4519', tags: [] });
+    expect(parseSiPoString('3177 OLUSPL')).toMatchObject({ core: '3177', tags: ['OLUSPL'] });
+    expect(parseSiPoString('PO8602 CSFB REP')).toMatchObject({ core: '8602', tags: ['CSFB'] }); // REP is noise
+  });
+});
+
+describe('siPoOrigin (space-after-PO rule)', () => {
+  test('a space after PO/DPO means a portal PO', () => {
+    expect(siPoOrigin('PO 3545 CIVB')).toBe('portal');
+    expect(siPoOrigin('PO 3332')).toBe('portal');
+    expect(siPoOrigin('DPO 3239 TLL')).toBe('portal');
+  });
+  test('no space after PO means the legacy/old system (→ Outside of Portal)', () => {
+    expect(siPoOrigin('PO3454')).toBe('old');
+    expect(siPoOrigin('PO8633TWELVEMM')).toBe('old');
+    expect(siPoOrigin('PO8602 CSFB')).toBe('old'); // joined "PO8602" → old, even with later spaces
+  });
+  test('non-PO-prefixed strings are unknown (let the matcher decide)', () => {
+    expect(siPoOrigin('NSA 4519')).toBe('unknown');
+    expect(siPoOrigin('3177 OLUSPL')).toBe('unknown');
+    expect(siPoOrigin('')).toBe('unknown');
+  });
+  test('the adapter surfaces po_origin on the mapped bill', () => {
+    expect(mapSportsLinkDocToBill({ poNumber: 'PO 3332 CIVB', lines: [] }).po_origin).toBe('portal');
+    expect(mapSportsLinkDocToBill({ poNumber: 'PO8633TWELVE', lines: [] }).po_origin).toBe('old');
+  });
+});
+
+describe('scoreSiPoMatch / rankSiPoCandidates', () => {
+  // "PO 3332 CIVB" from adidas → portal PO 3332 for Civica HS Basketball.
+  const bill = { po_number: 'PO 3332 CIVB', supplier: 'ADIDAS US TEAM SERVICES', items: [{ sku: 'IU2788' }, { sku: 'KB9105' }] };
+  const civica = { po_id: 'PO3332', po_core: '3332', vendor: 'ADIDAS US TEAM SERVICES', customer_alpha_tag: 'CIVB', skus: ['IU2788', 'KB9105'], so_id: 'SO-2001' };
+
+  test('PO core + alpha tag + supplier + SKUs → high confidence', () => {
+    const r = scoreSiPoMatch(bill, civica);
+    expect(r.confidence).toBe('high');
+    expect(r.method).toBe('po_core');
+    expect(r.reasons.join(' ')).toMatch(/CIVB/);
+  });
+
+  test('bill is source of truth: customer + supplier + SKUs still match when the PO number is wrong', () => {
+    // Salesperson fat-fingered the PO number, but the customer tag + supplier + lines line up.
+    const wrongNumber = { ...civica, po_id: 'PO9999', po_core: '9999' };
+    const r = scoreSiPoMatch(bill, wrongNumber);
+    expect(r.score).toBeGreaterThanOrEqual(45); // alpha_tag(35)+supplier(15)+SKUs(20) = 70
+    expect(['medium', 'high']).toContain(r.confidence);
+    expect(r.method).toBe('alpha_tag');
+  });
+
+  test('ranks the right customer first among candidates', () => {
+    const other = { po_id: 'PO3332B', po_core: '3332', vendor: 'SANMAR', customer_alpha_tag: 'CDB', skus: ['610534'], so_id: 'SO-2002' };
+    const ranked = rankSiPoCandidates(bill, [other, civica]);
+    expect(ranked[0].candidate.so_id).toBe('SO-2001');
+  });
+
+  test('no signal → no match', () => {
+    const unrelated = { po_id: 'PO1', po_core: '1', vendor: 'SANMAR', customer_alpha_tag: 'XYZ', skus: ['ZZZ'] };
+    expect(scoreSiPoMatch(bill, unrelated).confidence).toBe('none');
+    expect(rankSiPoCandidates(bill, [unrelated])).toHaveLength(0);
   });
 });
