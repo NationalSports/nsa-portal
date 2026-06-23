@@ -4785,6 +4785,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const linkedPOs=Object.values(_poMap).map(e=>({...e,itemCount:e.skus.length,status:e.totalRcvd>=e.totalOrd&&e.totalOrd>0?'received':e.totalRcvd>0?'partial':'waiting'}));
       const linkedIFs=[];safeItems(o).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&!linkedIFs.find(x=>x.pick_id===pk.pick_id)){const szKeys=Object.keys(pk).filter(k=>!['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'].includes(k)&&typeof pk[k]==='number');const totalQty=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);linkedIFs.push({pick_id:pk.pick_id,status:pk.status||'pick',totalQty,created_at:pk.created_at||'',memo:pk.memo||''})}})});
       const linkedInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
+      // Shared-screen jobs — jobs on OTHER sales orders in this parent family that carry the
+      // same artwork (manually linked, or auto-matched by art name + deco type). Surfaces the
+      // run-together relationship here so the rep can see and open the connected orders.
+      const _parentId=cust?.parent_id||cust?.id||null;
+      const _famIds=new Set((allCustomers||[]).filter(c=>c.id===_parentId||c.parent_id===_parentId).map(c=>c.id));if(_parentId)_famIds.add(_parentId);
+      const _pidOf=s=>{const c=(allCustomers||[]).find(x=>x.id===s.customer_id);return c?.parent_id||c?.id||null};
+      const _cn=id=>(allCustomers||[]).find(x=>x.id===id)?.name||'—';
+      const _plabel=s=>({hold:'On Hold',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'})[s]||s;
+      const _myLinkGroups=new Set(safeJobs(o).map(j=>j.link_group).filter(Boolean));
+      const _sharedSeen=new Set();const sharedJobs=[];
+      safeJobs(o).forEach(j=>{
+        const myGk=jobGroupKey(j,_parentId);const mySk=jobScreenKey(j);
+        if(!myGk&&!mySk)return;
+        (allOrders||[]).forEach(s=>{
+          if(s.id===o.id||!_famIds.has(s.customer_id))return;
+          safeJobs(s).forEach(jj=>{
+            const dk=s.id+'|'+jj.id;if(_sharedSeen.has(dk))return;
+            const sameGroup=!!myGk&&jobGroupKey(jj,_pidOf(s))===myGk;
+            const sameArt=!!mySk&&jobScreenKey(jj)===mySk;
+            if(!sameGroup&&!sameArt)return;
+            _sharedSeen.add(dk);
+            const manual=!!(jj.link_group&&_myLinkGroups.has(jj.link_group));
+            sharedJobs.push({soId:s.id,cust:_cn(s.customer_id),art:jj.art_name||j.art_name||'(unnamed art)',deco:jj.deco_type||'',units:jj.total_units||0,status:jj.prod_status||'',manual});
+          });
+        });
+      });
       // Render each linked transaction as a real anchor with a deep-link href so
       // it can be opened in a new tab (Cmd/Ctrl/middle-click). Plain left-click
       // navigates in-app via the existing handlers.
@@ -4796,6 +4822,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.estimate_id&&<a href={_navHref({est:o.estimate_id})} style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',cursor:onViewEstimate?'pointer':'default',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();onViewEstimate&&onViewEstimate(o.estimate_id)}}>
           <div style={{width:40,height:40,background:'#ede9fe',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="dollar" size={20}/></div>
           <div><div style={{fontWeight:700,color:'#7c3aed',textDecoration:'underline',textDecorationStyle:'dotted'}}>{o.estimate_id}</div><div style={{fontSize:12,color:'#64748b'}}>Source Estimate</div></div><span className="badge badge-green">Converted</span></a>}
+        <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}><div style={{fontWeight:600,marginBottom:4,color:'#166534'}}>🔗 Shared-Screen Jobs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— other orders that run on the same artwork (linked jobs share one screen setup)</span></div>
+          {sharedJobs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No other orders share this artwork</div>:
+          sharedJobs.map((sj,i)=><div key={sj.soId+'|'+i} onClick={()=>onViewSO&&onViewSO(sj.soId)} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #d1fae5',cursor:onViewSO?'pointer':'default',flexWrap:'wrap'}}>
+            <span style={{fontSize:13,fontWeight:600,color:'#0f172a'}}>{sj.art}</span>
+            {sj.deco&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600}}>{sj.deco.replace(/_/g,' ')}</span>}
+            <span style={{fontSize:11,color:'#64748b'}}>{sj.units} units</span>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{sj.soId}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>{sj.cust}</span>
+            {sj.status&&<span className="badge" style={{fontSize:9,background:SC[sj.status]?.bg||'#f1f5f9',color:SC[sj.status]?.c||'#475569'}}>{_plabel(sj.status)}</span>}
+            {sj.manual
+              ?<span title="Manually linked — decoration cost is combined across these jobs (one screen, not billed twice). Customer invoice unaffected." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#166534',color:'white'}}>🔗 linked · cost combined</span>
+              :<span title="Same artwork detected — link them on the Jobs tab to run together and combine the screen cost." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#fef9c3',color:'#854d0e'}}>same artwork</span>}
+          </div>)}</div>
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Item Fulfillments</div>
           {linkedIFs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No item fulfillments yet</div>:
           linkedIFs.map(pk=><a key={pk.pick_id} href={_navHref({if:pk.pick_id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();setTab('items')}}>
