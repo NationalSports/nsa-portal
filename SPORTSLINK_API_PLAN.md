@@ -382,3 +382,57 @@ document statuses were changed).
 posture given the per-supplier line variance. Remaining unknowns are confirmation
 items (older-doc line coverage, exact credit convention, historical-flag etiquette,
 timing/DST, rate limits) — see the questions sent to Sports Inc.
+
+---
+
+## Phase 2 — Dedicated accounting queue (finalized design)
+
+A dedicated **"Sports Inc Bills"** tab under Supplier Bills, backed by the shared
+`si_documents` queue (migration `00147`), so all of accounting sees the same list
+and approval history. The queue is the **single source of truth for every supplier
+document Sports Inc has for us** — nothing slips through.
+
+**Two paths, by what the document actually carries** (not just the supplier list):
+
+- 🟢 **EDI / auto** — real line items → matched to the PO, AI-reconciled (same
+  `ai-bill-matcher` as the parse), shown ready for accounting to **approve**.
+- 🟡 **OCR / manual** — header totals only, **no PDF over the API** → shown as a
+  **"Grab from Sports Inc"** worklist (supplier, SI doc #, invoice #, PO, total) so
+  the team pulls the PDF from the SI Invoice Center and runs it through the existing
+  parser. The row clears when that doc# lands → **completeness reconciliation**.
+
+**Supplier routing.** National Sports' EDI/OCR list (22 EDI suppliers / 252 OCR)
+seeds `supplier_method` as the *expectation*, but the **actual route follows the
+line data** (`has_usable_lines`). So when **S&S Activewear flips to EDI** (coming,
+not yet), it auto-promotes to the approve flow with no code change; the list just
+flags surprises both ways. The EDI set lives in `src/sportsLink.js`
+(`SI_EDI_SUPPLIERS`).
+
+**Two-step approval, phased to QuickBooks.** Bills land **matched but pending** —
+nothing auto-applies. Accounting reviews, then clicks **Approve**, which writes to
+the SO **Billed tracking** and stamps `resolved_by` / `resolved_at`. **QuickBooks
+is held off** for now (its own button, as today); the "approve also pushes QB"
+behavior sits behind a single flag so going live later is a one-line flip.
+
+**Lifecycle (`si_documents.status`):**
+
+| status | meaning | counts as captured? |
+|---|---|---|
+| `pending` | EDI, matched/AI-reconciled, awaiting approval | no |
+| `manual_pending` | OCR, on the "grab from Sports Inc" worklist | no |
+| `approved` | EDI applied to the Billed tracking (who/when stamped) | ✅ |
+| `manual_done` | OCR PDF was grabbed + parsed + applied (auto-detected by doc#) | ✅ |
+| `ignored` | intentionally skipped (e.g. an SI service charge handled elsewhere) | ✅ |
+
+**Sync.** A daily background job (`sportslink-sync-background` + `-cron`, after the
+10:30 EST cutoff) pulls **all active** documents and **upserts** them into the
+queue by `siDocNumber`, **never clobbering** a human decision (`status`/`resolved_*`).
+A manual "Pull now" does the same on demand. PO matching + AI run in the browser
+(reusing the proven logic) when the queue renders.
+
+**Completeness dashboard.** Header counts: *N pending · M to grab from Sports Inc ·
+K captured* over a date range, so accounting can confirm at a glance that every
+Sports Inc document for the period is accounted for.
+
+**Build status:** adapter classification + `si_documents` migration done; the sync
+functions and the dedicated tab/approval UI are the next increment.

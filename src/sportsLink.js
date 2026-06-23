@@ -24,6 +24,28 @@ export const _siDate = (iso) => {
   return `${mm}/${dd}/${d.getFullYear()}`;
 };
 
+// The suppliers Sports Inc delivers to us over EDI — real, structured line items we
+// can auto-bill. Everything else is OCR-scanned: the API returns only header totals
+// (no usable lines) and never the PDF, so those are handled manually. Source: National
+// Sports' "Athletic Suppliers" EDI/OCR list. Names are normalized (uppercase, alnum +
+// single spaces) before lookup so the API's free-text `supplier` field matches
+// regardless of punctuation/casing. (Mike's Test Store is on the sheet but omitted — a
+// test account.)
+export const SI_EDI_SUPPLIERS = new Set([
+  'AGRON INC', 'ALL STAR SPTG GOODS PRODUCTS', 'ASICS AMERICA CORPORATION',
+  'AUGUSTA SPORTSWEAR ASI', 'BADGER SPORTSWEAR', 'BADGER FOR UNDER ARMOUR', 'BOWNET',
+  'CHAMPION SPORTS', 'MIKEN', 'MIZUNO USA INC', 'MUELLER SPORTS MEDICINE INC',
+  'OUTDOOR CAP CO INC A', 'POWERS MANUFACTURING CO', 'POWERS MANUFACTURING UA',
+  'RAWLINGS SPORTING GOODS CO INC', 'RICHARDSON CAP CO', 'SANMAR', 'SCHUTT SPORTS',
+  'ADIDAS US TEAM SERVICES', 'TWIN CITY KNITTING CO', 'WILSON SPORTING GOODS CO',
+]);
+
+export const _siSupplierKey = (name) => String(name || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+
+// 'EDI' | 'OCR' — the supplier's expected delivery method per the National Sports list.
+// Unknown suppliers default to 'OCR' (treat as manual until a real line comes through).
+export const siSupplierMethod = (name) => (SI_EDI_SUPPLIERS.has(_siSupplierKey(name)) ? 'EDI' : 'OCR');
+
 // Build the dealers/documents query string from a filters object. `lines` defaults
 // to true so EDI documents bring their per-size line items (scanned/OCR documents
 // carry none — see has_lines on the mapped bill).
@@ -73,13 +95,16 @@ export const mapSportsLinkDocToBill = (doc) => {
   // the PDF parser stored (the supplier's invoice number) so the PDF→API cutover never
   // re-bills an invoice. siDocNumber is kept separately as SI's stable document key.
   const supplierDocNumber = String(doc.supplierDocNumber || '').trim();
-  // "Usable" = at least one line with a real SKU and a shipped qty. Scanned/OCR documents
-  // (e.g. S&S Activewear) come through with a single zero-qty "SEE VENDOR INVOICE FOR DETAIL"
-  // placeholder line that can't populate the size-level Billed tracking — those are left for
-  // the manual PDF parse, so flag them and let the caller skip them.
+  const supplierMethod = siSupplierMethod(doc.supplier); // 'EDI' | 'OCR' — expected, from the list
+  // "Usable" = at least one line with a real SKU and a shipped qty. This (not the supplier
+  // list) is what actually routes the doc, so a supplier that starts sending real EDI lines
+  // — e.g. S&S Activewear when it flips on — auto-promotes to the approve flow with no code
+  // change. Scanned/OCR docs come through with a single zero-qty "SEE VENDOR INVOICE FOR
+  // DETAIL" placeholder that can't fill the Billed tracking, so they go to the manual worklist.
   const hasUsableLines = items.some((it) => it.sku && it.qty > 0);
   const warnings = [];
-  if (!hasUsableLines) warnings.push('No usable line detail (scanned/OCR document) — size-level billed not available; left for the manual PDF parse');
+  if (!hasUsableLines) warnings.push('No usable line detail (OCR/scanned) — grab the PDF from Sports Inc and run it through the parser');
+  if (supplierMethod === 'EDI' && !hasUsableLines && !doc.isCredit) warnings.push('Expected an EDI supplier but no line detail came through — verify in the SI Invoice Center');
   if (doc.isCredit) warnings.push('Credit memo (isCredit) — applies as a negative; review before pushing');
   return {
     po_number: String(doc.poNumber || '').trim(),
@@ -90,6 +115,8 @@ export const mapSportsLinkDocToBill = (doc) => {
     due_date: _siDate(doc.dueDate),
     ship_date: _siDate(doc.shipDate),
     supplier: String(doc.supplier || '').trim(),
+    supplier_method: supplierMethod,                  // 'EDI' | 'OCR' — expected method (context/flagging)
+    source_type: hasUsableLines ? 'edi' : 'scanned',  // actual route: approve-flow vs manual worklist
     vendor: '',
     tracking: String(doc.trackingNumber || '').trim(),
     merchandise_total: _siNum(doc.merchandiseTotal),
