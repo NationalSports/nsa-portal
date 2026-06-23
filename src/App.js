@@ -22530,6 +22530,7 @@ export default function App(){
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page)
+  const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -26112,6 +26113,7 @@ export default function App(){
           });
           const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
           const selStyle={fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
+          const _custOf=sb=>{const po=sb.parsed?.po_number;if(!po)return'';const so=sos.find(s=>s.po_number===po);if(!so)return'';const c=cust.find(cc=>cc.id===so.customer_id);return c?.name||so.customer_name||''};
           return<div className="card" style={{marginTop:16}}>
           <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <h2 style={{margin:0}}>Bill History</h2>
@@ -26141,11 +26143,13 @@ export default function App(){
               <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{rows.length} shown</span>
             </div>
           </div>
-          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11,width:'100%'}}>
               <thead><tr style={{background:'#f8fafc',position:'sticky',top:0}}>
+                <th style={{textAlign:'left',padding:'8px 12px',width:20}}></th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>File</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>PO Number</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Customer</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>Vendor</th>
                 <th style={{textAlign:'right',padding:'8px 12px'}}>Total</th>
                 <th style={{textAlign:'right',padding:'8px 12px'}}>Freight</th>
@@ -26155,23 +26159,54 @@ export default function App(){
                 <th style={{textAlign:'left',padding:'8px 12px'}}>Uploaded</th>
               </tr></thead>
               <tbody>{rows.length===0
-                ?<tr><td colSpan={9} style={{padding:'18px 12px',textAlign:'center',color:'#94a3b8',fontSize:12}}>No bills match these filters.</td></tr>
-                :rows.map((sb,si)=><tr key={sb.id||si} style={{borderBottom:'1px solid #f1f5f9',background:sb.reviewLater?'#fffbeb':sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
-                <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
-                <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
-                <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
-                <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
-                <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
-                <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
-                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
-                  {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
-                    onClick={()=>{setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
-                <td style={{padding:'6px 12px',textAlign:'center'}}>
-                  <button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
-                    style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,border:'1px solid '+(sb.reviewLater?'#fbbf24':'#e2e8f0'),background:sb.reviewLater?'#fef3c7':'#fff',color:sb.reviewLater?'#b45309':'#94a3b8'}}>
-                    {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button></td>
-                <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
-              </tr>)}</tbody>
+                ?<tr><td colSpan={11} style={{padding:'18px 12px',textAlign:'center',color:'#94a3b8',fontSize:12}}>No bills match these filters.</td></tr>
+                :rows.map((sb,si)=>{
+                  const expanded=billExpandId===sb.id;
+                  const custName=_custOf(sb);
+                  const rowBg=sb.reviewLater?'#fffbeb':sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white';
+                  return<React.Fragment key={sb.id||si}>
+                  <tr style={{borderBottom:expanded?'none':'1px solid #f1f5f9',background:rowBg,cursor:'pointer'}} onClick={()=>setBillExpandId(expanded?null:sb.id)}>
+                  <td style={{padding:'6px 8px',textAlign:'center',color:'#94a3b8',fontSize:10}}>{expanded?'▲':'▼'}</td>
+                  <td style={{padding:'6px 12px',fontWeight:600,maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
+                  <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
+                  <td style={{padding:'6px 12px',color:'#334155',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{custName||'—'}</td>
+                  <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
+                  <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
+                  <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
+                  <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
+                  <td style={{padding:'6px 12px'}} onClick={e=>e.stopPropagation()}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
+                    {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
+                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
+                  <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
+                    <button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
+                      style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,border:'1px solid '+(sb.reviewLater?'#fbbf24':'#e2e8f0'),background:sb.reviewLater?'#fef3c7':'#fff',color:sb.reviewLater?'#b45309':'#94a3b8'}}>
+                      {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button></td>
+                  <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
+                </tr>
+                {expanded&&<tr style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
+                  <td colSpan={11} style={{padding:'0 0 10px 0'}}>
+                    {sb.parsed?.items?.length>0
+                      ?<table style={{fontSize:10,width:'100%',borderCollapse:'collapse'}}>
+                        <thead><tr style={{background:'#f1f5f9'}}>
+                          <th style={{textAlign:'left',padding:'5px 24px',fontWeight:700,color:'#475569'}}>SKU</th>
+                          <th style={{textAlign:'left',padding:'5px 12px',fontWeight:700,color:'#475569'}}>Size</th>
+                          <th style={{textAlign:'right',padding:'5px 12px',fontWeight:700,color:'#475569'}}>Qty</th>
+                          <th style={{textAlign:'right',padding:'5px 12px',fontWeight:700,color:'#475569'}}>Unit Price</th>
+                          <th style={{textAlign:'right',padding:'5px 24px',fontWeight:700,color:'#475569'}}>Extension</th>
+                        </tr></thead>
+                        <tbody>{sb.parsed.items.map((it,ii)=><tr key={ii} style={{borderTop:'1px solid #e2e8f0'}}>
+                          <td style={{padding:'4px 24px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{it.sku||'—'}</td>
+                          <td style={{padding:'4px 12px',color:'#334155'}}>{it.size||'—'}</td>
+                          <td style={{padding:'4px 12px',textAlign:'right',fontWeight:700}}>{it.qty??'—'}</td>
+                          <td style={{padding:'4px 12px',textAlign:'right',color:'#475569'}}>{it.unit_price!=null?'$'+Number(it.unit_price).toFixed(2):'—'}</td>
+                          <td style={{padding:'4px 24px',textAlign:'right',color:'#166534',fontWeight:700}}>{it.extension!=null?'$'+Number(it.extension).toFixed(2):it.unit_price!=null&&it.qty!=null?'$'+(Number(it.unit_price)*it.qty).toFixed(2):'—'}</td>
+                        </tr>)}</tbody>
+                      </table>
+                      :<div style={{padding:'10px 24px',color:'#94a3b8',fontSize:11}}>No line items stored for this bill.</div>}
+                  </td>
+                </tr>}
+                </React.Fragment>;
+              })}</tbody>
             </table>
           </div>
         </div>;})()}
@@ -26220,8 +26255,11 @@ export default function App(){
                 const reasons=matched?errs:(p.po_number?['No PO match for '+p.po_number]:['No PO number on the bill']);
                 const recent=(sb.reviewLaterAt||0)>=recentCut;
                 const vend=_vendorOf(sb);
-                return <div key={sb.id} style={{border:'1px solid '+(recent?'#fbbf24':'#e2e8f0'),borderLeft:'4px solid '+(clean?'#16a34a':'#f59e0b'),borderRadius:8,padding:'10px 14px',marginBottom:10,background:recent?'#fffdf5':'#fff'}}>
+                const expanded=billExpandId===sb.id;
+                return <div key={sb.id} style={{border:'1px solid '+(recent?'#fbbf24':'#e2e8f0'),borderLeft:'4px solid '+(clean?'#16a34a':'#f59e0b'),borderRadius:8,marginBottom:10,background:recent?'#fffdf5':'#fff',overflow:'hidden'}}>
+                  <div style={{padding:'10px 14px',cursor:'pointer'}} onClick={()=>setBillExpandId(expanded?null:sb.id)}>
                   <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontSize:11,color:'#94a3b8'}}>{expanded?'▲':'▼'}</span>
                     <span style={{fontWeight:700,fontSize:13}}>{p.doc_number?'Doc #'+p.doc_number:(sb.file||'Bill')}</span>
                     {recent&&<span style={{fontSize:9,fontWeight:800,color:'#b45309',background:'#fef3c7',border:'1px solid #fbbf24',borderRadius:10,padding:'1px 8px'}}>✨ Just moved{sb.reviewLaterAt?' · '+fmtAgo(sb.reviewLaterAt):''}</span>}
                     {clean
@@ -26235,11 +26273,32 @@ export default function App(){
                     {vend&&<span>{vend}</span>}
                     {p.doc_total?<span>Total <b style={{color:'#166534'}}>${Number(p.doc_total).toFixed(2)}</b></span>:null}
                     {p.freight?<span>Freight ${Number(p.freight).toFixed(2)}</span>:null}
-                    {p.items?.length?<span>{p.items.length} item{p.items.length>1?'s':''}</span>:null}
+                    {p.items?.length?<span>{p.items.length} line item{p.items.length>1?'s':''}</span>:null}
                     <span style={{color:'#94a3b8',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</span>
                   </div>
                   {!clean&&<ul style={{margin:'6px 0 0',paddingLeft:18}}>{reasons.map((r,ri)=><li key={ri} style={{fontSize:11,color:'#b45309'}}>{r}</li>)}</ul>}
-                  <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+                  </div>
+                  {expanded&&<div style={{borderTop:'1px solid #fde68a',background:'#fffbeb',padding:'8px 14px'}}>
+                    {p.items?.length>0
+                      ?<table style={{fontSize:10,width:'100%',borderCollapse:'collapse'}}>
+                        <thead><tr style={{background:'#fef3c7'}}>
+                          <th style={{textAlign:'left',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>SKU</th>
+                          <th style={{textAlign:'left',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Size</th>
+                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Qty</th>
+                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Unit Price</th>
+                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Extension</th>
+                        </tr></thead>
+                        <tbody>{p.items.map((it,ii)=><tr key={ii} style={{borderTop:'1px solid #fde68a'}}>
+                          <td style={{padding:'4px 8px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{it.sku||'—'}</td>
+                          <td style={{padding:'4px 8px',color:'#334155'}}>{it.size||'—'}</td>
+                          <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700}}>{it.qty??'—'}</td>
+                          <td style={{padding:'4px 8px',textAlign:'right',color:'#475569'}}>{it.unit_price!=null?'$'+Number(it.unit_price).toFixed(2):'—'}</td>
+                          <td style={{padding:'4px 8px',textAlign:'right',color:'#166534',fontWeight:700}}>{it.extension!=null?'$'+Number(it.extension).toFixed(2):it.unit_price!=null&&it.qty!=null?'$'+(Number(it.unit_price)*it.qty).toFixed(2):'—'}</td>
+                        </tr>)}</tbody>
+                      </table>
+                      :<div style={{color:'#94a3b8',fontSize:11,padding:'4px 0'}}>No line items stored for this bill.</div>}
+                  </div>}
+                  <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid #f1f5f9',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                     <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
                       title="Pull this bill back into the review list so you can fix and push it"
                       onClick={()=>{setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),{...sb,selected:true,reviewLater:false,portalStatus:sb.portalStatus||null,qbStatus:null}]}));setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});setBillView('import');nf('Moved back to Import & Review')}}>📤 Move back to Review</button>
