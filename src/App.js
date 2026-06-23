@@ -266,7 +266,8 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { mapSportsLinkDocToBill } from './sportsLink';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -23859,6 +23860,29 @@ export default function App(){
       return [parseSingleInvoice(lines,{},text)];
     };
 
+    // Finalize a freshly-built batch of parsed-bill review rows (from a PDF upload or a
+    // Sports Inc API pull): drop them into the review screen, append to saved history, and
+    // kick the non-blocking AI reconcile pass (size/SKU label alignment against the order).
+    // Non-matching/over-billing bills just stay flagged for manual review — nothing is
+    // applied here; that only happens when staff click "Push to Portal".
+    const _finishBillReview=(results,opts={})=>{
+      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed'}=opts;
+      const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
+      if(!results.length){
+        // Nothing new came in (all duplicates and/or unreadable) — don't drop into an empty review.
+        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
+        nf(skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':'No bills could be parsed',skippedDups.length?'success':'error');
+        return;
+      }
+      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
+      // Auto-save to history
+      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
+      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
+      nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      _aiReconcilePass(results);
+    };
+
     // Process multiple bill PDFs — each file may contain multiple invoices
     const processBillPdfs=async(files)=>{
       if(!files||!files.length)return;
@@ -23895,23 +23919,42 @@ export default function App(){
         }
       }
       if(_billParseToken.current!==myToken)return;// cancelled while the last file was parsing
-      const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
-      if(!results.length){
-        // Nothing new came in (all duplicates and/or unreadable) — don't drop into an empty review.
-        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
-        nf(skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':'No bills could be parsed',skippedDups.length?'success':'error');
+      _finishBillReview(results,{skippedDups,sourceCount:files.length,sourceNoun:'PDF(s)',verb:'parsed'});
+    };
+
+    // Pull supplier bills straight from the Sports Inc SportsLink API and drop them into the
+    // same review screen the PDF upload uses. Manual-confirm by design: documents are matched
+    // (rematchBill) and AI-reconciled for size/SKU label quirks, but nothing writes to the
+    // Billed tracking until staff click "Push to Portal". Replaces the PDF step for Sports
+    // Inc–routed bills; other suppliers still come in as PDFs.
+    const pullFromSportsInc=async(filters={})=>{
+      setBillImport(x=>({...x,uploading:true}));
+      let docs=[];
+      try{
+        // active=true → only documents SI hasn't been told we've imported. lines=true →
+        // EDI per-size line items (scanned docs come back header-only and get flagged).
+        docs=await sportsLinkGetDocuments({active:true,lines:true,...filters});
+      }catch(e){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('Sports Inc pull failed: '+(e.message||'connection error'),'error');
         return;
       }
-      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
-      // Auto-save to history
-      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
-      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
-      const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
-      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
-      // Quietly reconcile any matched-but-mismatched bills with an AI pass (size/SKU
-      // label alignment against the order). Non-blocking; bills that can't be resolved
-      // just stay flagged. No-PO-match bills are skipped — they're for "Look at later".
-      _aiReconcilePass(results);
+      if(!docs.length){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('No new Sports Inc documents found (nothing active in the Invoice Center)','success');
+        return;
+      }
+      const seenDocs=new Set();const skippedDups=[];const results=[];let idx=0;
+      docs.forEach(doc=>{
+        let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);return}
+        if(dn)seenDocs.add(dn);
+        const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
+        idx++;
+      });
+      _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled'});
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -25816,6 +25859,18 @@ export default function App(){
           {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
         </div>
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#2563eb',background:'#eff6ff'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed supplier bills straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Other suppliers still come in as PDFs.</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+                onClick={()=>pullFromSportsInc()}>
+                {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
+              </button>
+            </div>
+          </div>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
             <div className="card-body">
