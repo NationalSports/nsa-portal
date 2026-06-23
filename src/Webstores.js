@@ -611,6 +611,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(null);   // null | 'new' | storeObj (settings edit)
+  const [editStart, setEditStart] = useState('setup'); // Settings sub-page to open on ('setup' | 'delivery')
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
@@ -886,7 +887,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setStores((prev) => [store, ...prev]);
     flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    if (opts.rebrand) setEditing(store);
+    if (opts.rebrand) { setEditStart('setup'); setEditing(store); }
   }, [stores, flash]);
 
   // Mark / unmark a store as a reusable template — the starting point for
@@ -1634,14 +1635,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
 
       {editing ? (
-        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
+        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialPage={editStart}
           onCancel={() => setEditing(null)}
           onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
-          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
+          onEdit={(step) => { setEditStart(step === 'branding' ? 'delivery' : 'setup'); setEditing(sel); }} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
           onAddSingle={addSingle} onAddColors={addColorsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
@@ -1649,7 +1650,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => { setEditStart('setup'); setEditing('new'); }} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
     </>
   );
@@ -1858,7 +1859,7 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, initialPage }) {
   const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer.
@@ -1866,7 +1867,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
-  const [page, setPage] = useState('setup');
+  // initialPage lets a guide "Review" jump straight to the right sub-page.
+  const [page, setPage] = useState(initialPage === 'delivery' ? 'delivery' : 'setup');
   // Count of in-flight image uploads — block save until they finish so a slow
   // banner/logo upload can't be left out of the saved store (the create races the
   // upload otherwise: the small logo lands, the larger banner doesn't).
@@ -2516,8 +2518,17 @@ function StoreGuideFull({ store, detail = {}, onGoStep, onClose }) {
 
 // Contextual "you are here" helper shown on a single page. Walks the same steps
 // with Back/Next; when scopeIds is given (Settings) it only moves within them.
-function GuidePanel({ stepId, store, detail = {}, onGoStep, scopeIds }) {
+function GuidePanel({ stepId, store, detail = {}, onGoStep, scopeIds, nudge }) {
   const [open, setOpen] = useGuidePref('wsGuidePanel', true);
+  const panelRef = useRef(null);
+  // When a guide "Review/Go" navigates here, force the panel open and scroll to
+  // it so the explanation + screenshot are always visible (nudge bumps on nav).
+  useEffect(() => {
+    if (!nudge) return;
+    setOpen(true);
+    const t = setTimeout(() => panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 70);
+    return () => clearTimeout(t);
+  }, [nudge]); // eslint-disable-line react-hooks/exhaustive-deps
   const scope = scopeIds ? GUIDE_STEPS.filter((s) => scopeIds.includes(s.id)) : GUIDE_STEPS;
   const idx = scope.findIndex((s) => s.id === stepId);
   const step = scope[idx];
@@ -2526,13 +2537,13 @@ function GuidePanel({ stepId, store, detail = {}, onGoStep, scopeIds }) {
   const done = !!step.done(store, detail);
   if (!open) {
     return (
-      <div style={{ marginBottom: 12 }}>
+      <div ref={panelRef} style={{ marginBottom: 12 }}>
         <button type="button" onClick={() => setOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, border: '1px dashed #c7d2fe', background: '#f5f8ff', color: GUIDE_INK, borderRadius: 999, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>🧭 Show guide · Step {step.n}: {step.title}</button>
       </div>
     );
   }
   return (
-    <div style={{ marginBottom: 12, border: '1px solid #c7d2fe', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+    <div ref={panelRef} style={{ marginBottom: 12, border: '1px solid #c7d2fe', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', background: '#f5f8ff', borderBottom: '1px solid #e6ebfb' }}>
         <span style={{ fontSize: 16 }}>🧭</span>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -2568,11 +2579,14 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [guideNudge, setGuideNudge] = useState(0); // bumped by goStep to reveal the guide panel on the destination
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   // Route a guide step to where it's done: Settings steps open the editor, the
   // launch step opens the launch modal, the rest switch to that tab.
   const goStep = (id) => {
-    if (id === 'setup' || id === 'branding') onEdit();
+    try { localStorage.setItem('wsGuidePanel', '1'); } catch {} // reveal the guide on arrival
+    setGuideNudge((n) => n + 1);
+    if (id === 'setup' || id === 'branding') onEdit(id);
     else if (id === 'launch') setLaunchOpen(true);
     else { const st = GUIDE_STEPS.find((x) => x.id === id); if (st) setTab(st.target); }
   };
@@ -2704,7 +2718,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {tab !== 'catalog' && <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>{tabsButtons}</div>}
 
-      {GUIDE_BY_TAB[tab] && <GuidePanel stepId={GUIDE_BY_TAB[tab]} store={s} detail={detail || {}} onGoStep={goStep} />}
+      {GUIDE_BY_TAB[tab] && <GuidePanel stepId={GUIDE_BY_TAB[tab]} store={s} detail={detail || {}} onGoStep={goStep} nudge={guideNudge} />}
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
