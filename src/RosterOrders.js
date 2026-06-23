@@ -1384,6 +1384,57 @@ export function RosterOrdersStaff({ customer, nf }) {
   );
 }
 
+// ─── Coach sign-in card ───────────────────────────────────────────────────────
+// Shown inside CoachPortal when the coach isn't authenticated. Reads ?signin=
+// from the URL so the invite email can pre-fill the address. Sends a Supabase
+// OTP magic link that redirects back to the same portal URL.
+function CoachSignInCard() {
+  const preEmail = (() => {
+    try { return new URLSearchParams(window.location.search).get('signin') || ''; } catch { return ''; }
+  })();
+  const [email, setEmail] = useState(preEmail);
+  const [state, setState] = useState('idle'); // idle | sending | sent | error
+
+  const send = async () => {
+    const em = email.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || state === 'sending') return;
+    setState('sending');
+    const redirectTo = window.location.origin + window.location.pathname + window.location.search;
+    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: redirectTo } });
+    setState(error ? 'error' : 'sent');
+  };
+
+  if (state === 'sent') {
+    return (
+      <div style={{ marginTop: 16, padding: 18, border: '1px solid #d1fae5', borderRadius: 12, background: '#f0fdf4', textAlign: 'center' }}>
+        <div style={{ fontSize: 22, marginBottom: 6 }}>📬</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: '#15803d', marginBottom: 4 }}>Check your email</div>
+        <div style={{ fontSize: 12, color: '#64748b' }}>We sent a sign-in link to <strong>{email.trim()}</strong>. Tap it to open the roster.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 16, padding: 16, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc' }}>
+      <div style={{ fontSize: 12.5, fontWeight: 800, color: '#0b1220', marginBottom: 4 }}>📋 Coach sign in — Roster Orders</div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Sign in with your email to access your team's roster orders, fill in player sizes, and view the buy-sheet.</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <input
+          type="email" value={email} placeholder="your@email.com"
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && send()}
+          style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, outline: 'none' }}
+        />
+        <button onClick={send} disabled={state === 'sending'}
+          style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+          {state === 'sending' ? 'Sending…' : 'Send sign-in link'}
+        </button>
+      </div>
+      {state === 'error' && <div style={{ fontSize: 11.5, color: '#dc2626', marginTop: 6 }}>Couldn't send — check your email address and try again.</div>}
+    </div>
+  );
+}
+
 // ─── Coach: exported component (embeds in CoachPortal) ───────────────────────
 // Self-serve: a coach who belongs to this customer can create sessions + teams,
 // build the kit from NSA's item catalog, fill rosters, and invite other coaches.
@@ -1492,7 +1543,8 @@ export function RosterOrdersCoach({ customer }) {
   };
 
   if (loading) return null;
-  if (!coach) return null; // not a signed-in coach for this account → show nothing
+  if (!coach) return <CoachSignInCard />;
+
 
   const kitFor = (session) => ({ items: effectiveKit(session, catalog) });
 
