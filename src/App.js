@@ -1307,10 +1307,18 @@ const _dbSaveEstimateInner = async (est) => {
       // A write rejected by the version guard means another save (usually another open tab) advanced this
       // estimate past the copy we hold. Do NOT clobber it — skip the write; realtime delivers the newer rows
       // and the rep re-applies their edit on the refreshed copy. Not a failure, so no failed-id banner.
+      // Return 'stale' (truthy, not false) so _diffSave treats it as non-failure: it clears _dbSavePendingIds
+      // and does NOT roll back _dbSnap. Rolling back the snapshot on a stale rejection caused an infinite retry
+      // loop (old snap re-queued the item → next _diffSave retried → STALE again → forever), and left
+      // _dbSavePendingIds non-empty, which permanently blocked the build-version poller from reloading stale tabs.
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
-        return false;
+        // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
+        // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
+        // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        return 'stale';
       }
       if(_rpcErr){
         const _m=_rpcErr.message||String(_rpcErr);
