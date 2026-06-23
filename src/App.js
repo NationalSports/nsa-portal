@@ -11902,7 +11902,7 @@ export default function App(){
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={vk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
-          <div className="card-header" onClick={()=>setExpandedVendors(p=>({...p,[vk]:!p[vk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
+          <div className="card-header" onClick={()=>setExpandedVendors(p=>({[vk]:!p[vk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
               <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
               <div style={{textAlign:'right',flexShrink:0}}>

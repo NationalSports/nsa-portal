@@ -1247,6 +1247,13 @@ const momentecStyleV2 = async (design, env = 'prod') => {
   return { sku: d, styleName, brandName: 'Momentec', styleImage, styleBackImage, _mtId: d, _mtPrice: minPrice, colors };
 };
 
+// Collapse Momentec's one-size tokens (OS, OSFA, OSFM, "One Size"…) so an order line's
+// "OSFA" matches a catalog "OS". Real sizes pass through (uppercased, separators stripped).
+const _mtNormSize = (s) => {
+  const u = String(s || '').toUpperCase().replace(/[\s._/-]/g, '');
+  return ['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u) ? 'OS' : u;
+};
+
 // Resolve missing Momentec order SKUs (design.colorCode.size) live from /v2/Style,
 // matching each line's color (name or code) to a colorway. Mirrors ssResolveSkus so
 // the order modal never depends on an SKU stamped at add-time (it also covers items
@@ -1271,10 +1278,12 @@ const momentecResolveSkus = async (missing) => {
     candidates[String(design).toUpperCase()] = cand;
     for (const m of byDesign.get(design)) {
       const wantColor = String(m.color || '').toLowerCase().trim();
-      const wantSize = String(m.size || '').toLowerCase().trim();
-      const hit = cand.find((x) =>
-        String(x.size || '').toLowerCase() === wantSize &&
-        (String(x.color || '').toLowerCase() === wantColor || String(x.colorCode || '').toLowerCase() === wantColor));
+      const wantSize = _mtNormSize(m.size);
+      const colorOf = (x) => String(x.color || '').toLowerCase() === wantColor || String(x.colorCode || '').toLowerCase() === wantColor;
+      // 1) color + normalized size (OSFA/OS/"one size" variants collapse together)
+      let hit = cand.find((x) => colorOf(x) && _mtNormSize(x.size) === wantSize);
+      // 2) one-size fallback: this color exists with exactly one size — take it regardless of token
+      if (!hit) { const cc = cand.filter(colorOf); if (cc.length === 1) hit = cc[0]; }
       if (hit) resolved[m.key] = hit.sku;
     }
   }));
