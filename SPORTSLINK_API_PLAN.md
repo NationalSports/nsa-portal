@@ -418,11 +418,26 @@ behavior sits behind a single flag so going live later is a one-line flip.
 
 | status | meaning | counts as captured? |
 |---|---|---|
-| `pending` | EDI, matched/AI-reconciled, awaiting approval | no |
-| `manual_pending` | OCR, on the "grab from Sports Inc" worklist | no |
+| `pending` | EDI, **matches a portal PO**, AI-reconciled, awaiting approval | no |
+| `manual_pending` | OCR, matches a portal PO, on the "grab from Sports Inc" worklist | no |
+| `review` | **no portal PO match** — likely pre-portal; needs a human look | no |
 | `approved` | EDI applied to the Billed tracking (who/when stamped) | ✅ |
 | `manual_done` | OCR PDF was grabbed + parsed + applied (auto-detected by doc#) | ✅ |
+| `outside_portal` | confirmed pre-portal / not ours — billed via NetSuite→QB | ✅ |
 | `ignored` | intentionally skipped (e.g. an SI service charge handled elsewhere) | ✅ |
+
+**Pre-portal POs (Outside of Portal).** Sports Inc's history predates the portal, and
+some bills reference POs that live only in NetSuite→QuickBooks. Two guards keep those
+out of the Billed tracking without losing sight of them:
+1. **Date cutover** — the sync only pulls documents on/after a configured portal
+   cutover date (`siDocStartDate`), so the queue isn't flooded with years of
+   pre-portal history.
+2. **"Outside Portal — review" section** — any post-cutover document whose PO doesn't
+   match a portal PO lands here (🔵). Accounting either fixes a typo'd PO (it moves
+   into the approve/grab flow) or clicks **"Outside of Portal"** (`outside_portal`) —
+   seen, acknowledged, handled by NetSuite→QB, and cleared from the active worklist
+   while staying auditable. **Approve is disabled for these**, so they can never hit
+   the Billed tracking by accident.
 
 **Sync.** A daily background job (`sportslink-sync-background` + `-cron`, after the
 10:30 EST cutoff) pulls **all active** documents and **upserts** them into the

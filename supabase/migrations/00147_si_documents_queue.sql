@@ -34,9 +34,14 @@ create table if not exists public.si_documents (
   source_type         text        not null default 'edi',   -- actual route: 'edi' (usable lines) | 'scanned' (manual)
   raw                 jsonb,                                  -- full API document (re-map / audit)
   -- Lifecycle:
-  --   edi:     pending  → approved | ignored
-  --   scanned: manual_pending → manual_done | ignored
-  -- "Captured" (counts toward we-got-everything) = approved | manual_done | ignored.
+  --   matched + edi:     pending        → approved     | ignored
+  --   matched + scanned: manual_pending → manual_done  | ignored
+  --   no portal PO:      review         → outside_portal | (fixed → pending/manual_pending)
+  -- "No portal PO" = the bill's PO doesn't match any portal PO — usually a pre-portal order
+  -- that is billed through NetSuite → QuickBooks, NOT here. Those are surfaced in a review
+  -- section and marked 'outside_portal' (seen, acknowledged, handled elsewhere) so they never
+  -- touch the Billed tracking. "Captured" (we-got-everything) = approved | manual_done |
+  -- outside_portal | ignored.
   status              text        not null default 'new',
   resolved_by         text,                                   -- staff who approved / marked done
   resolved_at         timestamptz,
