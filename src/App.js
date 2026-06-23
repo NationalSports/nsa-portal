@@ -1314,6 +1314,10 @@ const _dbSaveEstimateInner = async (est) => {
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
         if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
+        // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
+        // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
         return 'stale';
       }
       if(_rpcErr){
