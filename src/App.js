@@ -4195,9 +4195,12 @@ export default function App(){
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
       const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
-      // Subscribe to core tables + pick_lines for instant warehouse sync
+      // Subscribe to core tables + pick_lines for instant warehouse sync.
+      // products is intentionally excluded: the full 53k-row catalog re-download triggered
+      // on every product realtime event consumed ~34% of DB CPU. The 60s poll keeps
+      // product prices/skus fresh within a minute — fast enough for catalog data.
       let _rtErrorLogged=false;
-      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
+      ['estimates','sales_orders','invoices','messages','customers','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
