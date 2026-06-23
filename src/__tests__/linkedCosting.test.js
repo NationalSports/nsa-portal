@@ -11,7 +11,7 @@
 //   • decoCostAt prices the per-piece cost at that combined qty, lowering each order's cost
 //   • auto-matched (un-linked) jobs never combine
 const pricing = require('../pricing');
-const { linkedArtCostQty, decoCostAt, dP, spP } = pricing;
+const { linkedArtCostQty, decoCostAt, dP, spP, calcOrderMargin } = pricing;
 
 const AF = { id: 'af1', deco_type: 'screen_print', ink_colors: 'PMS 1' }; // 1 ink color
 const artDeco = { kind: 'art', art_file_id: 'af1' };
@@ -112,5 +112,33 @@ describe('sell/revenue is never combined (customer price stays per-order)', () =
     const perOrderSell = dP(artDeco, 8, [AF], 8).sell;
     const combinedSell = dP(artDeco, 8, [AF], 8).sell; // editor still uses local cq for sell
     expect(combinedSell).toBe(perOrderSell);
+  });
+});
+
+// calcOrderMargin is the shared rev/cost/margin used by dashboards, reports, and (via the
+// parallel App walk) commission GP. With allOrders it must lower COST/raise MARGIN on linked
+// orders while leaving REVENUE identical — so the customer-facing total never moves.
+describe('calcOrderMargin combines cost across linked orders (rev unchanged)', () => {
+  const mkOrder = (id, units, afId) => ({
+    id,
+    art_files: [{ id: afId, deco_type: 'screen_print', ink_colors: 'PMS 1' }],
+    items: [{ sku: 'TEE', unit_sell: 20, nsa_cost: 5, sizes: { M: units }, decorations: [{ kind: 'art', art_file_id: afId }] }],
+    jobs: [{ id: 'j' + id, link_group: 'lg1', art_file_id: afId, deco_type: 'screen_print', total_units: units }],
+  });
+  const soA = mkOrder('SOA', 8, 'afA');   // small coach order
+  const soB = mkOrder('SOB', 57, 'afB');  // big spirit-pack order, same screen, linked
+
+  test('linked: cost drops, margin rises, revenue identical', () => {
+    const alone = calcOrderMargin(soA);              // legacy single-arg = no combine
+    const linked = calcOrderMargin(soA, [soA, soB]); // combined tier 8+57=65
+    expect(linked.rev).toBe(alone.rev);              // customer price untouched
+    expect(linked.cost).toBeLessThan(alone.cost);    // shared screen, not paid in full
+    expect(linked.margin).toBeGreaterThan(alone.margin);
+  });
+
+  test('no link group → allOrders makes no difference (backward compatible)', () => {
+    const plain = { id: 'P', art_files: [{ id: 'afP', deco_type: 'screen_print', ink_colors: 'PMS 1' }],
+      items: [{ sku: 'T', unit_sell: 20, nsa_cost: 5, sizes: { M: 8 }, decorations: [{ kind: 'art', art_file_id: 'afP' }] }], jobs: [] };
+    expect(calcOrderMargin(plain, [plain, soB])).toEqual(calcOrderMargin(plain));
   });
 });

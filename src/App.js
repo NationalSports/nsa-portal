@@ -20,7 +20,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart } from './utils';
-import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty } from './pricing';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -3287,6 +3287,14 @@ function dP(d,q,artFiles,cq){
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
+
+// ── Combined deco COST for manually-linked jobs that share a screen ──
+// Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
+// when it beats the per-order qty — so one shared screen isn't paid in full on each linked
+// order. Uses THIS file's dP so every App-side cost walk (commission GP, reports, dashboards)
+// stays self-consistent; each caller multiplies by its own eq/qty. Manual links only; sell is
+// never combined (customer price / invoices stay per-order unless the rep edits sell).
+const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.art_file_id&&comb&&comb[d.art_file_id]>localCq)?comb[d.art_file_id]:localCq;return safeNum(dP(d,q,af,cc).cost)};
 
 // Build the line-item rows for an invoice PDF/print document. The invoice's own stored
 // line_items are the source of truth for price/qty so any per-line edits or overrides
@@ -7998,7 +8006,7 @@ export default function App(){
       // ── Rep view: own sales by month within the period ──
       if(scopeRepId){
         const byMonth=new Map();
-        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byMonth.set(key,seg)});
+        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byMonth.set(key,seg)});
         const rows=[...byMonth.values()].sort((a,b)=>a.sortKey-b.sortKey);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         return(<div className="card">
@@ -8016,13 +8024,13 @@ export default function App(){
       let body=null;
       if(report==='top_customers'){
         const byCust=new Map();
-        periodSOs.forEach(so=>{if(dashCustRepFilter!=='all'&&repOf(so)!==dashCustRepFilter)return;const c=cust.find(x=>x.id===so.customer_id);const id=so.customer_id||'?';const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byCust.set(id,seg)});
+        periodSOs.forEach(so=>{if(dashCustRepFilter!=='all'&&repOf(so)!==dashCustRepFilter)return;const c=cust.find(x=>x.id===so.customer_id);const id=so.customer_id||'?';const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byCust.set(id,seg)});
         const rows=[...byCust.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev).slice(0,15);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true)}</>;
       }else if(report==='kpis'){
         let rev=0,cost=0,orders=0;const custSet=new Set();const perRep=new Map();
-        periodSOs.forEach(so=>{const m=calcOrderMargin(so);rev+=m.rev;cost+=m.cost;orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0};pr.rev+=m.rev;pr.cost+=m.cost;perRep.set(id,pr)}});
+        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0};pr.rev+=m.rev;pr.cost+=m.cost;perRep.set(id,pr)}});
         const margin=rev-cost,pct=rev>0?Math.round(margin/rev*100):0,avg=orders>0?rev/orders:0;
         let topRep=null,topRevV=0;perRep.forEach((v,id)=>{if(v.rev>topRevV){topRevV=v.rev;topRep=id}});
         const marginRows=[...perRep.entries()].map(([id,v])=>({label:repName(id),rev:v.rev,pct:v.rev>0?Math.round((v.rev-v.cost)/v.rev*100):0})).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
@@ -8045,7 +8053,7 @@ export default function App(){
         </>;
       }else{
         const byRep=new Map();
-        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so).rev;seg.orders++;byRep.set(id,seg)});
+        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
         const rows=[...byRep.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Reps',rows.length+'',RED]])}{_barRows(rows,96,true)}</>;
@@ -13763,13 +13771,13 @@ export default function App(){
     // qty falls back to est_qty when sizes aren't broken out; cost prefers PO
     // unit_cost (and deco_pos _bill_cost when billed) over catalog nsa_cost.
     const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
-    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q*(d.reversible?2:1)}})});const af=safeArt(so);safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;units+=q;
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q*(d.reversible?2:1)}})});const _comb=linkedArtCostQty(so,_aq,sos);const af=safeArt(so);safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;units+=q;
     if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
     let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
     if(poQty>0){cost+=poCost;const uncov=Math.max(0,q-poQty);if(uncov>0){if(it._sizeCosts&&sq>0){const tot=Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0);const avg=sq>0?tot/sq:safeNum(it.nsa_cost);cost+=uncov*avg}else{cost+=uncov*safeNum(it.nsa_cost)}}}
     else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
     else{cost+=q*safeNum(it.nsa_cost)}
-    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost})});
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*_decoUnitCostComb(d,q,af,cq,_comb)})});
     (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
@@ -15814,10 +15822,12 @@ export default function App(){
       const so=sos.find(s=>s.id===inv.so_id);
       if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0};
       const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
+      // Combined deco cost when the SO's jobs are manually linked to a shared screen on other SOs.
+      const _comb=linkedArtCostQty(so,_aq,sos);
       const af=safeArt(so);let rev=0,cost=0;
       safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;cost+=eq*dp2.cost});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
       });
       // Outside deco POs — SO-level cost bucket
       (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -15898,10 +15908,11 @@ export default function App(){
         const c=cust.find(x=>x.id===so.customer_id);
         const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const _comb=linkedArtCostQty(so,_aq,sos);
         const af=safeArt(so);let rev=0,cost=0;
         safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
@@ -15928,13 +15939,14 @@ export default function App(){
         const c=cust.find(x=>x.id===so.customer_id);
         const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const _comb=linkedArtCostQty(so,_aq,sos);
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
         safeItems(so).forEach(it=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return;
           if(it.is_promo){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
-            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*dp2.cost;promoRev+=qty*rQ(dp2.sell*1.25)});
+            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
           }
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
