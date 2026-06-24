@@ -6,6 +6,7 @@ import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { _sbAuthLock } from './lib/supabase';
+import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as fabric from 'fabric';
@@ -4252,6 +4253,19 @@ export default function App(){
       channels._onVis=onVis;
     }
     return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
+  },[]);
+
+  // ─── Deploy-aware auto-reload ───
+  // Long-lived/abandoned tabs keep running stale JS and can hammer the API. Watch for a new
+  // build and reload once the tab is idle — no save in flight, none just finished, none failed
+  // or pending — so a reload never drops unsaved work. Every window then converges on the
+  // current code. Production only (dev rebuilds would reload on every hot change). See
+  // src/deployReload.js.
+  React.useEffect(()=>{
+    if(process.env.NODE_ENV!=='production')return;
+    startDeployReloadWatcher({
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0,
+    });
   },[]);
 
   // ─── Auto-heal orphaned "converted" estimates (SO was truly deleted) ───
