@@ -266,7 +266,8 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -22575,7 +22576,10 @@ export default function App(){
   const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
-  const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page)
+  const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
+  const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
+  const[siQueueLoading,setSiQueueLoading]=useState(false);
+  const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
@@ -23873,6 +23877,30 @@ export default function App(){
       return [parseSingleInvoice(lines,{},text)];
     };
 
+    // Finalize a freshly-built batch of parsed-bill review rows (from a PDF upload or a
+    // Sports Inc API pull): drop them into the review screen, append to saved history, and
+    // kick the non-blocking AI reconcile pass (size/SKU label alignment against the order).
+    // Non-matching/over-billing bills just stay flagged for manual review — nothing is
+    // applied here; that only happens when staff click "Push to Portal".
+    const _finishBillReview=(results,opts={})=>{
+      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed',extraNote=''}=opts;
+      const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
+      if(!results.length){
+        // Nothing new came in (all duplicates/scanned/unreadable) — don't drop into an empty review.
+        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
+        const base=skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':(extraNote?'Nothing new to import':'No bills could be parsed');
+        nf(base+extraNote,(skippedDups.length||extraNote)?'success':'error');
+        return;
+      }
+      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
+      // Auto-save to history
+      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
+      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
+      nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+extraNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      _aiReconcilePass(results);
+    };
+
     // Process multiple bill PDFs — each file may contain multiple invoices
     const processBillPdfs=async(files)=>{
       if(!files||!files.length)return;
@@ -23909,23 +23937,137 @@ export default function App(){
         }
       }
       if(_billParseToken.current!==myToken)return;// cancelled while the last file was parsing
-      const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
-      if(!results.length){
-        // Nothing new came in (all duplicates and/or unreadable) — don't drop into an empty review.
-        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[]}));
-        nf(skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':'No bills could be parsed',skippedDups.length?'success':'error');
+      _finishBillReview(results,{skippedDups,sourceCount:files.length,sourceNoun:'PDF(s)',verb:'parsed'});
+    };
+
+    // Pull supplier bills straight from the Sports Inc SportsLink API and drop them into the
+    // same review screen the PDF upload uses. Manual-confirm by design: documents are matched
+    // (rematchBill) and AI-reconciled for size/SKU label quirks, but nothing writes to the
+    // Billed tracking until staff click "Push to Portal". Replaces the PDF step for Sports
+    // Inc–routed bills; other suppliers still come in as PDFs.
+    const pullFromSportsInc=async(filters={})=>{
+      setBillImport(x=>({...x,uploading:true}));
+      let docs=[];
+      try{
+        // active=true → only documents SI hasn't been told we've imported. lines=true →
+        // per-size line items. excludeScannedDocuments=true → only EDI documents with real
+        // line data (adidas, SanMar, Agron, …); scanned/OCR documents (e.g. S&S Activewear)
+        // carry no usable lines and stay on the manual PDF parse flow below.
+        docs=await sportsLinkGetDocuments({active:true,lines:true,excludeScannedDocuments:true,...filters});
+      }catch(e){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('Sports Inc pull failed: '+(e.message||'connection error'),'error');
         return;
       }
-      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null}));
-      // Auto-save to history
-      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
-      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
-      const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
-      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)'+dupNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
-      // Quietly reconcile any matched-but-mismatched bills with an AI pass (size/SKU
-      // label alignment against the order). Non-blocking; bills that can't be resolved
-      // just stay flagged. No-PO-match bills are skipped — they're for "Look at later".
-      _aiReconcilePass(results);
+      if(!docs.length){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('No new Sports Inc documents found (nothing active in the Invoice Center)','success');
+        return;
+      }
+      const seenDocs=new Set();const skippedDups=[];const results=[];let scanned=0;let idx=0;
+      docs.forEach(doc=>{
+        let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
+        // Belt-and-suspenders: skip any scanned/"SEE VENDOR INVOICE FOR DETAIL" doc that slips
+        // past excludeScannedDocuments — no usable SKU/qty can't fill the Billed tracking, so
+        // leave it for the manual PDF parse instead of cluttering review with an empty bill.
+        if(!parsed.has_usable_lines){scanned++;return}
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);return}
+        if(dn)seenDocs.add(dn);
+        const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
+        idx++;
+      });
+      const extraNote=scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'';
+      _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
+    };
+
+    // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
+    // Build PO-match candidates from the live orders: every portal PO line + deco PO, tagged
+    // with its customer alpha_tag and the SO's SKUs, so the matcher can triangulate (PO# +
+    // customer + supplier + SKUs).
+    const _siBuildCandidates=()=>{
+      const out=[];
+      for(const so of sos){
+        const c=cust.find(x=>x.id===so.customer_id);
+        const alpha=(c?.alpha_tag||'').toUpperCase();
+        const cname=c?.name||so.customer_name||'';
+        const skus=[...new Set((so.items||[]).map(it=>it.sku).filter(Boolean))];
+        const push=(po_id,vendor)=>{if(!po_id)return;out.push({po_id,po_core:(String(po_id).match(/\d{3,6}/)||[''])[0],vendor:vendor||'',customer_alpha_tag:alpha,customer_name:cname,skus,so_id:so.id})};
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>push(po.po_id,po.vendor||it.vendor)));
+        (so.deco_pos||[]).forEach(dp=>push(dp.po_id,dp.deco_vendor||dp.vendor));
+      }
+      return out;
+    };
+    // Triage one queue row → {bucket, parsed, match}. Buckets: captured|outside|grab|approve|review.
+    const _siTriage=(row,cands)=>{
+      const parsed=mapSportsLinkDocToBill(row.raw||{});
+      if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
+      if(siPoOrigin(row.po_number)==='old')return{bucket:'outside',parsed,match:null};// no-space PO = old system
+      if(row.source_type!=='edi')return{bucket:'grab',parsed,match:null};// scanned/OCR → grab the PDF
+      const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
+      if(best&&(best.confidence==='high'||best.confidence==='medium'))return{bucket:'approve',parsed,match:best};
+      return{bucket:'review',parsed,match:best};
+    };
+    const loadSiQueue=async()=>{
+      if(!supabase){nf('Database not connected','error');return}
+      setSiQueueLoading(true);
+      try{
+        const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
+        if(error)throw error;
+        const cands=_siBuildCandidates();
+        setSiQueue((data||[]).map(row=>({...row,_t:_siTriage(row,cands)})));
+      }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
+      setSiQueueLoading(false);
+    };
+    // Manual "Pull now": fetch active documents since the cutover and upsert them into the
+    // shared queue (omitting status/resolved/matched so any human decisions are preserved).
+    // The daily cron does the same server-side; this lets staff refresh on demand + seed testing.
+    const syncSiQueueNow=async()=>{
+      if(!supabase){nf('Database not connected','error');return}
+      setSiQueueLoading(true);
+      try{
+        const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});
+        const dateOnly=v=>(String(v||'').match(/^\d{4}-\d{2}-\d{2}/)||[null])[0];
+        const rows=docs.filter(d=>d&&d.siDocNumber!=null).map(d=>{const b=mapSportsLinkDocToBill(d);return{
+          si_doc_number:d.siDocNumber,supplier_doc_number:b.supplier_doc_number||null,po_number:b.po_number||null,supplier:b.supplier||null,
+          si_doc_date:dateOnly(d.siDocDate),supplier_doc_date:dateOnly(d.supplierDocDate),ship_date:dateOnly(d.shipDate),due_date:dateOnly(d.dueDate),
+          tracking_number:b.tracking||null,merchandise_total:b.merchandise_total,freight_amount:b.freight,si_upcharge:b.si_upcharge,doc_total:b.doc_total,
+          is_credit:b.is_credit,supplier_method:b.supplier_method,source_type:b.source_type,raw:d,si_historical:false,updated_at:new Date().toISOString()};});
+        for(let i=0;i<rows.length;i+=200){const{error}=await supabase.from('si_documents').upsert(rows.slice(i,i+200),{onConflict:'si_doc_number'});if(error)throw error}
+        await loadSiQueue();
+        nf('Pulled '+rows.length+' Sports Inc document(s)','success');
+      }catch(e){nf('Pull failed: '+(e.message||e),'error');setSiQueueLoading(false)}
+    };
+    // Approve a queued bill → apply to the SO Billed tracking + Costs via the SAME applyBillToSO
+    // path the PDF flow uses (so commissions/GP see identical cost data), then mark it captured.
+    const approveSiDoc=async(row)=>{
+      const t=row._t||_siTriage(row,_siBuildCandidates());
+      const parsed={...t.parsed};
+      // Use the matched portal PO's exact id string so the proven rematchBill/applyBillToSO path
+      // writes billed qty, unit cost, freight and tracking onto the right PO line.
+      if(t.match?.candidate?.po_id)parsed.po_number=t.match.candidate.po_id;
+      const matched=rematchBill(parsed);
+      if(!matched.matchedPO){nf('No portal PO matched — send to Review','error');return false}
+      applyBillToSO(matched);
+      const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
+        matched_so_id:matched.matchedPO.so_id||matched.matchedPO.so?.id||null,matched_po_id:matched.matchedPO.po_id||null,
+        match_confidence:t.match?.confidence||'high',match_method:t.match?.method||'po_core',match_reason:(t.match?.reasons||[]).join(' · ')};
+      try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){/* applied locally; status sync retried on reload */}
+      setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+      return true;
+    };
+    const markSiStatus=async(row,status,verb)=>{
+      const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
+      try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){nf('Update failed: '+(e.message||e),'error');return}
+      setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+      nf(verb||'Updated','success');
+    };
+    const approveAllSiHighConf=async()=>{
+      const rows=siQueue.filter(r=>r._t?.bucket==='approve'&&r._t?.match?.confidence==='high');
+      if(!rows.length){nf('No high-confidence bills ready','error');return}
+      let ok=0;for(const r of rows){try{if(await approveSiDoc(r))ok++}catch{}}
+      nf('Approved '+ok+' of '+rows.length+' — applied to Billed tracking',ok?'success':'error');
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -25897,11 +26039,12 @@ export default function App(){
       {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
       {impTab==='bills'&&<>
         {/* Sub-tabs: the import/review flow vs the built-out Look at Later workspace */}
-        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;return<div style={{display:'flex',gap:6,marginBottom:14,borderBottom:'1px solid #e2e8f0',paddingBottom:10}}>
-          {[['import','📥 Import & Review'],['later','🕒 Look at Later'+(parked?' ('+parked+')':'')]].map(([id,label])=>
-            <button key={id} onClick={()=>setBillView(id)} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
-              border:'1px solid '+(billView===id?(id==='later'?'#f59e0b':'#7c3aed'):'#e2e8f0'),
-              background:billView===id?(id==='later'?'#f59e0b':'#7c3aed'):'#fff',color:billView===id?'#fff':'#475569'}}>{label}</button>)}
+        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&r._t.bucket!=='captured').length;return<div style={{display:'flex',gap:6,marginBottom:14,borderBottom:'1px solid #e2e8f0',paddingBottom:10}}>
+          {[['import','📥 Import & Review'],['sportsinc','🏀 Sports Inc'+(siOpen?' ('+siOpen+')':'')],['later','🕒 Look at Later'+(parked?' ('+parked+')':'')]].map(([id,label])=>{
+            const accent=id==='later'?'#f59e0b':id==='sportsinc'?'#2563eb':'#7c3aed';
+            return <button key={id} onClick={()=>{setBillView(id);if(id==='sportsinc'&&!siQueue.length)loadSiQueue()}} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
+              border:'1px solid '+(billView===id?accent:'#e2e8f0'),
+              background:billView===id?accent:'#fff',color:billView===id?'#fff':'#475569'}}>{label}</button>;})}
         </div>;})()}
         {billView==='import'&&<>
         {/* QB Connection Status Banner */}
@@ -25914,6 +26057,18 @@ export default function App(){
           {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
         </div>
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#2563eb',background:'#eff6ff'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Scanned/OCR documents (e.g. S&amp;S Activewear) are left for the manual PDF parse below.</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+                onClick={()=>pullFromSportsInc()}>
+                {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
+              </button>
+            </div>
+          </div>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
             <div className="card-body">
@@ -26496,6 +26651,58 @@ export default function App(){
           </div>
         </div>;})()}
         </>}
+
+        {/* ── Sports Inc Bills — the shared API queue (si_documents) ── */}
+        {billView==='sportsinc'&&(()=>{
+          const money=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+          const by=b=>siQueue.filter(r=>r._t?.bucket===b);
+          const approve=by('approve'),review=by('review'),grab=by('grab'),outside=by('outside'),captured=by('captured');
+          const sumD=rows=>rows.reduce((a,r)=>a+(Number(r.doc_total)||0),0);
+          const highConf=approve.filter(r=>r._t?.match?.confidence==='high');
+          const confPill=c=>{const m=({high:['#dcfce7','#166534'],medium:['#fef9c3','#854d0e'],low:['#fee2e2','#991b1b']})[c]||['#e2e8f0','#475569'];return <span style={{padding:'1px 7px',borderRadius:10,fontSize:10,fontWeight:700,background:m[0],color:m[1]}}>{c==='high'?'high match':c==='medium'?'review match':c||'no match'}</span>;};
+          const Row=(r,opts={})=>{
+            const t=r._t||{};const p=t.parsed||{};const open=siExpand===r.si_doc_number;
+            return <div key={r.si_doc_number} style={{border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,background:'#fff'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',cursor:'pointer'}} onClick={()=>setSiExpand(open?null:r.si_doc_number)}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:700}}>{r.supplier||'—'} <span style={{fontWeight:400,color:'#64748b',fontSize:11}}>· Inv {r.supplier_doc_number||r.si_doc_number}</span></div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{r.po_number||'(no PO)'}{t.match?.candidate?' → '+(t.match.candidate.customer_name||t.match.candidate.po_id):''}{r.is_credit?' · ↩️ credit':''}</div>
+                </div>
+                {t.match&&opts.showConf!==false&&confPill(t.match.confidence)}
+                <div style={{fontSize:13,fontWeight:700,width:84,textAlign:'right'}}>{money(r.doc_total)}</div>
+                {opts.actions&&<div style={{display:'flex',gap:4}} onClick={e=>e.stopPropagation()}>{opts.actions(r)}</div>}
+              </div>
+              {open&&<div style={{borderTop:'1px solid #f1f5f9',padding:'8px 12px',fontSize:11}}>
+                <div style={{color:'#64748b',marginBottom:6}}>SI doc #{r.si_doc_number} · {r.si_doc_date||''} · merch {money(r.merchandise_total)} · freight {money(r.freight_amount)} · SI fee {money(r.si_upcharge)} · doc total {money(r.doc_total)}{t.match?.reasons?.length?' · matched on '+t.match.reasons.join(', '):''}</div>
+                {(p.items||[]).length?<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}><thead><tr style={{color:'#94a3b8',textAlign:'left'}}><th>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit</th><th style={{textAlign:'right'}}>Ext</th></tr></thead><tbody>{p.items.map((it,i)=><tr key={i} style={{borderTop:'1px solid #f8fafc'}}><td>{it.sku}</td><td>{it.size}</td><td>{it.color}</td><td style={{textAlign:'right'}}>{it.qty}</td><td style={{textAlign:'right'}}>{money(it.unit_price)}</td><td style={{textAlign:'right'}}>{money(it.extension)}</td></tr>)}</tbody></table>:<div style={{color:'#94a3b8'}}>No line detail — grab the PDF from Sports Inc.</div>}
+              </div>}
+            </div>;
+          };
+          const Section=(title,color,rows,desc,actions,showConf)=>rows.length>0&&<div style={{marginBottom:18}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}><span style={{fontSize:13,fontWeight:800,color}}>{title}</span><span style={{fontSize:11,color:'#94a3b8'}}>{rows.length} · {money(sumD(rows))}</span></div>
+            {desc&&<div style={{fontSize:11,color:'#64748b',marginBottom:8}}>{desc}</div>}
+            {rows.map(r=>Row(r,{actions,showConf}))}
+          </div>;
+          const apBtn=(r)=><button key="ap" className="btn btn-sm" style={{fontSize:11,background:'#16a34a',color:'#fff',border:'none'}} onClick={()=>approveSiDoc(r).then(ok=>ok&&nf('Approved — applied to Billed tracking','success'))}>Approve</button>;
+          const outBtn=(r,label)=><button key="out" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'outside_portal','Marked Outside of Portal')}>{label||'Outside'}</button>;
+          return <div>
+            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:14,padding:'12px 16px',borderRadius:10,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+              <div style={{flex:1,minWidth:220}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>🏀 Sports Inc Bills</div>
+                <div style={{fontSize:11,color:'#475569',marginTop:2}}>{siQueue.length} documents · 🟢 {approve.length} ready · ⚠️ {review.length} review · 🟡 {grab.length} to grab · 🔵 {outside.length} outside · ✅ {captured.length} captured</div>
+              </div>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} disabled={siQueueLoading} onClick={loadSiQueue}>{siQueueLoading?'Loading…':'↻ Refresh'}</button>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#2563eb',color:'#fff',border:'none'}} disabled={siQueueLoading} onClick={syncSiQueueNow}>⚡ Pull now</button>
+              {highConf.length>0&&<button className="btn btn-sm" style={{fontSize:11,background:'#16a34a',color:'#fff',border:'none'}} onClick={approveAllSiHighConf}>✓ Approve all high-confidence ({highConf.length})</button>}
+            </div>
+            {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:'#94a3b8',fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
+            {Section('🟢 Ready to approve','#166534',approve,'Matched to a portal PO. Approving writes billed qty, unit cost, freight & tracking to the order’s Tracking & Costs tabs — the same path as PDF bills, so commissions/GP see identical numbers.',apBtn)}
+            {Section('⚠️ Needs review','#b45309',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Verify and Approve, or mark Outside of Portal.',(r)=>[apBtn(r),outBtn(r)])}
+            {Section('🟡 Grab from Sports Inc','#a16207',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=><button key="g" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'manual_done','Marked grabbed')}>Mark grabbed</button>,false)}
+            {Section('🔵 Outside of Portal','#1d4ed8',outside,'Old-system POs (no space after “PO”) — billed through NetSuite/QuickBooks, not here. Confirm and clear; these never touch the Billed tracking.',(r)=>outBtn(r,'Mark outside'),false)}
+            {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontSize:12,fontWeight:700,color:'#475569',cursor:'pointer'}}>✅ Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:8}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false}))}</div></details>}
+          </div>;
+        })()}
 
         {/* ── Look at Later — built-out workspace for parked bills (out of the import list) ── */}
         {billView==='later'&&(()=>{

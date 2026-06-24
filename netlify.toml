@@ -109,3 +109,12 @@
 # to populate on the first run.
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
+
+# Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
+# safely after the 10:30 EST SI processing cutoff). The cron fires
+# sportslink-sync-background, which mirrors all active SI documents since the portal
+# cutover into the si_documents queue (EDI → approve flow, scanned → manual worklist)
+# and emails the daily digest to accounting. Env: SPORTSLINK_API_KEY,
+# SPORTSLINK_SINCE_DATE (default 2026-04-01), SPORTSLINK_DIGEST_EMAIL.
+[functions."sportslink-sync-cron"]
+  schedule = "30 16 * * *"

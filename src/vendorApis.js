@@ -6,6 +6,7 @@ import { NSA } from './constants';
 import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { authFetch } from './utils';
+import { buildSportsLinkDocsQuery } from './sportsLink';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -1455,5 +1456,67 @@ const resolveSkuAcrossVendors = async (sku) => {
   return hits[0];
 };
 
+// ─── Sports Inc "SportsLink" API (via Netlify proxy — REST/JSON, X-API-KEY auth) ───
+// Pulls dealer invoice documents from the SportsWeb Invoice Center. The pure
+// document→bill adapter + query builder live in ./sportsLink (unit-tested); this
+// section only handles the network round-trip and pagination.
+// Requires SPORTSLINK_API_KEY in Netlify env (request from mhoerner@hq.sportsinc.com).
+const sportsLinkApiCall = async (path, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/sportslink-proxy?path=${encodeURIComponent(path)}`;
+    const response = await authFetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {}),
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `Sports Inc API error: ${response.status}`);
+    }
+    if (response.status === 204) return null; // PATCH status returns No Content
+    return await response.json();
+  } catch (error) { console.error('[SportsLink] API call failed:', path, error); throw error; }
+};
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+// Fetch dealer documents, following pagination (the API caps a single call at 1000
+// docs). Returns a flat array of raw SportsLink document objects.
+const sportsLinkGetDocuments = async (filters = {}) => {
+  const pageSize = filters.pageSize || 1000;
+  let page = 1, all = [], guard = 0;
+  while (guard++ < 50) {
+    const p = buildSportsLinkDocsQuery(filters);
+    p.set('pageSize', String(pageSize));
+    p.set('page', String(page));
+    const data = await sportsLinkApiCall(`dealers/documents/?${p.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+    all = all.concat(items);
+    if (!data || data.hasNextPage !== true) break;
+    page++;
+  }
+  console.log('[SportsLink] pulled', all.length, 'document(s)');
+  return all;
+};
+
+// PATCH dealers/documents/status — move imported docs to Historical (isActive:false)
+// in the SI Invoice Center, or back to Active (true). Our "mark as imported" lever
+// (used by the Phase-2 background sync, not the manual Phase-1 pull).
+const sportsLinkSetStatus = async (siDocNumbers, isActive) => {
+  const arr = (Array.isArray(siDocNumbers) ? siDocNumbers : [siDocNumbers]).map((n) => parseInt(n, 10)).filter(Boolean);
+  if (!arr.length) return null;
+  return await sportsLinkApiCall('dealers/documents/status', {
+    method: 'PATCH',
+    body: JSON.stringify({ siDocNumbers: arr, isActive: !!isActive }),
+  });
+};
+
+const testSportsLinkConnection = async () => {
+  try {
+    const d = await sportsLinkApiCall('dealers/documents/?pageSize=1');
+    return { ok: true, count: d?.totalCount ?? (Array.isArray(d?.items) ? d.items.length : 0) };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
