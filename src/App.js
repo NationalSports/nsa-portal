@@ -7205,6 +7205,12 @@ export default function App(){
   const[catReqCustSel,setCatReqCustSel]=useState({});
   const[catReqSearch,setCatReqSearch]=useState({});
   const[catReqFocus,setCatReqFocus]=useState(null);
+  // Coach email → linked customer_id (from coach_accounts), so a request auto-matches
+  // its team even when the storefront didn't forward the link (guest cart / lapsed
+  // sign-in). Mirrors the server-side lookup in catalog-order-request; no-ops to {}
+  // if RLS hides the table from this role, falling back to contact-email matching.
+  const[coachCustMap,setCoachCustMap]=useState({});
+  useEffect(()=>{if(!supabase)return;supabase.from('coach_accounts').select('email,customer_id,status').then(r=>{if(!r.error&&Array.isArray(r.data)){const m={};r.data.forEach(a=>{if(a.email&&a.customer_id&&a.status==='active')m[String(a.email).toLowerCase()]=a.customer_id});setCoachCustMap(m)}})},[]);
   useEffect(()=>{if(!supabase)return;let on=true;
     const load=()=>supabase.from('catalog_order_requests').select('*').not('status','in','(done,dismissed,estimate_created)').order('created_at',{ascending:false}).limit(200).then(r=>{if(on&&!r.error&&Array.isArray(r.data))setCatReqs(r.data)});
     load();const t=setInterval(load,5*60*1000);return()=>{on=false;clearInterval(t)};
@@ -7220,21 +7226,36 @@ export default function App(){
   },[catReqOpen,catReqFocus,catReqs.length]);
   useEffect(()=>{if(!catReqOpen)setCatReqFocus(null)},[catReqOpen]);
   // Auto-create a TODO per new request (idempotent: deterministic id + upsert; todo_id
-  // written back). Assigned to the matched customer's primary rep, else whoever loads first.
+  // written back). Routed to the account's assigned rep when we can resolve the coach's
+  // team (explicit link → their coach_accounts row → a contact-email hit); left
+  // UNASSIGNED otherwise — an empty queue beats guessing the wrong rep.
   useEffect(()=>{if(!supabase||!cu?.id||!catReqs.length)return;
+    const matchCust=(r)=>{
+      if(r.customer_id)return cust.find(c2=>c2.id===r.customer_id)||null;
+      const linked=coachCustMap[String(r.coach_email||'').toLowerCase()];
+      if(linked){const c=cust.find(c2=>c2.id===linked);if(c)return c}
+      return cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()))||null;
+    };
     catReqs.filter(r=>!r.todo_id&&r.status==='new').slice(0,20).forEach(r=>{
-      const match=r.customer_id?cust.find(c2=>c2.id===r.customer_id):cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()));
+      const match=matchCust(r);
       const rep=match?REPS.find(x=>x.id===match.primary_rep_id&&x.is_active!==false):null;
       const todoId='todo-catreq-'+String(r.id).slice(0,8);
       const lines=Array.isArray(r.lines)?r.lines:[];
-      const todo={id:todoId,title:'📥 Estimate request — '+(r.coach_name||'Coach')+(r.team_name?' ('+r.team_name+')':''),description:'From the adidas catalog: '+lines.length+' line'+(lines.length===1?'':'s')+', '+lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0)+' units.'+(r.notes?' Notes: '+r.notes:'')+' Review it from Dashboard → Estimate Requests.',created_by:cu.id,assigned_to:rep?.id||cu.id,so_id:null,customer_id:match?.id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+      const todo={id:todoId,title:'📥 Estimate request — '+(r.coach_name||'Coach')+(r.team_name?' ('+r.team_name+')':''),description:'From the adidas catalog: '+lines.length+' line'+(lines.length===1?'':'s')+', '+lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0)+' units.'+(r.notes?' Notes: '+r.notes:'')+' Review it from Dashboard → Estimate Requests.',created_by:cu.id,assigned_to:rep?.id||null,so_id:null,customer_id:match?.id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
       setAssignedTodos(prev=>prev.some(t=>t.id===todoId)?prev:[todo,...prev]);
       _dbSavingGuard(()=>supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(rr=>{if(rr.error)console.error('[DB] catreq todo:',rr.error.message)}));
       supabase.from('catalog_order_requests').update({todo_id:todoId,customer_id:r.customer_id||match?.id||null}).eq('id',r.id).then(()=>{});
       setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,todo_id:todoId,customer_id:x.customer_id||match?.id||null}:x));
     });
+    // Heal rows whose TODO already exists but still have no customer linked (they came
+    // in before coach_accounts resolution shipped): backfill the match so the inbox
+    // shows the team and Build Estimate works without manual matching. Rep left as-is.
+    catReqs.filter(r=>r.todo_id&&!r.customer_id&&r.status==='new').slice(0,40).forEach(r=>{
+      const m=matchCust(r);
+      if(m){supabase.from('catalog_order_requests').update({customer_id:m.id}).eq('id',r.id).then(()=>{});setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:m.id}:x))}
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[catReqs.length,cust.length,cu?.id]);
+  },[catReqs.length,cust.length,cu?.id,coachCustMap]);
   // Seed a draft estimate from a request: lines grouped by SKU, sizes→qty map,
   // adidas tier pricing when the product is in the catalog (mirrors newE's logic).
   const estFromCatReq=(r)=>{
