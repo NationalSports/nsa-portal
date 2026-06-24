@@ -513,6 +513,15 @@ let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 // handlers never read them, so routine reloads exclude them rather than drag ~1.1 MB of JSON
 // (so_history 662kB + est_history 371kB + qb_config 82kB + …) on every fetch.
 const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_log','wh_recent_actions','job_time_logs'];
+// Momentec (v8), S&S Activewear (v4), and SanMar (v3) are large API-sourced ("drop-ship") catalogs:
+// server-side Netlify sync functions keep their rows in the DB products table for order history and
+// server-side search, but at ~41k rows they pushed the in-memory `prod` array past the 20k load cap
+// (hiding later-alphabet SKUs like JY6033 from client-side search) and bloated the Products page. We
+// exclude them from the LOCAL catalog load only — the rows stay in the DB untouched (no delete path
+// exists), line items carry their own sku/name/color snapshots, and the PO modal + global search query
+// these vendors server-side. Null-vendor products (Artwork, Wilson balls) are explicitly preserved.
+const API_CATALOG_VENDOR_IDS=['v8','v4','v3'];
+const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_VENDOR_IDS.join(',')+')';
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -524,6 +533,7 @@ const _safeQuery=(table,opts)=>{
   const fetchPage=(start)=>{
     let q=supabase.from(table).select('*');
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
+    if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
     return q.range(start,start+pageSize-1);
   };
@@ -824,7 +834,7 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name'}),true),
+      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR}),true),
       essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
@@ -3769,7 +3779,9 @@ export default function App(){
   // 401/RLS error and surfaces as "N items failed to save to cloud". Strip them on load.
   const[prod,setProd]=useState(()=>{
     const _SAMPLE_PROD_IDS=new Set(['p1','p2','p3','p4','p5','p6','p7','p8','p9']);
-    return loadState('prod',D_P).filter(p=>!_SAMPLE_PROD_IDS.has(p.id));
+    // Drop API-catalog vendors (Momentec/S&S/SanMar) from any stale localStorage cache so a returning
+    // user's old full catalog can't be retained as `localOnly` past the now-filtered DB load.
+    return loadState('prod',D_P).filter(p=>!_SAMPLE_PROD_IDS.has(p.id)&&!API_CATALOG_VENDOR_IDS.includes(p.vendor_id));
   });
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
