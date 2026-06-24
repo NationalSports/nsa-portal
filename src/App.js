@@ -6734,6 +6734,41 @@ export default function App(){
     });
     return{...est,items,_itemsHydrated:true,_decosHydrated:true};
   };
+  // SO counterpart of _refetchEstimateForConvert: re-fetch a sales order's items +
+  // decorations from the DB and rebuild the items array exactly as the main loader does,
+  // so copying a partially-loaded SO still carries every per-line decoration. (pick/po
+  // lines are intentionally omitted — copySalesOrder strips them anyway.)
+  const _refetchSOForCopy=async so=>{
+    const{data:rawItems,error:ie}=await supabase.from('so_items').select('*').eq('so_id',so.id);
+    if(ie)throw ie;
+    const itemIds=(rawItems||[]).map(i=>i.id);
+    let rawDecos=[];
+    if(itemIds.length){
+      const{data:dd,error:de}=await supabase.from('so_item_decorations').select('*').in('so_item_id',itemIds);
+      if(de)throw de;
+      rawDecos=dd||[];
+    }
+    // Dedup phantom duplicate items per item_index (keep the one with the most
+    // decorations; newest id breaks ties) — mirrors the loader.
+    const _childCount=it=>rawDecos.filter(d=>d.so_item_id===it.id).length;
+    const _byIdx=new Map();
+    (rawItems||[]).forEach(it=>{
+      const cur=_byIdx.get(it.item_index);
+      if(!cur){_byIdx.set(it.item_index,it);return;}
+      const a=_childCount(it),b=_childCount(cur);
+      if(a>b||(a===b&&it.id>cur.id))_byIdx.set(it.item_index,it);
+    });
+    const items=[..._byIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      const decorations=rawDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{
+        const{id:_,so_item_id:__,deco_index:___,...rest}=d;
+        if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';
+        return rest;
+      });
+      const{id:_,so_id:__,item_index:___,...rest}=item;
+      return{...rest,decorations};
+    });
+    return{...so,items,_itemsHydrated:true,_decosHydrated:true};
+  };
   const convertSO=async est=>{
     // Auto-heal a partially-loaded estimate before converting. The loader flags
     // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
@@ -6842,12 +6877,30 @@ export default function App(){
       setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
     }
     setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
-  const copyEstimate=est=>{
+  const copyEstimate=async est=>{
+    // Auto-heal a partially-loaded estimate before copying — same failure mode the convert
+    // path guards against: when estimate_item_decorations/estimate_items timed out on the
+    // last load, est.items can be present while their per-line `decorations` arrays are
+    // empty, and cloning that hollow state would silently produce a copy with no decorations.
+    if(est._itemsHydrated===false||est._decosHydrated===false){
+      if(!supabase){nf("This estimate hasn't finished loading — reload the page and try again before copying.",'error');return;}
+      try{est=await _refetchEstimateForConvert(est);}
+      catch(e){console.error('[copyEstimate] decoration re-fetch failed:',e);nf("Couldn't load this estimate's decorations to copy it — reload the page and try again.",'error');return;}
+    }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
     const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
-  const copySalesOrder=so=>{
+  const copySalesOrder=async so=>{
+    // Auto-heal a partially-loaded sales order before copying — same failure mode the
+    // convert path guards against: when so_item_decorations/so_items timed out on the last
+    // load, so.items can be present while their per-line `decorations` arrays are empty, and
+    // cloning that hollow state would silently produce a copy with no decorations.
+    if(so._itemsHydrated===false||so._decosHydrated===false){
+      if(!supabase){nf("This order hasn't finished loading — reload the page and try again before copying.",'error');return;}
+      try{so=await _refetchSOForCopy(so);}
+      catch(e){console.error('[copySalesOrder] decoration re-fetch failed:',e);nf("Couldn't load this order's decorations to copy it — reload the page and try again.",'error');return;}
+    }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(so.art_files);
     const clonedItems=remapItemArtIds(safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;
       // Preserve qty-only lines: the count lives in est_qty (sizes is empty). Keep qty_only=true so the
