@@ -8,6 +8,16 @@
 -- Under 24 concurrent save_estimate calls this dropped ~528 heavy info_schema scans → 72
 -- fast single-table lookups, resolving the CPU spike that caused PostgREST schema cache
 -- timeouts and 503 errors.
+--
+-- Replay-safety: the migration numbering is out of order — 00128 (optimistic _version) drops
+-- the legacy 2-arg save_estimate(jsonb,jsonb) and creates the 3-arg function, but 00133
+-- (atomic_rpc) re-creates the 2-arg overload. Live applied them by timestamp (00133 then
+-- 00128) so only the 3-arg survives, but a fresh `db reset` replays by filename (00128 then
+-- 00133) and would leave the expensive 2-arg overload in place. This migration runs last, so
+-- dropping the 2-arg here guarantees the optimized 3-arg is the only save_estimate after any
+-- rebuild. No-op on the live DB, where the 2-arg no longer exists.
+DROP FUNCTION IF EXISTS public.save_estimate(jsonb, jsonb);
+
 CREATE OR REPLACE FUNCTION public.save_estimate(
   p_estimate jsonb,
   p_items jsonb,
@@ -153,3 +163,7 @@ BEGIN
   RETURN jsonb_build_object('estimate_id', v_estimate_id, 'item_count', v_count, 'version', v_cur_version);
 END;
 $function$;
+
+-- Re-affirm execute grants so the function is callable after a fresh replay regardless of
+-- which historical migration last (re)created it.
+GRANT EXECUTE ON FUNCTION public.save_estimate(jsonb, jsonb, integer) TO anon, authenticated, service_role;
