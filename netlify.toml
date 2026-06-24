@@ -19,6 +19,13 @@
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
 
+# build-meta.json is the deploy fingerprint that long-lived tabs poll to detect a new
+# build (see src/deployReload.js). It must never be cached or the reload would never fire.
+[[headers]]
+  for = "/build-meta.json"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 # Hashed build assets are content-addressed and safe to cache forever.
 [[headers]]
   for = "/static/*"
