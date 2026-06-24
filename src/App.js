@@ -523,6 +523,7 @@ const _safeQuery=(table,opts)=>{
   const fetchPage=(start)=>{
     let q=supabase.from(table).select('*');
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
+    if(opts?.is)for(const[c,v]of opts.is)q=q.is(c,v);// e.g. deleted_at IS NULL to skip soft-deleted rows
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
     return q.range(start,start+pageSize-1);
   };
@@ -837,7 +838,7 @@ const _dbLoad = async (opts={}) => {
       _grp('sales_orders',()=>_safeQuery('so_item_pick_lines')),
       _grp('sales_orders',()=>_safeQuery('so_item_po_lines')),
       _grp('sales_orders',()=>_safeQuery('so_jobs')),
-      _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
+      _grp('invoices',()=>_safeQuery('invoices',{order:'id',is:[['deleted_at',null]]})),
       _grp('invoices',()=>_safeQuery('invoice_payments')),
       _grp('invoices',()=>_safeQuery('invoice_items')),
       _grp('messages',()=>_safeQuery('messages',{order:'id'})),
@@ -2334,9 +2335,11 @@ const _dbDeleteSO = async (id) => {
 const _dbDeleteInvoice = async (id) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
-    await supabase.from('invoice_payments').delete().eq('invoice_id',id);
-    await supabase.from('invoice_items').delete().eq('invoice_id',id);
-    await supabase.from('invoices').delete().eq('id',id);
+    // Soft delete: stamp deleted_at and KEEP the invoice (plus its payments/items) so a mistaken
+    // or errant delete is always recoverable. Loads filter out rows where deleted_at IS NOT NULL,
+    // so a soft-deleted invoice vanishes from the UI exactly like a hard delete used to — but the
+    // record survives in the DB (and the audit_log trigger captures who/when on top of that).
+    await supabase.from('invoices').update({deleted_at:new Date().toISOString()}).eq('id',id);
   }catch(e){console.error('[DB] delete invoice:',e)}});
 };
 const _dbDeleteHistInvoice = async (id) => {
