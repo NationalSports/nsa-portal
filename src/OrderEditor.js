@@ -2561,7 +2561,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // style, real per-color dealer cost), so keep their per-colorway catalog rows
   // (one per color, MSRP-based cost) out of this local list to avoid duplicates.
   const _serverFp=serverProducts.filter(p=>{if(!pS||pS.length<2)return false;const toks=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!toks.length)return false;const sk=(p.sku||'').toLowerCase(),nm=(p.name||'').toLowerCase(),br=(p.brand||'').toLowerCase(),cl=(p.color||'').toLowerCase();return toks.every(t=>sk.includes(t)||nm.includes(t)||br.includes(t)||cl.includes(t));});
-  const allFp=(fp.length>0?fp:_serverFp).filter(p=>!(p.inventory_source==='momentec'||(p.brand||'').toLowerCase()==='momentec')&&p.inventory_source!=='sanmar');
+  const _liveVendorSources=new Set(['momentec','sanmar','ss_activewear']);
+  const allFp=(fp.length>0?fp:_serverFp).filter(p=>!_liveVendorSources.has(p.inventory_source)&&(p.brand||'').toLowerCase()!=='momentec');
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
