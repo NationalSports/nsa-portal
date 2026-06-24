@@ -3139,7 +3139,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvMemo(o.memo||'');setInvType(typeHint||(_hasAnyInv?'partial':'final'));setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
           };
           if(o.promo_applied)return null;// promo flow handled below
-          if(o.status==='complete')return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
+          if(o.status==='complete'&&_hasAnyInv)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
           if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
           // Has prior invoices with un-billed remaining qty: only show Create Invoice — nothing left to "close ahead of".
           if(_hasRemaining)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('partial')}><Icon name="dollar" size={14}/> Create Invoice</button>;
