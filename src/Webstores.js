@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
@@ -610,6 +611,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(null);   // null | 'new' | storeObj (settings edit)
+  const [editStart, setEditStart] = useState('setup'); // Settings sub-page to open on ('setup' | 'delivery')
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
@@ -885,7 +887,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setStores((prev) => [store, ...prev]);
     flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    if (opts.rebrand) setEditing(store);
+    if (opts.rebrand) { setEditStart('setup'); setEditing(store); }
   }, [stores, flash]);
 
   // Mark / unmark a store as a reusable template — the starting point for
@@ -1655,14 +1657,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
 
       {editing ? (
-        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
+        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialPage={editStart}
           onCancel={() => setEditing(null)}
           onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
-          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
+          onEdit={(step) => { setEditStart(step === 'branding' ? 'delivery' : 'setup'); setEditing(sel); }} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
           onAddSingle={addSingle} onAddColors={addColorsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
@@ -1670,7 +1672,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => { setEditStart('setup'); setEditing('new'); }} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
     </>
   );
@@ -1879,7 +1881,7 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, initialPage }) {
   const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer.
@@ -1887,7 +1889,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
-  const [page, setPage] = useState('setup');
+  // initialPage lets a guide "Review" jump straight to the right sub-page.
+  const [page, setPage] = useState(initialPage === 'delivery' ? 'delivery' : 'setup');
   // Count of in-flight image uploads — block save until they finish so a slow
   // banner/logo upload can't be left out of the saved store (the create races the
   // upload otherwise: the small logo lands, the larger banner doesn't).
@@ -2049,6 +2052,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           <button key={k} type="button" onClick={() => setPage(k)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '8px 2px', marginRight: 18, fontSize: 13, fontWeight: 800, fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em', color: page === k ? '#191919' : '#9aa1ad', borderBottom: page === k ? '2px solid #191919' : '2px solid transparent', marginBottom: -1 }}>{lbl}</button>
         ))}
       </div>
+      <GuidePanel stepId={page === 'delivery' ? 'branding' : 'setup'} store={f} scopeIds={['setup', 'branding']}
+        onGoStep={(id) => setPage(id === 'branding' ? 'delivery' : 'setup')} />
       {page === 'setup' && (
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -2311,11 +2316,302 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
+// ── In-app store-build guide ───────────────────────────────────────────────
+// A teaching walkthrough for staff building a team store. ONE ordered list of
+// steps powers both the overview checklist on a store's main page and the
+// contextual "what to do on this page" helper shown on every store tab and on
+// the Settings pages. Each step auto-detects whether it's done from store data,
+// so the guide doubles as a live progress checklist (great for training on the
+// Orange Lutheran Football demo store).
+//
+// Each step's `shot` is a screenshot of that page, captured from the live Orange
+// Lutheran Football demo store and hosted on Cloudinary (like the rest of the
+// app); the GuidePanel renders it automatically. To refresh one, recapture the
+// page and replace its URL.
+const GUIDE_STEPS = [
+  { id: 'setup', n: 1, title: 'Store setup', icon: '⚙️', target: 'settings',
+    where: 'Header → ⚙ Settings → “1 · Setup”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144718/nsa-store-guide/step-1-setup.png',
+    blurb: 'Link the team and set the store’s name, web address, dates and ordering rules.',
+    todo: [
+      'Link the customer (team/club) first — it unlocks the art library',
+      'Store name + /shop URL slug',
+      'Rep & CSR (auto-fill from the customer)',
+      'Open & close dates (optional)',
+      'Decoration: in-house vs. decorated elsewhere',
+      'Player numbers & fundraising if the team wants them',
+    ],
+    done: (s) => !!s.customer_id && !!s.name && !!s.slug },
+  { id: 'branding', n: 2, title: 'Delivery & branding', icon: '🎨', target: 'settings',
+    where: 'Header → ⚙ Settings → “2 · Delivery & branding”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144719/nsa-store-guide/step-2-branding.png',
+    blurb: 'Choose how orders are delivered and give the store its team look.',
+    todo: [
+      'Delivery: ship to each home, or bulk-deliver to the team',
+      'Primary & accent team colors',
+      'Upload the team logo',
+      'Banner image & hero blurb (optional)',
+    ],
+    done: (s) => !!s.logo_url },
+  { id: 'catalog', n: 3, title: 'Add items', icon: '🛍️', target: 'catalog',
+    where: 'Catalog tab → “Add items”',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144721/nsa-store-guide/step-3-catalog.png',
+    blurb: 'Build the product line — browse the catalog, import a list, start from a template, or build with AI.',
+    todo: [
+      'Add items: Browse products / Import list / Add template / Build with AI',
+      'Set each item’s price and fundraising',
+      'Pick sizes offered and add color options',
+      'Turn on name/number personalization where needed (e.g. jerseys)',
+    ],
+    done: (s, d) => (d.catalog || []).length > 0 },
+  { id: 'art', n: 4, title: 'Art & logos', icon: '🖼️', target: 'art',
+    where: 'Art & Logos tab',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144722/nsa-store-guide/step-4-art.png',
+    blurb: 'Place the team logos and decorations on the gear, and build mockups.',
+    todo: [
+      'Add team logos to the store art library',
+      'Drag logos onto items to set decoration placements',
+      'Build mockups so shoppers see the finished look',
+    ],
+    done: (s, d) => (s.store_art || []).length > 0 || (d.catalog || []).some((c) => (c.decorations || []).length) },
+  { id: 'launch', n: 5, title: 'Launch the store', icon: '🚀', target: 'launch',
+    where: 'Header → 🚀 Launch store',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144723/nsa-store-guide/step-5-launch.png',
+    blurb: 'Preview the storefront, then open it for shoppers and share the link.',
+    todo: [
+      'Click “↗ View storefront” to preview it',
+      'Click “🚀 Launch store” to open ordering',
+      'Share the link / printable QR flyer with the team',
+    ],
+    done: (s) => s.status === 'open' || s.status === 'closed' },
+  { id: 'operate', n: 6, title: 'Orders & fulfillment', icon: '📦', target: 'orders',
+    where: 'Orders tab (after launch)',
+    shot: 'https://res.cloudinary.com/dwlyljyuz/image/upload/v1782144724/nsa-store-guide/step-6-orders.png',
+    blurb: 'Watch orders come in, batch them into a Sales Order, and track fulfillment.',
+    todo: [
+      'Review orders as they arrive',
+      'Batch orders into a Sales Order',
+      'Use Analytics, Roster & Coupons to manage the store',
+    ],
+    done: (s, d) => (d.orders || []).length > 0 },
+];
+// Which guide step is the contextual helper for each store tab.
+const GUIDE_BY_TAB = { catalog: 'catalog', art: 'art', orders: 'operate', batches: 'operate', analytics: 'operate', inventory: 'operate', roster: 'operate', coupons: 'operate' };
+const GUIDE_INK = '#192853', GUIDE_GREEN = '#166534';
+
+// Small localStorage-backed boolean so a staffer's show/hide choice sticks.
+function useGuidePref(key, def) {
+  const [v, setV] = useState(() => { try { const r = localStorage.getItem(key); return r == null ? def : r === '1'; } catch { return def; } });
+  const set = (nv) => { setV(nv); try { localStorage.setItem(key, nv ? '1' : '0'); } catch {} };
+  return [v, set];
+}
+
+// Overview checklist for a store's main page — shows EVERY step at a glance with
+// live done/next state and a “Go” button that jumps to the right place.
+function StoreGuideOverview({ store, detail = {}, onGoStep }) {
+  const [open, setOpen] = useGuidePref('wsGuideOverview', true);
+  const [fullOpen, setFullOpen] = useState(false);
+  const states = GUIDE_STEPS.map((st) => ({ st, done: !!st.done(store, detail) }));
+  const doneCount = states.filter((x) => x.done).length;
+  const nextId = (states.find((x) => !x.done) || {}).st?.id;
+  const pct = Math.round((doneCount / GUIDE_STEPS.length) * 100);
+  return (
+    <>
+    <div className="card" style={{ marginBottom: 12, border: '1px solid #dbe3f4', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'stretch', background: `linear-gradient(120deg, ${GUIDE_INK}, ${shadeHex(GUIDE_INK, -22)})`, color: '#fff' }}>
+        <button type="button" onClick={() => setOpen(!open)} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', textAlign: 'left' }}>
+          <span style={{ fontSize: 18 }}>🧭</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 14.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Store build guide</div>
+            <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.8)', marginTop: 1 }}>{doneCount} of {GUIDE_STEPS.length} steps done — a teaching walkthrough for building this store</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 84, height: 6, borderRadius: 999, background: 'rgba(255,255,255,.25)', overflow: 'hidden' }}><div style={{ width: pct + '%', height: '100%', background: '#4ade80' }} /></div>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{open ? '▲' : '▼'}</span>
+          </div>
+        </button>
+        <button type="button" onClick={() => setFullOpen(true)} title="Open the full step-by-step guide" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7, padding: '0 15px', background: 'rgba(255,255,255,.14)', border: 'none', borderLeft: '1px solid rgba(255,255,255,.22)', cursor: 'pointer', color: '#fff', fontWeight: 800, fontSize: 12.5, whiteSpace: 'nowrap' }}>📖 Full guide</button>
+      </div>
+      {open && (
+        <div style={{ padding: 10, display: 'grid', gap: 8 }}>
+          {states.map(({ st, done }) => {
+            const isNext = st.id === nextId;
+            return (
+              <div key={st.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 11, padding: '10px 12px', borderRadius: 10, border: `1px solid ${isNext ? '#c7d2fe' : '#eef0f3'}`, background: done ? '#f6fbf7' : isNext ? '#f5f8ff' : '#fff' }}>
+                <div style={{ width: 26, height: 26, flexShrink: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, color: '#fff', background: done ? GUIDE_GREEN : isNext ? GUIDE_INK : '#cbd5e1' }}>{done ? '✓' : st.n}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 800, fontSize: 13.5, color: '#1e293b' }}>{st.icon} {st.title}</span>
+                    {done ? <span style={{ fontSize: 10.5, fontWeight: 800, color: GUIDE_GREEN, background: '#dcfce7', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em' }}>Done</span>
+                      : isNext ? <span style={{ fontSize: 10.5, fontWeight: 800, color: GUIDE_INK, background: '#e0e7ff', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em' }}>Do next</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{st.blurb}</div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3, fontFamily: 'monospace' }}>{st.where}</div>
+                </div>
+                <button type="button" className="btn btn-sm" onClick={() => onGoStep(st.id)} style={{ flexShrink: 0, background: isNext ? GUIDE_INK : '#eef2ff', color: isNext ? '#fff' : GUIDE_INK, fontWeight: 700, border: 'none' }}>{done ? 'Review' : 'Go'} →</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+    {fullOpen && <StoreGuideFull store={store} detail={detail} onGoStep={onGoStep} onClose={() => setFullOpen(false)} />}
+    </>
+  );
+}
+
+// A guide screenshot a rep can click to enlarge. Inline it looks like before;
+// clicking opens a full-size lightbox above everything (incl. the Full-guide
+// modal). Click anywhere or × to dismiss.
+function ShotImage({ src, alt }) {
+  const [zoom, setZoom] = useState(false);
+  return (
+    <>
+      <img src={src} alt={alt} loading="lazy" title="Click to enlarge" onClick={() => setZoom(true)}
+        style={{ marginTop: 11, width: '100%', borderRadius: 8, border: '1px solid #e6ebfb', boxShadow: '0 1px 4px rgba(15,26,56,.08)', cursor: 'zoom-in', display: 'block' }} />
+      {zoom && createPortal(
+        <div onClick={() => setZoom(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.82)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}>
+          <img src={src} alt={alt} style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 10, boxShadow: '0 24px 70px rgba(0,0,0,.55)' }} />
+          <button type="button" onClick={() => setZoom(false)} aria-label="Close" style={{ position: 'absolute', top: 16, right: 20, width: 40, height: 40, borderRadius: 999, border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 24, lineHeight: 1, cursor: 'pointer' }}>×</button>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
+// Full step-by-step walkthrough for a store's main page — every step in detail
+// (what to do, the example screenshot, and where to do it) in one scrollable
+// guide with a jump-to button per step. Driven by the same GUIDE_STEPS as the
+// overview checklist and the per-page panels.
+function StoreGuideFull({ store, detail = {}, onGoStep, onClose }) {
+  const states = GUIDE_STEPS.map((st) => ({ st, done: !!st.done(store, detail) }));
+  const doneCount = states.filter((x) => x.done).length;
+  const nextId = (states.find((x) => !x.done) || {}).st?.id;
+  const go = (id) => { onClose(); onGoStep(id); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 780, margin: 'auto', maxHeight: 'calc(100vh - 80px)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <span style={{ fontSize: 20 }}>🧭</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 16, textTransform: 'uppercase', letterSpacing: '.03em', color: GUIDE_INK }}>Store build guide</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Full step-by-step for {store.name} · {doneCount} of {GUIDE_STEPS.length} done</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 18, display: 'grid', gap: 16, overflowY: 'auto' }}>
+          {states.map(({ st, done }) => {
+            const isNext = st.id === nextId;
+            return (
+              <div key={st.id} style={{ border: `1px solid ${isNext ? '#c7d2fe' : '#eef0f3'}`, borderRadius: 12, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 14px', background: done ? '#f6fbf7' : isNext ? '#f5f8ff' : '#fafbfc', borderBottom: '1px solid #eef0f3' }}>
+                  <div style={{ width: 28, height: 28, flexShrink: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, color: '#fff', background: done ? GUIDE_GREEN : isNext ? GUIDE_INK : '#cbd5e1' }}>{done ? '✓' : st.n}</div>
+                  <div style={{ flex: 1, minWidth: 0, fontWeight: 800, fontSize: 15, color: '#1e293b' }}>{st.icon} Step {st.n}: {st.title}
+                    {done ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: GUIDE_GREEN, background: '#dcfce7', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em', verticalAlign: 'middle' }}>Done</span>
+                      : isNext ? <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: GUIDE_INK, background: '#e0e7ff', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em', verticalAlign: 'middle' }}>Do next</span> : null}
+                  </div>
+                  <button type="button" className="btn btn-sm" onClick={() => go(st.id)} style={{ flexShrink: 0, background: GUIDE_INK, color: '#fff', fontWeight: 700, border: 'none' }}>{done ? 'Review' : 'Go'} →</button>
+                </div>
+                <div style={{ padding: '12px 14px' }}>
+                  <div style={{ fontSize: 13, color: '#475569', marginBottom: 9 }}>{st.blurb}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>What to do</div>
+                  <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 5 }}>
+                    {st.todo.map((t, i) => (
+                      <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: '#334155' }}>
+                        <span style={{ color: GUIDE_INK, fontWeight: 900, lineHeight: 1.4 }}>›</span><span>{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {st.shot && <ShotImage src={st.shot} alt={`${st.title} — example`} />}
+                  <div style={{ fontSize: 11.5, color: '#94a3b8', fontFamily: 'monospace', marginTop: 10 }}>{st.where}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Contextual "you are here" helper shown on a single page. Walks the same steps
+// with Back/Next; when scopeIds is given (Settings) it only moves within them.
+function GuidePanel({ stepId, store, detail = {}, onGoStep, scopeIds, nudge }) {
+  const [open, setOpen] = useGuidePref('wsGuidePanel', true);
+  const panelRef = useRef(null);
+  // When a guide "Review/Go" navigates here, force the panel open and scroll to
+  // it so the explanation + screenshot are always visible (nudge bumps on nav).
+  useEffect(() => {
+    if (!nudge) return;
+    setOpen(true);
+    const t = setTimeout(() => panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 70);
+    return () => clearTimeout(t);
+  }, [nudge]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scope = scopeIds ? GUIDE_STEPS.filter((s) => scopeIds.includes(s.id)) : GUIDE_STEPS;
+  const idx = scope.findIndex((s) => s.id === stepId);
+  const step = scope[idx];
+  if (!step) return null;
+  const prev = scope[idx - 1], next = scope[idx + 1];
+  const done = !!step.done(store, detail);
+  if (!open) {
+    return (
+      <div ref={panelRef} style={{ marginBottom: 12 }}>
+        <button type="button" onClick={() => setOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, border: '1px dashed #c7d2fe', background: '#f5f8ff', color: GUIDE_INK, borderRadius: 999, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>🧭 Show guide · Step {step.n}: {step.title}</button>
+      </div>
+    );
+  }
+  return (
+    <div ref={panelRef} style={{ marginBottom: 12, border: '1px solid #c7d2fe', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', background: '#f5f8ff', borderBottom: '1px solid #e6ebfb' }}>
+        <span style={{ fontSize: 16 }}>🧭</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: GUIDE_INK, textTransform: 'uppercase', letterSpacing: '.06em' }}>Guide · Step {step.n} of {GUIDE_STEPS.length}</div>
+          <div style={{ fontWeight: 800, fontSize: 14.5, color: '#1e293b' }}>{step.icon} {step.title}{done && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: GUIDE_GREEN, background: '#dcfce7', borderRadius: 999, padding: '1px 8px', textTransform: 'uppercase', letterSpacing: '.04em', verticalAlign: 'middle' }}>Done</span>}</div>
+        </div>
+        <button type="button" onClick={() => setOpen(false)} title="Hide guide" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18, lineHeight: 1, padding: 4 }}>×</button>
+      </div>
+      <div style={{ padding: '12px 14px' }}>
+        <div style={{ fontSize: 13, color: '#475569', marginBottom: 9 }}>{step.blurb}</div>
+        <div style={{ fontSize: 11, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>On this page</div>
+        <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 5 }}>
+          {step.todo.map((t, i) => (
+            <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: '#334155' }}>
+              <span style={{ color: GUIDE_INK, fontWeight: 900, lineHeight: 1.4 }}>›</span><span>{t}</span>
+            </li>
+          ))}
+        </ul>
+        {step.shot && <ShotImage src={step.shot} alt={`${step.title} — example`} />}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 13, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11.5, color: '#94a3b8', fontFamily: 'monospace' }}>{step.where}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn btn-sm btn-secondary" disabled={!prev} onClick={() => prev && onGoStep(prev.id)} style={{ opacity: prev ? 1 : 0.45 }}>← {prev ? prev.title : 'Back'}</button>
+            <button type="button" className="btn btn-sm" disabled={!next} onClick={() => next && onGoStep(next.id)} style={{ background: next ? GUIDE_INK : '#cbd5e1', color: '#fff', border: 'none', fontWeight: 700 }}>{next ? `Next: ${next.title}` : 'Last step'} →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [guideNudge, setGuideNudge] = useState(0); // bumped by goStep to reveal the guide panel on the destination
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
+  // Route a guide step to where it's done: Settings steps open the editor, the
+  // launch step opens the launch modal, the rest switch to that tab.
+  const goStep = (id) => {
+    try { localStorage.setItem('wsGuidePanel', '1'); } catch {} // reveal the guide on arrival
+    setGuideNudge((n) => n + 1);
+    if (id === 'setup' || id === 'branding') onEdit(id);
+    else if (id === 'launch') setLaunchOpen(true);
+    else { const st = GUIDE_STEPS.find((x) => x.id === id); if (st) setTab(st.target); }
+  };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -2430,6 +2726,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         );
       })()}
 
+      <StoreGuideOverview store={s} detail={detail || {}} onGoStep={goStep} />
+
       {soSummary.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sales Orders created</span>
         {soSummary.map((so) => (
@@ -2441,6 +2739,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       </div></div>}
 
       {tab !== 'catalog' && <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>{tabsButtons}</div>}
+
+      {GUIDE_BY_TAB[tab] && <GuidePanel stepId={GUIDE_BY_TAB[tab]} store={s} detail={detail || {}} onGoStep={goStep} nudge={guideNudge} />}
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
