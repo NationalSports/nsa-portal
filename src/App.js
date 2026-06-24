@@ -3840,6 +3840,20 @@ export default function App(){
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});// create/edit PO modal
   const[invPOApiResults,setInvPOApiResults]=useState([]);
   const[invPOApiLoading,setInvPOApiLoading]=useState(false);
+  const[invPOServerResults,setInvPOServerResults]=useState([]);
+  const[invPOServerLoading,setInvPOServerLoading]=useState(false);
+  React.useEffect(()=>{
+    const q=(invPOModal.productSearch||'').trim();
+    if(!invPOModal.open||q.length<2){setInvPOServerResults([]);setInvPOServerLoading(false);return}
+    setInvPOServerLoading(true);
+    const t=setTimeout(async()=>{
+      try{const res=await _searchProductsServer(q,{},0,15);setInvPOServerResults(res?.products||[]);}
+      catch(e){console.warn('[PO] Server product search failed:',e);setInvPOServerResults([])}
+      setInvPOServerLoading(false);
+    },300);
+    return()=>{clearTimeout(t)};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[invPOModal.productSearch,invPOModal.open]);
   React.useEffect(()=>{
     const vendor=vend.find(v=>v.id===invPOModal.vendor_id);
     const isSanMar=vendor&&/sanmar/i.test(vendor.name||'');
@@ -31461,16 +31475,19 @@ export default function App(){
             const vendorId=invPOModal.vendor_id;
             const vendor=vend.find(v=>v.id===vendorId);
             const isSanMar=vendor&&/sanmar/i.test(vendor.name||'');
-            // Search the FULL catalog — the selected vendor's products surface first, but any SKU
-            // can be added to the PO even if it's assigned to a different vendor (or none).
-            const available=prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
-            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq))
+            const addedIds=new Set(invPOModal.items.map(it=>it.product_id).filter(Boolean));
+            // Server-side results cover the full 53k catalog; local prod array is capped at ~20k rows.
+            const serverMatches=invPOServerResults.filter(p=>!addedIds.has(p.id));
+            const localMatches=prod.filter(p=>!addedIds.has(p.id)&&((p.sku||'').toLowerCase().includes(pq)||(p.name||'').toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq)))
               .sort((a,b)=>((vendorId&&a.vendor_id===vendorId)?0:1)-((vendorId&&b.vendor_id===vendorId)?0:1)).slice(0,15);
+            const matches=serverMatches.length>0?serverMatches:localMatches;
             const hasLocal=matches.length>0;const hasApi=invPOApiResults.length>0;
-            if(!hasLocal&&!hasApi&&!invPOApiLoading)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found.{isSanMar?' Searching SanMar catalog...':''}</div>;
+            const isSearching=invPOServerLoading||invPOApiLoading;
+            if(!hasLocal&&!hasApi&&!isSearching)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found.{isSanMar?' Searching SanMar catalog...':''}</div>;
             return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:220,overflowY:'auto'}}>
+              {invPOServerLoading&&!hasLocal&&<div style={{padding:'8px 12px',fontSize:12,color:'#64748b',fontStyle:'italic'}}>Searching catalog...</div>}
               {matches.map(p2=><div key={p2.id} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
-                onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
+                onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...(p2.available_sizes||['S','M','L','XL','2XL'])],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p2.sku}</span>
                 <span style={{flex:1}}>{p2.name}</span>
                 <span style={{color:'#94a3b8',fontSize:11}}>{p2.color}</span>
