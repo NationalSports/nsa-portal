@@ -30,6 +30,42 @@ const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minim
 const _cpStages = { pending: 'Ordered', received: 'Received', in_production: 'In production', bagging: 'Bagging', shipped: 'Shipped', complete: 'Complete' };
 const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'bagging' ? '#86198f' : s === 'in_production' ? '#92400e' : s === 'received' ? '#3730a3' : '#64748b';
 
+// ── Team-colored portal header ───────────────────────────────────────
+// Wear the team's own colors in the portal header, the way each webstore
+// header is themed by its store colors. customer.school_colors is an array of
+// catalog color-family names (e.g. ["Navy","Orange","White"]); families + hexes
+// match src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js.
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// Darkest-first: which team color makes the best deep banner background (white
+// text stays readable). Light/neutral families are intentionally excluded.
+const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
+// Brightest-first: which team color pops best as the accent underline/eyebrow.
+const CP_ACCENT_PREF = ['Orange', 'Red', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
+const CP_DEFAULT_THEME = { primary: '#1e3a5f', accent: '#2563eb' }; // NSA navy/blue fallback
+// Lighten (pct>0) / darken (pct<0) a hex — mirrors storefront/Storefront.js shade().
+const cpShade = (hex, pct) => {
+  try {
+    const h = (hex || '#1e3a5f').replace('#', '');
+    const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+    const f = (v) => Math.max(0, Math.min(255, Math.round(v + (pct / 100) * 255)));
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  } catch { return hex; }
+};
+// Resolve a {primary, accent} header theme from a customer's school colors.
+// primary is always a dark, readable banner color (a dark team color or the NSA
+// navy default); accent is the team's brightest color (or a tonal fallback).
+function cpTeamTheme(customer) {
+  const fams = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  if (!fams.length) return { ...CP_DEFAULT_THEME };
+  const darkFam = CP_PRIMARY_PREF.find((f) => fams.includes(f));
+  const primary = darkFam ? CP_HEX[darkFam] : CP_DEFAULT_THEME.primary;
+  const accentFam = CP_ACCENT_PREF.find((f) => fams.includes(f) && f !== darkFam)
+    || fams.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
+  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, 45);
+  return { primary, accent };
+}
+
 function CoachStore({ customer }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
@@ -1148,23 +1184,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Coach store builder — full-screen guided flow
   if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
-  // Main portal view
+  // Main portal view — header wears the team's own colors
+  const cpTheme = cpTeamTheme(customer);
   return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
     <div style={{width:'100%',maxWidth:1100,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div>
-            <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:38,filter:'brightness(0) invert(1)',marginBottom:6}}/>
-            <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
-            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
+      <div style={{background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'24px 28px',position:'relative',borderBottom:`4px solid ${cpTheme.accent}`,boxShadow:'0 2px 14px rgba(11,18,32,.18)'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16}}>
+          <div style={{minWidth:0}}>
+            <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:34,filter:'brightness(0) invert(1)',marginBottom:8,opacity:.95}}/>
+            <div style={{fontSize:23,fontWeight:800,lineHeight:1.15}}>{customer.name}</div>
+            <div style={{display:'inline-flex',alignItems:'center',gap:8,marginTop:7}}>
+              <span style={{width:22,height:3,borderRadius:2,background:cpTheme.accent,display:'inline-block'}} />
+              <span style={{fontSize:11.5,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>Customer Portal</span>
+            </div>
           </div>
-          <div style={{textAlign:'right'}}>
-            {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
+          <div style={{textAlign:'right',flexShrink:0}}>
+            {totalDue>0&&<><div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:0.8}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
           </div>
         </div>
       </div>
       <div style={{padding:'20px 28px'}}>
-        <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}`}</style>
+        <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
         <div className="cp-grid">
 
         {/* ── LEFT COLUMN — Orders & Billing ── */}
@@ -1449,6 +1489,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{fontSize:22}}>🎨</span>
               <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Custom &amp; Catalog Gear</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse our catalogs or request a custom quote.</span></span>
               <span style={{color:'#94a3b8'}}>›</span>
+            </a>
+            {/* adidas team catalog — branded banner linking out to the live adidas dealer site.
+                Background photo lives at public/adidas-team-catalog.jpg; until it's added the
+                dark gradient over #0a0a0a renders as a clean black adidas banner. */}
+            <a className="cp-adidas" href="https://www.adidas-team.com/usa/us-team/" target={CP_LINK_TARGET} rel="noopener noreferrer"
+              style={{position:'relative',display:'flex',alignItems:'center',gap:12,minHeight:104,borderRadius:12,overflow:'hidden',textDecoration:'none',color:'#fff',border:'1px solid #e2e8f0',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(90deg, rgba(8,8,8,.82) 0%, rgba(8,8,8,.45) 52%, rgba(8,8,8,.18) 100%), url('/adidas-team-catalog.jpg')`,backgroundSize:'cover',backgroundPosition:'center 28%'}}>
+              <span style={{flex:1,minWidth:0,padding:'14px 16px'}}>
+                <span style={{display:'block',fontSize:11,fontWeight:800,letterSpacing:'.16em',opacity:.85}}>adidas</span>
+                <span style={{display:'block',fontWeight:800,fontSize:16,lineHeight:1.15,marginTop:3}}>Shop the adidas Catalog</span>
+                <span style={{display:'block',fontSize:12,opacity:.92,marginTop:3}}>Browse the full adidas team collection.</span>
+              </span>
+              <span style={{fontSize:22,opacity:.85,paddingRight:14}}>›</span>
             </a>
           </div>
         </div>
