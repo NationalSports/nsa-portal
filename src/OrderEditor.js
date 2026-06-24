@@ -1566,6 +1566,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const remap={};entries.forEach((e,newI)=>{remap[e.i]=newI});
     applyItemOrder(entries.map(e=>e.it),remap);
     setCollapsedItems({});nf('Sorted line items by decoration')};
+  const isItemShortPulled=(it)=>safePicks(it).some(pk=>{const pkQty=Object.entries(pk).reduce((a,[k,v])=>typeof v==='number'?a+v:a,0);return(pk.status||'pick')==='pulled'&&pkQty===0});
+  const sortShortPullsFirst=()=>{const items=safeItems(o);const entries=items.map((it,i)=>({it,i,isShort:isItemShortPulled(it)}));if(!entries.some(e=>e.isShort)){nf('No short-pulled items');return}const sorted=[...entries].sort((a,b)=>(b.isShort?1:0)-(a.isShort?1:0)||a.i-b.i);if(sorted.every((e,i)=>e.i===i)){nf('Short-pulled items already at top');return}const remap={};sorted.forEach((e,newI)=>{remap[e.i]=newI});applyItemOrder(sorted.map(e=>e.it),remap);setCollapsedItems({});nf('Short-pulled items moved to top')};
   // Collapse / expand controls for the compact line-item view.
   const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
@@ -3279,6 +3281,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
         <div style={{flex:1}}/>
         <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
+        {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
         {_anyCollapsed
           ?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
           :<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
@@ -9804,13 +9807,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {/* Status (applies to all items on this IF) */}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
           <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s,...(s==='pulled'&&!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+        {isShortPullIF&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid #f59e0b',background:'#fffbeb'}}><div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ Short Pull — 0 units pulled</div><div style={{fontSize:11,color:'#78350f'}}>Remove items from this IF to free them up for a new SKU or PO.</div></div>}
         {/* Per-item product info + quantities */}
         {itemInfos.map(info=><div key={info.idx} style={{marginBottom:12,padding:10,border:'1px solid #e2e8f0',borderRadius:6,background:'#fafafa'}}>
           <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{info.item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{info.item.name}</span>
             {info.item.color&&<span className="badge badge-gray">{info.item.color}</span>}
-            {picks.length>1&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'3px 10px',fontWeight:700}} onClick={()=>setEditPick(p=>({...p,picks:p.picks.filter((_,i)=>i!==info.idx)}))}>✕ Remove</button>}
+            {(picks.length>1||isShortPullIF)&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'3px 10px',fontWeight:700}} onClick={()=>{const newPicks=editPick.picks.filter((_,i)=>i!==info.idx);if(newPicks.length===0){const pkId=editPick.pickId;const affected=new Set(editPick.picks.map(p=>p.lineIdx));o.items.forEach((it,i)=>{if((it.pick_lines||[]).some(pl=>pl.pick_id===pkId))affected.add(i)});const updatedItems=o.items.map((it,i)=>affected.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Removed from IF');}else{setEditPick(p=>({...p,picks:newPicks}));}}}>{isShortPullIF?'✕ Remove from IF':'✕ Remove'}</button>}
           </div>
           <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
