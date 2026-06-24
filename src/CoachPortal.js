@@ -1491,10 +1491,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{color:'#94a3b8'}}>›</span>
             </a>
             {/* adidas team catalog — branded banner linking out to the live adidas dealer site.
-                Background photo lives at public/adidas-team-catalog.jpg; until it's added the
-                dark gradient over #0a0a0a renders as a clean black adidas banner. */}
+                Background photo lives at public/adidas-team-catalog.png; the dark gradient over
+                #0a0a0a keeps the heading readable and falls back to a black adidas banner. */}
             <a className="cp-adidas" href="https://www.adidas-team.com/usa/us-team/" target={CP_LINK_TARGET} rel="noopener noreferrer"
-              style={{position:'relative',display:'flex',alignItems:'center',gap:12,minHeight:104,borderRadius:12,overflow:'hidden',textDecoration:'none',color:'#fff',border:'1px solid #e2e8f0',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(90deg, rgba(8,8,8,.82) 0%, rgba(8,8,8,.45) 52%, rgba(8,8,8,.18) 100%), url('/adidas-team-catalog.jpg')`,backgroundSize:'cover',backgroundPosition:'center 28%'}}>
+              style={{position:'relative',display:'flex',alignItems:'center',gap:12,minHeight:104,borderRadius:12,overflow:'hidden',textDecoration:'none',color:'#fff',border:'1px solid #e2e8f0',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(90deg, rgba(8,8,8,.82) 0%, rgba(8,8,8,.45) 52%, rgba(8,8,8,.18) 100%), url('/adidas-team-catalog.png')`,backgroundSize:'cover',backgroundPosition:'center 28%'}}>
               <span style={{flex:1,minWidth:0,padding:'14px 16px'}}>
                 <span style={{display:'block',fontSize:11,fontWeight:800,letterSpacing:'.16em',opacity:.85}}>adidas</span>
                 <span style={{display:'block',fontWeight:800,fontSize:16,lineHeight:1.15,marginTop:3}}>Shop the adidas Catalog</span>
