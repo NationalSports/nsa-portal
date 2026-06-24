@@ -62,12 +62,38 @@ exports.handler = async (event) => {
     // 1. Store the structured request (the portal can turn this into an estimate)
     const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
     const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const sbHeaders = { apikey: sbKey, Authorization: `Bearer ${sbKey}` };
+    // Resolve the coach's team and its assigned rep up front. The storefront only
+    // forwards customer_id for a live signed-in session, so a guest cart or a
+    // lapsed sign-in arrives blank — but the coach's email is in coach_accounts,
+    // which is the reliable link. With the team known we route the alert to the
+    // one rep who owns the account instead of the shared catalog inbox.
+    let resolvedCustomerId = customer_id;
+    let repEmail = null;
+    if (sbUrl && sbKey) {
+      try {
+        if (!resolvedCustomerId && coach_email) {
+          const r = await fetch(`${sbUrl}/rest/v1/coach_accounts?select=customer_id&status=eq.active&email=ilike.${encodeURIComponent(coach_email)}&limit=1`, { headers: sbHeaders });
+          if (r.ok) { const rows = await r.json(); if (rows && rows[0] && rows[0].customer_id) resolvedCustomerId = rows[0].customer_id; }
+        }
+        if (resolvedCustomerId) {
+          const rc = await fetch(`${sbUrl}/rest/v1/customers?select=primary_rep_id&id=eq.${encodeURIComponent(resolvedCustomerId)}&limit=1`, { headers: sbHeaders });
+          const crows = rc.ok ? await rc.json() : [];
+          const repId = crows && crows[0] ? crows[0].primary_rep_id : null;
+          if (repId) {
+            const rt = await fetch(`${sbUrl}/rest/v1/team_members?select=email,is_active&id=eq.${encodeURIComponent(repId)}&limit=1`, { headers: sbHeaders });
+            const trows = rt.ok ? await rt.json() : [];
+            if (trows && trows[0] && trows[0].email && trows[0].is_active !== false) repEmail = trows[0].email;
+          }
+        }
+      } catch (e) { console.error('[catalog-order-request] customer/rep resolution failed:', e.message); }
+    }
     let requestId = null;
     if (sbUrl && sbKey) {
       const resp = await fetch(`${sbUrl}/rest/v1/catalog_order_requests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: `Bearer ${sbKey}`, Prefer: 'return=representation' },
-        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, customer_id, lines }),
+        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, customer_id: resolvedCustomerId, lines }),
       });
       if (resp.ok) {
         const rows = await resp.json();
@@ -163,7 +189,9 @@ exports.handler = async (event) => {
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
       body: JSON.stringify({
         sender: { name: 'NSA Catalog', email: 'noreply@nationalsportsapparel.com' },
-        to: [{ email: REP_EMAIL }],
+        // Route to the account's assigned rep when we resolved one; otherwise the
+        // shared catalog inbox so an unmatched request still reaches someone.
+        to: [{ email: repEmail || REP_EMAIL }],
         replyTo: { email: coach_email, name: coach_name },
         subject: `Order request: ${coach_name}${team_name ? ' (' + team_name + ')' : ''} — ${lines.length} line${lines.length === 1 ? '' : 's'}, ${totalUnits} units`,
         htmlContent,
