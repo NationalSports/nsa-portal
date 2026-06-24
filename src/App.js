@@ -817,7 +817,7 @@ const _dbLoad = async (opts={}) => {
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
-      rHistInvs] = await _batch([
+      rHistInvs,rBoxes] = await _batch([
       _cold(()=>_safeQuery('team_members',{order:'name'})),
       // customers (+ its contacts/promo/credit children) are COLD for the same reason as products:
       // slow-changing, and the customers realtime channel + ~10-min full poll keep them fresh.
@@ -892,6 +892,7 @@ const _dbLoad = async (opts={}) => {
       // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
       // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
       ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
+      _cold(()=>_safeQuery('boxes')),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -918,7 +919,7 @@ const _dbLoad = async (opts={}) => {
     const quoteReqRaw=d(rQuoteReqs);const quoteReqItemsRaw=d(rQuoteReqItems);
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
-    const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
+    const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);const boxes=d(rBoxes);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -1038,7 +1039,7 @@ const _dbLoad = async (opts={}) => {
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,boxes,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -2458,6 +2459,11 @@ const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toL
 const _retryNet=async(fn,tries=3)=>{let last;for(let i=0;i<tries;i++){try{const r=await fn();if(r&&r.error&&_isNetErr(r.error)){last={error:r.error};if(i<tries-1){await new Promise(res=>setTimeout(res,400*Math.pow(3,i)));continue}}return r}catch(e){last=e;if(!_isNetErr(e)||i===tries-1)throw e;await new Promise(res=>setTimeout(res,400*Math.pow(3,i)))}}throw last};
 // Legacy compat — keep old _dbSave for team_members and other simple tables. Retries transient network errors.
 const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'})).then(r=>{if(r&&r.error)console.error('[DB] save '+table+':', r.error.message)}).catch(e=>{console.error('[DB] save '+table+':', e.message||e)}) };
+// Boxes persist through the generic _dbSave upsert, which — like a PostgREST bulk upsert — needs
+// every row in a batch to share the same columns. Box objects legitimately vary (a fulfillment box
+// has if_id but no po_id; a freshly-minted box lacks the nullable columns a DB-loaded one carries),
+// so normalize each to the full, fixed column set before saving. NOT-NULL columns get safe defaults.
+const _boxRow = (b) => ({ id:b.id, kind:b.kind||'fulfillment', contents:b.contents||[], source_refs:b.source_refs||[], so_id:b.so_id??null, if_id:b.if_id??null, po_id:b.po_id??null, status:b.status||'staged', merged_into:b.merged_into??null, bin:b.bin??null, weight:b.weight??null, dimensions:b.dimensions??null, notes:b.notes??null, created_by:b.created_by??null, created_at:b.created_at??null, updated_at:b.updated_at??null });
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -3960,6 +3966,8 @@ export default function App(){
   const[teamInlineEmailVal,setTeamInlineEmailVal]=useState('');
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
+  const[whBoxes,setWhBoxes]=useState([]);// warehouse box records (overlay; loaded from `boxes` table — [] if table absent)
+  const[boxModal,setBoxModal]=useState(null);// box currently open in the Box Action modal (a scanned BX plate, survivor-resolved)
   const[assignedTodos,setAssignedTodos]=useState([]);
   // When each OMG store was first brought into the portal, keyed by store id:
   // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
@@ -4041,6 +4049,7 @@ export default function App(){
           setIssues(d.issues||[]);
           if(d.quote_requests)setQuoteRequests(d.quote_requests);
           if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
+          if(d.boxes)setWhBoxes(d.boxes);
           if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
           if(d.decoVendors)setDecoVendors(d.decoVendors);
           if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
@@ -5025,6 +5034,94 @@ export default function App(){
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
+  // Warehouse boxes auto-save (overlay model — purely additive; mirrors the rep-CSR diff-save)
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.boxes||[];const changed=whBoxes.filter(b=>{const old=snap.find(p=>p.id===b.id);return!old||JSON.stringify(old)!==JSON.stringify(b)});if(changed.length)_dbSave('boxes',changed.map(_boxRow));_dbSnap.current.boxes=whBoxes},[whBoxes]);
+  // Mint the next BX-#### plate (max existing + 1, base 2000). Mirrors nextEstId.
+  const nextBoxId=()=>{const mx=whBoxes.reduce((m,b)=>{const n=parseInt(String(b.id).replace(/^BX-/i,''),10);return Number.isFinite(n)&&n>m?n:m},2000);return 'BX-'+(mx+1)};
+  // Upsert a box into state; the effect above persists it. Best-effort by design (never in a critical path).
+  const saveBox=(box)=>{const ts=new Date().toISOString();setWhBoxes(prev=>{const i=prev.findIndex(b=>b.id===box.id);if(i>=0){const c=[...prev];c[i]={...c[i],...box,updated_at:ts};return c}return[...prev,{status:'staged',contents:[],source_refs:[],created_by:cu?.id,created_at:ts,updated_at:ts,...box}]})};
+  // Record one STOCK box per receive action (overlay): capture exactly the SKUs/sizes that just
+  // landed, each content line keeping its own so_id so SO-earmarked goods stay attributable. Mirrors
+  // the box-on-pull path; best-effort (wrapped in try/catch, never blocks the receive or touches _inv).
+  // `lines` is [{sku,name,color,so_id|soId,sizes:{}}]; returns the minted BX plate (or null if empty).
+  const recordReceiveBox=(lines,{poId,so_id}={})=>{
+    try{
+      const contents=(lines||[]).map(r=>{const sizes={};Object.entries(r.sizes||{}).forEach(([sz,v])=>{if((v||0)>0)sizes[sz]=v});return{sku:r.sku||'',name:r.name||'',color:r.color||'',so_id:r.so_id||r.soId||null,if_id:null,sizes}}).filter(l=>Object.keys(l.sizes).length>0);
+      if(contents.length===0)return null;
+      const soIds=[...new Set(contents.map(c=>c.so_id).filter(Boolean))];
+      const id=nextBoxId();
+      saveBox({id,kind:'stock',po_id:poId||null,so_id:so_id||(soIds.length===1?soIds[0]:null),source_refs:poId?[{type:'PO',id:poId}]:[],contents,status:'staged'});
+      return id;
+    }catch(e){/* overlay box is best-effort */return null}
+  };
+  // ── Box Action helpers (used by the Box Action modal) ──
+  // Total units across a box's contents.
+  const boxUnits=(b)=>(b?.contents||[]).reduce((a,c)=>a+Object.values(c.sizes||{}).reduce((x,v)=>x+(v||0),0),0);
+  // Persist a status change and keep the open modal in sync.
+  const setBoxStatus=(b,status)=>{if(!b)return;saveBox({id:b.id,status});setBoxModal({...b,status})};
+  // Reprint a box's 4×6 plate (QR → ?scan=BX-####), using the shared label renderer.
+  const printBoxLabel=(b)=>{if(!b)return;
+    const items=(b.contents||[]).map(c=>{const sz=Object.entries(c.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((c.sku||'')+' '+(c.name||'')).trim(),detail:[(c.color&&c.color!=='—')?c.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
+    const refs=[b.if_id,b.so_id,b.po_id].filter(Boolean).join(' · ');
+    printQrLabel({code:b.id,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(b.id),subtitle:refs,note:(b.kind||'box').toUpperCase()+(b.status&&b.status!=='staged'?' · '+b.status.toUpperCase():''),items,codeSub:boxUnits(b)+' units · scan box'});
+  };
+  // Combine a box into another plate: append src contents into the target, dedupe source_refs,
+  // then mark src combined (merged_into=target). Overlay-only; never touches _inv. Follows the
+  // target through its own merge chain so a stale plate still resolves to the live survivor.
+  const combineBox=(src,targetRaw)=>{
+    const targetId=(targetRaw||'').trim().toUpperCase();
+    if(!src||!targetId)return;
+    if(!targetId.startsWith('BX-')){nf('Enter a box plate like BX-2001','warn');return}
+    if(targetId===(src.id||'').toUpperCase()){nf('Cannot combine a box into itself','warn');return}
+    let tgt=whBoxes.find(b=>(b.id||'').toUpperCase()===targetId);
+    let guard=0;while(tgt&&tgt.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===tgt.merged_into);if(!nx)break;tgt=nx}
+    if(!tgt){nf('Box '+targetId+' not found','warn');return}
+    if(tgt.status==='voided'){nf('Box '+tgt.id+' is voided — restore it first','warn');return}
+    const refKey=r=>(r.type||'')+':'+(r.id||'');
+    const mergedRefs=[...(tgt.source_refs||[])];const seen=new Set(mergedRefs.map(refKey));
+    [...(src.source_refs||[]),...(src.if_id?[{type:'IF',id:src.if_id}]:[]),...(src.po_id?[{type:'PO',id:src.po_id}]:[])].forEach(r=>{if(r.id&&!seen.has(refKey(r))){seen.add(refKey(r));mergedRefs.push(r)}});
+    const newTgt={...tgt,contents:[...(tgt.contents||[]),...(src.contents||[])],source_refs:mergedRefs};
+    saveBox(newTgt);
+    saveBox({id:src.id,status:'combined',merged_into:tgt.id,contents:[]});
+    nf('Combined '+src.id+' → '+tgt.id);
+    setBoxModal(newTgt);
+  };
+  // Active stock boxes (not voided/combined) currently holding a SKU, with the per-size quantities
+  // they hold. Powers the pull-screen "which stock box holds this" hint. Color match is lenient:
+  // SKU is the key; a differing non-'—' color excludes (handles same-SKU/different-color cases).
+  const stockBoxesForSku=(sku,color)=>{
+    if(!sku)return[];const out=[];
+    (whBoxes||[]).forEach(b=>{
+      if(b.kind!=='stock'||b.status==='voided'||b.status==='combined')return;
+      const sizes={};let any=false;
+      (b.contents||[]).forEach(c=>{if((c.sku||'')!==sku)return;if(color&&color!=='—'&&c.color&&c.color!=='—'&&c.color!==color)return;Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){sizes[sz]=(sizes[sz]||0)+v;any=true}})});
+      if(any)out.push({id:b.id,bin:b.bin,sizes,total:Object.values(sizes).reduce((a,v)=>a+v,0)});
+    });
+    return out.sort((a,b)=>(a.id||'').localeCompare(b.id||''));
+  };
+  // Scan-out: when a pull is confirmed, deplete matching stock boxes by exactly what was pulled —
+  // units move out of stock and into the new fulfillment box (overlay bookkeeping; never touches
+  // _inv). Prefers boxes earmarked for the same SO, then oldest. Works on a local copy so several
+  // sizes/lines deplete consistently before persisting (React state won't flush mid-tick).
+  const depleteStockForPull=(contents,soId)=>{
+    try{
+      const work={};const get=id=>{if(!(id in work)){const b=(whBoxes||[]).find(x=>x.id===id);work[id]=b?{...b,contents:(b.contents||[]).map(c=>({...c,sizes:{...(c.sizes||{})}}))}:null}return work[id]};
+      // Lenient color match (mirrors the hint/reconcile): a differing non-'—' color excludes, so a
+      // mixed-color stock box depletes the right colorway and won't show a phantom reconcile delta.
+      const colorOk=(a,b)=>!(a&&a!=='—'&&b&&b!=='—'&&a!==b);
+      const stockList=(whBoxes||[]).filter(b=>b.kind==='stock'&&b.status!=='voided'&&b.status!=='combined');
+      (contents||[]).forEach(line=>{const sku=line.sku;if(!sku)return;const col=line.color;
+        Object.entries(line.sizes||{}).forEach(([sz,qtyRaw])=>{let remaining=qtyRaw||0;if(remaining<=0)return;
+          const cands=stockList.filter(b=>(b.contents||[]).some(c=>c.sku===sku&&colorOk(c.color,col)&&((c.sizes||{})[sz]||0)>0))
+            .sort((a,b)=>{const ae=a.so_id===soId?0:1,be=b.so_id===soId?0:1;if(ae!==be)return ae-be;return String(a.created_at||a.id).localeCompare(String(b.created_at||b.id))});
+          for(const cand of cands){if(remaining<=0)break;const wb=get(cand.id);if(!wb)continue;
+            for(const c of wb.contents){if(remaining<=0)break;if(c.sku!==sku||!colorOk(c.color,col))continue;const have=c.sizes[sz]||0;if(have<=0)continue;const take=Math.min(have,remaining);c.sizes[sz]=have-take;if(c.sizes[sz]<=0)delete c.sizes[sz];remaining-=take}
+          }
+        });
+      });
+      Object.values(work).forEach(wb=>{if(!wb)return;const pruned=wb.contents.filter(c=>Object.keys(c.sizes||{}).length>0);saveBox({id:wb.id,contents:pruned})});
+    }catch(e){/* scan-out depletion is best-effort */}
+  };
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
@@ -11916,6 +12013,9 @@ export default function App(){
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
+                  // Accumulate exactly what's received this action (per line, with so_id) so we can
+                  // record a stock box overlay after the commit — mirrors the warehouse receive path.
+                  const _jr=[];
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -11937,6 +12037,7 @@ export default function App(){
                         const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
+                        if(_rcvd>0)_jr.push({sku:it.sku,name:it.name,color:it.color,so_id:soId,sizes:rcv});
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -11945,6 +12046,8 @@ export default function App(){
                     _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
                     savSO({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                   });
+                  // Stock-box overlay for this receive (best-effort; record only, label unchanged here).
+                  recordReceiveBox(_jr,{poId});
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   notifyDecoReady(_decoReady);
                   // Print label(s) after receiving — separate per source PO for batches
@@ -17670,6 +17773,7 @@ export default function App(){
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
       ...(cu.role==='warehouse'?[{id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'}]:[]),
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
+      {id:'reconcile',label:'Boxes / Reconcile',icon:'🧮',count:whBoxes.filter(b=>b.status!=='voided'&&b.status!=='combined').length,color:'#0e7490'},
     ];
 
     return(<>
@@ -17766,6 +17870,7 @@ export default function App(){
                         Need to pull: <strong style={{color:'#d97706'}}>{pi.needsPull} units</strong>
                         {' · '}Total ordered: {pi.totalOrdered}{' · '}Already pulled: {pi.totalPulled}
                       </div>
+                      {(()=>{const sb=stockBoxesForSku(pi.sku,pi.color);if(!sb.length)return null;return <div style={{marginTop:4,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}><span style={{fontSize:11,fontWeight:700,color:'#0e7490'}}>📦 Stock box{sb.length>1?'es':''}:</span>{sb.map(s=><button key={s.id} type="button" onClick={()=>handleScanResult(s.id)} title="Open this box" style={{cursor:'pointer',border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',borderRadius:6,padding:'1px 7px',fontWeight:700,fontFamily:'monospace',fontSize:11}}>{s.id}{s.bin?(' · '+s.bin):''} <span style={{fontWeight:600}}>({Object.entries(s.sizes).map(([sz,v])=>sz+':'+v).join(' ')})</span></button>)}</div>;})()}
                     </div>
                   </div>
                   <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
@@ -17846,11 +17951,17 @@ export default function App(){
                       try{
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
+                          // One box per pull: record exactly what was pulled and label it with its BX plate (QR → box).
+                          const boxId=nextBoxId();
+                          const boxContents=pulledItemsForLabel.map(({pi,qtys})=>{const sizes={};pi.szKeys.forEach(sz=>{if((qtys[sz]||0)>0)sizes[sz]=qtys[sz]});return{sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes}});
+                          saveBox({id:boxId,kind:'fulfillment',if_id:pickIdToUse,so_id:t.soId,source_refs:[{type:'IF',id:pickIdToUse}],contents:boxContents,status:'staged'});
+                          // Scan-out: deplete the stock box(es) these units came from (overlay only).
+                          depleteStockForPull(boxContents,t.soId);
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
-                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:pickIdToUse+' · PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
-                          printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
+                          printQrLabel({id:boxId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(boxId),shipBadge:labelShipBadge,lines});
                         }
                       }catch(e){/* label print is best-effort */}
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
@@ -18474,6 +18585,11 @@ export default function App(){
                     addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
                     nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
                     notifyDecoReady(_decoReady);
+                    // Box-on-receive (overlay): one stock box capturing exactly what just landed this
+                    // action (each content line keeps its own so_id). Best-effort — see recordReceiveBox.
+                    // Batch multi-source receives still record one box per action; per-physical-box
+                    // plating on the batch label is a future refinement.
+                    const _recvBoxId=recordReceiveBox(justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered})),{poId});
                     // Auto-print 4×6 landscape label(s) on receive — shared renderer.
                     // Batch → one page per source PO (each its own customer + items);
                     // otherwise a single label for what just landed in this box.
@@ -18488,7 +18604,10 @@ export default function App(){
                     } else {
                       const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      // When a stock box was minted, the label IS that box (QR + big code → BX plate,
+                      // mirroring the pull label); the PO drops into the subtitle. Otherwise scan → PO.
+                      const _bxScan=_recvBoxId?(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_recvBoxId)):_scanUrl;
+                      printQrLabel({code:_recvBoxId||poId,qrData:_bxScan,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_recvBoxId?[_sid,poId].filter(Boolean).join(' · '):(_sid||vendorName||''),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to '+(_recvBoxId?'open box':'open PO')});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -20498,6 +20617,77 @@ export default function App(){
           <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>{/* effect persists empty list to app_state */}
         </div>}
       </>})()}
+
+      {/* ── BOXES / RECONCILE ── box overlay vs on-hand inventory ── */}
+      {whTab==='reconcile'&&(()=>{
+        // product._inv is the source of truth. Stock boxes are a location overlay: they record
+        // where units physically sit. Reconcile per SKU/size: boxed (active stock boxes) vs on-hand.
+        // Over-tracked (boxed > on-hand) is the actionable discrepancy; loose (on-hand not boxed)
+        // is expected while box tracking is being adopted.
+        const active=whBoxes.filter(b=>b.status!=='voided'&&b.status!=='combined');
+        const activeStock=active.filter(b=>b.kind==='stock');
+        // Aggregate active stock-box contents by SKU + color — a SKU can repeat across colorways,
+        // each its own product with its own _inv — tracking which boxes hold each.
+        const agg={};// key -> {sku,color,sizes:{},boxIds:Set}
+        activeStock.forEach(b=>{(b.contents||[]).forEach(c=>{const sku=c.sku;if(!sku)return;const color=(c.color&&c.color!=='—')?c.color:'';const key=sku+'|||'+color;const e=agg[key]||(agg[key]={sku,color,sizes:{},boxIds:new Set()});Object.entries(c.sizes||{}).forEach(([sz,v])=>{if((v||0)>0){e.sizes[sz]=(e.sizes[sz]||0)+v;e.boxIds.add(b.id)}})})});
+        const sq=(whSearch||'').toLowerCase();
+        let rows=Object.values(agg).map(e=>{
+          // Match the product by SKU + color; fall back to SKU-only when color is absent/ambiguous.
+          const p=(e.color&&prod.find(pp=>pp.sku===e.sku&&(pp.color||'')===e.color))||prod.find(pp=>pp.sku===e.sku);
+          const inv=p?._inv||{};
+          const allSz=[...new Set([...Object.keys(e.sizes),...Object.keys(inv)])].filter(sz=>(e.sizes[sz]||0)>0||(inv[sz]||0)>0);
+          let over=0,loose=0,boxedTotal=0;
+          const cells=allSz.map(sz=>{const bq=e.sizes[sz]||0;const oh=inv[sz]||0;const d=bq-oh;if(d>0)over+=d;else if(d<0)loose+=-d;boxedTotal+=bq;return{sz,bq,oh,d}});
+          return{sku:e.sku,name:p?.name||'',color:e.color||p?.color||'',cells,over,loose,boxedTotal,boxIds:[...e.boxIds]};
+        });
+        if(sq)rows=rows.filter(r=>[r.sku,r.name,r.color].filter(Boolean).some(v=>v.toLowerCase().includes(sq)));
+        rows.sort((a,b)=>(b.over-a.over)||(a.sku||'').localeCompare(b.sku||''));
+        const discrepancies=rows.filter(r=>r.over>0);
+        const totalOver=discrepancies.reduce((a,r)=>a+r.over,0);
+        const totalBoxedUnits=activeStock.reduce((a,b)=>a+boxUnits(b),0);
+        const emptyBoxes=active.filter(b=>boxUnits(b)===0);
+        const byKind=k=>active.filter(b=>b.kind===k);
+        return<>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14}}>
+            <div className="stat-card" style={{borderLeft:'3px solid #0e7490'}}><div className="stat-label">Active stock boxes</div><div className="stat-value" style={{color:'#0e7490'}}>{activeStock.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{totalBoxedUnits} units tracked</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Fulfillment boxes</div><div className="stat-value" style={{color:'#166534'}}>{byKind('fulfillment').length}</div><div style={{fontSize:10,color:'#94a3b8'}}>staged for ship/deco</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid '+(discrepancies.length?'#dc2626':'#16a34a')}}><div className="stat-label">Over-tracked SKUs</div><div className="stat-value" style={{color:discrepancies.length?'#dc2626':'#16a34a'}}>{discrepancies.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{totalOver} units over on-hand</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Empty boxes</div><div className="stat-value" style={{color:'#64748b'}}>{emptyBoxes.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>depleted / unused</div></div>
+          </div>
+          <div style={{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 12px'}}>
+            <strong>Box overlay vs on-hand inventory.</strong> Stock boxes record where units physically sit; on-hand <code>_inv</code> is the source of truth for how many you have.
+            <span style={{color:'#b91c1c',fontWeight:700}}> Over-tracked</span> = boxes claim more than on-hand (investigate: double-count, or stock left a box without scan-out).
+            <span style={{color:'#0e7490',fontWeight:700}}> Loose</span> = on-hand not yet in a box (expected while rolling out box tracking).
+          </div>
+          {rows.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No stock boxes yet — receive a PO to create one.</div>:
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+            <div style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',background:'#f8fafc',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>
+              <div>SKU</div><div>Sizes (boxed / on-hand)</div><div style={{textAlign:'right'}}>Boxed</div><div style={{textAlign:'right'}}>Status</div>
+            </div>
+            {rows.map((r,ri)=>(
+              <div key={r.sku+'|'+(r.color||'')} style={{display:'grid',gridTemplateColumns:'2fr 3fr 70px 80px',gap:8,padding:'8px 12px',borderTop:'1px solid #f1f5f9',background:r.over>0?'#fef2f2':ri%2?'#fff':'#fafbfc',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,fontFamily:'monospace',fontSize:12}}>{r.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{[r.name,r.color&&r.color!=='—'?r.color:''].filter(Boolean).join(' · ')}</div>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3}}>{r.boxIds.map(id=><button key={id} type="button" onClick={()=>handleScanResult(id)} style={{cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',borderRadius:5,padding:'0 5px',fontSize:10,fontFamily:'monospace',color:'#475569'}}>{id}</button>)}</div>
+                </div>
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{r.cells.map(c=>(
+                  <span key={c.sz} style={{fontSize:11,padding:'2px 6px',borderRadius:5,fontWeight:700,background:c.d>0?'#fee2e2':c.d<0?'#ecfeff':'#dcfce7',color:c.d>0?'#b91c1c':c.d<0?'#0e7490':'#166534'}} title={c.d>0?(c.d+' over on-hand'):c.d<0?(-c.d+' on-hand not boxed'):'reconciled'}>{c.sz} {c.bq}/{c.oh}</span>
+                ))}</div>
+                <div style={{textAlign:'right',fontWeight:700}}>{r.boxedTotal}</div>
+                <div style={{textAlign:'right',fontWeight:700,fontSize:11,color:r.over>0?'#b91c1c':r.loose>0?'#0e7490':'#16a34a'}}>{r.over>0?('⚠ +'+r.over):r.loose>0?('◦ '+r.loose):'✓'}</div>
+              </div>
+            ))}
+          </div>}
+          <div style={{marginTop:18,fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Active boxes ({active.length})</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {active.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No active boxes.</div>:
+              active.slice().sort((a,b)=>(a.id||'').localeCompare(b.id||'')).map(b=>{const u=boxUnits(b);const kc={stock:'#0e7490',fulfillment:'#166534',consolidation:'#7c3aed',receiving:'#c2410c'}[b.kind]||'#475569';
+                return<button key={b.id} type="button" onClick={()=>handleScanResult(b.id)} title={(b.kind||'box')+' · '+(b.status||'staged')} style={{cursor:'pointer',border:'1px solid #e2e8f0',borderLeft:'3px solid '+kc,background:'#fff',borderRadius:6,padding:'4px 8px',fontSize:11,textAlign:'left'}}>
+                  <div style={{fontFamily:'monospace',fontWeight:700,color:kc}}>{b.id}</div>
+                  <div style={{fontSize:10,color:'#94a3b8'}}>{u} unit{u!==1?'s':''}{b.status&&b.status!=='staged'?' · '+b.status:''}</div>
+                </button>;})}
+          </div>
+        </>;
+      })()}
     </>}
     </>);
   };
@@ -31236,7 +31426,18 @@ export default function App(){
     try{const u=new URL(scanVal);const sp=u.searchParams.get('scan');if(sp)scanVal=sp}catch{}
     // Also handle JSON-encoded QR data (legacy format)
     try{const j=JSON.parse(scanVal);if(j.id)scanVal=j.id}catch{}
-    const upper=scanVal.toUpperCase();
+    let upper=scanVal.toUpperCase();
+    // Box plate (BX-####): resolve the box (following a combined plate to its live survivor)
+    // and open the Box Action modal — a global overlay with contents + actions (open linked
+    // IF/SO/PO, print, mark shipped/staged, void, combine). Works from any page.
+    if(upper.startsWith('BX-')){
+      let bx=whBoxes.find(b=>(b.id||'').toUpperCase()===upper);
+      let guard=0;while(bx&&bx.merged_into&&guard++<10){const nx=whBoxes.find(b=>b.id===bx.merged_into);if(!nx)break;bx=nx}
+      if(!bx){nf('Box "'+scanVal+'" not found','warn');return}
+      setBoxModal(bx);
+      nf('Scanned box '+bx.id+((bx.id||'').toUpperCase()!==upper?' (survivor of '+scanVal+')':''));
+      return;
+    }
     // Check if it's an Item Fulfillment (IF-XXXX)
     if(upper.startsWith('IF-')){
       for(const so of sos){
@@ -32008,6 +32209,51 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
+
+    {/* BOX ACTION MODAL — opened by scanning a BX-#### plate (global overlay; works from any page) */}
+    {boxModal&&(()=>{const b=boxModal;const units=boxUnits(b);
+      const kindColors={stock:{bg:'#eff6ff',fg:'#1e40af'},fulfillment:{bg:'#f0fdf4',fg:'#166534'},consolidation:{bg:'#faf5ff',fg:'#7c3aed'},receiving:{bg:'#fff7ed',fg:'#c2410c'}};
+      const statusColors={staged:{bg:'#f1f5f9',fg:'#475569'},at_deco:{bg:'#fff7ed',fg:'#c2410c'},shipped:{bg:'#ecfdf5',fg:'#047857'},combined:{bg:'#faf5ff',fg:'#7c3aed'},voided:{bg:'#fef2f2',fg:'#b91c1c'}};
+      const kc=kindColors[b.kind]||{bg:'#f1f5f9',fg:'#475569'};const sc=statusColors[b.status]||{bg:'#f1f5f9',fg:'#475569'};
+      const open=(ref)=>{if(!ref)return;setBoxModal(null);setScanModalOpen(false);handleScanResult(ref)};
+      const isLocked=b.status==='combined'||b.status==='voided';
+      return <div className="modal-overlay" onClick={()=>setBoxModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+            <span style={{fontSize:20,fontWeight:800,fontFamily:'monospace'}}>{b.id}</span>
+            <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6,background:kc.bg,color:kc.fg,textTransform:'uppercase'}}>{b.kind||'box'}</span>
+            <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6,background:sc.bg,color:sc.fg,textTransform:'uppercase'}}>{b.status||'staged'}</span>
+          </div>
+          <button onClick={()=>setBoxModal(null)} style={{background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:22,lineHeight:1}}>×</button>
+        </div>
+        <div style={{padding:'14px 20px',maxHeight:'58vh',overflowY:'auto'}}>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+            {b.if_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.if_id)}>Open {b.if_id}</button>}
+            {b.so_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.so_id)}>Open {b.so_id}</button>}
+            {b.po_id&&<button className="btn btn-sm btn-secondary" onClick={()=>open(b.po_id)}>Open {b.po_id}</button>}
+            {b.merged_into&&<button className="btn btn-sm btn-secondary" onClick={()=>handleScanResult(b.merged_into)}>→ Survivor {b.merged_into}</button>}
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>CONTENTS · {units} unit{units!==1?'s':''}</div>
+          {(b.contents||[]).length===0?<div style={{fontSize:13,color:'#94a3b8',fontStyle:'italic',padding:'8px 0'}}>Empty box.</div>:
+            (b.contents||[]).map((c,ci)=>{const sz=Object.entries(c.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);
+              return <div key={ci} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'6px 0',borderTop:ci?'1px solid #f1f5f9':'none'}}>
+                <div><div style={{fontWeight:700}}>{[c.sku,c.name].filter(Boolean).join(' ')}</div><div style={{fontSize:11,color:'#64748b'}}>{[c.color&&c.color!=='—'?c.color:'',c.so_id||'',c.if_id||''].filter(Boolean).join(' · ')}</div></div>
+                <div style={{textAlign:'right',whiteSpace:'nowrap'}}><div style={{fontWeight:700}}>{q}</div><div style={{fontSize:11,color:'#64748b'}}>{sz.map(([s,v])=>s+':'+v).join('  ')}</div></div>
+              </div>;})}
+          {b.bin&&<div style={{marginTop:10,fontSize:12,color:'#475569'}}><strong>Bin:</strong> {b.bin}</div>}
+          {b.notes&&<div style={{marginTop:4,fontSize:12,color:'#475569'}}><strong>Notes:</strong> {b.notes}</div>}
+        </div>
+        <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+          <button className="btn btn-sm btn-secondary" onClick={()=>printBoxLabel(b)}>🖨️ Print 4×6</button>
+          {!isLocked&&<button className="btn btn-sm btn-secondary" onClick={()=>{const t=window.prompt('Combine '+b.id+' into which box plate? (e.g. BX-2001)');if(t)combineBox(b,t)}}>Combine into…</button>}
+          <div style={{marginLeft:'auto',display:'flex',gap:8,flexWrap:'wrap'}}>
+            {!isLocked&&b.status!=='staged'&&<button className="btn btn-sm btn-secondary" onClick={()=>setBoxStatus(b,'staged')}>Mark Staged</button>}
+            {!isLocked&&b.status!=='shipped'&&<button className="btn btn-sm btn-primary" onClick={()=>setBoxStatus(b,'shipped')}>Mark Shipped</button>}
+            {b.status==='voided'?<button className="btn btn-sm btn-secondary" onClick={()=>setBoxStatus(b,'staged')}>Restore</button>:
+              (b.status!=='combined'&&<button className="btn btn-sm btn-secondary" style={{color:'#b91c1c'}} onClick={()=>{if(window.confirm('Void '+b.id+'? It will be excluded from reconciliation.'))setBoxStatus(b,'voided')}}>Void</button>)}
+          </div>
+        </div>
+      </div></div>;})()}
   </div>);
 }
 
