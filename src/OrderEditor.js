@@ -1077,10 +1077,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const ssSearchGen=useRef(0);// generation counter to discard stale results
 
   const ssLiveSearch=useCallback(async(query)=>{
-    if(!query||query.length<2){setSsResults([]);return}
+    if(!query||query.length<2){setSsResults([]);setSsSearching(false);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=ssSearchCache.current[cacheKey];
-    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSsResults(cached.length?cached:[]);return}
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSsResults(cached.length?cached:[]);setSsSearching(false);return}
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
@@ -1165,10 +1165,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const smSearchGen=useRef(0);
 
   const smLiveSearch=useCallback(async(query)=>{
-    if(!query||query.length<2){setSmResults([]);return}
+    if(!query||query.length<2){setSmResults([]);setSmSearching(false);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=smSearchCache.current[cacheKey];
-    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSmResults(cached.length?cached:[]);return}
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSmResults(cached.length?cached:[]);setSmSearching(false);return}
     const gen=smSearchGen.current;
     setSmSearching(true);
     try{
@@ -1284,10 +1284,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const mtSearchGen=useRef(0);
 
   const mtLiveSearch=useCallback(async(query)=>{
-    if(!query||query.length<2){setMtResults([]);return}
+    if(!query||query.length<2){setMtResults([]);setMtSearching(false);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=mtSearchCache.current[cacheKey];
-    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setMtResults(cached.length?cached:[]);return}
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setMtResults(cached.length?cached:[]);setMtSearching(false);return}
     const gen=mtSearchGen.current;
     setMtSearching(true);
     try{
@@ -1326,10 +1326,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const rsSearchGen=useRef(0);
 
   const rsLiveSearch=useCallback(async(query)=>{
-    if(!query||query.length<2){setRsResults([]);return}
+    if(!query||query.length<2){setRsResults([]);setRsSearching(false);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=rsSearchCache.current[cacheKey];
-    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setRsResults(cached.length?cached:[]);return}
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setRsResults(cached.length?cached:[]);setRsSearching(false);return}
     const gen=rsSearchGen.current;
     setRsSearching(true);
     try{
@@ -1384,7 +1384,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const copyQ=copySkuModal?.search||'';
     const activeQ=showAdd?pS:copyQ;
     const isActive=showAdd||!!copySkuModal;
-    if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
+    if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setSsSearching(false);setSmSearching(false);setMtSearching(false);setRsSearching(false);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
     ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);
     const localCount=allFp.length;
