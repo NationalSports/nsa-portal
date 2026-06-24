@@ -208,7 +208,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
       const _fromEmail=(repUser?.email&&/@nationalsportsapparel\.com$/i.test(repUser.email))?repUser.email:'noreply@nationalsportsapparel.com';
       const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:_fromEmail,replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
-      if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
+      if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);sendingRef.current=false;return}
       // Send SMS notification if enabled
       if(smsEnabled&&smsPhone){
         const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
