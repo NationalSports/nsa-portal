@@ -4269,7 +4269,8 @@ export default function App(){
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
-      const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReloadGroups=(groups,delay=10000)=>{groups.forEach(g=>_rtPending.add(g));if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReload=(tbl,delay=10000)=>debouncedReloadGroups([_RT_GROUP[tbl]||'__all__'],delay);
       // Subscribe to core tables + pick_lines for instant warehouse sync.
       // products is intentionally excluded: the full 53k-row catalog re-download triggered
       // on every product realtime event consumed ~34% of DB CPU. The 60s poll keeps
@@ -4285,9 +4286,12 @@ export default function App(){
         });
         channels.push(ch);
       });
-      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
-      // Tab regained focus: full reload, short 1s debounce — a deliberate user action, keep it snappy
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload(null,1000)}};
+      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff.
+      // Keep focus refresh scoped to operational tables. A full reload also drags the cold catalog
+      // (products/product_inventory + app_state image rows), so normal tab switching can otherwise
+      // multiply into a large PostgREST burst across every open portal tab.
+      const _FOCUS_RELOAD_GROUPS=['estimates','sales_orders','invoices','messages','assigned_todos'];
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReloadGroups(_FOCUS_RELOAD_GROUPS,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
