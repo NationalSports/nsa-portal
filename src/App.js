@@ -2717,8 +2717,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const _gk=jobGroupKey(j,_pid);
   const _famPid=s2=>{const cc=customers.find(x=>x.id===s2.customer_id);return cc?.parent_id||cc?.id||null};
   const _sibs=[];
-  if(_gk)allOrders.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:customers.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
-  const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
+  if(_gk)allOrders.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!jj.link_group&&!isJobReady(jj,s2))return;const _ready=isJobReady(jj,s2);_sibs.push({soId:s2.id,cust:customers.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group,ready:_ready})})});
+  const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.ready?'':'  ⚠️ items pending')+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
   // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
   // The <style> override strips the yellow notes-box styling so item sections render cleanly.
   const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
@@ -10892,7 +10892,7 @@ export default function App(){
       const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          parentId,grpKey:isJobReady(j,so)?jobGroupKey(j,parentId):null,
+          parentId,grpKey:(j.link_group||isJobReady(j,so))?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
@@ -21738,15 +21738,19 @@ export default function App(){
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const updArt=safeArt(liveSO).map(a=>{
               const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);
-              return addl.length?{...a,prod_files:[...(a.prod_files||[]),...addl]}:a;
+              const merged=addl.length?{...a,prod_files:[...(a.prod_files||[]),...addl]}:a;
+              if((merged.deco_type||'')==='embroidery'&&merged.status==='approved'&&merged.prod_files_attached!==true&&[...(merged.files||[]),...(merged.prod_files||[])].some(isDstFile))return{...merged,prod_files_attached:true};
+              return merged;
             });
-            const newSO=savSO({...liveSO,art_files:updArt});
+            const updJobs=safeJobs(liveSO).map(jj=>{if(jj.art_status!=='upload_emb_files')return jj;const ids=(jj._art_ids||[jj.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return jj;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...jj,art_status:'art_complete'}:jj});
+            const autoCompleted=updJobs.some((jj,i)=>jj!==safeJobs(liveSO)[i]);
+            const newSO=savSO({...liveSO,art_files:updArt,...(autoCompleted?{jobs:updJobs}:{})});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf});
             // Block on the DB write so the success toast only fires after the file is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Production file uploaded but failed to save to order. Please retry.','error');return}
-            nf(uploads.length+' production file'+(uploads.length>1?'s':'')+' uploaded!');
+            nf(uploads.length+' production file'+(uploads.length>1?'s':'')+' uploaded!'+(autoCompleted?' 🧵 Embroidery job auto-marked complete!':''));
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
