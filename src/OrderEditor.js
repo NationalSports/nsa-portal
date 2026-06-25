@@ -2140,6 +2140,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(onSaveArtFiles){nf('Saving '+(label||'file')+'...');const ok=await onSaveArtFiles(updated);if(ok){setSaved(true);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
     onSave(updated);setSaved(true);return true;
   };
+  // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
+  // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
+  const _autoCompleteEmbAfterUpload=(newArts)=>{const curO=oRef.current;const updArt=newArts.map(a=>{if((a.deco_type||'')!=='embroidery'||a.status!=='approved'||a.prod_files_attached===true)return a;if(![...(a.files||[]),...(a.prod_files||[])].some(isDstFile))return a;return{...a,prod_files_attached:true}});if(!updArt.some((a,i)=>a!==newArts[i]))return;const updJobs=safeJobs(curO).map(j=>{if(j.art_status!=='upload_emb_files')return j;const ids=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return j;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...j,art_status:'art_complete'}:j});const updated={...curO,art_files:updArt,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🧵 DST detected — embroidery job auto-marked complete!')};
   // The customer whose library this order's art should be promoted into. Library art lives on
   // the *parent* account and cascades to every sub-customer ("applies to all"), so a logo
   // created on one team's order can be made reusable program-wide. If this order's customer is
@@ -4611,10 +4614,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let arts=(oRef.current.art_files||[]);for(const f of inp.files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(e){nf('Upload failed: '+e.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}};inp.click()}}
+                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let arts=(oRef.current.art_files||[]);for(const f of inp.files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(e){nf('Upload failed: '+e.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}_autoCompleteEmbAfterUpload(arts)};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);let arts=(oRef.current.art_files||[]);for(const f of files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(err){nf('Upload failed: '+err.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);let arts=(oRef.current.art_files||[]);for(const f of files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(err){nf('Upload failed: '+err.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}_autoCompleteEmbAfterUpload(arts)}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
@@ -5665,6 +5668,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _dstTarget=dstUploadModal.target;
       const _handleDstFiles=async(files)=>{
         let arts=(oRef.current.art_files||[]);for(const f of files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(err){nf('Upload failed: '+err.message,'error');continue}arts=arts.map(fa=>fa.id===_dstTarget?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}
+        _autoCompleteEmbAfterUpload(arts);
         setDstUploadModal(null);setDstDragOver(false);
       };
       return<div className="modal-overlay" onClick={()=>{setDstUploadModal(null);setDstDragOver(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
@@ -6038,10 +6042,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
 
           {/* Final: warning about closing SO */}
-          {invType==='final'&&<div style={{marginBottom:12,padding:12,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
-            <div style={{fontWeight:700,color:'#dc2626',fontSize:13,marginBottom:4}}>Final Invoice</div>
-            <div style={{fontSize:12,color:'#991b1b'}}>This will invoice the full order amount and mark <strong>{o.id}</strong> as <strong>Complete</strong>.</div>
-            {soInvTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
+          {invType==='final'&&<div style={{marginBottom:12,padding:12,background:invTotal===0?'#f0fdf4':'#fef2f2',border:'1px solid '+(invTotal===0?'#a7f3d0':'#fecaca'),borderRadius:8}}>
+            <div style={{fontWeight:700,color:invTotal===0?'#047857':'#dc2626',fontSize:13,marginBottom:4}}>{invTotal===0?'Close Sales Order':'Final Invoice'}</div>
+            <div style={{fontSize:12,color:invTotal===0?'#065f46':'#991b1b'}}>{invTotal===0?<>This order is <strong>fully covered</strong> by prior invoices or deposits. Clicking below will mark <strong>{o.id}</strong> as Complete — no additional charge.</>:<>This will invoice the full order amount and mark <strong>{o.id}</strong> as <strong>Complete</strong>.</>}</div>
+            {soInvTotal>0&&invTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
           </div>}
 
           {/* Memo + Invoice Date */}
@@ -6105,15 +6109,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>${invTotal.toFixed(2)}</span>
             </div>}
             <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'2px solid #e2e8f0'}}>
-              <span style={{fontSize:14,fontWeight:800}}>Invoice Total</span>
-              <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${invTotal.toFixed(2)}</span>
+              <span style={{fontSize:14,fontWeight:800}}>{invType==='final'&&invTotal===0?'Balance Due':'Invoice Total'}</span>
+              <span style={{fontSize:18,fontWeight:800,color:invType==='final'&&invTotal===0?'#16a34a':'#dc2626'}}>${invTotal.toFixed(2)}{invType==='final'&&invTotal===0?' — Fully Paid':''}</span>
             </div>
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
-          <button className="btn btn-primary" style={invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invCreating||(invType==='partial'&&invSelItems.length===0)} onClick={async()=>{
+          <button className="btn btn-primary" style={invType==='final'&&invTotal===0?{background:'#16a34a',borderColor:'#16a34a'}:invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invCreating||(invType==='partial'&&invSelItems.length===0)} onClick={async()=>{
             if(invCreating)return;// double-click guard — a second click would mint a second invoice with the same id
+            // When Final invoice is $0 (fully covered by prior invoices/deposits), skip creating a $0 invoice and just close the SO
+            if(invType==='final'&&invTotal===0&&!isPromoOrder){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
             setInvCreating(true);
             try{
             const invId=nextInvId(allInvoices);
@@ -6173,7 +6179,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nationalsportsapparel.com/coach?portal='+(cust?.alpha_tag||''));
             }finally{setInvCreating(false)}
-          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
+          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):invType==='final'&&invTotal===0?'Close Sales Order — Fully Paid':(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')+' — $'+invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
 
