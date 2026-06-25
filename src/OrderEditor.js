@@ -9760,6 +9760,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const grandTotal=itemInfos.reduce((a,x)=>a+x.total,0);
       const overallStatus=picks.every(p=>p.pick.status==='pulled')?'pulled':'pick';
       const isShortPullIF=overallStatus==='pulled'&&grandTotal===0;
+      const _confirmShortPull=!!editPick._confirmShortPull;
       // SO items not already on this pick that still have open units (ordered − picked − PO-committed),
       // so the user can grow the pick from the order side. Mirrors the "Create IF" availability check.
       const onPickIdxs=new Set(picks.map(p=>p.lineIdx));
@@ -9806,7 +9807,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>}
         {/* Status (applies to all items on this IF) */}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s,...(s==='pulled'&&!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+          {_confirmShortPull
+            ?<div style={{padding:'10px 14px',borderRadius:8,border:'2px solid #f59e0b',background:'#fffbeb',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}><span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>⚠ 0 units entered — this will flag as a Short Pull. Confirm?</span><div style={{marginLeft:'auto',display:'flex',gap:6}}><button className="btn btn-sm btn-secondary" onClick={()=>setEditPick(p=>({...p,_confirmShortPull:false}))}>Cancel</button><button className="btn btn-sm" style={{background:'#d97706',color:'white',fontWeight:700}} onClick={()=>setEditPick(p=>({...p,_confirmShortPull:false,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:'pulled',...(!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))} >Yes, Short Pull</button></div></div>
+            :<div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>{if(s==='pulled'&&grandTotal===0&&overallStatus!=='pulled'){setEditPick(p=>({...p,_confirmShortPull:true}))}else{setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s,...(s==='pulled'&&!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))}}}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div>}
+        </div>
         {isShortPullIF&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid #f59e0b',background:'#fffbeb'}}><div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ Short Pull — 0 units pulled</div><div style={{fontSize:11,color:'#78350f'}}>Remove items from this IF to free them up for a new SKU or PO.</div></div>}
         {/* Per-item product info + quantities */}
         {itemInfos.map(info=><div key={info.idx} style={{marginBottom:12,padding:10,border:'1px solid #e2e8f0',borderRadius:6,background:'#fafafa'}}>
