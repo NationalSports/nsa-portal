@@ -887,12 +887,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
   },[o.items?.length]);// only re-run when items are added/removed
 
-  // Sync SanMar line-item cost to the live program price. SanMar's getPricing returns
-  // the account's program/contract price (myPrice); without this an item keeps whatever
-  // cost was captured when it was first added (often a stale catalog value), so the cost
-  // shown drifts from the real program price. Cost-only — never touches unit_sell, so the
-  // customer-facing price is left untouched. Skips custom items and any item with a PO/IF
-  // already committed (their cost reflects what was actually ordered).
+  // Fill a SanMar line's cost from the live program price (myPrice) ONLY when the line has no
+  // cost captured yet — e.g. a SKU that was added without a price. We intentionally do NOT
+  // overwrite a cost the rep already has: silently bumping a saved estimate's cost to SanMar's
+  // current live price (often higher than what was captured when the item was added) changed
+  // costs out from under reps and broke per-size sell editing. Cost-only — never touches
+  // unit_sell. Skips custom items and any item with a PO/IF already committed.
   React.useEffect(()=>{
     if(!Object.keys(vendorInv).length)return;
     const items=safeItems(o);
@@ -901,18 +901,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const next=items.map(item=>{
       if(item.is_custom||!isSanMarItem(item))return item;
       if(safePOs(item).length||safePicks(item).length)return item;
+      // Non-destructive: a line that already carries a cost (flat or per-size) keeps exactly
+      // what the rep saved. We only fill genuine gaps.
+      const hasCost=safeNum(item.nsa_cost)>0||Object.values(item._sizeCosts||{}).some(c=>safeNum(c)>0);
+      if(hasCost)return item;
       const price=vendorInv[item.sku]?.price;
       if(!price)return item;
-      const vals=Object.values(price).map(v=>safeNum(v)).filter(v=>v>0);
+      const sizeCosts={};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)sizeCosts[sz]=n});
+      const vals=Object.values(sizeCosts);
       if(!vals.length)return item;
-      const base=Math.min(...vals);
-      const mergedSizeCosts={...(item._sizeCosts||{})};
-      Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)mergedSizeCosts[sz]=n});
-      const costChanged=Math.abs(base-safeNum(item.nsa_cost))>0.005;
-      const scChanged=JSON.stringify(mergedSizeCosts)!==JSON.stringify(item._sizeCosts||{});
-      if(!costChanged&&!scChanged)return item;
+      // Representative per-each cost consistent with how the line's cost is displayed/used:
+      // weighted across the ordered sizes when known, else a plain average of the size prices.
+      // Never Math.min — anchoring nsa_cost on the cheapest size made the per-size sell math
+      // snap a rep's typed price upward (the displayed cost is the weighted average, not the min).
+      const sizes=safeSizes(item);let base;
+      const oq=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0);
+      if(oq>0){let c=0,q=0;Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0&&sizeCosts[sz]>0){c+=n*sizeCosts[sz];q+=n}});base=q>0?c/q:vals.reduce((a,b)=>a+b,0)/vals.length}
+      else base=vals.reduce((a,b)=>a+b,0)/vals.length;
+      base=Math.round(base*100)/100;
       changed=true;
-      return {...item,nsa_cost:base,_sizeCosts:mergedSizeCosts};
+      return {...item,nsa_cost:base,_sizeCosts:sizeCosts};
     });
     if(changed){setO(e=>({...e,items:next,updated_at:new Date().toLocaleString()}));setDirty(true)}
   },[vendorInv]);// eslint-disable-line react-hooks/exhaustive-deps
@@ -935,8 +943,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const price=inv.price||{};
         const vals=Object.values(price).map(safeNum).filter(v=>v>0);
         if(!vals.length)return it;// vendor has no price for this SKU — keep catalog cost
-        const base=Math.min(...vals);
         const mergedSizeCosts={...(it._sizeCosts||{})};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)mergedSizeCosts[sz]=n});
+        // Representative per-each cost — weighted across the ordered sizes when known, else a
+        // plain average of the size prices. Never Math.min: anchoring on the cheapest size
+        // understates cost and skews the per-size sell math (mirrors the add-time fill above).
+        const _sizes=safeSizes(it);const _oq=Object.values(_sizes).reduce((a,v)=>a+safeNum(v),0);
+        let base;
+        if(_oq>0){let c=0,q=0;Object.entries(_sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0&&mergedSizeCosts[sz]>0){c+=n*mergedSizeCosts[sz];q+=n}});base=q>0?c/q:vals.reduce((a,b)=>a+b,0)/vals.length}
+        else base=vals.reduce((a,b)=>a+b,0)/vals.length;
+        base=Math.round(base*100)/100;
         if(Math.abs(base-safeNum(it.nsa_cost))<0.005&&JSON.stringify(mergedSizeCosts)===JSON.stringify(it._sizeCosts||{}))return it;
         changed=true;
         return{...it,nsa_cost:base,_sizeCosts:mergedSizeCosts};
@@ -1541,7 +1556,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // sizes (a curated run). Staff can +Size for outliers either way.
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
   // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
@@ -1605,7 +1620,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
     // Preserve source's available_sizes (union with new product's) so manually-added sizes survive the swap
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];const newSizes=Array.isArray(p.available_sizes)?p.available_sizes:[];clone.available_sizes=[...new Set([...srcSizes,...newSizes])];
-    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
+    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    // The clone carried the OLD SKU's per-size maps — rebuild them from the new product (or clear
+    // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
+    if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
+    sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
   const copyIWithVendorResult=(i,style,color,source)=>{
@@ -2196,10 +2215,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let promoRev=0,promoCost=0,normalRev=0,normalCost=0,origPromoRev=0;
     safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
       if(it.is_promo){
-        if(!it.is_free_promo){promoRev+=q*safeNum(it.unit_sell);promoCost+=q*safeNum(it.nsa_cost);origPromoRev+=q*safeNum(it._pre_promo_sell||it.unit_sell);}
+        if(!it.is_free_promo){const _szs=safeSizes(it);promoRev+=it._sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):q*safeNum(it.unit_sell);promoCost+=it._sizeCosts&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0):q*safeNum(it.nsa_cost);origPromoRev+=it._pre_promo_sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._pre_promo_sizeSells[sz]||safeNum(it._pre_promo_sell||it.unit_sell)):a},0):q*safeNum(it._pre_promo_sell||it.unit_sell);}
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);promoCost+=decoCostAt(d,q,af,cq,costArtQty);origPromoRev+=eq*dp.sell});
       }else{
-        if(!it.is_free_promo){normalRev+=q*safeNum(it.unit_sell);normalCost+=q*safeNum(it.nsa_cost);}
+        if(!it.is_free_promo){const _szs=safeSizes(it);normalRev+=it._sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):q*safeNum(it.unit_sell);normalCost+=it._sizeCosts&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0):q*safeNum(it.nsa_cost);}
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;normalCost+=decoCostAt(d,q,af,cq,costArtQty)});
       }});
     // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
@@ -2828,7 +2847,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
         {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
-        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
+        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
         {isSO&&<div style={{width:120}}>
           <label className="form-label">Order Type</label>
           <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
@@ -3047,7 +3066,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(remaining>=itemTotal){
                   // Fully covered by promo
                   remaining-=itemTotal;fullCount++;
-                  newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell});
+                  newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell,...(it._sizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:undefined}:{})});
                 }else{
                   // Partially covered — cover N whole units fully at retail (discard the leftover),
                   // then blend the savings across the line by scaling both unit_sell and each deco
@@ -3060,8 +3079,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const newGarmentSell=rQ(safeNum(it.unit_sell)*(1-coveredFraction));
                     const promoSpent=rQ(N*perUnitRetail);
                     const scaledDecos=safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const blendedSell=rQ(dp.sell*(1-coveredFraction));return{...d,_pre_promo_sell_override:d.sell_override,sell_override:blendedSell}});
+                    const scaledSizeSells=it._sizeSells?Object.fromEntries(Object.entries(it._sizeSells).map(([sz,s])=>[sz,rQ(safeNum(s)*(1-coveredFraction))])):null;
                     partialItem=true;
-                    newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:newGarmentSell,decorations:scaledDecos,_promo_credit:promoSpent,_promo_partial_qty:N});
+                    newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:newGarmentSell,decorations:scaledDecos,_promo_credit:promoSpent,_promo_partial_qty:N,...(scaledSizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:scaledSizeSells}:{})});
                     // Subtract only what was actually spent; the rounded-off leftover stays in the customer's budget.
                     remaining=Math.max(0,remaining-promoSpent);
                   }
@@ -3112,7 +3132,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,isSO?o.id:null,isSO?null:o.id)}
                 if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(c.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(c.promo_usage||[]).filter(u=>!_mine(u))}})}
               }
-              sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
+              sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,...(it._pre_promo_sizeSells?{_sizeSells:it._pre_promo_sizeSells}:{}),decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_pre_promo_sizeSells:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
@@ -3382,10 +3402,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
-                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
+                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
                 {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
-                <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
+                <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const avgCost=szQty>0?pCost/szQty:safeNum(item.nsa_cost);const ratio=avgCost>0?v/rQ(avgCost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
                 {item._sizeSells&&szQty>0&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}>(avg)</span>}
                 {item.is_custom&&!item.customer_supplied&&(_tsPo?<span style={{fontSize:12,color:'#64748b'}} title="Cost comes from the linked Topstar PO — edit the decoration PO to change it">Cost: <strong>${_costEa.toFixed(2)}</strong></span>:<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>)}
                 {item.customer_supplied&&<span style={{fontSize:11,color:'#0e7490'}}>$0 garment — decoration charges below</span>}
@@ -5830,7 +5850,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const invoiced=invoicedQtyMap.get(soLineKey(it,idx))||0;
         const remaining=Math.max(0,fullQty-invoiced);
         const qty=invType==='deposit'?fullQty:remaining;
-        const rev=qty*safeNum(it.unit_sell);
+        // Per-size sells (2XL+ upcharges) bill at the line's blended per-each so the invoice
+        // matches the SO total, which uses _sizeSells. Blended × remaining qty prorates partials.
+        const perEachSell=it._sizeSells&&szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/szQty):safeNum(it.unit_sell);
+        const rev=qty*perEachSell;
         // Deco revenue uses the equivalent quantity (dp2._nq for numbers/names, x2 for reversible) like
         // the SO totals and the line_items below — otherwise the invoice total disagrees with the SO and
         // with its own lines. _nq is roster/full-order based, so prorate by qty/fullQty: a partial invoice
@@ -5856,7 +5879,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
-      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=it._sizeSells&&_sq>0?Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
       const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
@@ -6058,8 +6081,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const qty=Math.max(0,totalQty-alreadyInvoiced);
               if(invType!=='deposit'&&qty===0)return null;
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+(dp2._nq!=null?(totalQty>0?dp2._nq/totalQty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell)},0);
-              const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
-              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
+              // Blended per-each sell so per-size 2XL+ upcharges are billed (matches the SO total).
+              const perEachSell=it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell);
+              const lineAmt=qty*(perEachSell+decoSell);
+              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;

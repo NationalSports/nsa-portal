@@ -1472,8 +1472,17 @@ const sportsLinkApiCall = async (path, options = {}) => {
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `Sports Inc API error: ${response.status}`);
+      // The Sports Inc API returns ASP.NET problem+json — the real reason lives in
+      // title/detail/errors, NOT an `error` field — so surface that instead of a bare
+      // status code (e.g. an out-of-range PageSize or a flagged param explains itself).
+      let msg;
+      try {
+        const j = JSON.parse(errText);
+        const errs = j?.errors && typeof j.errors === 'object'
+          ? Object.values(j.errors).flat().filter(Boolean).join('; ') : '';
+        msg = j?.error || j?.detail || errs || j?.title || j?.message;
+      } catch {}
+      throw new Error(msg ? `Sports Inc API ${response.status}: ${msg}` : `Sports Inc API error: ${response.status}`);
     }
     if (response.status === 204) return null; // PATCH status returns No Content
     return await response.json();
