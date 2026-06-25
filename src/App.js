@@ -1295,6 +1295,18 @@ const _dbSaveEstimateInner = async (est) => {
       const _wiped=itemsWithWipedQty(items,_oldEstItems);
       if(_wiped.length){
         const w=_wiped[0];const label=(w.name||'').trim()||w.sku||('item '+w.item_index);
+        // A background reconciliation (poll/realtime _diffSave) carrying a never-hydrated snapshot can show a
+        // surviving line's sizes as empty while the DB still holds real units — a stale/partial in-memory
+        // artifact, not a deliberate wipe. itemsWithWipedQty only fires when the client's sizes total 0, so on a
+        // background sync that means this client never loaded the real quantities. Preserve the DB units silently
+        // (mirrors the bg_shrink guard above): no write, no alert — nothing was lost, and the next reconciliation
+        // re-fills the sizes from the DB so the diff resolves. A FOREGROUND save, or a hydrated client, that
+        // empties a surviving line is the real EST-1316 wipe — that still blocks and alerts below.
+        const _hydrated=est._itemsHydrated||_everHydratedItems.has(est.id);
+        if(_bgSync&&!_hydrated){
+          console.warn('[DB] SAFETY: background sync would empty quantities for "'+label+'" on',est.id,'— items not hydrated, preserving DB units, skipping write');
+          _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+        }
         console.error('[DB] SAFETY: Blocking estimate save — quantities for "'+label+'" would be wiped ('+w.prevQty+' units → 0) for',est.id);
         if(_dataLossAlert)_dataLossAlert({kind:'qty_wipe_blocked',soId:est.id,itemIndex:w.item_index,sku:w.sku,prevQty:w.prevQty,reason:'item quantities would be emptied'});
         if(_dbNotify)_dbNotify('Save blocked — the quantities for "'+label+'" ('+w.prevQty+' units) would be lost. Reload the page to restore them.','error');
