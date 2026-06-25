@@ -940,8 +940,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const price=inv.price||{};
         const vals=Object.values(price).map(safeNum).filter(v=>v>0);
         if(!vals.length)return it;// vendor has no price for this SKU — keep catalog cost
-        const base=Math.min(...vals);
         const mergedSizeCosts={...(it._sizeCosts||{})};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)mergedSizeCosts[sz]=n});
+        // Representative per-each cost — weighted across the ordered sizes when known, else a
+        // plain average of the size prices. Never Math.min: anchoring on the cheapest size
+        // understates cost and skews the per-size sell math (mirrors the add-time fill above).
+        const _sizes=safeSizes(it);const _oq=Object.values(_sizes).reduce((a,v)=>a+safeNum(v),0);
+        let base;
+        if(_oq>0){let c=0,q=0;Object.entries(_sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0&&mergedSizeCosts[sz]>0){c+=n*mergedSizeCosts[sz];q+=n}});base=q>0?c/q:vals.reduce((a,b)=>a+b,0)/vals.length}
+        else base=vals.reduce((a,b)=>a+b,0)/vals.length;
+        base=Math.round(base*100)/100;
         if(Math.abs(base-safeNum(it.nsa_cost))<0.005&&JSON.stringify(mergedSizeCosts)===JSON.stringify(it._sizeCosts||{}))return it;
         changed=true;
         return{...it,nsa_cost:base,_sizeCosts:mergedSizeCosts};
@@ -2821,7 +2828,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
         {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
-        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
+        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
         {isSO&&<div style={{width:120}}>
           <label className="form-label">Order Type</label>
           <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
