@@ -142,6 +142,11 @@ const withBrand = (brand, name) => {
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
 const normCategory = (c) => CATEGORY_ALIASES[c] || c || 'Other';
+// Quick-pick category chips shown above the grid — the types coaches shop most,
+// with Footwear surfaced first so it reads as its own section. Only chips whose
+// category is actually present (live, imaged stock) render; the complete list of
+// categories still lives in the "Item type" dropdown for the long tail.
+const QUICK_CATS = ['Footwear', 'Tees', 'Hoods', '1/4 Zips', 'Outerwear', 'Polos', 'Shorts', 'Pants', 'Jersey', 'Hats', 'Bags', 'Socks'];
 // Bags browse as one "Bags" category (backpacks, duffels, totes, coolers, …).
 // The marquee team duffels (Defender, Team Issue) merchandise to the very top,
 // then any other duffel — coaches shop bags by these first. Sort-only: the DB
@@ -2157,6 +2162,20 @@ export default function AdidasInventory() {
               {!loading && loadingAll ? ' · loading more…' : ''}
             </span>
           </div>
+          {/* Quick category chips — one-tap "sections" for the most-shopped types
+              (Footwear surfaced first). Full category list stays in the dropdown above. */}
+          {facets.categories.length > 1 && (
+          <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>Shop:</span>
+            <button className={'ai-filterbtn' + (category === 'All' ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }} onClick={() => setCategory('All')}>All</button>
+            {QUICK_CATS.filter((c) => facets.categories.some((fc) => fc.v === c)).map((c) => (
+              <button key={c} className={'ai-filterbtn' + (category === c ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }}
+                onClick={() => setCategory(category === c ? 'All' : c)}>
+                {c === 'Footwear' ? '👟 Footwear' : c}
+              </button>
+            ))}
+          </div>
+          )}
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>In stock in:</span>
             {FILTER_SIZES.map((s) => (

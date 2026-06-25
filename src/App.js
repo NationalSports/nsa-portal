@@ -37,7 +37,10 @@ const _warmHeavyLibs = () => {
   // navigation into an order or customer is instant instead of waiting on a chunk download.
   warm(import('./OrderEditor')); warm(import('./CustDetail'));
 };
-if (typeof window !== 'undefined') {
+// Skip prefetch entirely when running as the public coach portal — coaches never
+// use admin tools (Excel import, PDF export, OCR, OrderEditor) and shouldn't
+// download them in the background.
+if (typeof window !== 'undefined' && !new URLSearchParams(window.location.search).get('portal')) {
   if ('requestIdleCallback' in window) window.requestIdleCallback(_warmHeavyLibs, { timeout: 10000 });
   else setTimeout(_warmHeavyLibs, 4000);
 }
