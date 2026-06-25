@@ -14,7 +14,7 @@ import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
@@ -307,7 +307,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // but NEVER drop a local group the incoming copy is missing. A stale poll/refresh snapshot must not
         // silently remove art the rep just added here — that drop would then be persisted as a DELETE on the
         // next save (and unlink it from the line items it was applied to). Union-merge keeps local-only groups.
-        const mergedArt=hasExternalArtChange?(()=>{const ext=safeArt(order);const extById=new Map(ext.map(a=>[a.id,a]));const loc=safeArt(prev);const locIds=new Set(loc.map(a=>a.id));const out=loc.map(a=>extById.get(a.id)||a);ext.forEach(a=>{if(!locIds.has(a.id))out.push(a)});return out})():prev.art_files;
+        // For a group present in BOTH, union its files (mergeArtGroupFiles) instead of taking the incoming copy
+        // wholesale — otherwise a stale read that's missing a just-uploaded mockup/prod file silently reverts it
+        // (the "art disappears / must upload twice" report). Incoming status/approval still win; files are kept.
+        const mergedArt=hasExternalArtChange?(()=>{const ext=safeArt(order);const extById=new Map(ext.map(a=>[a.id,a]));const loc=safeArt(prev);const locIds=new Set(loc.map(a=>a.id));const out=loc.map(a=>{const e=extById.get(a.id);return e?mergeArtGroupFiles(e,a):a});ext.forEach(a=>{if(!locIds.has(a.id))out.push(a)});return out})():prev.art_files;
         // Union the hydrated PO/pick id sets: ids the App-side restore marked as known must survive the
         // editor round-trip, or a later deliberate deletion of those lines would be resurrected again.
         const mergedPoIds=[...new Set([...(Array.isArray(prev._hydratedPoIds)?prev._hydratedPoIds:[]),...(Array.isArray(order._hydratedPoIds)?order._hydratedPoIds:[])])];
@@ -2090,6 +2093,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // writing back a stale snapshot would clobber unsaved color ways / size.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
+  // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
+  // Cloudinary but never recorded in the portal" gap the old "click Save to keep" flow left open (a refresh,
+  // nav-away, or session timeout between upload and a manual Save would orphan the file). Only art_files are
+  // persisted (the lightweight onSaveArtFiles path); metadata edits still save via the Save button. Returns
+  // true on a confirmed write; on failure it keeps the editor dirty and warns the user NOT to reload.
+  const saveArtFilesNow=async(newArtFiles,label)=>{
+    const updated={...oRef.current,art_files:newArtFiles,updated_at:new Date().toLocaleString()};
+    setO(updated);
+    if(onSaveArtFiles){nf('Saving '+(label||'file')+'...');const ok=await onSaveArtFiles(updated);if(ok){setSaved(true);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
+    onSave(updated);setSaved(true);return true;
+  };
   // The customer whose library this order's art should be promoted into. Library art lives on
   // the *parent* account and cascades to every sub-customer ("applies to all"), so a logo
   // created on one team's order can be made reusable program-wide. If this order's customer is
@@ -4516,7 +4531,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {!isCollapsed&&<div style={{padding:'0 14px 14px 14px'}}>
               <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                 <div style={{width:64,height:64,borderRadius:8,flexShrink:0,position:'relative',cursor:'pointer',overflow:'hidden',border:'1px solid #e2e8f0',background:thumbUrl?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.webp';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading preview...');try{const url=await fileUpload(f,'nsa-art-previews');uArt(i,'preview_url',url);nf('Preview uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}
+                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.webp';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading preview...');try{const url=await fileUpload(f,'nsa-art-previews');const arts=(oRef.current.art_files||[]).map(fa=>fa.id===art.id?{...fa,preview_url:url}:fa);await saveArtFilesNow(arts,'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}
                   title={art.preview_url?'Click to change preview image':'Click to upload preview image'}>
                   {thumbUrl?<img src={thumbUrl} alt="Preview" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
                   :<div style={{textAlign:'center'}}><div style={{fontSize:20}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</div><div style={{fontSize:7,color:'#94a3b8',fontWeight:600}}>+ Preview</div></div>}
@@ -4550,10 +4565,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let arts=(oRef.current.art_files||[]);for(const f of inp.files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(e){nf('Upload failed: '+e.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(ev=>({...ev,art_files:(ev.art_files||[]).map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);let arts=(oRef.current.art_files||[]);for(const f of files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(err){nf('Upload failed: '+err.message,'error');continue}arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
@@ -5603,7 +5618,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {dstUploadModal&&(()=>{
       const _dstTarget=dstUploadModal.target;
       const _handleDstFiles=async(files)=>{
-        for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===_dstTarget?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}
+        let arts=(oRef.current.art_files||[]);for(const f of files){nf('Uploading '+f.name+'...');let url;try{url=await fileUpload(f,'nsa-production')}catch(err){nf('Upload failed: '+err.message,'error');continue}arts=arts.map(fa=>fa.id===_dstTarget?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa);await saveArtFilesNow(arts,f.name)}
         setDstUploadModal(null);setDstDragOver(false);
       };
       return<div className="modal-overlay" onClick={()=>{setDstUploadModal(null);setDstDragOver(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>

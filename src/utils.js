@@ -165,6 +165,45 @@ export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
 
+// ── Art-file superset merge (data-loss guard for reconciliation) ──
+// Background reconciliation (poll/realtime reloadAll) re-reads orders, estimates & customers from
+// Supabase and merges the server copy back into state. The merge must NEVER drop a file the user just
+// added to an EXISTING art group: a reconciliation read that lands a beat behind the (queued, lightweight)
+// art save returns that group with FEWER files, and a wholesale replace silently reverts the just-uploaded
+// image — the file stays in Cloudinary, but its URL is dropped from the record. This is the root cause of
+// the "I have to upload images twice" / "data keeps disappearing" reports. These helpers union an art
+// group's file arrays — keeping any LOCAL file the incoming (server) copy is missing — while otherwise
+// adopting the incoming row (status/approval/_version). Symmetric tradeoff, consistent with the existing
+// "never drop a local art group" guard (OrderEditor mergedArt): a deliberately-deleted-then-saved file can
+// rarely be resurrected by a stale read — a visible, recoverable annoyance vs. today's silent loss.
+const _afUrl=f=>typeof f==='string'?f:(f?.url||'');
+const _afUnion=(extArr,locArr)=>{const l=Array.isArray(locArr)?locArr:[];if(!l.length)return extArr;const e=Array.isArray(extArr)?extArr:[];const seen=new Set(e.map(_afUrl).filter(Boolean));const add=l.filter(f=>{const u=_afUrl(f);return u&&!seen.has(u)});return add.length?[...e,...add]:extArr};
+// Merge one art group: adopt the incoming (server) group's fields but UNION its file arrays with the local
+// copy's, so a file the user just added (that the stale server read is missing) is never dropped. Returns
+// the incoming group unchanged (same ref) when the local copy adds nothing new.
+export const mergeArtGroupFiles=(ext,loc)=>{
+  if(!ext)return loc;if(!loc)return ext;
+  const mf=_afUnion(ext.mockup_files,loc.mockup_files),pf=_afUnion(ext.prod_files,loc.prod_files),fl=_afUnion(ext.files,loc.files);
+  let im=ext.item_mockups||{},imCh=false;const locIM=loc.item_mockups||{};const imKeys=Object.keys(locIM);
+  if(imKeys.length){const base={...(ext.item_mockups||{})};imKeys.forEach(k=>{const u=_afUnion(base[k],locIM[k]);if(u!==base[k]){base[k]=u;imCh=true}});if(imCh)im=base}
+  if(mf===ext.mockup_files&&pf===ext.prod_files&&fl===ext.files&&!imCh)return ext;
+  return{...ext,mockup_files:mf,prod_files:pf,files:fl,...(imCh?{item_mockups:im}:{})};
+};
+// Array-level: superset-merge an incoming art_files array against the local one, grouped by id. Keeps any
+// local-only group (the incoming snapshot is missing it entirely) AND any local-only file within a shared
+// group. Returns the incoming array unchanged (same ref) when the local copy adds nothing.
+export const mergeArtFileSuperset=(extArr,locArr)=>{
+  if(!Array.isArray(locArr)||!locArr.length)return Array.isArray(extArr)?extArr:[];
+  if(!Array.isArray(extArr)||!extArr.length)return locArr;
+  const locById=new Map(locArr.map(a=>[a&&a.id,a]).filter(([k])=>k!=null));
+  let changed=false;
+  const out=extArr.map(ea=>{const la=ea&&locById.get(ea.id);if(!la)return ea;const m=mergeArtGroupFiles(ea,la);if(m!==ea)changed=true;return m});
+  const extIds=new Set(extArr.map(a=>a&&a.id));
+  const locOnly=locArr.filter(a=>a&&!extIds.has(a.id));
+  if(locOnly.length)return[...out,...locOnly];
+  return changed?out:extArr;
+};
+
 // ── PDF open (resilient to Cloudinary's PDF-delivery block) ──
 // Cloudinary refuses to deliver PDFs on free/untrusted accounts (HTTP 401,
 // x-cld-error "deny or ACL failure"), which the browser shows as a blank

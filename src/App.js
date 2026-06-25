@@ -20,7 +20,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -1951,6 +1951,10 @@ const _dbSaveArtFilesInner = async (so) => {
     // SO from a possibly-stale DB snapshot and drops a just-added art group from the open editor — even though
     // the row persisted fine. Keeping the timestamps in sync lets the poll recognize there's nothing to change.
     if(so.updated_at)await _retryNet(()=>supabase.from('sales_orders').update({updated_at:so.updated_at}).eq('id',so.id));
+    // Register this art save as "recently saved by this client" so the reconciliation art-superset guard (and the
+    // version-conflict skip) treats the local copy as the fresher one for the next ~60s. The lightweight art save
+    // otherwise never set this, unlike the full SO/estimate/customer saves.
+    _dbRecentSaves[so.id]=Date.now();
     return true;
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
@@ -2455,6 +2459,10 @@ const _mergeAssignedTodos=(dbTodos,localTodos)=>{
 };
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
+// True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
+// protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
+// letting another user's/tab's legitimate art deletions reconcile normally instead of being resurrected.
+const _recentlySavedByMe=id=>!!_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000;
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
 // not real server-side errors. Backoff: 400ms, 1.2s.
 const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
@@ -4189,11 +4197,16 @@ export default function App(){
           return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
             apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
         };
+        // Realtime reload is a blunt wholesale-replace; for art-carrying entities (SOs, estimates, customers)
+        // layer the art_files superset against current state so a stale ~10s-after-save reload (triggered by the
+        // art save's own updated_at bump) can't drop a just-uploaded file. Snap is refreshed inside apply
+        // (prev-dependent), mirroring the poll-merge path so the _diffSave baseline matches what we put in state.
+        const _mergeProtectedArt=(dbArr,snapKey)=>{const base=_mergeProtected(dbArr,snapKey);return{snap:base.snap,apply:prev=>{const merged0=base.apply(prev);const merged=(merged0===prev)?prev:merged0.map(e=>{const lp=prev.find(p=>p.id===e.id);if(lp&&lp.art_files?.length&&_recentlySavedByMe(e.id)){const ma=mergeArtFileSuperset(e.art_files,lp.art_files);if(ma!==e.art_files)return{...e,art_files:ma}}return e});_dbSnap.current[snapKey]=merged;return _jsonEq(prev,merged)?prev:merged}};};
         // Only build merges for groups that were actually loaded — skipped groups keep prior snap/state
-        const estMerge=_has('estimates')?_mergeProtected(d.estimates,'ests'):null;
-        const soMerge=_has('sales_orders')?_mergeProtected(d.sales_orders,'sos'):null;
+        const estMerge=_has('estimates')?_mergeProtectedArt(d.estimates,'ests'):null;
+        const soMerge=_has('sales_orders')?_mergeProtectedArt(d.sales_orders,'sos'):null;
         const invMerge=_has('invoices')?_mergeProtected(d.invoices,'invs'):null;
-        const custMerge=_has('customers')?_mergeProtected(d.customers,'cust'):null;
+        const custMerge=_has('customers')?_mergeProtectedArt(d.customers,'cust'):null;
         const msgMerge=_has('messages')?_mergeProtected(d.messages,'msgs'):null;
         const prodMerge=_has('products')?_mergeProtected(d.products,'prod'):null;
         // Update snapshot before state — auto-save effects will diff against this.
@@ -4347,7 +4360,7 @@ export default function App(){
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
-        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
@@ -4359,7 +4372,11 @@ export default function App(){
           // Accept DB data — don't compare updated_at (string comparison of locale dates is unreliable)
           const m={...s};
           if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;
-          if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;
+          // Art files: DB-empty falls back to the local copy wholesale (hollowed-read guard, unchanged). When the
+          // DB has art too, superset-merge ONLY within this client's own post-save window (_recentlySavedByMe) so a
+          // read that landed behind a just-saved upload can't drop a file added to an existing group (the "art
+          // disappears / must upload twice" bug), while another user's deletion still reconciles after the window.
+          if(local.art_files?.length){if(!s.art_files||!s.art_files.length)m.art_files=local.art_files;else if(_recentlySavedByMe(s.id))m.art_files=mergeArtFileSuperset(s.art_files,local.art_files);}
           // Protect against mid-save transient state: if local has pick_lines but DB doesn't, preserve them
           if(localPickCount>0&&dbPickCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
@@ -4373,7 +4390,10 @@ export default function App(){
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
-        if(d.customers.length)setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
+        // Customer reload is a wholesale replace (no per-field merge like SOs/estimates). Library art lives in
+        // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
+        // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
+        if(d.customers.length)setCust(prev=>{const _mcArt=c=>{const lp=prev.find(p=>p.id===c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
