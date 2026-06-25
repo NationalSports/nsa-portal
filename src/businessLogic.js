@@ -668,7 +668,7 @@ function calcQualifyingSpend(o, minMargin = 0.2) {
     if (!q) return;
     let rev = 0, cost = 0;
     if (it._sizeSells && sq > 0) {
-      Object.entries(safeSizes(it)).forEach(([sz, v]) => { const n = safeNum(v); if (n > 0) { rev += n * (it._sizeSells?.[sz] || safeNum(it.unit_sell)); cost += n * safeNum(it.nsa_cost) } });
+      Object.entries(safeSizes(it)).forEach(([sz, v]) => { const n = safeNum(v); if (n > 0) { rev += n * (it._sizeSells?.[sz] || safeNum(it.unit_sell)); cost += n * (it._sizeCosts?.[sz] || safeNum(it.nsa_cost)) } });
     } else {
       rev += q * safeNum(it.unit_sell); cost += q * safeNum(it.nsa_cost);
     }

@@ -5830,7 +5830,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const invoiced=invoicedQtyMap.get(soLineKey(it,idx))||0;
         const remaining=Math.max(0,fullQty-invoiced);
         const qty=invType==='deposit'?fullQty:remaining;
-        const rev=qty*safeNum(it.unit_sell);
+        // Per-size sells (2XL+ upcharges) bill at the line's blended per-each so the invoice
+        // matches the SO total, which uses _sizeSells. Blended × remaining qty prorates partials.
+        const perEachSell=it._sizeSells&&szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/szQty):safeNum(it.unit_sell);
+        const rev=qty*perEachSell;
         // Deco revenue uses the equivalent quantity (dp2._nq for numbers/names, x2 for reversible) like
         // the SO totals and the line_items below — otherwise the invoice total disagrees with the SO and
         // with its own lines. _nq is roster/full-order based, so prorate by qty/fullQty: a partial invoice
@@ -5856,7 +5859,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
-      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=it._sizeSells&&_sq>0?Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:fq;const dp2=dP(d,fq,safeArt(o),cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?fq*2:fq);dr+=eq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;if(it.is_free_promo)return dr;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
       const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
@@ -6058,8 +6061,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const qty=Math.max(0,totalQty-alreadyInvoiced);
               if(invType!=='deposit'&&qty===0)return null;
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+(dp2._nq!=null?(totalQty>0?dp2._nq/totalQty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell)},0);
-              const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
-              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
+              // Blended per-each sell so per-size 2XL+ upcharges are billed (matches the SO total).
+              const perEachSell=it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell);
+              const lineAmt=qty*(perEachSell+decoSell);
+              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
