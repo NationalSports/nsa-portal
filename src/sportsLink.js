@@ -141,7 +141,6 @@ export const buildSportsLinkDocsQuery = (filters = {}) => {
   if (filters.siDocEndDate) p.set('siDocEndDate', filters.siDocEndDate);
   if (filters.supplierDocStartDate) p.set('supplierDocStartDate', filters.supplierDocStartDate);
   if (filters.supplierDocEndDate) p.set('supplierDocEndDate', filters.supplierDocEndDate);
-  if (filters.excludeScannedDocuments) p.set('excludeScannedDocuments', 'true');
   if (filters.orderBy) p.set('orderBy', filters.orderBy);
   if (filters.orderByDescending) p.set('orderByDescending', 'true');
   return p;
