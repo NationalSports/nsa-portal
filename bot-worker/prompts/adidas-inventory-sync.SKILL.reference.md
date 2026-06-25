@@ -163,14 +163,22 @@ out-of-stock dates. Never submit an order. On a call failure leave that size's
 `future_delivery_qty` null and continue. matCall = retry(≤6)+cart-rotation; on HTTP 401 set an
 auth-stop flag, preserve the batch, halt.
 
-## Step 4b — Image / description backfill (fill empties only)
+## Step 4b — Image / description / name backfill (fill empties only)
 
-For a SKU whose `products` row has empty `image_front_url` and/or `description`, capture from the
-catalog response: `assetUrl` → `image_front_url`; a plain-text blend of
-`longDescription`/`features`/`materialComposition` → `description`. **Only fill empties — never
-overwrite** (portal mockups & edited copy win). One-time per SKU; once filled, skip. Footwear and
-hats are the biggest image gaps. PATCH `products` by `sku` (`?sku=eq.<sku>`,
-`Prefer: return=minimal`), and only send columns that are currently null/empty.
+For a SKU whose `products` row has empty `image_front_url`, `description`, `color`, or a
+placeholder `name` (i.e. `name === 'Adidas ' + sku` — the fallback written when the catalog
+returned no name during discovery), capture from the catalog response and backfill:
+- `assetUrl` → `image_front_url`
+- plain-text blend of `longDescription`/`features`/`materialComposition` → `description`
+- `searchColorName` → `color`
+- `"Adidas " + catalog.name` (with W/Y gender suffix if applicable) → `name` when current name is
+  the placeholder pattern `^Adidas [A-Z]{2}[0-9]{4}[WY]?$`
+
+**Only fill empties / placeholders — never overwrite real values** (portal mockups & edited copy
+win). One-time per SKU; once all four fields are real, skip. Footwear and hats are the biggest
+image gaps; ~688 products from the June-12 discovery run are missing real names. PATCH `products`
+by `sku` (`?sku=eq.<sku>`, `Prefer: return=minimal`), and only send columns that are currently
+null/empty/placeholder.
 
 ## Step 4c — Discovery row creation (create missing only)
 
