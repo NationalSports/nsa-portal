@@ -47,6 +47,11 @@ exports.handler = async (event) => {
 
     // 204 (PATCH success) has no body; pass through an empty object so callers can json() safely.
     const data = await response.text();
+    // Log upstream failures (status + body) so the real reason lands in the function logs, not
+    // just a bare status code in the browser — the SportsLink API hides the cause in problem+json.
+    if (!response.ok) {
+      console.error('[sportslink-proxy]', method, url, '→', response.status, (data || '').slice(0, 500));
+    }
     return {
       statusCode: response.status,
       headers: { 'Content-Type': 'application/json' },
