@@ -731,9 +731,10 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   };
 
   const share = async () => {
-    // Build the link off the current path so it works whether the catalog is on
-    // /adidas or proxied onto nationalsportsapparel.com/livelook.
-    const url = `${window.location.origin}${catalogPath()}?style=${encodeURIComponent(st.colorways[0].sku)}`;
+    // Always share the public marketing URL (nationalsportsapparel.com/livelook) so the
+    // link never exposes the raw nsa-portal.netlify.app app origin — even when a staff
+    // member shares from /adidas inside the app.
+    const url = `https://nationalsportsapparel.com/livelook?style=${encodeURIComponent(st.colorways[0].sku)}`;
     if (navigator.share) {
       try { await navigator.share({ title: `${st.name} — NSA adidas catalog`, url }); return; } catch { /* fall through to copy */ }
     }

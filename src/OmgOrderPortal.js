@@ -644,7 +644,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   // Map order number → its parsed-slip draft index, so the orders table itself
   // becomes the review surface (one section instead of a separate grid).
   const draftIdxByNum = draftContacts ? Object.fromEntries(draftContacts.map((c, i) => [String(c.orderNumber || '').trim(), i])) : null;
-  const trackUrl = (o) => `${window.location.origin}/shop/order/${o.status_token}`;
+  // Always the public marketing URL (nationalsportsapparel.com 200-proxies /shop/*) so the
+  // tracking link staff copy/send never exposes the raw nsa-portal.netlify.app app origin.
+  const trackUrl = (o) => `https://nationalsportsapparel.com/shop/order/${o.status_token}`;
   const withEmail = orders.filter((o) => o.buyer_email).length;
   const withAddress = orders.filter((o) => o.ship_address && o.ship_address.street1).length;
   // Per-line incoming-stock tracking (Billed/Received/Need), FIFO-allocated to
