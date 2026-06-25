@@ -24050,10 +24050,9 @@ export default function App(){
       let docs=[];
       try{
         // active=true → only documents SI hasn't been told we've imported. lines=true →
-        // per-size line items. excludeScannedDocuments=true → only EDI documents with real
-        // line data (adidas, SanMar, Agron, …); scanned/OCR documents (e.g. S&S Activewear)
-        // carry no usable lines and stay on the manual PDF parse flow below.
-        docs=await sportsLinkGetDocuments({active:true,lines:true,excludeScannedDocuments:true,...filters});
+        // per-size line items. Scanned/OCR docs (e.g. S&S) are filtered client-side via
+        // has_usable_lines below; excludeScannedDocuments is not a supported API param.
+        docs=await sportsLinkGetDocuments({active:true,lines:true,...filters});
       }catch(e){
         setBillImport(x=>({...x,uploading:false}));
         nf('Sports Inc pull failed: '+(e.message||'connection error'),'error');
