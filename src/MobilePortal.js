@@ -488,7 +488,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12,marginBottom:12}}>
           {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
             return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
-          {cc.alpha_tag&&<button onClick={()=>window.open(window.location.origin+'/?portal='+cc.alpha_tag,'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
+          {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag,'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
           {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
         </div>
         {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
@@ -2030,7 +2030,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(!sendEstModal)return null;
     const est=sendEstModal;
     const cc=custObj(est.customer_id);
-    const estUrl=window.location.origin+'/?estimate='+est.id;
+    const estUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag:'';
     const copyLink=()=>{navigator.clipboard.writeText(estUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendEstModal(null)}).catch(()=>{window.prompt('Copy this link:',estUrl);setSendEstModal(null)})};
     const emailEst=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
@@ -2062,7 +2062,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const cc=custObj(inv.customer_id);
     const bal=(+inv.total||0)-(+inv.amount_paid||0);
     // Coaches portal shows the customer's open invoices + Pay Now; fall back to a plain summary if no portal tag.
-    const portalUrl=cc?.alpha_tag?window.location.origin+'/?portal='+cc.alpha_tag:'';
+    const portalUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag:'';
     const copyLink=()=>{if(!portalUrl)return;navigator.clipboard.writeText(portalUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendInvModal(null)}).catch(()=>{window.prompt('Copy this link:',portalUrl);setSendInvModal(null)})};
     const emailInv=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];

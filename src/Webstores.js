@@ -623,7 +623,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const coachPortalUrl = useCallback((store) => {
     const c = cust.find((x) => x.id === store?.customer_id);
     const tag = c?.alpha_tag || c?.name || '';
-    return tag ? `${window.location.origin}/?portal=${encodeURIComponent(tag)}` : '';
+    return tag ? `${PUBLIC_SITE}/coach?portal=${encodeURIComponent(tag)}` : '';
   }, [cust]);
 
   // Send the polished launch email (shop link + QR + key info + tracking portal).
