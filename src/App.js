@@ -4665,7 +4665,7 @@ export default function App(){
   _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
     try{
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
-      const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked';
+      const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked'||kind==='qty_wipe_blocked';
       const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
       logChange(isBlocked?'save_blocked':'data_loss','SO',soId,detail);
       if(kind==='blocked')return; // plain blocked saves are logged but not emailed — no data is lost, so they're informational only
