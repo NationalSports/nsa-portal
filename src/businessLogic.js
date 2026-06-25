@@ -131,6 +131,28 @@ function calcSOStatus(ord) {
   return 'need_order';
 }
 
+// ── Outside decoration (deco POs) ──
+// Which deco TYPES are outsourced for each item. A deco PO (SO-level so.deco_pos) and an item-level
+// outside-deco PO line each carry a single deco_type and a set of items — when sending work out, the
+// rep picks ONE type plus the items it covers. So outsourcing is per DECO TYPE, not per whole item: a
+// garment embroidered out of house can still carry a screen-print / DTF / names / numbers run produced
+// in-house, and that run still needs its own production job. Returns { [item_idx]: Set<deco_type|'*'> };
+// a covering PO with no deco_type can't be matched by type, so it's recorded as '*' (wildcard) and
+// suppresses every decoration on that item — preserving the legacy all-or-nothing behavior.
+const outsourcedDecoTypes = (o) => {
+  const map = {};
+  const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
+  safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
+  safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
+  return map;
+};
+// Is a decoration whose resolved type is `concreteDt` produced by an outside vendor (so it must NOT
+// spawn an in-house production job)? `outTypes` is the Set returned above for the item (undefined when
+// nothing is outsourced). Art with no file assigned yet has no concrete type (pass null/undefined):
+// while the item is outsourced we treat that as covered, so a not-yet-assigned design doesn't spawn a
+// mistyped placeholder job — once art is assigned, a type that doesn't match the PO un-suppresses it.
+const decoIsOutsourced = (outTypes, concreteDt) => !!outTypes && (outTypes.has('*') || !concreteDt || outTypes.has(concreteDt));
+
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
@@ -802,7 +824,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
