@@ -13,7 +13,7 @@
 // grow into a multi-brand catalog later (Sanmar, Momentec) — the grouping and
 // filter logic only assume {sku,name,color,category,sizes[]} per variant.
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabaseCoach as supabase } from '../lib/supabaseCoach';
 import { rQ, auTierDisc } from '../pricing';
 
 // Type system aligned with the NSA marketing site (same as Storefront.js)
