@@ -256,7 +256,7 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
     if(!q)return;
     let rev=0,cost=0;
     if(it._sizeSells&&sq>0){
-      Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell));cost+=n*_sNum(it.nsa_cost)}});
+      Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell));cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))}});
     }else{
       rev+=q*_sNum(it.unit_sell);cost+=q*_sNum(it.nsa_cost);
     }
