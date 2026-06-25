@@ -4344,6 +4344,10 @@ export default function App(){
     const schedulePoll=()=>{if(cancelled)return;const interval=_getPollInterval();pollTimer=setTimeout(runPoll,interval)};
     const runPoll=async()=>{
       if(cancelled)return;
+      // Skip polling while the tab is hidden — a backgrounded tab nobody's looking at would only
+      // add redundant DB load. onVis (realtime effect) fires a full reload the moment the tab is
+      // shown again, so freshness on return is covered. Keep the timer alive so polling auto-resumes.
+      if(typeof document!=='undefined'&&document.hidden){schedulePoll();return}
       if(!_dbReady.current){schedulePoll();return}
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
