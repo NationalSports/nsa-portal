@@ -349,6 +349,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[dpoDropShip,setDpoDropShip]=useState(true);// standalone deco PO form — deco POs are always drop ship
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
+    // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
+    const TOPSTAR_SERVICES={dst:{label:'DST Embroidery File',cost:15,sell:25,deco_type:'embroidery',orderType:'Digitizing',emailService:'Digitizing — DST File'},vector:{label:'Vector Logo',cost:10,sell:15,deco_type:'vector',orderType:'Vector',emailService:'Vector'}};
+    // Email a planned Topstar digitizing/vector PO to the vendor and flip it from "planned" to "waiting".
+    // This is the explicit "order now": POs created on an estimate are planned (no email) so the cost is
+    // captured and carried forward; the rep sends here once the order is firm (on the estimate or its SO).
+    const sendTopstarPO=async(dp)=>{
+      const svc=TOPSTAR_SERVICES[dp.topstar_service]||TOPSTAR_SERVICES.dst;
+      const imgs=dp.images||[];
+      if(imgs.length===0){nf('Add at least one artwork image to this PO before sending to Topstar','error');return false}
+      const custName=cust?.name||cust?.alpha_tag||'';
+      const imgList=imgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
+      const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
+        '<h2 style="color:#0891b2">New '+svc.orderType+' Order — '+dp.po_id+'</h2>'+
+        '<p><strong>Service:</strong> '+svc.emailService+' ($'+svc.cost.toFixed(2)+')</p>'+
+        (custName?'<p><strong>Customer:</strong> '+custName+'</p>':'')+
+        '<p><strong>PO #:</strong> '+dp.po_id+'</p>'+
+        '<p><strong>Instructions:</strong><br/>'+(dp.notes?String(dp.notes).replace(/\n/g,'<br/>'):'(none provided)')+'</p>'+
+        '<p><strong>Artwork:</strong></p><ul>'+imgList+'</ul>'+
+        '<p style="color:#64748b;font-size:12px">Sent from the National Sports Apparel portal. Reply to this email to reach the rep.</p></div>';
+      let r={ok:false,error:'not sent'};
+      try{r=await sendBrevoEmail({to:[{email:'info@topstardigitizing.com'}],
+        subject:'New '+svc.orderType+' Order — '+dp.po_id+' ('+svc.emailService+')',
+        htmlContent:html,senderName:_ci?.name||'National Sports Apparel',
+        replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
+        attachment:imgs.map((u,i)=>({url:u,name:(svc.deco_type||'art')+'-'+(i+1)+'.'+((u.split('?')[0].split('.').pop())||'png')}))});
+      }catch(e){r={ok:false,error:e.message}}
+      if(r.ok){
+        const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?{...x,status:'waiting',_topstar_sent_at:new Date().toLocaleString()}:x),updated_at:new Date().toLocaleString()};
+        setO(updated);onSave(updated);
+        setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>dp.id?x.id===dp.id:x.po_id===dp.po_id)||p.decoPo}:p);
+        nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
+      } else nf('Email to Topstar failed: '+r.error,'error');
+      return r.ok;
+    };
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
@@ -3161,6 +3195,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>})()}
         </div>
       </div>
+      {isE&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
+        <button className="btn btn-secondary" onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}} title="Plan a digitizing or vector file now — cost and the customer charge carry forward to the sales order">🧵 Plan Digitizing / Vector</button>
+        {(o.deco_pos||[]).map(dp=>{const _amt=safeNum(dp.expected_cost||dp.unit_cost);const _planned=dp.status==='planned';return<span key={dp.id||dp.po_id} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})} title={(_planned?'Planned (not ordered yet) — ':'')+'open digitizing PO'} style={{cursor:'pointer',fontSize:11,padding:'3px 8px',borderRadius:6,background:_planned?'#fef9c3':'#ecfeff',border:'1px solid '+(_planned?'#fde047':'#a5f3fc'),color:_planned?'#854d0e':'#0e7490',fontWeight:700}}>{dp.po_id} · ${_amt.toFixed(2)} · {_planned?'Planned':(dp.status||'waiting')}</span>})}
+      </div>}
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {(()=>{
@@ -6697,14 +6735,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
       // TOPSTAR DIGITIZING / VECTOR PO — file creation vendor, billed back to the customer as a line item
       if(showPO==='topstar'){
-        const TOPSTAR={dst:{label:'DST Embroidery File',cost:15,sell:25,deco_type:'embroidery',orderType:'Digitizing',emailService:'Digitizing — DST File'},vector:{label:'Vector Logo',cost:10,sell:15,deco_type:'vector',orderType:'Vector',emailService:'Vector'}};
+        const TOPSTAR=TOPSTAR_SERVICES;const planOnly=isE;
         const svc=TOPSTAR[topstarService]||TOPSTAR.dst;
         const tsPoId='TS '+poCounter+(cust?.alpha_tag?' '+cust.alpha_tag:'');
         return<div className="modal-overlay" onClick={()=>!topstarSending&&setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}}>
-          <div className="modal-header"><h2 style={{color:'#0891b2'}}>🧵 Topstar Digitizing PO</h2><button className="modal-close" onClick={()=>!topstarSending&&setShowPO(null)}>x</button></div>
+          <div className="modal-header"><h2 style={{color:'#0891b2'}}>🧵 {planOnly?'Plan Digitizing / Vector':'Topstar Digitizing PO'}</h2><button className="modal-close" onClick={()=>!topstarSending&&setShowPO(null)}>x</button></div>
           <div className="modal-body">
-            <div style={{padding:10,background:'#ecfeff',border:'1px solid #a5f3fc',borderRadius:8,marginBottom:12,fontSize:12,color:'#0e7490'}}>
-              Sends a PO + your artwork to <strong>info@topstardigitizing.com</strong> for file creation. Topstar's fee is recorded as a cost on this order, and the customer is billed a matching line item.
+            <div style={{padding:10,background:planOnly?'#fef9c3':'#ecfeff',border:'1px solid '+(planOnly?'#fde047':'#a5f3fc'),borderRadius:8,marginBottom:12,fontSize:12,color:planOnly?'#854d0e':'#0e7490'}}>
+              {planOnly
+                ?<>Plans the digitizing/vector file on this estimate. The cost and a matching customer charge are recorded now and <strong>carry forward to the sales order</strong>. Topstar is <strong>not</strong> emailed yet — send it from the PO when you're ready to order.</>
+                :<>Sends a PO + your artwork to <strong>info@topstardigitizing.com</strong> for file creation. Topstar's fee is recorded as a cost on this order, and the customer is billed a matching line item.</>}
             </div>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Service</div>
             <div style={{display:'flex',gap:8,marginBottom:14}}>
@@ -6717,22 +6757,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div><label className="form-label">PO Number</label><input className="form-input" value={tsPoId} readOnly style={{color:'#0891b2',fontWeight:700}}/></div>
               <div><label className="form-label">Customer Bill</label><input className="form-input" value={'$'+svc.sell.toFixed(2)} readOnly style={{color:'#166534',fontWeight:800}}/></div>
             </div>
-            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Images</label>
+            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Images{planOnly?' (optional now — add before sending)':''}</label>
               <ImgGallery images={topstarImgs} onUpdate={setTopstarImgs} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
             <div><label className="form-label">Explanation / Instructions for Topstar</label><textarea className="form-input" rows={4} value={topstarNotes} onChange={e=>setTopstarNotes(e.target.value)} placeholder="Describe the logo/name, thread colors, sizing, file format needed, etc." style={{resize:'vertical'}}/></div>
           </div>
           <div className="modal-footer">
-            <button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO('select')}>← Back</button>
+            {!planOnly&&<button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO('select')}>← Back</button>}
             <button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO(null)}>Cancel</button>
             <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2'}} disabled={topstarSending} onClick={async()=>{
-              if(topstarImgs.length===0){nf('Add at least one artwork image for Topstar','error');return}
+              if(!planOnly&&topstarImgs.length===0){nf('Add at least one artwork image for Topstar','error');return}
               setTopstarSending(true);
               const tsPoIdFinal=tsPoId;
               const decoPO={id:'TS-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:tsPoIdFinal,vendor:'Topstar',deco_vendor_id:null,deco_type:svc.deco_type,
                 topstar_service:topstarService,item_idxs:[],qty:1,unit_cost:svc.cost,expected_cost:svc.cost,
-                notes:topstarNotes,images:topstarImgs,status:'waiting',created_at:new Date().toLocaleDateString(),
+                notes:topstarNotes,images:topstarImgs,status:planOnly?'planned':'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
               const lineItem={product_id:null,sku:'DIGITIZING',name:'Topstar — '+svc.label,brand:'Topstar',vendor_id:null,color:'',
                 nsa_cost:0,unit_sell:svc.sell,retail_price:0,available_sizes:[],sizes:{},qty_only:true,est_qty:1,
@@ -6741,6 +6781,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
               // during the await) must not be able to drop the optimistic deco_pos record.
               setO(updated);onSave(updated);setPOCounter(c=>c+1);
+              if(planOnly){
+                setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
+                nf('🧵 '+tsPoIdFinal+' planned — $'+svc.cost.toFixed(2)+' cost & $'+svc.sell.toFixed(2)+' customer charge will carry to the sales order. Send to Topstar when ready to order.');
+                return;
+              }
               const custName=cust?.name||cust?.alpha_tag||'';
               const imgList=topstarImgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
               const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -6762,7 +6807,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
               if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
               else nf('PO created & customer billed, but email to Topstar failed: '+r.error,'error');
-            }}>{topstarSending?'Sending…':'🧵 Create PO & Email Topstar'}</button>
+            }}>{topstarSending?(planOnly?'Saving…':'Sending…'):(planOnly?'🧵 Plan Digitizing PO':'🧵 Create PO & Email Topstar')}</button>
           </div>
         </div></div>;
       }
@@ -10734,6 +10779,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);
         const actual=safeNum(dp._bill_cost||0);
         const isTopstar=!!dp.topstar_service;
+        const _poParentLabel=isE?'Estimate':'SO';
         const _rate=safeNum(dp.unit_cost);
         const _saveDp=(updatedDp,msg)=>{
           const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
@@ -10757,7 +10803,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
           if((dp.tracking_numbers||[]).includes(tn)){nf('Tracking number already on this PO','error');return}
           _saveDp({...dp,tracking_numbers:[...(dp.tracking_numbers||[]),tn]},'Added tracking '+tn);setDecoTrackAdd('')};
-        const DECO_STATUSES=[['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
+        const DECO_STATUSES=[['planned','Planned (not ordered)'],['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
         const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
         const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
         const editingPo=decoEditPo&&decoEditPo.decoPoId===dpKey;
@@ -10773,7 +10819,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           headerRight:'<div class="ta" style="font-size:18px">Status: '+(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())+'</div><div class="ts">'+(dp.qty||0)+' unit'+((dp.qty||0)!==1?'s':'')+' · Expected: <strong>$'+expected.toFixed(2)+'</strong></div>',
           infoBoxes:[
             {label:'Vendor',value:dp.vendor||'—',sub:dp.deco_type?dp.deco_type.replace(/_/g,' '):undefined},
-            {label:'Sales Order',value:soId||o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
+            {label:isE?'Estimate':'Sales Order',value:soId||o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
             {label:'Expected Return',value:dp.expected_date||'TBD',sub:dp.created_at?'Created: '+dp.created_at:undefined},
           ],
           tables:[
@@ -10818,7 +10864,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
-                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)}} title="Back to Sales Order">{soId}</span></div>
+                <div style={{fontSize:11,color:'#64748b'}}>{_poParentLabel}: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)}} title={isE?'Back to estimate':'Back to Sales Order'}>{soId}</span></div>
                 <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{dp.vendor||'—'}</strong></div>
                 {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
                 {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
@@ -10827,6 +10873,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
+              {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
               <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
                 try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
