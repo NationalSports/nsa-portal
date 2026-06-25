@@ -6688,11 +6688,11 @@ export default function App(){
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
     nf('Inventory updated');
   };
-  const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
+  const newE=(c,product,seedItems,memo='')=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=isAU(product.brand)&&!String(product.id||'').startsWith('ssa-');const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
-    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
+    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
   // customer from inside the editor — same default shape as a freshly converted SO.
   const newSOFn=(c)=>{const mk=c?.catalog_markup||1.65;
@@ -7311,21 +7311,38 @@ export default function App(){
   },[catReqs.length,cust.length,cu?.id,coachCustMap]);
   // Seed a draft estimate from a request: lines grouped by SKU, sizes→qty map,
   // adidas tier pricing when the product is in the catalog (mirrors newE's logic).
-  const estFromCatReq=(r)=>{
+  const estFromCatReq=async(r)=>{
     const c=cust.find(x=>x.id===(catReqCustSel[r.id]||r.customer_id));
     if(!c){nf('Match a customer first — search by name on the request','error');return}
     const lines=Array.isArray(r.lines)?r.lines:[];
     const bySku={};lines.forEach(l=>{(bySku[l.sku]=bySku[l.sku]||[]).push(l)});
     const mk=c.catalog_markup||1.65;
+    // The in-memory catalog is capped (~20k of ~41k rows), so a real coach-ordered
+    // SKU can miss `prod` and fall through as a $0 "custom" line carrying the terse
+    // name the cart captured. Resolve those misses straight from the products table
+    // by SKU so the estimate reads the true name, cost, and tier pricing for the item.
+    const dbBySku={};
+    const missingSkus=Object.keys(bySku).filter(s=>!prod.find(x=>x.sku===s));
+    if(missingSkus.length&&supabase){
+      try{const{data}=await supabase.from('products').select('id,sku,name,brand,vendor_id,pricing_group,category,color,nsa_cost,clearance_cost,is_clearance,retail_price,available_sizes').in('sku',missingSkus);
+        (data||[]).forEach(row=>{if(row&&row.sku&&!dbBySku[row.sku])dbBySku[row.sku]=row});
+      }catch(e){console.error('[catreq] product lookup failed:',e.message)}
+    }
     const items=Object.entries(bySku).map(([sku,ls])=>{
-      const p=prod.find(x=>x.sku===sku);
+      const p=prod.find(x=>x.sku===sku)||dbBySku[sku];
       const sizes={};ls.forEach(l=>{sizes[l.size]=(sizes[l.size]||0)+(safeNum(l.qty)||0)});
-      const decoNotes=[...new Set(ls.map(l=>l.decoration).filter(Boolean))];
-      const notes=[decoNotes.length?'Decoration requested: '+decoNotes.join(', '):null,ls.some(l=>l.inbound)?'Some sizes inbound at adidas — confirm delivery dates':null].filter(Boolean).join(' · ');
+      // Decoration + the coach's free-text description are per-item (shared
+      // across that SKU's sizes), so collapse to the one value each and fold
+      // both into the line note the rep sees on the estimate.
+      const decoTypes=[...new Set(ls.map(l=>l.decoration).filter(Boolean))];
+      const decoDescs=[...new Set(ls.map(l=>l.decoration_note).filter(Boolean))];
+      const decoStr=decoTypes.length?('Decoration: '+decoTypes.join(', ')+(decoDescs.length?' — '+decoDescs.join('; '):'')):(decoDescs.length?'Decoration: '+decoDescs.join('; '):null);
+      const notes=[decoStr,ls.some(l=>l.inbound)?'Some sizes inbound at adidas — confirm delivery dates':null].filter(Boolean).join(' · ');
       if(p){const au=(p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance')&&!String(p.id||'').startsWith('ssa-');const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;const sell=au?rQ(p.retail_price*(1-auTierDisc(c.adidas_ua_tier||'B',p.pricing_group,p.category))):rQ(repCost*mk);
         return{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||Object.keys(sizes))],_colors:p._colors||null,sizes,decorations:[],_is_clearance:p.is_clearance||false,notes}}
       return{product_id:null,sku,name:ls[0].name||sku,brand:'Adidas',vendor_id:null,color:ls[0].color||'',nsa_cost:0,retail_price:safeNum(ls[0].price),unit_sell:safeNum(ls[0].price),available_sizes:Object.keys(sizes),sizes,decorations:[],is_custom:true,notes}});
-    const e=newE(c,null,items);
+    // The coach's order name seeds the estimate memo line.
+    const e=newE(c,null,items,r.order_name||'');
     const upd={status:'estimate_created',estimate_id:e.id,customer_id:c.id,reviewed_by:cu.id,reviewed_at:new Date().toISOString()};
     // Once it's an estimate the request is handled — drop it from the inbox
     // (also excluded from the reload query); the rep works it under Estimates.
@@ -7408,7 +7425,7 @@ export default function App(){
   // email so the inbox and the email read the same.
   const REQ_SIZE_ORDER=['3XS','2XS','XXS','XS','S','M','L','XL','2XL','XXL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','OSFA','ONE SIZE','OS','NS'];
   const reqSizeRank=(s)=>{const i=REQ_SIZE_ORDER.indexOf(String(s||'').trim().toUpperCase());return i===-1?900:i};
-  const groupReqLines=(lines)=>{const gs=[];const idx={};(lines||[]).forEach(l=>{if(idx[l.sku]==null){idx[l.sku]=gs.length;gs.push({sku:l.sku,name:l.name,color:l.color,decoration:l.decoration,lines:[]})}gs[idx[l.sku]].lines.push(l)});gs.forEach(g=>g.lines.sort((a,b)=>reqSizeRank(a.size)-reqSizeRank(b.size)||String(a.size).localeCompare(String(b.size))));return gs};
+  const groupReqLines=(lines)=>{const gs=[];const idx={};(lines||[]).forEach(l=>{if(idx[l.sku]==null){idx[l.sku]=gs.length;gs.push({sku:l.sku,name:l.name,color:l.color,decoration:l.decoration,decoration_note:l.decoration_note,lines:[]})}gs[idx[l.sku]].lines.push(l)});gs.forEach(g=>g.lines.sort((a,b)=>reqSizeRank(a.size)-reqSizeRank(b.size)||String(a.size).localeCompare(String(b.size))));return gs};
   const renderCatReqModal=()=>catReqOpen&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setCatReqOpen(false)}>
     <div style={{background:'white',borderRadius:14,maxWidth:880,width:'100%',marginBottom:'6vh'}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'16px 22px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center'}}>
@@ -7427,10 +7444,11 @@ export default function App(){
               {r.coach_phone&&<span style={{fontSize:12,color:'#64748b'}}>{r.coach_phone}</span>}
               <span style={{fontSize:11,color:'#94a3b8',marginLeft:'auto'}}>{r.created_at?new Date(r.created_at).toLocaleString():''}</span>
             </div>
+            {r.order_name&&<div style={{fontSize:12,marginTop:6}}><span style={{color:'#64748b'}}>Order name → estimate memo: </span><span style={{fontWeight:600}}>{r.order_name}</span></div>}
             {r.notes&&<div style={{fontSize:12,color:'#475569',marginTop:6,background:'#f8fafc',borderRadius:8,padding:'6px 10px'}}>“{r.notes}”</div>}
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,marginTop:10}}>
               <thead><tr style={{textAlign:'left',color:'#64748b'}}><th style={{padding:'4px 6px'}}>SKU</th><th style={{padding:'4px 6px'}}>Item</th><th style={{padding:'4px 6px'}}>Color</th><th style={{padding:'4px 6px'}}>Size</th><th style={{padding:'4px 6px',textAlign:'right'}}>Qty</th><th style={{padding:'4px 6px'}}>Deco</th><th style={{padding:'4px 6px',textAlign:'right'}}>Retail</th></tr></thead>
-              <tbody>{groups.map((g,i)=>{const qty=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);const retail=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0)*(safeNum(l.price)||0),0);return<tr key={i} style={{borderTop:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontFamily:'monospace',verticalAlign:'top'}}>{g.sku}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.name}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.color}</td><td style={{padding:'4px 6px'}}>{g.lines.map((l,j)=><span key={j} style={{display:'inline-block',whiteSpace:'nowrap',marginRight:12}}>{l.size}&nbsp;<b>{l.qty}</b>{l.inbound?<span style={{color:'#b45309',fontSize:11}}> · inbound {l.inbound}</span>:''}</span>)}</td><td style={{padding:'4px 6px',textAlign:'right',fontWeight:700,verticalAlign:'top'}}>{qty}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.decoration||'—'}</td><td style={{padding:'4px 6px',textAlign:'right',verticalAlign:'top'}}>{retail?'$'+retail:'—'}</td></tr>})}</tbody>
+              <tbody>{groups.map((g,i)=>{const qty=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);const retail=g.lines.reduce((a,l)=>a+(safeNum(l.qty)||0)*(safeNum(l.price)||0),0);return<tr key={i} style={{borderTop:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontFamily:'monospace',verticalAlign:'top'}}>{g.sku}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.name}</td><td style={{padding:'4px 6px',verticalAlign:'top'}}>{g.color}</td><td style={{padding:'4px 6px'}}>{g.lines.map((l,j)=><span key={j} style={{display:'inline-block',whiteSpace:'nowrap',marginRight:12}}>{l.size}&nbsp;<b>{l.qty}</b>{l.inbound?<span style={{color:'#b45309',fontSize:11}}> · inbound {l.inbound}</span>:''}</span>)}</td><td style={{padding:'4px 6px',textAlign:'right',fontWeight:700,verticalAlign:'top'}}>{qty}</td><td style={{padding:'4px 6px',verticalAlign:'top',maxWidth:200}}>{g.decoration?<span style={{fontWeight:600,color:'#2563eb'}}>{g.decoration}</span>:(!g.decoration_note&&'—')}{g.decoration_note&&<div style={{fontSize:11,color:'#64748b',marginTop:1,whiteSpace:'normal'}}>{g.decoration_note}</div>}</td><td style={{padding:'4px 6px',textAlign:'right',verticalAlign:'top'}}>{retail?'$'+retail:'—'}</td></tr>})}</tbody>
             </table>
             <div style={{display:'flex',gap:8,alignItems:'center',marginTop:12,flexWrap:'wrap'}}>
               {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
