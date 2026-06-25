@@ -1050,8 +1050,15 @@ function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoadi
   );
 }
 
+// Decoration methods a coach can request per item. Multi-select (an item can be
+// screen-printed AND embroidered); "no deco" is the absence of any. Stored on the
+// line as a comma-joined `decoration` string so the rep email / inbox / estimate
+// all read one display value, with the free-text in `decoration_note`.
+const DECO_METHODS = ['Screen print', 'Embroidery', 'Heat press'];
+const parseDeco = (s) => new Set(String(s || '').split(',').map((x) => x.trim()).filter(Boolean));
+
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account,
+function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onClose, notify, account,
   savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
   const [coach, setCoach] = useState(() => {
     const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
@@ -1152,8 +1159,11 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
           coach_phone: coach.phone.trim(),
           team_name: coach.team.trim(),
           notes: notes.trim(),
+          // The coach's order name becomes the estimate's memo line when the rep
+          // builds it from this request.
+          order_name: orderName.trim(),
           customer_id: (account && account.customerId) || null,
-          lines: list.map((l) => ({ sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
+          lines: list.map((l) => ({ sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration, decoration_note: l.decoration_note })),
           images: images.map(({ name, type, content }) => ({ name, type, content })),
         }),
       });
@@ -1250,6 +1260,17 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
               {groups.map((g) => {
                 const gUnits = g.lines.reduce((a, l) => a + l.qty, 0);
                 const gTotal = g.lines.reduce((a, l) => a + (l.price || 0) * l.qty, 0);
+                const deco = parseDeco(g.lines[0].decoration);
+                const decoNote = g.lines[0].decoration_note || '';
+                // Toggle one decoration method on/off for this SKU. Clearing the
+                // last method drops the note too. Picking any method is mutually
+                // exclusive with "no deco" (which is just the empty set).
+                const toggleMethod = (m) => {
+                  const next = new Set(deco);
+                  if (next.has(m)) next.delete(m); else next.add(m);
+                  const joined = DECO_METHODS.filter((x) => next.has(x)).join(', ');
+                  setSkuDeco(g.sku, { decoration: joined || null, decoration_note: joined ? decoNote : null });
+                };
                 return (
                 <div key={g.sku} style={{ padding: '12px 0', borderBottom: '1px solid #F0F1F4' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -1261,13 +1282,32 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                     </div>
                     <button onClick={() => removeSku(g)} aria-label={`Remove ${g.name}`} style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
                   </div>
-                  <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 6, color: g.lines[0].decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
-                    value={g.lines[0].decoration || ''} onChange={(e) => setSkuDecoration(g.sku, e.target.value)} aria-label={`Decoration for ${g.name}`}>
-                    <option value="">Blank (no decoration)</option>
-                    <option>Screen print</option>
-                    <option>Embroidery</option>
-                    <option>Heat press</option>
-                  </select>
+                  {/* Decoration: tap any methods that apply (an item can be
+                      screen-printed AND embroidered). A description box appears
+                      once a method is on; its text rides into the estimate line's
+                      notes so the rep sees exactly what the coach wants. */}
+                  <div role="group" aria-label={`Decoration for ${g.name}`} style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {DECO_METHODS.map((m) => {
+                      const on = deco.has(m);
+                      return (
+                        <button key={m} type="button" className={'ai-filterbtn' + (on ? ' on' : '')} aria-pressed={on}
+                          onClick={() => toggleMethod(m)} style={{ padding: '4px 11px', fontSize: 12 }}>
+                          {on ? '✓ ' : ''}{m}
+                        </button>
+                      );
+                    })}
+                    <button type="button" className={'ai-filterbtn' + (deco.size === 0 ? ' on' : '')} aria-pressed={deco.size === 0}
+                      onClick={() => setSkuDeco(g.sku, { decoration: null, decoration_note: null })} style={{ padding: '4px 11px', fontSize: 12 }}>
+                      No deco
+                    </button>
+                  </div>
+                  {deco.size > 0 && (
+                    <textarea className="ai-input" rows={2} value={decoNote}
+                      onChange={(e) => setSkuDeco(g.sku, { decoration_note: e.target.value })}
+                      placeholder={`Describe the ${[...deco].join(' + ').toLowerCase()} — logo/text, colors, placement…`}
+                      aria-label={`Decoration details for ${g.name}`}
+                      style={{ marginTop: 7, resize: 'vertical', fontSize: 13, padding: '7px 10px' }} />
+                  )}
                   {/* Every size for this item sits on one line — type a qty under each (0 removes it). */}
                   <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-start' }}>
                     {g.lines.map((l) => (
@@ -1496,16 +1536,18 @@ export default function AdidasInventory() {
       const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
       if (n === 0) return i >= 0 ? prev.filter((_, j) => j !== i) : prev;
       if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: n } : l));
-      return [...prev, { sku: cw.sku, brand: st.brand, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null }];
+      return [...prev, { sku: cw.sku, brand: st.brand, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null, decoration_note: null }];
     });
   }, [mutateList, yourPriceFn]);
   const updateLine = useCallback((i, qty) => {
     mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
   }, [mutateList]);
-  // Decoration is chosen per item (colorway), so it applies to every size of
-  // that SKU on the list at once.
-  const setSkuDecoration = useCallback((sku, deco) => {
-    mutateList((prev) => prev.map((l) => (l.sku === sku ? { ...l, decoration: deco || null } : l)));
+  // Decoration is chosen per item (colorway), so a patch applies to every size
+  // of that SKU on the list at once. `patch` is a partial line — { decoration,
+  // decoration_note } — letting the drawer toggle methods and edit the note
+  // without clobbering the other field.
+  const setSkuDeco = useCallback((sku, patch) => {
+    mutateList((prev) => prev.map((l) => (l.sku === sku ? { ...l, ...patch } : l)));
   }, [mutateList]);
   const removeLine = useCallback((i) => mutateList((prev) => prev.filter((_, j) => j !== i)), [mutateList]);
   const clearList = useCallback(() => mutateList(() => []), [mutateList]);
@@ -1536,6 +1578,7 @@ export default function AdidasInventory() {
   const linesForSave = useCallback(() => list.map((l) => ({
     sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size,
     qty: l.qty, price: l.price, inbound: l.inbound || null, decoration: l.decoration || null,
+    decoration_note: l.decoration_note || null,
   })), [list]);
 
   // Create or update a saved order from the current cart. forceNew always inserts
@@ -2213,7 +2256,7 @@ export default function AdidasInventory() {
         <OrderDrawer
           list={list}
           updateLine={updateLine}
-          setSkuDecoration={setSkuDecoration}
+          setSkuDeco={setSkuDeco}
           removeLine={removeLine}
           clearList={clearList}
           onClose={() => setDrawerOpen(false)}
