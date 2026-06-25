@@ -17,7 +17,7 @@ import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -1504,7 +1504,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // When every live line ships direct to the customer — each item is on a drop-ship PO and/or decorated
   // out of house, with nothing received in-house or pulled from our stock — no goods route through the
   // warehouse, so the selector is unnecessary and is replaced by a note (and the far-account default
-  // below is skipped). The "decorated out of house" test mirrors the sentOutside check used for jobs.
+  // below is skipped). This is intentionally a per-ITEM test (any covering deco PO routes the garment
+  // to the vendor) — unlike job creation, which is now per deco TYPE (see outsourcedDecoTypes).
   const allShipDirect=useMemo(()=>{
     if(!isSO)return false;
     const live=safeItems(o).map((it,idx)=>({it,idx})).filter(({it})=>(Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty))>0);
@@ -2241,20 +2242,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Step 1: Build decoration entries per item, grouped by deco type
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
+    // Decoration sent to an outside decorator is produced by the vendor, not in-house, so it must not
+    // spawn a production job. Outsourcing is per DECO TYPE, not per item: a deco PO (and an item-level
+    // outside-deco PO line) each carry a single deco_type, so changing an item's art to an in-house
+    // type while it still sits on an unrelated deco PO (e.g. a screen-print logo on an item that's also
+    // on an embroidery deco PO) must still produce that screen-print job. The previous per-item skip
+    // dropped the whole item on ANY covering PO — that's why a freshly-changed design auto-created no
+    // job. outsourcedByItem maps item_idx -> Set of outsourced types; decoIsOutsourced matches per deco.
+    const outsourcedByItem=outsourcedDecoTypes(o);
     safeItems(o).forEach((it,ii)=>{
-      // Item sent to an outside decorator — via an item-level outside-deco PO line or an
-      // SO-level deco PO covering this item. The in-house team doesn't produce decoration
-      // for these items, so they must not generate any production job.
-      const sentOutside=(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')
-        ||(o.deco_pos||[]).some(dp=>(dp.item_idxs||[]).includes(ii));
-      if(sentOutside)return;
+      const outTypes=outsourcedByItem[ii];
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
         if(frozenItemDecos.has(ii+'::'+di))return;
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
-          const dt=artF?.deco_type||d.deco_type||'screen_print';
+          const concreteDt=artF?.deco_type||d.deco_type||null;
+          if(decoIsOutsourced(outTypes,concreteDt))return;// vendor produces this decoration — no in-house job
+          const dt=concreteDt||'screen_print';
           const part=d.art_file_id?'art_'+d.art_file_id:'unassigned@'+safeStr(d.position);
           // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
           // split across several lines — and a standalone copy of it — all consolidate into ONE job.
@@ -2265,11 +2271,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
+          if(decoIsOutsourced(outTypes,dt))return;// vendor produces these numbers — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di,_dt:dt});
         } else if(d.kind==='names'){
           const dt=d.name_method||'heat_press';
+          if(decoIsOutsourced(outTypes,dt))return;// vendor produces these names — no in-house job
           const part='names_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di,_dt:dt});
