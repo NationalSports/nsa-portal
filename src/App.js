@@ -7311,14 +7311,25 @@ export default function App(){
   },[catReqs.length,cust.length,cu?.id,coachCustMap]);
   // Seed a draft estimate from a request: lines grouped by SKU, sizes→qty map,
   // adidas tier pricing when the product is in the catalog (mirrors newE's logic).
-  const estFromCatReq=(r)=>{
+  const estFromCatReq=async(r)=>{
     const c=cust.find(x=>x.id===(catReqCustSel[r.id]||r.customer_id));
     if(!c){nf('Match a customer first — search by name on the request','error');return}
     const lines=Array.isArray(r.lines)?r.lines:[];
     const bySku={};lines.forEach(l=>{(bySku[l.sku]=bySku[l.sku]||[]).push(l)});
     const mk=c.catalog_markup||1.65;
+    // The in-memory catalog is capped (~20k of ~41k rows), so a real coach-ordered
+    // SKU can miss `prod` and fall through as a $0 "custom" line carrying the terse
+    // name the cart captured. Resolve those misses straight from the products table
+    // by SKU so the estimate reads the true name, cost, and tier pricing for the item.
+    const dbBySku={};
+    const missingSkus=Object.keys(bySku).filter(s=>!prod.find(x=>x.sku===s));
+    if(missingSkus.length&&supabase){
+      try{const{data}=await supabase.from('products').select('id,sku,name,brand,vendor_id,pricing_group,category,color,nsa_cost,clearance_cost,is_clearance,retail_price,available_sizes').in('sku',missingSkus);
+        (data||[]).forEach(row=>{if(row&&row.sku&&!dbBySku[row.sku])dbBySku[row.sku]=row});
+      }catch(e){console.error('[catreq] product lookup failed:',e.message)}
+    }
     const items=Object.entries(bySku).map(([sku,ls])=>{
-      const p=prod.find(x=>x.sku===sku);
+      const p=prod.find(x=>x.sku===sku)||dbBySku[sku];
       const sizes={};ls.forEach(l=>{sizes[l.size]=(sizes[l.size]||0)+(safeNum(l.qty)||0)});
       // Decoration + the coach's free-text description are per-item (shared
       // across that SKU's sizes), so collapse to the one value each and fold
