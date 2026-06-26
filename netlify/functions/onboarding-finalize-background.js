@@ -75,14 +75,25 @@ exports.handler = async (event) => {
     }
 
     const files = await buildPacketFiles(invite, sub, events || []);
-    const zipBuffer = await zipFiles(files);
+    const zipBuffer = await zipFiles(files); // emailed packet = generated PDFs only (keeps attachment small)
     const filename = `${safeName(invite.full_name)}_NSA_New_Hire_Packet.zip`;
+
+    // The hire's uploaded documents (voided check, photo ID, …) — added to the
+    // Drive copy so the Employee Forms folder is complete.
+    const { data: docs } = await admin.from('onboarding_documents').select('kind, filename, storage_path').eq('invite_id', invite.id);
+    const driveFiles = files.slice();
+    for (const d of (docs || [])) {
+      try {
+        const dl = await admin.storage.from('onboarding-docs').download(d.storage_path);
+        if (dl.data) { const ab = await dl.data.arrayBuffer(); driveFiles.push({ name: `Uploads/${d.kind}_${d.filename}`, bytes: Buffer.from(ab) }); }
+      } catch {}
+    }
 
     // 1) Google Drive copy (best-effort).
     let driveUrl = null;
     if (drive.isConfigured()) {
       try {
-        const r = await drive.uploadPacketToDrive(invite.full_name, files);
+        const r = await drive.uploadPacketToDrive(invite.full_name, driveFiles);
         driveUrl = r.folderUrl;
         await admin.from('onboarding_events').insert([{ invite_id: invite.id, kind: 'drive_uploaded', ref: r.folderId, meta: { uploaded: r.uploaded, url: r.folderUrl } }]);
       } catch (e) {

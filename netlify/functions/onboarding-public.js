@@ -80,11 +80,16 @@ exports.handler = async (event) => {
     if (action === 'load') {
       const sensitiveSet = {};
       for (const k of SENSITIVE_KEYS) sensitiveSet[k] = !!(subRow && subRow.sensitive && subRow.sensitive[k]);
+      const { data: docs } = await admin
+        .from('onboarding_documents')
+        .select('id, kind, filename, content_type, size_bytes, uploaded_at')
+        .eq('invite_id', invite.id).order('uploaded_at', { ascending: true });
       return {
         statusCode: 200, headers,
         body: JSON.stringify({
           ok: true,
           invite: safeInvite,
+          documents: docs || [],
           submission: subRow ? {
             data: subRow.data || {},
             signatures: subRow.signatures || {},
@@ -96,6 +101,35 @@ exports.handler = async (event) => {
           } : null,
         }),
       };
+    }
+
+    // ── Document upload / delete (token-gated, before submit) ──
+    if (action === 'upload') {
+      const kind = String(body.kind || 'other').slice(0, 40);
+      const filename = String(body.filename || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120);
+      const contentType = String(body.content_type || 'application/octet-stream').slice(0, 100);
+      const b64 = String(body.data_base64 || '');
+      if (!b64) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'No file data' }) };
+      const buf = Buffer.from(b64, 'base64');
+      if (buf.length > 4.5 * 1024 * 1024) return { statusCode: 413, headers, body: JSON.stringify({ ok: false, error: 'File too large (max ~4 MB)' }) };
+      const path = `${invite.id}/${kind}_${Date.now()}_${filename}`;
+      const up = await admin.storage.from('onboarding-docs').upload(path, buf, { contentType, upsert: false });
+      if (up.error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: up.error.message }) };
+      const { data: row, error: insErr } = await admin.from('onboarding_documents')
+        .insert({ invite_id: invite.id, kind, filename, storage_path: path, content_type: contentType, size_bytes: buf.length })
+        .select('id, kind, filename, content_type, size_bytes, uploaded_at').maybeSingle();
+      if (insErr) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: insErr.message }) };
+      await admin.from('onboarding_events').insert([{ invite_id: invite.id, kind: 'doc_upload', ref: kind, meta: { filename } }]);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, document: row }) };
+    }
+
+    if (action === 'delete_doc') {
+      const docId = String(body.document_id || '');
+      const { data: doc } = await admin.from('onboarding_documents').select('id, storage_path').eq('id', docId).eq('invite_id', invite.id).maybeSingle();
+      if (!doc) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Not found' }) };
+      await admin.storage.from('onboarding-docs').remove([doc.storage_path]);
+      await admin.from('onboarding_documents').delete().eq('id', docId);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
     }
 
     if (invite.status === 'completed' || (subRow && subRow.submitted)) {

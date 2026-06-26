@@ -112,6 +112,7 @@ exports.handler = async (event) => {
           id: i.id, full_name: i.full_name, personal_email: i.personal_email, nsa_email: i.nsa_email,
           role: i.role, position_title: i.position_title, status: i.status,
           invited_at: i.invited_at, completed_at: i.completed_at, expires_at: i.expires_at,
+          i9_status: i.i9_status || 'pending',
           steps_done: s ? (s.completed_steps || []).length : 0,
           submitted: s ? !!s.submitted : false,
           last_activity: s ? s.updated_at : i.created_at,
@@ -126,9 +127,29 @@ exports.handler = async (event) => {
       if (!inv) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Not found' }) };
       const { data: sub } = await admin.from('onboarding_submissions').select('invite_id, data, signatures, acknowledgments, completed_steps, submitted, submitted_at, updated_at').eq('invite_id', id).maybeSingle();
       const { data: events } = await admin.from('onboarding_events').select('kind, ref, meta, created_at').eq('invite_id', id).order('created_at', { ascending: true }).limit(2000);
+      const { data: documents } = await admin.from('onboarding_documents').select('id, kind, filename, content_type, size_bytes, uploaded_at').eq('invite_id', id).order('uploaded_at', { ascending: true });
       const link = inviteLink(inv.token);
       // Never return decrypted SSN/bank here; the detail view shows progress only.
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, invite: { ...inv, token: undefined }, link, submission: sub || null, events: events || [] }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, invite: { ...inv, token: undefined }, link, submission: sub || null, events: events || [], documents: documents || [] }) };
+    }
+
+    if (action === 'set_i9') {
+      const id = String(body.id || '');
+      const status = body.i9_status === 'completed' ? 'completed' : (body.i9_status === 'na' ? 'na' : 'pending');
+      const patch = { i9_status: status, i9_completed_at: status === 'completed' ? new Date().toISOString() : null, i9_verified_by: status === 'completed' ? String(body.verified_by || auth.teamMemberId || '') : null };
+      const { error } = await admin.from('onboarding_invites').update(patch).eq('id', id);
+      if (error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: error.message }) };
+      await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'i9_status', ref: status, meta: { by: auth.teamMemberId } }]);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...patch }) };
+    }
+
+    if (action === 'doc_url') {
+      const docId = String(body.document_id || '');
+      const { data: doc } = await admin.from('onboarding_documents').select('storage_path, filename').eq('id', docId).maybeSingle();
+      if (!doc) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Not found' }) };
+      const { data: signed, error } = await admin.storage.from('onboarding-docs').createSignedUrl(doc.storage_path, 300, { download: doc.filename });
+      if (error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: error.message }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, url: signed.signedUrl }) };
     }
 
     if (action === 'resend') {
@@ -152,6 +173,17 @@ exports.handler = async (event) => {
       const { data: events } = await admin.from('onboarding_events').select('kind, ref, meta, created_at').eq('invite_id', id).order('created_at', { ascending: true }).limit(5000);
 
       const files = await buildPacketFiles(inv, sub, events || []);
+      // Append the hire's uploaded documents under an Uploads/ folder.
+      const { data: docs } = await admin.from('onboarding_documents').select('kind, filename, storage_path').eq('invite_id', id);
+      for (const d of (docs || [])) {
+        try {
+          const dl = await admin.storage.from('onboarding-docs').download(d.storage_path);
+          if (dl.data) {
+            const ab = await dl.data.arrayBuffer();
+            files.push({ name: `Uploads/${d.kind}_${d.filename}`, bytes: Buffer.from(ab) });
+          }
+        } catch {}
+      }
       const buf = await zipFiles(files);
 
       await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'download', ref: 'packet_zip', meta: { by: auth.teamMemberId } }]);

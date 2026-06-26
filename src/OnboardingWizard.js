@@ -11,6 +11,7 @@ import { HANDBOOK, HANDBOOK_SECTION_COUNT } from './onboardingHandbook';
 import {
   CA_NOTICES, AT_WILL_STATEMENT, WIZARD_STEPS, FILING_STATUSES, ACCOUNT_TYPES,
   ESIGN_CONSENT, CPRA_NOTICE, formatPayComponents,
+  DOCUMENT_TYPES, MAX_UPLOAD_MB, I9_NOTICE,
 } from './onboardingForms';
 
 const API = '/.netlify/functions/onboarding-public';
@@ -64,6 +65,7 @@ export default function OnboardingWizard() {
   const [readSections, setReadSections] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
+  const [documents, setDocuments] = useState([]);
 
   const eventBuf = useRef([]);
 
@@ -85,6 +87,7 @@ export default function OnboardingWizard() {
           setPhase('error'); return;
         }
         setInvite(j.invite);
+        setDocuments(j.documents || []);
         if (j.submission) {
           setData(j.submission.data || {});
           setSignatures(j.submission.signatures || {});
@@ -144,6 +147,27 @@ export default function OnboardingWizard() {
     } catch { setSaving(false); return false; }
   }, [token, data, signatures, acks, step]);
 
+  // ── document upload / delete ──
+  const uploadDoc = async (kind, file) => {
+    if (!file) return { ok: false };
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) return { ok: false, error: `File too large (max ${MAX_UPLOAD_MB} MB)` };
+    const b64 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = rej; fr.readAsDataURL(file); });
+    try {
+      const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token, action: 'upload', kind, filename: file.name, content_type: file.type || 'application/octet-stream', data_base64: b64 }) });
+      const j = await r.json();
+      if (j.ok && j.document) { setDocuments((d) => [...d, j.document]); track('doc_upload', kind); }
+      return j;
+    } catch { return { ok: false, error: 'Upload failed' }; }
+  };
+  const deleteDoc = async (id) => {
+    try {
+      const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token, action: 'delete_doc', document_id: id }) });
+      const j = await r.json();
+      if (j.ok) setDocuments((d) => d.filter((x) => x.id !== id));
+      return j;
+    } catch { return { ok: false }; }
+  };
+
   const setField = (path, value) => setData((d) => {
     const next = JSON.parse(JSON.stringify(d));
     let o = next; const parts = path.split('.');
@@ -201,6 +225,7 @@ export default function OnboardingWizard() {
           {step.id === 'direct_deposit' && <DirectDeposit get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} />}
           {step.id === 'emergency' && <Emergency get={get} setField={setField} />}
           {step.id === 'tax' && <Tax get={get} setField={setField} />}
+          {step.id === 'documents' && <Documents documents={documents} onUpload={uploadDoc} onDelete={deleteDoc} />}
           {step.id === 'commission' && <Commission invite={invite} get={get} setField={setField} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, commission_agreement: v }))} acks={acks} setAck={(v) => setAcks((a) => ({ ...a, commission_agreement: v }))} />}
           {step.id === 'handbook' && <Handbook readSections={readSections} setRead={(id) => { setReadSections((s) => { const n = new Set(s); n.add(id); return n; }); save({ acknowledgments: { ['handbook:' + id]: { at: nowISO(), scrolled: true } } }); track('scroll_complete', 'handbook:' + id); }} onView={(id) => track('section_view', 'handbook:' + id)} acks={acks} setAck={(v) => setAcks((a) => ({ ...a, 'handbook:all': v, 'policy:at_will': v }))} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, handbook: v }))} totalHb={totalHb} />}
           {step.id === 'ca_notices' && <CaNotices acks={acks} setAck={(key, v) => setAcks((a) => ({ ...a, [key]: v ? { at: nowISO() } : undefined }))} onView={(key) => track('section_view', key)} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, ca_notices: v }))} />}
@@ -441,6 +466,53 @@ function Tax({ get, setField }) {
       </div>
       <Field label="Additional CA amount to withhold ($)"><Text value={get('tax.ca_de4.extra')} onChange={(v) => setField('tax.ca_de4.extra', v)} /></Field>
       <Check checked={get('tax.ca_de4.exempt')} onChange={(v) => setField('tax.ca_de4.exempt', v)}>I claim exemption from California withholding</Check>
+    </div>
+  );
+}
+
+function Documents({ documents, onUpload, onDelete }) {
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const pick = async (kind, file) => {
+    setErr(''); if (!file) return;
+    setBusy(kind);
+    const j = await onUpload(kind, file);
+    setBusy('');
+    if (!j.ok) setErr(j.error || 'Upload failed');
+  };
+  const fmtKb = (b) => b ? (b < 1024 * 1024 ? Math.round(b / 1024) + ' KB' : (b / 1048576).toFixed(1) + ' MB') : '';
+  return (
+    <div>
+      <H sub="Upload anything we asked you to provide. Photos or PDFs work great. (Optional — you can skip and send these later.)">Documents</H>
+      <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, padding: '12px 14px', fontSize: 13, color: '#1e3a5f', lineHeight: 1.6, margin: '12px 0 18px' }}>
+        <strong>📋 About your I-9:</strong> {I9_NOTICE}
+      </div>
+      {DOCUMENT_TYPES.map((t) => {
+        const mine = documents.filter((d) => d.kind === t.key);
+        return (
+          <div key={t.key} style={{ borderBottom: '1px solid ' + C.line, padding: '10px 0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{t.label}</div>
+                {t.hint && <div style={{ fontSize: 12, color: C.muted }}>{t.hint}</div>}
+              </div>
+              <label style={{ ...S.btnGhost, cursor: 'pointer', fontSize: 13, padding: '8px 14px', whiteSpace: 'nowrap', opacity: busy === t.key ? 0.6 : 1 }}>
+                {busy === t.key ? 'Uploading…' : '+ Upload'}
+                <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} disabled={!!busy}
+                  onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; pick(t.key, f); }} />
+              </label>
+            </div>
+            {mine.map((d) => (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: C.goodBg, border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px', marginTop: 6, fontSize: 12.5 }}>
+                <span style={{ color: '#166534', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>✓ {d.filename} <span style={{ color: '#16a34a' }}>{fmtKb(d.size_bytes)}</span></span>
+                <button onClick={() => onDelete(d.id)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 12, marginLeft: 8 }}>Remove</button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      {err && <div style={{ color: C.bad, fontSize: 13, marginTop: 10 }}>{err}</div>}
+      <div style={{ fontSize: 11.5, color: C.muted, marginTop: 12 }}>🔒 Files are stored securely and visible only to HR. Max {MAX_UPLOAD_MB} MB each.</div>
     </div>
   );
 }

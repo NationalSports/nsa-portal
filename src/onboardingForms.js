@@ -134,6 +134,20 @@ export const CPRA_NOTICE = `<p><strong>Notice at Collection (California employee
 export const AT_WILL_STATEMENT =
   'I acknowledge that I have received, read, and understand the National Sports Apparel, LLC Employee Handbook (2025). I understand that my employment is "at-will," meaning either I or the Company may end the employment relationship at any time, with or without cause or notice, and that nothing in the handbook creates a contract or promise of continued employment.';
 
+// Document upload types offered on the Documents step.
+export const DOCUMENT_TYPES = [
+  { key: 'voided_check', label: 'Voided check', hint: 'Verifies your direct deposit account' },
+  { key: 'photo_id', label: 'Photo ID', hint: "Driver's license or state ID" },
+  { key: 'signed_form', label: 'Signed form', hint: 'Any form we asked you to sign & return' },
+  { key: 'certification', label: 'Certification / license', hint: 'If your role requires one' },
+  { key: 'other', label: 'Other', hint: '' },
+];
+export const MAX_UPLOAD_MB = 4;
+
+// Shown on the Documents step — I-9 is completed in person, not uploaded here.
+export const I9_NOTICE =
+  "Federal law requires us to verify your identity and work authorization (Form I-9) in person — your supervisor will complete this with you on your first day. Please bring acceptable documents (e.g., your passport, OR a driver's license plus Social Security card or birth certificate). See the I-9 “List of Acceptable Documents” for the full list.";
+
 // Wizard step ids in order (drives progress + the staff tracking view).
 export const WIZARD_STEPS = [
   { id: 'welcome', label: 'Welcome' },
@@ -142,6 +156,7 @@ export const WIZARD_STEPS = [
   { id: 'direct_deposit', label: 'Direct Deposit' },
   { id: 'emergency', label: 'Emergency Contacts' },
   { id: 'tax', label: 'Tax Forms (W-4 / DE 4)' },
+  { id: 'documents', label: 'Documents' },
   { id: 'commission', label: 'Commission Agreement' }, // shown only if commission_eligible
   { id: 'handbook', label: 'Employee Handbook' },
   { id: 'ca_notices', label: 'California Notices' },

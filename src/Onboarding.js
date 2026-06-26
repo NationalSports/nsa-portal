@@ -86,7 +86,7 @@ export default function OnboardingAdmin({ cu }) {
                     </td>
                     <td style={{ color: '#475569' }}>{(ONBOARDING_ROLES.find((r) => r.key === i.role) || {}).label || i.role || '—'}</td>
                     <td><Chip s={i.status} /></td>
-                    <td style={{ color: '#475569' }}>{i.submitted ? 'Submitted' : `${i.steps_done} step${i.steps_done === 1 ? '' : 's'}`}</td>
+                    <td style={{ color: '#475569' }}>{i.submitted ? 'Submitted' : `${i.steps_done} step${i.steps_done === 1 ? '' : 's'}`}{i.status === 'completed' && i.i9_status === 'pending' && <span title="I-9 not yet completed" style={{ marginLeft: 6, fontSize: 11, color: '#b45309', fontWeight: 700 }}>· I-9 ⏳</span>}</td>
                     <td style={{ color: '#94a3b8', fontSize: 12.5 }}>{i.last_activity ? new Date(i.last_activity).toLocaleDateString() : '—'}</td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-light" style={{ marginRight: 6 }} onClick={() => setDetail(i.id)}>View</button>
@@ -235,7 +235,9 @@ function NewInvite({ cu, onClose, onCreated }) {
 
 function DetailModal({ id, onClose, flash, onChanged }) {
   const [d, setD] = useState(null);
-  useEffect(() => { (async () => { const j = await call('detail', { id }); if (j.ok) setD(j); else { flash(j.error || 'Failed'); onClose(); } })(); }, [id]); // eslint-disable-line
+  const [i9, setI9] = useState('pending');
+  useEffect(() => { (async () => { const j = await call('detail', { id }); if (j.ok) { setD(j); setI9((j.invite && j.invite.i9_status) || 'pending'); } else { flash(j.error || 'Failed'); onClose(); } })(); }, [id]); // eslint-disable-line
+  const setI9Status = async (status) => { setI9(status); const j = await call('set_i9', { id, i9_status: status }); if (!j.ok) flash(j.error || 'Failed to update I-9'); else { flash('I-9 status updated'); onChanged && onChanged(); } };
   if (!d) return <Modal title="Loading…" onClose={onClose}><div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>Loading…</div></Modal>;
   const inv = d.invite, sub = d.submission, events = d.events || [];
   const acks = (sub && sub.acknowledgments) || {};
@@ -245,7 +247,7 @@ function DetailModal({ id, onClose, flash, onChanged }) {
   const resend = async () => { const j = await call('resend', { id }); flash(j.emailed ? 'Invite re-sent' : (j.error || 'Resend failed')); };
   const voidIt = async () => { if (!window.confirm('Cancel this invite? Their link will stop working.')) return; const j = await call('void', { id }); if (j.ok) { flash('Invite canceled'); onChanged(); onClose(); } };
 
-  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized', sensitive_revealed: '🔓 SSN/bank revealed (payroll)' };
+  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized', sensitive_revealed: '🔓 SSN/bank revealed (payroll)', doc_upload: '📎 Uploaded a document', i9_status: '🪪 I-9 status updated', reminder_sent: '🔔 Reminder sent' };
 
   return (
     <Modal title={inv.full_name} onClose={onClose} wide>
@@ -277,9 +279,23 @@ function DetailModal({ id, onClose, flash, onChanged }) {
             <KV k="Handbook read" v={`${hbRead} sections${acks['handbook:all'] ? ' · acknowledged ✓' : ''}`} />
             <KV k="CA notices" v={sigs.ca_notices ? '✓ acknowledged' : '—'} />
           </Sec>
+          <Sec title="I-9 (in-person)">
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>Federal Form I-9 is verified in person within 3 business days of the start date. Mark it once completed.</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[['pending', 'Pending', '#b45309', '#fef3c7'], ['completed', 'Completed ✓', '#166534', '#dcfce7'], ['na', 'N/A', '#64748b', '#f1f5f9']].map(([k, label, color, bg]) => (
+                <button key={k} onClick={() => setI9Status(k)} className="btn btn-sm"
+                  style={{ background: i9 === k ? bg : '#fff', color: i9 === k ? color : '#64748b', border: '1px solid ' + (i9 === k ? color : '#cbd5e1'), fontWeight: 600 }}>{label}</button>
+              ))}
+            </div>
+            {inv.i9_completed_at && i9 === 'completed' && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 6 }}>Marked {new Date(inv.i9_completed_at).toLocaleDateString()}</div>}
+          </Sec>
           {inv.status === 'completed' && <PayrollReveal id={id} flash={flash} />}
         </div>
         <div>
+          <Sec title={`Uploaded documents (${(d.documents || []).length})`}>
+            {(d.documents || []).length === 0 ? <div style={{ color: '#94a3b8', fontSize: 13 }}>None uploaded.</div>
+              : (d.documents || []).map((doc) => <DocRow key={doc.id} doc={doc} flash={flash} />)}
+          </Sec>
           <Sec title={`Review audit trail (${events.length})`}>
             <div style={{ maxHeight: 320, overflowY: 'auto', fontSize: 12.5 }}>
               {events.length === 0 ? <div style={{ color: '#94a3b8' }}>No activity yet.</div> : events.slice().reverse().map((e, i) => (
@@ -323,6 +339,18 @@ function PayrollReveal({ id, flash }) {
         </div>
       )}
     </Sec>
+  );
+}
+
+function DocRow({ doc, flash }) {
+  const [busy, setBusy] = useState(false);
+  const KIND = { voided_check: 'Voided check', photo_id: 'Photo ID', signed_form: 'Signed form', certification: 'Certification', other: 'Other' };
+  const dl = async () => { setBusy(true); const j = await call('doc_url', { document_id: doc.id }); setBusy(false); if (j.ok && j.url) window.open(j.url, '_blank'); else flash(j.error || 'Could not open'); };
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#94a3b8' }}>{KIND[doc.kind] || doc.kind}:</span> {doc.filename}</span>
+      <button className="btn btn-light" disabled={busy} onClick={dl} style={{ whiteSpace: 'nowrap' }}>{busy ? '…' : '⬇ Open'}</button>
+    </div>
   );
 }
 
