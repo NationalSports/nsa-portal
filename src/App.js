@@ -6455,7 +6455,17 @@ export default function App(){
   const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_todos',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
   const[todoFilter,setTodoFilter]=useState('all');// all|art|follow_up|order|deadline|booking|delivery|issue|est
   const[snoozeOpenKey,setSnoozeOpenKey]=useState(null);
+  // Generic time-based snooze for any to-do (hides it until the chosen date). Follow-up
+  // types keep their own follow_up_at logic via snoozeTodo; everything else uses this map.
+  const[snoozedTodos,setSnoozedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_snoozed_todos')||'{}')}catch{return{}}});
+  const _todoSnoozed=(key)=>{const u=key&&snoozedTodos[key];return!!u&&u>Date.now()};
+  const snoozeTodoUntil=(t,days)=>{const key=t.dismissKey;if(!key){nf('Cannot snooze this item','error');return}
+    const until=Date.now()+days*86400000;
+    setSnoozedTodos(prev=>{const n={...prev};Object.keys(n).forEach(k=>{if(n[k]<=Date.now())delete n[k]});n[key]=until;_lsSet('nsa_snoozed_todos',JSON.stringify(n));return n});
+    setSnoozeOpenKey(null);nf('Snoozed for '+days+' day'+(days!==1?'s':''))};
   const _todoIsFollowUp=(t)=>t.type==='follow_up'||t.type==='inv_followup'||t.type==='coach_followup';
+  // Unified snooze: follow-ups push their source date; all other to-dos use the snooze map.
+  const doSnooze=(t,days)=>{if(_todoIsFollowUp(t))snoozeTodo(t,days);else snoozeTodoUntil(t,days)};
   const _todoCategory=(t)=>{
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
     if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
@@ -6497,7 +6507,18 @@ export default function App(){
   const[acSearch,setAcSearch]=useState('');
   const[acMsgKey,setAcMsgKey]=useState(null);// dismissKey of the row whose message composer is open
   const[acMsgText,setAcMsgText]=useState('');
-  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcMsgKey(null);setAcMsgText('');setAcOpen(true)};
+  const[acDateKey,setAcDateKey]=useState(null);// dismissKey of the row whose expected-date editor is open
+  const[acDateVal,setAcDateVal]=useState('');
+  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
+  // Change a to-do's linked sales order's "expected by" date (e.g. custom uniforms need a longer lead time).
+  const acSetExpectedDate=(t)=>{
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const v=acDateVal||'';
+    setSos(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
+    setAcDateKey(null);setAcDateVal('');
+    nf(v?('Expected date set to '+v):'Expected date cleared');
+  };
   // Post a quick message to a to-do/notification's related sales-order thread (reuses the messages system).
   const acSendMessage=(t)=>{
     const txt=(acMsgText||'').trim();if(!txt){nf('Type a message first','error');return}
@@ -8423,7 +8444,7 @@ export default function App(){
       const _src=isAdmin?adminTodos:myTodos;
       const _completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((Date.now()-new Date(t.completed_at))/864e5)<=7).map(t=>{const cb=REPS.find(r=>r.id===t.completed_by);const da=Math.floor((Date.now()-new Date(t.completed_at))/864e5);return{type:'_task',isNotification:true,isTaskComplete:true,todoId:t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(cb?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(da===0?' · Today':' · '+da+'d ago'),action:'View',date:t.completed_at}});
       const _allNotifs=[..._src.filter(t=>t.isNotification),..._completedTaskNotifs].filter(t=>!dismissedNotifs.includes(t.dismissKey));
-      const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey));
+      const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
       const _q=acSearch.trim().toLowerCase();
       const _matchQ=t=>!_q||((t.msg||'').toLowerCase().includes(_q)||(t.detail||'').toLowerCase().includes(_q));
       const notifs=_allNotifs.filter(_matchQ),todos=_allTodos.filter(_matchQ);
@@ -8448,6 +8469,17 @@ export default function App(){
             <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSendMessage(t)}>Send</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcMsgKey(null);setAcMsgText('')}}>Cancel</button>
           </div>
+        </div>}
+      </div>:null};
+      // "Expected by" date editor — for order/deadline to-dos tied to a sales order (e.g. custom uniforms with longer lead times).
+      const _expectedBy=t=>!!(t.so&&(t.type==='order'||t.type==='deadline'||t.type==='firm'));
+      const _dateRow=t=>{const open=acDateKey===_rk(t);const cur=t.so?.expected_date||'';return _expectedBy(t)?<div style={{marginTop:open?8:0,display:'inline-block'}}>
+        {!open?<button title="Change the expected-by date on this order" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fff7ed',color:'#c2410c',border:'1px solid #fed7aa',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer',marginRight:6}} onClick={e=>{e.stopPropagation();setAcDateKey(_rk(t));setAcDateVal(cur)}}>📅 {cur?'Expected '+cur:'Set expected date'}</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'inline-flex',gap:6,alignItems:'center',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 8px'}}>
+          <span style={{fontSize:11,fontWeight:700,color:'#c2410c'}}>Expected by:</span>
+          <input type="date" autoFocus value={acDateVal} onChange={e=>setAcDateVal(e.target.value)} style={{fontSize:12,padding:'4px 6px',border:'1px solid #fdba74',borderRadius:6}}/>
+          <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSetExpectedDate(t)}>Save</button>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcDateKey(null);setAcDateVal('')}}>Cancel</button>
         </div>}
       </div>:null};
       const _markAllRead=()=>{notifs.forEach(t=>t.dismissKey&&dismissNotif(t.dismissKey))};
@@ -8484,12 +8516,13 @@ export default function App(){
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:14,fontWeight:600,color:'#0f172a'}}>{t.msg}</div>
                       <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div>
-                      {_msgRow(t)}
+                      {!isN&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:6,alignItems:'center'}}>{_msgRow(t)}{_dateRow(t)}</div>}
+                      {isN&&_msgRow(t)}
                     </div>
                     {_fmtD(t.date)&&<span style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',marginTop:2}}>{_fmtD(t.date)}</span>}
                     <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}} onClick={e=>e.stopPropagation()}>
                       {t.action&&<span style={{fontSize:10,padding:'3px 9px',borderRadius:8,background:isN?'#dcfce7':(t.type==='art'?'#fef3c7':'#eff6ff'),color:isN?'#166534':(t.type==='art'?'#92400e':'#2563eb'),fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>isN?_navNotif(t):(t.type==='rep_delivery'?_repDeliver(t):_navTodo(t))}>{t.action}</span>}
-                      {!isN&&_todoIsFollowUp(t)&&<span style={{display:'flex',gap:2}}>{[1,3,5,7].map(d=><button key={d} title={'Snooze '+d+'d'} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={()=>snoozeTodo(t,d)}>{d}d</button>)}</span>}
+                      {!isN&&t.type!=='rep_delivery'&&(snoozeOpenKey===_rk(t)?<span style={{display:'flex',gap:2,alignItems:'center'}}><button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={()=>setSnoozeOpenKey(null)}>←</button>{[1,3,5,7].map(d=><button key={d} title={'Snooze '+d+'d'} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={()=>doSnooze(t,d)}>{d}d</button>)}</span>:<button title="Snooze — hide for a few days" style={{fontSize:10,padding:'3px 8px',background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer',fontWeight:600,whiteSpace:'nowrap'}} onClick={()=>setSnoozeOpenKey(_rk(t))}>💤 Snooze</button>)}
                       {!isN&&t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button title="Assign this to a CSR" style={{fontSize:10,padding:'3px 9px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',cursor:'pointer',fontWeight:600}} onClick={()=>{setAcOpen(false);setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
                       {isN?<button title="Mark read" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:13,color:'#16a34a'}} onClick={()=>t.dismissKey&&dismissNotif(t.dismissKey)}>✓</button>:
                       <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:12,color:'#94a3b8'}} onClick={()=>dismissTodo(t.dismissKey)}>✕</button>}
@@ -8513,7 +8546,7 @@ export default function App(){
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8632,7 +8665,7 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -9035,7 +9068,7 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
     </div>
     {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
       <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
