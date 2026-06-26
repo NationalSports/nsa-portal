@@ -1489,10 +1489,11 @@ const sportsLinkApiCall = async (path, options = {}) => {
   } catch (error) { console.error('[SportsLink] API call failed:', path, error); throw error; }
 };
 
-// Fetch dealer documents, following pagination (the API caps a single call at 1000
-// docs). Returns a flat array of raw SportsLink document objects.
+// Fetch dealer documents, following pagination. The API rejects pageSize >= 1000
+// ("Page Size must be less than 1000"), so we page in 500s. Returns a flat array of
+// raw SportsLink document objects.
 const sportsLinkGetDocuments = async (filters = {}) => {
-  const pageSize = filters.pageSize || 1000;
+  const pageSize = filters.pageSize || 500;
   let page = 1, all = [], guard = 0;
   while (guard++ < 50) {
     const p = buildSportsLinkDocsQuery(filters);
