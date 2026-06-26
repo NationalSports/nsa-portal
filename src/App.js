@@ -6672,6 +6672,23 @@ export default function App(){
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
+  const changeDocRep=(customer,newRepId,docId)=>{
+    const oldRepId=customer.primary_rep_id;
+    if(!newRepId||oldRepId===newRepId)return;
+    const oldRepName=REPS.find(r=>r.id===oldRepId)?.name||'None';
+    const newRepName=REPS.find(r=>r.id===newRepId)?.name||'Unknown';
+    savC({...customer,primary_rep_id:newRepId});
+    const adminUser=REPS.find(r=>(r.role==='admin'||r.role==='super_admin')&&r.id!==cu.id);
+    if(adminUser){
+      const ts=new Date().toISOString();
+      const todo={id:'todo-rc-'+Date.now(),title:'Rep change: '+customer.name+' → '+newRepName,
+        description:'__rep_change__:'+JSON.stringify({old_rep_id:oldRepId,new_rep_id:newRepId,customer_id:customer.id})+'\nPreviously: '+oldRepName+'. Changed by '+cu.name+' on '+docId+'.',
+        created_by:cu.id,assigned_to:adminUser.id,customer_id:customer.id,priority:1,status:'open',created_at:ts,updated_at:ts};
+      setAssignedTodos(prev=>[...prev,todo]);
+      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] rep change todo:',r.error.message)}));
+    }
+    nf('Rep updated to '+newRepName);
+  };
   const savC=async c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     // Is this a brand-new customer (e.g. created inline while building an estimate)? If so we confirm it
@@ -8500,7 +8517,8 @@ export default function App(){
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
-              <button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
+              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
               <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
             </div>
           </div>})}
@@ -9212,7 +9230,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend}/></React.Suspense></ComponentErrorBoundary>
+      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} onChangeRep={newRepId=>{if(eSOC)changeDocRep(eSOC,newRepId,eSO.id)}}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
@@ -12550,6 +12568,7 @@ export default function App(){
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
   const[viewInvoice,setViewInvoice]=useState(null);
+  const[editingInvRep,setEditingInvRep]=useState(false);
   const[splitModal,setSplitModal]=useState(null);// {inv, selItems:[indices], memo:''}
   const[invEditModal,setInvEditModal]=useState(null);// {inv, memo, due_date}
   const[invSendModalDirect,setInvSendModalDirect]=useState(null);// {inv, email, msg}
@@ -12765,6 +12784,18 @@ export default function App(){
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Rep field */}
+          <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
+            {editingInvRep
+              ?<><select className="form-select" style={{width:180,fontSize:12,padding:'2px 6px'}} defaultValue={repObj?.id||''} onChange={e=>{changeDocRep(ic,e.target.value,inv.id);setEditingInvRep(false)}}>
+                <option value="">— None —</option>
+                {REPS.filter(r=>r.is_active!==false&&(r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button></>
+              :<><span style={{fontSize:12,color:'#1e293b'}}>{repObj?.name||'—'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change rep" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
           </div>
 
           {/* Sent History */}
