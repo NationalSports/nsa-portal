@@ -17,7 +17,7 @@ import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -5299,6 +5299,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // covers many garments) and pushed as a single grouped row after the
         // item loop — instead of a separate, setup-inflated row per garment.
         const decoGroups={};
+        // Same outsourced gate syncJobs uses — a decoration routed onto a deco PO is produced by the
+        // vendor, so its in-house cost must be excluded here (the PO's own cost row is added below).
+        const outsourcedByItem=outsourcedDecoTypes(o);
         safeItems(o).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
@@ -5335,9 +5338,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // outside-deco PO / vendor), since a decorator's bill covers multiple items as a
           // single purchase. Splitting it per-item doesn't match how the cost lands.
           safeDecos(it).forEach(d=>{
-            const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-            const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
-            if(isOutside)return;
+            // Outside if a vendor produces it (legacy outside_deco, item-level outside-deco PO line,
+            // or a SO-level deco PO covering this deco's type). Mirrors syncJobs so the PO cost row
+            // below isn't double-counted against an in-house deco cost here.
+            if(isDecoOutsourced(o,ii,d,outsourcedByItem))return;
             // Price the shared logo at its COMBINED run quantity so one setup is spread across
             // every garment — and, when this job is manually linked to the same screen on other
             // SOs, across that combined run too (costArtQty) — matching the header margin.

@@ -153,6 +153,29 @@ const outsourcedDecoTypes = (o) => {
 // mistyped placeholder job — once art is assigned, a type that doesn't match the PO un-suppresses it.
 const decoIsOutsourced = (outTypes, concreteDt) => !!outTypes && (outTypes.has('*') || !concreteDt || outTypes.has(concreteDt));
 
+// Resolve a decoration's CONCRETE deco type — the art file's type is the source of truth once a
+// real design is attached, else the decoration's own type hint. `null` for an art deco that has no
+// file/type yet. Mirrors exactly how syncJobs classifies a decoration so jobs and costs never drift.
+const decoConcreteType = (o, d) => {
+  if (!d) return null;
+  if (d.kind === 'art') { const af = d.art_file_id ? safeArt(o).find(a => a.id === d.art_file_id) : null; return (af && af.deco_type) || d.deco_type || null; }
+  if (d.kind === 'numbers') return d.num_method || 'heat_transfer';
+  if (d.kind === 'names') return d.name_method || 'heat_press';
+  return d.deco_type || d.type || null;
+};
+// THE unified in-house↔outside switch. A decoration is produced outside when it carries a legacy
+// kind:'outside_deco', or a covering deco PO (SO-level o.deco_pos or an item-level outside-deco PO
+// line) matches its resolved type. This is the single gate BOTH job creation (syncJobs) and cost
+// accounting (Costs tab) read, so routing a decoration onto a deco PO suppresses its in-house job
+// AND its in-house cost together — never double-counting the in-house cost against the PO's bill.
+// Pass a precomputed outsourcedDecoTypes(o) as `outByItem` when calling inside an item loop.
+const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
+  if (!d) return false;
+  if (d.kind === 'outside_deco') return true;
+  const map = outByItem || outsourcedDecoTypes(o);
+  return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
+};
+
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
@@ -824,7 +847,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
