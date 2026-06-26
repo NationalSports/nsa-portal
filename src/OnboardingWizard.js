@@ -10,10 +10,15 @@ import { NSA } from './constants';
 import { HANDBOOK, HANDBOOK_SECTION_COUNT } from './onboardingHandbook';
 import {
   CA_NOTICES, AT_WILL_STATEMENT, WIZARD_STEPS, FILING_STATUSES, ACCOUNT_TYPES,
+  ESIGN_CONSENT, CPRA_NOTICE,
 } from './onboardingForms';
 
 const API = '/.netlify/functions/onboarding-public';
 const nowISO = () => new Date().toISOString();
+// When embedded in the marketing site (nationalsportsapparel.com/welcome) the
+// page already shows the NSA header/footer, so we drop our own dark header and
+// just keep a slim progress bar.
+const EMBED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
 
 // ── styles ────────────────────────────────────────────────────────────────
 const C = {
@@ -189,6 +194,7 @@ export default function OnboardingWizard() {
 
         <div key={step.id} className="onb-card" style={{ background: C.card, border: '1px solid ' + C.line, borderRadius: 14, padding: 26, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
           {step.id === 'welcome' && <Welcome invite={invite} />}
+          {step.id === 'consent' && <Consent acks={acks} setAck={(key, v) => setAcks((a) => ({ ...a, [key]: v ? { at: nowISO() } : undefined }))} onView={(k) => track('section_view', k)} />}
           {step.id === 'personal' && <Personal get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} invite={invite} />}
           {step.id === 'direct_deposit' && <DirectDeposit get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} />}
           {step.id === 'emergency' && <Emergency get={get} setField={setField} />}
@@ -225,6 +231,7 @@ export default function OnboardingWizard() {
 
 // Gate logic for the "continue" button per step.
 function stepGateOk(step, ctx) {
+  if (step.id === 'consent') return ctx.acks['consent:esign'] && ctx.acks['consent:privacy'];
   if (step.id === 'handbook') return ctx.handbookReadAll && ctx.acks['handbook:all'] && ctx.signatures.handbook && ctx.signatures.handbook.name;
   if (step.id === 'ca_notices') return ctx.allCaAcked && ctx.signatures.ca_notices && ctx.signatures.ca_notices.name;
   if (step.id === 'commission') return ctx.acks.commission_agreement && ctx.signatures.commission_agreement && ctx.signatures.commission_agreement.name;
@@ -253,17 +260,25 @@ const ONB_CSS = `
 
 function Shell({ children, progress }) {
   return (
-    <div className="onb" style={{ minHeight: '100vh', background: C.pageBg, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", color: C.ink }}>
+    <div className="onb" style={{ minHeight: EMBED ? 'auto' : '100vh', background: C.pageBg, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", color: C.ink }}>
       <style>{ONB_CSS}</style>
-      <div style={{ background: 'linear-gradient(135deg,#191919 0%,#262d3d 100%)', padding: '18px 0 16px', textAlign: 'center', position: 'relative' }}>
-        <img src={NSA.logoUrl} alt="National Sports Apparel" style={{ height: 42, filter: 'brightness(0) invert(1)' }} />
-        <div style={{ fontSize: 10.5, color: '#94a3b8', letterSpacing: 2.5, textTransform: 'uppercase', marginTop: 4, fontWeight: 600 }}>New&nbsp;Hire&nbsp;Onboarding</div>
-        {typeof progress === 'number' && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, background: 'rgba(255,255,255,.12)' }}>
+      {EMBED ? (
+        typeof progress === 'number' && (
+          <div style={{ position: 'sticky', top: 0, zIndex: 5, height: 4, background: '#e2e8f0' }}>
             <div style={{ height: '100%', width: `${Math.max(2, Math.round(progress * 100))}%`, background: 'linear-gradient(90deg,#3b82f6,#22c55e)', transition: 'width .4s ease' }} />
           </div>
-        )}
-      </div>
+        )
+      ) : (
+        <div style={{ background: 'linear-gradient(135deg,#191919 0%,#262d3d 100%)', padding: '18px 0 16px', textAlign: 'center', position: 'relative' }}>
+          <img src={NSA.logoUrl} alt="National Sports Apparel" style={{ height: 42, filter: 'brightness(0) invert(1)' }} />
+          <div style={{ fontSize: 10.5, color: '#94a3b8', letterSpacing: 2.5, textTransform: 'uppercase', marginTop: 4, fontWeight: 600 }}>New&nbsp;Hire&nbsp;Onboarding</div>
+          {typeof progress === 'number' && (
+            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, background: 'rgba(255,255,255,.12)' }}>
+              <div style={{ height: '100%', width: `${Math.max(2, Math.round(progress * 100))}%`, background: 'linear-gradient(90deg,#3b82f6,#22c55e)', transition: 'width .4s ease' }} />
+            </div>
+          )}
+        </div>
+      )}
       {children}
     </div>
   );
@@ -302,6 +317,21 @@ function Welcome({ invite }) {
         You'll complete: personal info, direct deposit, emergency contacts, tax forms (W-4 &amp; California DE 4),
         {invite?.commission_eligible ? ' your commission agreement,' : ''} the employee handbook, and required California notices.
       </div>
+    </div>
+  );
+}
+
+function Consent({ acks, setAck, onView }) {
+  useEffect(() => { onView('consent:view'); }, []); // eslint-disable-line
+  return (
+    <div>
+      <H sub="Two quick things before we start — please read and agree to each.">Consent &amp; Privacy</H>
+      <div style={{ background: '#f8fafc', border: '1px solid ' + C.line, borderRadius: 10, padding: '12px 16px', fontSize: 13, color: '#334155', lineHeight: 1.6, marginTop: 12 }}>
+        {ESIGN_CONSENT}
+      </div>
+      <Check checked={!!acks['consent:esign']} onChange={(v) => setAck('consent:esign', v)}>I agree to sign and complete these documents electronically.</Check>
+      <div style={{ background: '#f8fafc', border: '1px solid ' + C.line, borderRadius: 10, padding: '12px 16px', marginTop: 14 }} dangerouslySetInnerHTML={{ __html: CPRA_NOTICE }} />
+      <Check checked={!!acks['consent:privacy']} onChange={(v) => setAck('consent:privacy', v)}>I have read the Notice at Collection above.</Check>
     </div>
   );
 }

@@ -196,7 +196,7 @@ function DetailModal({ id, onClose, flash, onChanged }) {
   const resend = async () => { const j = await call('resend', { id }); flash(j.emailed ? 'Invite re-sent' : (j.error || 'Resend failed')); };
   const voidIt = async () => { if (!window.confirm('Cancel this invite? Their link will stop working.')) return; const j = await call('void', { id }); if (j.ok) { flash('Invite canceled'); onChanged(); onClose(); } };
 
-  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized' };
+  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized', sensitive_revealed: '🔓 SSN/bank revealed (payroll)' };
 
   return (
     <Modal title={inv.full_name} onClose={onClose} wide>
@@ -225,6 +225,7 @@ function DetailModal({ id, onClose, flash, onChanged }) {
             <KV k="Handbook read" v={`${hbRead} sections${acks['handbook:all'] ? ' · acknowledged ✓' : ''}`} />
             <KV k="CA notices" v={sigs.ca_notices ? '✓ acknowledged' : '—'} />
           </Sec>
+          {inv.status === 'completed' && <PayrollReveal id={id} flash={flash} />}
         </div>
         <div>
           <Sec title={`Review audit trail (${events.length})`}>
@@ -243,6 +244,33 @@ function DetailModal({ id, onClose, flash, onChanged }) {
         {inv.status === 'completed' && <DownloadBtn id={id} name={inv.full_name} flash={flash} />}
       </div>
     </Modal>
+  );
+}
+
+function PayrollReveal({ id, flash }) {
+  const [vals, setVals] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const reveal = async () => {
+    if (!window.confirm('Reveal the full SSN and bank numbers for payroll? This access is logged to the audit trail.')) return;
+    setBusy(true);
+    const j = await call('reveal_sensitive', { id, reason: 'payroll' });
+    setBusy(false);
+    if (!j.ok) { flash(j.error || 'Could not reveal'); return; }
+    setVals(j);
+  };
+  return (
+    <Sec title="Payroll (sensitive)">
+      {!vals ? (
+        <button className="btn btn-light" onClick={reveal} disabled={busy} style={{ color: '#b45309' }}>{busy ? 'Revealing…' : '🔓 Reveal SSN / bank for payroll'}</button>
+      ) : (
+        <div style={{ fontSize: 13, fontFamily: 'monospace', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
+          <KV k="SSN" v={vals.ssn || '—'} />
+          <KV k="Bank routing" v={vals.bank_routing || '—'} />
+          <KV k="Bank account" v={vals.bank_account || '—'} />
+          <div style={{ marginTop: 8, fontFamily: 'inherit', fontSize: 11, color: '#92400e' }}>This view was logged. Close the dialog to hide.</div>
+        </div>
+      )}
+    </Sec>
   );
 }
 

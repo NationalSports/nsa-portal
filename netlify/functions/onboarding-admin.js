@@ -11,6 +11,7 @@
 const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
 const { buildPacketFiles, zipFiles, safeName } = require('./_onboardingPacket');
+const { decryptField } = require('./_onboardingCrypto');
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -18,10 +19,17 @@ function portalUrl() {
   return (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
 }
 
+// The hire-facing link. Defaults to the marketing site's /welcome page (which
+// wraps the wizard in the NSA header/footer); falls back to the portal route.
+function inviteLink(token) {
+  const base = (process.env.ONBOARDING_WELCOME_URL || 'https://www.nationalsportsapparel.com/welcome').replace(/\/+$/, '');
+  return `${base}?token=${encodeURIComponent(token)}`;
+}
+
 async function sendInviteEmail(invite) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
   if (!brevoKey) return { emailed: false, error: 'Email not configured' };
-  const link = `${portalUrl()}/onboarding?token=${encodeURIComponent(invite.token)}`;
+  const link = inviteLink(invite.token);
   const hello = invite.full_name ? `Hi ${esc(invite.full_name.split(' ')[0])},` : 'Hello,';
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -90,7 +98,7 @@ exports.handler = async (event) => {
       const { data: inserted, error } = await admin.from('onboarding_invites').insert(row).select().maybeSingle();
       if (error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: error.message }) };
       const mail = await sendInviteEmail(inserted);
-      const link = `${portalUrl()}/onboarding?token=${encodeURIComponent(inserted.token)}`;
+      const link = inviteLink(inserted.token);
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, invite: { id: inserted.id, ...row, token: undefined }, link, emailed: mail.emailed, emailError: mail.error || null }) };
     }
 
@@ -124,7 +132,7 @@ exports.handler = async (event) => {
       if (!inv) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Not found' }) };
       const { data: sub } = await admin.from('onboarding_submissions').select('invite_id, data, signatures, acknowledgments, completed_steps, submitted, submitted_at, updated_at').eq('invite_id', id).maybeSingle();
       const { data: events } = await admin.from('onboarding_events').select('kind, ref, meta, created_at').eq('invite_id', id).order('created_at', { ascending: true }).limit(2000);
-      const link = `${portalUrl()}/onboarding?token=${encodeURIComponent(inv.token)}`;
+      const link = inviteLink(inv.token);
       // Never return decrypted SSN/bank here; the detail view shows progress only.
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, invite: { ...inv, token: undefined }, link, submission: sub || null, events: events || [] }) };
     }
@@ -157,6 +165,22 @@ exports.handler = async (event) => {
         statusCode: 200, headers,
         body: JSON.stringify({ ok: true, filename: `${safeName(inv.full_name)}_NSA_New_Hire_Packet.zip`, zip_base64: buf.toString('base64') }),
       };
+    }
+
+    if (action === 'reveal_sensitive') {
+      // Audited, admin-only retrieval of full SSN/bank for payroll. Keeps full
+      // numbers out of emailed files — they are shown once, on demand, and the
+      // access is logged to the audit trail.
+      const id = String(body.id || '');
+      const { data: sub } = await admin.from('onboarding_submissions').select('invite_id, sensitive').eq('invite_id', id).maybeSingle();
+      if (!sub) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'No submission' }) };
+      const s = sub.sensitive || {};
+      let ssn = '', acct = '', routing = '';
+      try { ssn = decryptField(s.ssn); } catch {}
+      try { acct = decryptField(s.bank_account); } catch {}
+      try { routing = decryptField(s.bank_routing); } catch {}
+      await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'sensitive_revealed', ref: String(body.reason || 'payroll'), meta: { by: auth.teamMemberId } }]);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ssn, bank_account: acct, bank_routing: routing }) };
     }
 
     return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Unknown action' }) };

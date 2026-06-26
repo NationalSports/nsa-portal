@@ -30,6 +30,57 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
 
   const docs = [];
 
+  // 00 — Electronic consent + CPRA notice acknowledgment
+  docs.push({
+    name: '00_Electronic_Consent_and_Privacy.pdf',
+    pdf: await renderDocument({
+      title: 'Electronic Records Consent & Privacy Notice',
+      blocks: [
+        { type: 'heading', text: 'Electronic signature consent (ESIGN Act / CA UETA)' },
+        { type: 'para', text: 'I agreed to complete my new-hire paperwork electronically and to use a typed signature as my legal, binding signature on these documents, and acknowledged I may request paper copies.' },
+        { type: 'field', label: 'Consent given', value: ack['consent:esign'] ? fmtDateTime(ack['consent:esign'].at) : 'Not recorded' },
+        { type: 'rule' },
+        { type: 'heading', text: 'California Notice at Collection (CPRA)' },
+        { type: 'para', text: 'I received the Notice at Collection describing the categories of personal information collected (identifiers including SSN/DOB, financial account information, and employment information) and the purposes for which it is used.' },
+        { type: 'field', label: 'Notice acknowledged', value: ack['consent:privacy'] ? fmtDateTime(ack['consent:privacy'].at) : 'Not recorded' },
+      ],
+    }),
+  });
+
+  // 00b — Wage Theft Prevention Notice (Labor Code 2810.5), filled
+  const emp = {
+    name: process.env.EMPLOYER_LEGAL_NAME || 'National Sports Apparel, LLC',
+    address: process.env.EMPLOYER_ADDRESS || '',
+    phone: process.env.EMPLOYER_PHONE || '',
+    wc: process.env.WORKERS_COMP_CARRIER || '',
+  };
+  docs.push({
+    name: '00b_Wage_Theft_Prevention_Notice.pdf',
+    pdf: await renderDocument({
+      title: 'Notice to Employee', subtitle: 'California Labor Code § 2810.5 (Wage Theft Prevention Act)',
+      blocks: [
+        { type: 'heading', text: 'Employee' },
+        { type: 'field', label: 'Name', value: p.full_name || invite.full_name },
+        { type: 'field', label: 'Start Date', value: fmtDate(invite.hire_date) },
+        { type: 'heading', text: 'Rate(s) of Pay' },
+        { type: 'field', label: 'Pay Basis', value: invite.pay_type === 'draw_commission' ? 'Draw + commission' : (invite.pay_type || '') },
+        { type: 'field', label: 'Rate', value: invite.pay_rate },
+        { type: 'field', label: 'Overtime Rate (if non-exempt)', value: 'Per California law (1.5× / 2× regular rate as applicable)' },
+        { type: 'field', label: 'Regular Payday', value: process.env.EMPLOYER_PAYDAY || 'As posted by the employer' },
+        { type: 'field', label: 'Allowances claimed against minimum wage', value: 'None' },
+        { type: 'heading', text: 'Employer' },
+        { type: 'field', label: 'Legal Name', value: emp.name },
+        { type: 'field', label: 'Address', value: emp.address },
+        { type: 'field', label: 'Phone', value: emp.phone },
+        { type: 'heading', text: "Workers' Compensation" },
+        { type: 'field', label: 'Insurance Carrier', value: emp.wc },
+        { type: 'spacer', h: 10 },
+        { type: 'para', text: 'This notice is provided under California Labor Code section 2810.5. The employee acknowledged receipt as part of the California notices step.' },
+        { type: 'field', label: 'Acknowledged', value: ack['ca:wage_theft'] ? fmtDateTime(ack['ca:wage_theft'].at) : 'See CA notices acknowledgment' },
+      ],
+    }),
+  });
+
   docs.push({
     name: '01_Job_Hire_Form.pdf',
     pdf: await renderDocument({
@@ -109,25 +160,31 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
   docs.push({
     name: '04_Tax_Withholding_W4_DE4.pdf',
     pdf: await renderDocument({
-      title: 'Tax Withholding Elections', subtitle: 'Federal Form W-4 and California Form DE 4 elections',
+      title: 'Substitute Form W-4 and Form DE 4', subtitle: 'Employee’s Withholding Certificates — Federal (IRS W-4) and California (EDD DE 4)',
       blocks: [
-        { type: 'heading', text: 'Federal (W-4)' },
-        { type: 'field', label: 'Filing Status', value: fed.filing_status },
-        { type: 'field', label: 'Multiple Jobs / Spouse Works', value: yn(fed.multiple_jobs) },
-        { type: 'field', label: 'Dependents Amount', value: fed.dependents_amount },
-        { type: 'field', label: 'Other Income', value: fed.other_income },
-        { type: 'field', label: 'Deductions', value: fed.deductions },
-        { type: 'field', label: 'Extra Withholding', value: fed.extra_withholding },
-        { type: 'field', label: 'Claims Exempt', value: yn(fed.exempt) },
+        { type: 'field', label: 'Employee Name', value: p.full_name || invite.full_name },
+        { type: 'field', label: 'Social Security Number', value: ssn ? maskTail(ssn) + '  (full SSN on file, encrypted)' : '—' },
+        { type: 'field', label: 'Address', value: [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ') },
         { type: 'rule' },
-        { type: 'heading', text: 'California (DE 4)' },
+        { type: 'heading', text: 'Federal — IRS Form W-4 (Employee’s Withholding Certificate)' },
+        { type: 'field', label: 'Step 1(c) Filing Status', value: fed.filing_status },
+        { type: 'field', label: 'Step 2 Multiple Jobs / Spouse Works', value: yn(fed.multiple_jobs) },
+        { type: 'field', label: 'Step 3 Dependents Amount', value: fed.dependents_amount },
+        { type: 'field', label: 'Step 4(a) Other Income', value: fed.other_income },
+        { type: 'field', label: 'Step 4(b) Deductions', value: fed.deductions },
+        { type: 'field', label: 'Step 4(c) Extra Withholding', value: fed.extra_withholding },
+        { type: 'field', label: 'Claims Exemption (writes "Exempt")', value: yn(fed.exempt) },
+        { type: 'rule' },
+        { type: 'heading', text: 'California — EDD Form DE 4 (Employee’s Withholding Allowance Certificate)' },
         { type: 'field', label: 'Filing Status', value: de4.filing_status },
-        { type: 'field', label: 'Allowances', value: de4.allowances },
-        { type: 'field', label: 'Additional Amount', value: de4.extra },
-        { type: 'field', label: 'Claims Exempt', value: yn(de4.exempt) },
-        { type: 'spacer', h: 14 },
-        { type: 'para', text: 'Under penalties of perjury, I declare these withholding elections are true and correct.' },
+        { type: 'field', label: 'Regular Withholding Allowances', value: de4.allowances },
+        { type: 'field', label: 'Additional Amount to Withhold', value: de4.extra },
+        { type: 'field', label: 'Claims Exemption', value: yn(de4.exempt) },
+        { type: 'spacer', h: 10 },
+        { type: 'para', text: 'Certification: Under penalties of perjury, I declare that I have examined this certificate and, to the best of my knowledge and belief, it is true, correct, and complete. I understand these are substitute Form W-4 and Form DE 4 certificates containing the same information requested on the official forms.' },
         sigLine('tax_w4'),
+        { type: 'spacer', h: 6 },
+        { type: 'para', text: 'Note to payroll: retain alongside the official IRS W-4 / EDD DE 4 if your payroll system requires the original form.' },
       ],
     }),
   });

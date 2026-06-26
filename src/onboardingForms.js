@@ -87,6 +87,21 @@ export const CA_NOTICES = [
   },
 ];
 
+// Electronic records & signature consent (ESIGN Act / California UETA). Captured
+// up front so every typed-name signature in the packet is enforceable.
+export const ESIGN_CONSENT = `I agree to complete my new-hire paperwork electronically and to use a typed signature as my legal, binding signature on these documents. I understand I may request paper copies of any document, and that I can ask my hiring contact for help at any time. I have the hardware and software needed to view and save PDF documents.`;
+
+// California CPRA "notice at collection" — must be given to employees at or
+// before the point of collection. HR/counsel should confirm the categories and
+// purposes match your actual practices.
+export const CPRA_NOTICE = `<p><strong>Notice at Collection (California employees).</strong> National Sports Apparel, LLC collects the following categories of personal information for employment purposes:</p>
+<ul>
+<li><strong>Identifiers</strong> — name, address, email, phone, Social Security number, date of birth.</li>
+<li><strong>Financial information</strong> — bank account and routing numbers for payroll direct deposit.</li>
+<li><strong>Professional/employment information</strong> — position, pay, tax withholding elections, emergency contacts.</li>
+</ul>
+<p>We use this information to administer payroll and benefits, meet legal and tax obligations, maintain emergency contacts, and otherwise manage the employment relationship. We retain it for as long as needed for these purposes and as required by law. We do not sell or share your personal information. You have rights under the California Privacy Rights Act, including to know, correct, and (subject to legal retention requirements) delete your information — contact HR to exercise them.</p>`;
+
 // At-will + handbook acknowledgment statement shown on the handbook step.
 export const AT_WILL_STATEMENT =
   'I acknowledge that I have received, read, and understand the National Sports Apparel, LLC Employee Handbook (2025). I understand that my employment is "at-will," meaning either I or the Company may end the employment relationship at any time, with or without cause or notice, and that nothing in the handbook creates a contract or promise of continued employment.';
@@ -94,6 +109,7 @@ export const AT_WILL_STATEMENT =
 // Wizard step ids in order (drives progress + the staff tracking view).
 export const WIZARD_STEPS = [
   { id: 'welcome', label: 'Welcome' },
+  { id: 'consent', label: 'Consent & Privacy' },
   { id: 'personal', label: 'Personal Info' },
   { id: 'direct_deposit', label: 'Direct Deposit' },
   { id: 'emergency', label: 'Emergency Contacts' },
