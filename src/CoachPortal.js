@@ -1326,6 +1326,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Main portal view — a branded "Team HQ" shell: team-colored sidebar + bottom nav, paged content.
   const cpTheme = cpTeamTheme(customer);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
+  const cpTint=cpShade(cpTheme.primary,84);// light team-tint for active nav pills & highlights
   const cpNav=[
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
@@ -1342,49 +1343,51 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const href=base+sep+'art='+encodeURIComponent(url||a.urls[0]||'')+'&an='+encodeURIComponent(a.name||'Design')+(a.deco?'&ad='+encodeURIComponent(a.deco):'');
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
-  return<div className="cp-app" style={{minHeight:'100vh',background:'#eef1f6'}}>
-    <style>{`.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1280px;margin:0 auto;background:#eef1f6}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:250px;flex-shrink:0;padding:20px 14px;gap:5px;position:sticky;top:0;height:100vh;overflow-y:auto}}.cp-main{flex:1;min-width:0;padding-bottom:90px}@media(min-width:880px){.cp-main{padding-bottom:28px}}.cp-page{max-width:840px;margin:0 auto;padding:24px 18px 48px}.cp-navbtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:none;background:transparent;color:rgba(255,255,255,.82);border-radius:11px;padding:11px 13px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:rgba(255,255,255,.12);color:#fff}.cp-bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;z-index:40;padding:7px 4px}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:5px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
+  return<div className="cp-app" style={{minHeight:'100vh',background:'#eef2f7'}}>
+    <style>{`.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1260px;margin:0 auto}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:236px;flex-shrink:0;gap:4px;position:sticky;top:18px;align-self:flex-start;max-height:calc(100vh - 36px);overflow-y:auto;margin:18px 0 18px 18px;padding:16px 13px;background:#fff;border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.08)}}.cp-main{flex:1;min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:18px 20px 28px}}.cp-page{max-width:820px;margin:0 auto;padding:16px 0 48px}.cp-navbtn{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:none;background:transparent;color:#64748b;border-radius:14px;padding:9px 11px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:#f1f5f9;color:#1e293b}.cp-navico{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#f1f5f9}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
     <div className="cp-shell">
       {/* ── SIDEBAR (desktop) — wears the team's colors ── */}
-      <div className="cp-side" style={{background:`linear-gradient(180deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-22)})`}}>
-        <div style={{display:'flex',alignItems:'center',gap:11,padding:'4px 8px 18px'}}>
-          <div style={{width:42,height:42,borderRadius:12,background:cpTheme.accent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:15,flexShrink:0,boxShadow:'0 2px 8px rgba(0,0,0,.25)'}}>{cpMonogram}</div>
+      <div className="cp-side">
+        <div style={{display:'flex',alignItems:'center',gap:11,padding:'2px 6px 14px'}}>
+          <div style={{width:44,height:44,borderRadius:14,background:`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:16,flexShrink:0,boxShadow:`0 5px 14px ${cpTheme.primary}33`}}>{cpMonogram}</div>
           <div style={{minWidth:0}}>
-            <div style={{color:'#fff',fontSize:13.5,fontWeight:800,lineHeight:1.18,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
-            <div style={{color:cpTheme.accent,fontSize:9.5,fontWeight:800,letterSpacing:'.13em',textTransform:'uppercase',marginTop:1}}>Team HQ</div>
+            <div style={{color:'#0f172a',fontSize:13.5,fontWeight:800,lineHeight:1.18,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
+            <div style={{color:'#94a3b8',fontSize:9.5,fontWeight:800,letterSpacing:'.13em',textTransform:'uppercase',marginTop:1}}>Team HQ</div>
           </div>
         </div>
-        <div style={{display:'flex',flexDirection:'column',gap:4,flex:1}}>
+        <div style={{display:'flex',flexDirection:'column',gap:3,flex:1}}>
           {cpNav.map(it=>{const active=page===it.key;return(
-            <button key={it.key} className="cp-navbtn" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:'rgba(255,255,255,.17)',color:'#fff',boxShadow:`inset 3px 0 0 ${cpTheme.accent}`}:undefined}>
-              <span style={{fontSize:18,width:22,textAlign:'center'}}>{it.icon}</span>
+            <button key={it.key} className="cp-navbtn" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:cpTint,color:cpTheme.primary}:undefined}>
+              <span className="cp-navico" style={active?{background:cpTheme.primary,color:'#fff'}:undefined}>{it.icon}</span>
               <span style={{flex:1}}>{it.label}</span>
               {it.badge>0?<span style={{fontSize:11,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'1px 8px',minWidth:20,textAlign:'center'}}>{it.badge}</span>:null}
             </button>
           )})}
         </div>
-        <div style={{marginTop:14,padding:'12px 13px',background:'rgba(0,0,0,.18)',borderRadius:12}}>
-          <div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.1em',color:cpTheme.accent,textTransform:'uppercase'}}>Your NSA Rep</div>
-          <div style={{fontSize:13,fontWeight:700,color:'#fff',marginTop:3}}>{rep?.name||'NSA Team'}</div>
-          <div style={{fontSize:11,color:'rgba(255,255,255,.7)',marginTop:1}}>team@nsa-teamwear.com</div>
+        <div style={{marginTop:12,padding:'12px 13px',background:'#f8fafc',borderRadius:14}}>
+          <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:15,opacity:.7,marginBottom:8}}/>
+          <div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.1em',color:'#94a3b8',textTransform:'uppercase'}}>Your Rep</div>
+          <div style={{fontSize:13,fontWeight:700,color:'#1e293b',marginTop:2}}>{rep?.name||'NSA Team'}</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>team@nsa-teamwear.com</div>
         </div>
       </div>
 
       {/* ── MAIN ── */}
       <div className="cp-main">
-        {/* Branded hero — large team identity with a watermark monogram */}
-        <div style={{position:'relative',overflow:'hidden',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'26px 26px 24px',borderBottom:`4px solid ${cpTheme.accent}`,boxShadow:'0 2px 14px rgba(11,18,32,.18)'}}>
-          <div style={{position:'absolute',right:-12,top:-46,fontSize:180,fontWeight:900,opacity:.08,lineHeight:1,letterSpacing:'-.05em',userSelect:'none',pointerEvents:'none'}}>{cpMonogram}</div>
-          <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap'}}>
-            <div style={{minWidth:0}}>
-              <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:26,filter:'brightness(0) invert(1)',marginBottom:9,opacity:.9}}/>
-              <div style={{fontSize:27,fontWeight:900,lineHeight:1.08,letterSpacing:'-.01em'}}>{customer.name}</div>
-              <div style={{display:'inline-flex',alignItems:'center',gap:8,marginTop:8}}>
-                <span style={{width:20,height:3,borderRadius:2,background:cpTheme.accent,display:'inline-block'}} />
-                <span style={{fontSize:11,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>{(cpNav.find(n=>n.key===page)||{}).label||'Home'}</span>
+        {/* Friendly hero — light floating card, team-color monogram + accent rail, welcoming greeting */}
+        <div style={{position:'relative',overflow:'hidden',maxWidth:820,margin:'0 auto 18px',borderRadius:22,background:'#fff',padding:'20px 22px',boxShadow:'0 8px 26px rgba(15,23,42,.07)'}}>
+          <div style={{position:'absolute',left:0,top:0,bottom:0,width:6,background:cpTheme.accent}}/>
+          <div style={{position:'absolute',right:-8,top:-34,fontSize:150,fontWeight:900,color:cpTheme.primary,opacity:.06,lineHeight:1,letterSpacing:'-.05em',pointerEvents:'none',userSelect:'none'}}>{cpMonogram}</div>
+          <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+            <div style={{display:'flex',alignItems:'center',gap:14,minWidth:0}}>
+              <div style={{width:54,height:54,borderRadius:16,background:`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:19,flexShrink:0,boxShadow:`0 6px 16px ${cpTheme.primary}40`}}>{cpMonogram}</div>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#94a3b8'}}>Welcome back 👋</div>
+                <div style={{fontSize:23,fontWeight:900,lineHeight:1.1,color:'#0f172a',letterSpacing:'-.01em'}}>{customer.name}</div>
+                <div style={{fontSize:10.5,fontWeight:800,letterSpacing:'.12em',textTransform:'uppercase',color:cpTheme.accent,marginTop:2}}>{(cpNav.find(n=>n.key===page)||{}).label||'Home'}</div>
               </div>
             </div>
-            {totalDue>0&&<div style={{textAlign:'right',flexShrink:0}}><div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:.8}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:900}}>${totalDue.toLocaleString()}</div></div>}
+            {totalDue>0&&<div style={{flexShrink:0,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:14,padding:'8px 14px',textAlign:'right'}}><div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.06em',color:'#b91c1c'}}>BALANCE DUE</div><div style={{fontSize:20,fontWeight:900,color:'#dc2626'}}>${totalDue.toLocaleString()}</div></div>}
           </div>
         </div>
         <div className="cp-page">
@@ -1783,10 +1786,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     </div>{/* /cp-shell */}
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
-    <nav className="cp-bottomnav" style={{background:`linear-gradient(180deg, ${cpShade(cpTheme.primary,-4)}, ${cpShade(cpTheme.primary,-20)})`,borderTop:`2px solid ${cpTheme.accent}`}}>
+    <nav className="cp-bottomnav">
       {cpNav.filter(n=>n.key!=='spend').slice(0,6).map(it=>{const active=page===it.key;return(
-        <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.accent:'rgba(255,255,255,.78)'}}>
-          <span style={{fontSize:20,position:'relative',lineHeight:1}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-4,right:-10,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:15,textAlign:'center'}}>{it.badge}</span>:null}</span>
+        <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.primary:'#94a3b8'}}>
+          <span style={{position:'relative',width:38,height:30,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,background:active?cpTint:'transparent',transition:'background .12s'}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-3,right:-1,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:14,textAlign:'center'}}>{it.badge}</span>:null}</span>
           <span>{it.label}</span>
         </button>
       )})}
