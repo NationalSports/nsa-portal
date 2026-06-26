@@ -361,7 +361,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sendTopstarPO=async(dp)=>{
       const svc=TOPSTAR_SERVICES[dp.topstar_service]||TOPSTAR_SERVICES.dst;
       const imgs=dp.images||[];
-      if(imgs.length===0){nf('Add at least one artwork image to this PO before sending to Topstar','error');return false}
+      if(imgs.length===0){nf('Add at least one artwork file (image, PDF, or vector) to this PO before sending to Topstar','error');return false}
       const custName=cust?.name||cust?.alpha_tag||'';
       const imgList=imgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
       const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -6767,8 +6767,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div><label className="form-label">PO Number</label><input className="form-input" value={tsPoId} readOnly style={{color:'#0891b2',fontWeight:700}}/></div>
               <div><label className="form-label">Customer Bill</label><input className="form-input" value={'$'+svc.sell.toFixed(2)} readOnly style={{color:'#166534',fontWeight:800}}/></div>
             </div>
-            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Images{planOnly?' (optional now — add before sending)':''}</label>
-              <ImgGallery images={topstarImgs} onUpdate={setTopstarImgs} onError={e=>nf(e,'error')} maxImages={10}/>
+            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Files{planOnly?' (optional now — add before sending)':''}</label>
+              <ImgGallery images={topstarImgs} onUpdate={setTopstarImgs} onError={e=>nf(e,'error')} maxImages={10} allowVector/>
             </div>
             <div><label className="form-label">Explanation / Instructions for Topstar</label><textarea className="form-input" rows={4} value={topstarNotes} onChange={e=>setTopstarNotes(e.target.value)} placeholder="Describe the logo/name, thread colors, sizing, file format needed, etc." style={{resize:'vertical'}}/></div>
           </div>
@@ -6776,7 +6776,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {!planOnly&&<button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO('select')}>← Back</button>}
             <button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO(null)}>Cancel</button>
             <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2'}} disabled={topstarSending} onClick={async()=>{
-              if(!planOnly&&topstarImgs.length===0){nf('Add at least one artwork image for Topstar','error');return}
+              if(!planOnly&&topstarImgs.length===0){nf('Add at least one artwork file (image, PDF, or vector) for Topstar','error');return}
               setTopstarSending(true);
               const tsPoIdFinal=tsPoId;
               const decoPO={id:'TS-'+Date.now()+'-'+Math.floor(Math.random()*10000),
