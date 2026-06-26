@@ -1415,23 +1415,57 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         {/* ── content sections (each gated to a nav page) ── */}
         <div className="cp-col">
-        {/* AD Spend & Promo — compact entry on Home; the full dashboard opens as its own view. */}
-        {page==='home'&&adData&&<button onClick={()=>setSpendView(true)} style={{width:'100%',textAlign:'left',cursor:'pointer',border:'none',borderRadius:14,marginBottom:18,padding:'15px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,color:'#fff',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,boxShadow:'0 2px 12px rgba(15,23,42,.12)'}}>
-          <span style={{display:'flex',alignItems:'center',gap:12,minWidth:0}}>
-            <span style={{fontSize:24}}>📊</span>
-            <span style={{minWidth:0}}>
-              <span style={{display:'block',fontSize:15,fontWeight:800}}>Spend &amp; Promo Dashboard</span>
-              <span style={{display:'block',fontSize:12,opacity:.85}}>{adData.deptName} · {adData.teamCount} team{adData.teamCount!==1?'s':''}</span>
-            </span>
-          </span>
-          <span style={{display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
-            {adData.hasPromo&&<span style={{textAlign:'right'}}>
-              <span style={{display:'block',fontSize:10,fontWeight:700,letterSpacing:'.06em',opacity:.8}}>PROMO LEFT</span>
-              <span style={{display:'block',fontSize:16,fontWeight:800}}>{adData.money2(adData.remainingDisplay)}</span>
-            </span>}
-            <span style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'9px 14px',whiteSpace:'nowrap'}}>View →</span>
-          </span>
-        </button>}
+        {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
+        {page==='home'&&<div style={{marginBottom:18}}>
+          <style>{`.cp-hub{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:780px){.cp-hub{grid-template-columns:minmax(0,1fr) minmax(0,1.05fr)}}.cp-tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cp-tile{position:relative;text-align:left;border:none;border-radius:18px;padding:15px 16px;cursor:pointer;display:flex;flex-direction:column;min-height:116px;transition:transform .12s,box-shadow .12s}.cp-tile:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(15,23,42,.12)}`}</style>
+          <div className="cp-hub">
+            {/* School hero — athletic, team-colored, monogram badge + watermark */}
+            <div style={{position:'relative',overflow:'hidden',borderRadius:24,background:`linear-gradient(150deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-22)})`,color:'#fff',boxShadow:'0 14px 36px rgba(15,23,42,.18)',minHeight:296,display:'flex',flexDirection:'column',justifyContent:'space-between',padding:'24px'}}>
+              <div style={{position:'absolute',right:-26,bottom:-46,fontSize:230,fontWeight:900,color:cpTheme.accent,opacity:.16,lineHeight:.8,letterSpacing:'-.06em',pointerEvents:'none',userSelect:'none'}}>{cpMonogram}</div>
+              <div style={{position:'absolute',left:0,right:0,top:0,height:6,background:cpTheme.accent}}/>
+              <div style={{position:'relative'}}>
+                <div style={{fontSize:11,fontWeight:800,letterSpacing:'.16em',textTransform:'uppercase',color:cpTheme.accent}}>★ Team HQ ★</div>
+                <div style={{display:'flex',alignItems:'center',gap:14,marginTop:14}}>
+                  <div style={{width:64,height:64,borderRadius:18,background:'rgba(255,255,255,.12)',border:`2px solid ${cpTheme.accent}`,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:23,flexShrink:0}}>{cpMonogram}</div>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:25,fontWeight:900,lineHeight:1.05,letterSpacing:'-.01em'}}>{customer.name}</div>
+                    <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>{isP?(adData?adData.teamCount:subs.length)+' teams · powered by NSA':'Powered by NSA'}</div>
+                  </div>
+                </div>
+              </div>
+              <div style={{position:'relative',display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7}}>
+                  <span style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:.7,textTransform:'uppercase'}}>Colors</span>
+                  {[cpTheme.primary,cpTheme.accent,'#ffffff'].map((c,i)=><span key={i} style={{width:17,height:17,borderRadius:'50%',background:c,border:'2px solid rgba(255,255,255,.45)'}}/>)}
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:10,fontWeight:700,letterSpacing:'.06em',opacity:.7,textTransform:'uppercase'}}>Your Rep</div>
+                  <div style={{fontSize:13,fontWeight:800}}>{rep?.name||'NSA Team'}</div>
+                </div>
+              </div>
+            </div>
+            {/* Section tiles */}
+            <div className="cp-tiles">
+              {(()=>{const tiles=[
+                {key:'orders',label:'Orders',icon:'📦',color:cpTheme.primary,stat:(activeSOs.length||'No')+' active'},
+                {key:'estimates',label:'Estimates',icon:'📋',color:'#d97706',stat:openEstCount?openEstCount+' to approve':'All clear'},
+                {key:'art',label:'Art Locker',icon:'🎨',color:cpTheme.accent,stat:artLibrary.length+' design'+(artLibrary.length!==1?'s':'')},
+                {key:'shop',label:'Shop',icon:'🛍️',color:'#0f172a',stat:'Browse gear'},
+                {key:'billing',label:'Billing',icon:'💳',color:'#dc2626',stat:totalDue>0?'$'+totalDue.toLocaleString()+' due':'Up to date'},
+                ...(adData?[{key:'spend',label:adData.hasPromo?'Promo & Spend':'Sales Report',icon:'📊',color:'#15803d',stat:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo':'View report',onClick:()=>setSpendView(true)}]:[]),
+              ];
+              return tiles.map(t=>(
+                <button key={t.key} className="cp-tile" onClick={t.onClick||(()=>setPage(t.key))} style={{background:t.color+'14'}}>
+                  <span style={{width:42,height:42,borderRadius:12,background:t.color,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,boxShadow:`0 4px 12px ${t.color}44`}}>{t.icon}</span>
+                  <span style={{marginTop:'auto'}}>
+                    <span style={{display:'block',fontSize:15,fontWeight:800,color:'#1e293b'}}>{t.label}</span>
+                    <span style={{display:'block',fontSize:12,fontWeight:700,color:t.color,marginTop:1}}>{t.stat}</span>
+                  </span>
+                </button>
+              ));})()}
+            </div>
+          </div>
+        </div>}
         {/* ── ART LOCKER (page: art) — gallery of every design the team has run ── */}
         {page==='art'&&(()=>{
           const decos=['all',...Array.from(new Set(artLibrary.map(a=>a.deco).filter(Boolean)))];
@@ -1777,8 +1811,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>}
 
-        {/* Your rep — also pinned in the sidebar */}
-        {page==='home'&&<div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
+        {/* Your rep — also pinned in the sidebar & home hero; shown on Shop for quick contact */}
+        {page==='shop'&&<div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
           <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
           <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
