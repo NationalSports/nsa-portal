@@ -6515,7 +6515,7 @@ export default function App(){
     const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
     if(!so){nf('No order linked to this item','error');return}
     const v=acDateVal||'';
-    setSos(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
+    setSOs(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
     setAcDateKey(null);setAcDateVal('');
     nf(v?('Expected date set to '+v):'Expected date cleared');
   };
@@ -6539,7 +6539,7 @@ export default function App(){
     }else if(t.type==='inv_followup'&&t.inv){
       setInvs(prev=>prev.map(i=>i.id===t.inv.id?{...i,follow_up_at:fuAt,updated_at:nowIso}:i));
     }else if(t.type==='coach_followup'&&t.so&&t.jobId){
-      setSos(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
+      setSOs(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
     }
     setSnoozeOpenKey(null);
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
