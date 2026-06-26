@@ -213,14 +213,22 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
       name: '05_Commission_Agreement.pdf',
       pdf: await renderDocument({
         title: 'Commission Pay Agreement', subtitle: 'California Labor Code § 2751',
-        blocks: [
-          { type: 'para', text: 'This agreement sets out the method by which commissions are computed and paid, as required by California Labor Code section 2751.' },
-          { type: 'field', label: 'Base Draw', value: invite.pay_rate },
-          { type: 'field', label: 'Commission Basis', value: data.commission && data.commission.basis },
-          { type: 'para', text: data.commission && data.commission.terms ? String(data.commission.terms) : 'Commission terms as described in the offer and discussed with your supervisor. (Attach the full commission schedule before signing.)' },
-          { type: 'para', text: 'By signing, I acknowledge I received and agree to the commission terms above.' },
-          sigLine('commission_agreement'),
-        ],
+        blocks: (() => {
+          const comps = Array.isArray(invite.pay_components) ? invite.pay_components : [];
+          const commComp = comps.find((c) => c && c.type === 'commission') || {};
+          const basePay = formatPayComponents(comps.filter((c) => c && c.type !== 'commission')) || invite.pay_rate;
+          const commBasis = (data.commission && data.commission.basis) || commComp.basis || '';
+          return [
+            { type: 'para', text: 'This agreement sets out the method by which commissions are computed and paid, as required by California Labor Code section 2751.' },
+            { type: 'field', label: 'Base Pay', value: basePay },
+            { type: 'field', label: 'Commission Rate / Basis', value: commBasis },
+            { type: 'field', label: 'Calculated On', value: /gross profit/i.test(commBasis) ? 'Gross profit on the employee’s sales' : (commBasis ? '(see Commission Rate / Basis above)' : '') },
+            { type: 'field', label: 'Payment Terms', value: data.commission && data.commission.terms ? String(data.commission.terms) : 'As described in the offer and discussed with your supervisor.' },
+            { type: 'para', text: 'Commissions are earned and paid per the rate and terms above. Attach the full commission schedule if one applies.' },
+            { type: 'para', text: 'By signing, I acknowledge I received and agree to the commission terms above.' },
+            sigLine('commission_agreement'),
+          ];
+        })(),
       }),
     });
   }
