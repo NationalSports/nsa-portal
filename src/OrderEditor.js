@@ -274,15 +274,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
     else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
   };
-  // Add a Previous Artwork group to this order, carrying over ONLY the mockup images the rep
-  // selected (selUrls). Production files, color ways, preview, etc. are always kept; unselected
-  // mockup IMAGES are stripped from mockup_files/files/item_mockups so nothing is auto-applied.
-  // selUrls=null means "all mockups" (legacy add-everything path); an empty set means art only.
+  // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
+  // color ways, preview, spec, etc. come along; mockup IMAGES are stripped from mockup_files/files
+  // and the per-garment item_mockups are cleared, so the rep selects mockups per garment afterward.
+  // selUrls (a Set of urls) optionally whitelists specific mockup images to keep; null keeps none.
   const addPrevArt=(art,selUrls)=>{
     const _u=f=>typeof f==='string'?f:(f?.url||'');
-    // Keep non-image files (e.g. .ai production art that legacy records stash in `files`) and any
-    // selected mockup image; drop only the unselected mockup images.
-    const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):true});
+    // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
+    // explicitly-whitelisted mockup image; drop every other mockup image.
+    const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
     const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
     delete clone._so_id;delete clone._so_memo;
     clone.mockup_files=keep(clone.mockup_files);
@@ -291,9 +291,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     clone.item_mockups=im;
     sv('art_files',[...af,clone]);
     const _pf=(clone.prod_files||[]).length;
-    const _mc=selUrls?selUrls.size:'all';
-    nf('Added "'+(art.name||'Untitled')+'" from '+(art._so_id||'Library')+' — '+_mc+' mockup'+(_mc===1?'':'s')+(_pf?', incl. '+_pf+' production file'+(_pf>1?'s':''):''));
-    setMockSelectModal(null);
+    nf('Added "'+(art.name||'Untitled')+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+(_pf?', incl. '+_pf+' production file'+(_pf>1?'s':''):''));
   };
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
@@ -441,7 +439,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
-  const[mockSelectModal,setMockSelectModal]=useState(null);// {art,mockups:[{url,name,file}],selected:{url:true}} — when adding Previous Artwork, choose which mockups carry over instead of auto-applying all.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
@@ -4784,50 +4781,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
-                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
-                      // With mockups, let the rep choose which carry over instead of auto-applying all.
-                      const imgMocks=mockups.filter(f=>_isImgUrl(_urlOf(f),f));
-                      if(imgMocks.length)setMockSelectModal({art,mockups:imgMocks.map(f=>({url:_urlOf(f),name:fileDisplayName(f),file:f})),selected:{}});
-                      else addPrevArt(art,new Set());
-                    }}>+ Add</button>}
-                    {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} mockup(s)</span>}
+                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files. Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
+                    {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
                   </div>
                 </div>
               </div>})}
           </div>}</>}
-        </div>
-      </div></div>})()}
-
-    {/* MOCKUP SELECTION MODAL — choose which prior-art mockups to carry over */}
-    {mockSelectModal&&(()=>{
-      const{art,mockups,selected}=mockSelectModal;
-      const selCount=mockups.filter(m=>selected[m.url]).length;
-      const allSel=selCount===mockups.length&&mockups.length>0;
-      const toggle=url=>setMockSelectModal(m=>({...m,selected:{...m.selected,[url]:!m.selected[url]}}));
-      const setAll=on=>setMockSelectModal(m=>({...m,selected:on?Object.fromEntries(mockups.map(x=>[x.url,true])):{}}));
-      const selSet=new Set(mockups.filter(m=>selected[m.url]).map(m=>m.url));
-      return<div className="modal-overlay" onClick={()=>setMockSelectModal(null)}><div className="modal" style={{maxWidth:620}} onClick={e=>e.stopPropagation()}>
-        <div className="modal-header"><h2>Select mockups to include</h2><button className="modal-close" onClick={()=>setMockSelectModal(null)}>×</button></div>
-        <div className="modal-body" style={{maxHeight:520,overflowY:'auto'}}>
-          <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Choose which mockups from <b>{art.name||'this artwork'}</b> to carry onto this order. Production files and color ways always come along; unselected mockups won't be applied.</div>
-          <div style={{display:'flex',gap:8,marginBottom:12}}>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setAll(!allSel)}>{allSel?'Clear all':'Select all'}</button>
-            <span style={{fontSize:11,color:'#64748b',alignSelf:'center'}}>{selCount} of {mockups.length} selected</span>
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:10}}>
-            {mockups.map((m,i)=>{const on=!!selected[m.url];
-              return<div key={m.url+'-'+i} onClick={()=>toggle(m.url)} title={m.name} style={{position:'relative',cursor:'pointer',borderRadius:8,border:'2px solid '+(on?'#7c3aed':'#e2e8f0'),background:on?'#faf5ff':'white',padding:6,boxShadow:on?'0 0 0 1px #7c3aed':'none'}}>
-                <div style={{position:'absolute',top:8,left:8,width:20,height:20,borderRadius:'50%',background:on?'#7c3aed':'rgba(255,255,255,0.9)',border:'1px solid '+(on?'#7c3aed':'#cbd5e1'),color:'white',fontSize:13,lineHeight:'18px',textAlign:'center',zIndex:2}}>{on?'✓':''}</div>
-                {_isImgUrl(m.url,m.file)?<img src={m.url} alt={m.name} style={{width:'100%',height:104,objectFit:'contain',borderRadius:4,background:'#fafafa'}}/>:
-                  <div style={{height:104,display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,background:'#f1f5f9',borderRadius:4}}>📄</div>}
-                <div style={{fontSize:9,color:'#64748b',marginTop:4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.name||'mockup'}</div>
-              </div>})}
-          </div>
-        </div>
-        <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-          <button className="btn btn-sm btn-secondary" onClick={()=>addPrevArt(art,new Set())}>Add artwork only</button>
-          <button className="btn btn-sm btn-primary" disabled={selCount===0} style={{background:selCount?'#7c3aed':'#c4b5fd',borderColor:selCount?'#7c3aed':'#c4b5fd',cursor:selCount?'pointer':'not-allowed'}} onClick={()=>addPrevArt(art,selSet)}>+ Add with {selCount} mockup{selCount===1?'':'s'}</button>
         </div>
       </div></div>})()}
 
