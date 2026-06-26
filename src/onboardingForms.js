@@ -155,7 +155,7 @@ export const WIZARD_STEPS = [
   { id: 'personal', label: 'Personal Info' },
   { id: 'direct_deposit', label: 'Direct Deposit' },
   { id: 'emergency', label: 'Emergency Contacts' },
-  { id: 'tax', label: 'Tax Forms (W-4 / DE 4)' },
+  { id: 'tax', label: 'Tax Form' },
   { id: 'documents', label: 'Documents' },
   { id: 'commission', label: 'Commission Agreement' }, // shown only if commission_eligible
   { id: 'handbook', label: 'Employee Handbook' },
@@ -165,3 +165,16 @@ export const WIZARD_STEPS = [
 
 export const FILING_STATUSES = ['Single or Married filing separately', 'Married filing jointly', 'Head of Household'];
 export const ACCOUNT_TYPES = ['Checking', 'Savings'];
+
+// ── W-9 (for true 1099 contractors) ──
+export const W9_CLASSIFICATIONS = [
+  'Individual / sole proprietor or single-member LLC',
+  'C Corporation',
+  'S Corporation',
+  'Partnership',
+  'Trust / estate',
+  'Limited liability company (LLC)',
+];
+export const W9_LLC_TAX = ['C = C corporation', 'S = S corporation', 'P = Partnership'];
+export const W9_CERTIFICATION =
+  'Under penalties of perjury, I certify that: (1) the taxpayer identification number shown on this form is my correct TIN; (2) I am not subject to backup withholding (unless I indicate otherwise above); (3) I am a U.S. citizen or other U.S. person; and (4) any FATCA code entered is correct.';

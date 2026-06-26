@@ -333,6 +333,7 @@ function PayrollReveal({ id, flash }) {
       ) : (
         <div style={{ fontSize: 13, fontFamily: 'monospace', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
           <KV k="SSN" v={vals.ssn || '—'} />
+          {vals.ein && <KV k="EIN" v={vals.ein} />}
           <KV k="Bank routing" v={vals.bank_routing || '—'} />
           <KV k="Bank account" v={vals.bank_account || '—'} />
           <div style={{ marginTop: 8, fontFamily: 'inherit', fontSize: 11, color: '#92400e' }}>This view was logged. Close the dialog to hide.</div>

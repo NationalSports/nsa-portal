@@ -201,12 +201,13 @@ exports.handler = async (event) => {
       const { data: sub } = await admin.from('onboarding_submissions').select('invite_id, sensitive').eq('invite_id', id).maybeSingle();
       if (!sub) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'No submission' }) };
       const s = sub.sensitive || {};
-      let ssn = '', acct = '', routing = '';
+      let ssn = '', acct = '', routing = '', ein = '';
       try { ssn = decryptField(s.ssn); } catch {}
       try { acct = decryptField(s.bank_account); } catch {}
       try { routing = decryptField(s.bank_routing); } catch {}
+      try { ein = decryptField(s.ein); } catch {}
       await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'sensitive_revealed', ref: String(body.reason || 'payroll'), meta: { by: auth.teamMemberId } }]);
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ssn, bank_account: acct, bank_routing: routing }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ssn, bank_account: acct, bank_routing: routing, ein }) };
     }
 
     return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Unknown action' }) };

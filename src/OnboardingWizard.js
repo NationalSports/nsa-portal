@@ -12,6 +12,7 @@ import {
   CA_NOTICES, AT_WILL_STATEMENT, WIZARD_STEPS, FILING_STATUSES, ACCOUNT_TYPES,
   ESIGN_CONSENT, CPRA_NOTICE, formatPayComponents,
   DOCUMENT_TYPES, MAX_UPLOAD_MB, I9_NOTICE,
+  W9_CLASSIFICATIONS, W9_LLC_TAX, W9_CERTIFICATION,
 } from './onboardingForms';
 
 const API = '/.netlify/functions/onboarding-public';
@@ -179,7 +180,7 @@ export default function OnboardingWizard() {
   // Only send sensitive keys the hire actually entered this session (non-empty).
   const sensitivePayload = () => {
     const out = {};
-    for (const k of ['ssn', 'bank_account', 'bank_routing']) if (sensitive[k]) out[k] = sensitive[k];
+    for (const k of ['ssn', 'bank_account', 'bank_routing', 'ein']) if (sensitive[k]) out[k] = sensitive[k];
     return Object.keys(out).length ? out : undefined;
   };
 
@@ -224,7 +225,7 @@ export default function OnboardingWizard() {
           {step.id === 'personal' && <Personal get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} invite={invite} />}
           {step.id === 'direct_deposit' && <DirectDeposit get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} />}
           {step.id === 'emergency' && <Emergency get={get} setField={setField} />}
-          {step.id === 'tax' && <Tax get={get} setField={setField} />}
+          {step.id === 'tax' && <Tax invite={invite} get={get} setField={setField} sensitive={sensitive} setSensitive={setSensitive} sensitiveSet={sensitiveSet} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, tax_form: v }))} />}
           {step.id === 'documents' && <Documents documents={documents} onUpload={uploadDoc} onDelete={deleteDoc} />}
           {step.id === 'commission' && <Commission invite={invite} get={get} setField={setField} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, commission_agreement: v }))} acks={acks} setAck={(v) => setAcks((a) => ({ ...a, commission_agreement: v }))} />}
           {step.id === 'handbook' && <Handbook readSections={readSections} setRead={(id) => { setReadSections((s) => { const n = new Set(s); n.add(id); return n; }); save({ acknowledgments: { ['handbook:' + id]: { at: nowISO(), scrolled: true } } }); track('scroll_complete', 'handbook:' + id); }} onView={(id) => track('section_view', 'handbook:' + id)} acks={acks} setAck={(v) => setAcks((a) => ({ ...a, 'handbook:all': v, 'policy:at_will': v }))} signatures={signatures} setSig={(v) => setSignatures((s) => ({ ...s, handbook: v }))} totalHb={totalHb} />}
@@ -259,6 +260,7 @@ export default function OnboardingWizard() {
 // Gate logic for the "continue" button per step.
 function stepGateOk(step, ctx) {
   if (step.id === 'consent') return ctx.acks['consent:esign'] && ctx.acks['consent:privacy'];
+  if (step.id === 'tax') return ctx.signatures.tax_form && ctx.signatures.tax_form.name;
   if (step.id === 'handbook') return ctx.handbookReadAll && ctx.acks['handbook:all'] && ctx.signatures.handbook && ctx.signatures.handbook.name;
   if (step.id === 'ca_notices') return ctx.allCaAcked && ctx.signatures.ca_notices && ctx.signatures.ca_notices.name;
   if (step.id === 'commission') return ctx.acks.commission_agreement && ctx.signatures.commission_agreement && ctx.signatures.commission_agreement.name;
@@ -440,7 +442,48 @@ function Emergency({ get, setField }) {
   );
 }
 
-function Tax({ get, setField }) {
+function Tax({ invite, get, setField, sensitive, setSensitive, sensitiveSet, signatures, setSig }) {
+  const is1099 = invite && invite.employment_type === 'contractor_1099';
+  if (is1099) {
+    const cls = get('tax.w9.classification') || '';
+    const tinType = get('tax.w9.tin_type') || 'ssn';
+    return (
+      <div>
+        <H sub="As an independent contractor, we need a Form W-9 (not a W-4). This gives us your taxpayer ID for year-end 1099 reporting.">Taxpayer Information — Form W-9</H>
+        <Field label="Federal tax classification">
+          <select style={S.input} value={cls} onChange={(e) => setField('tax.w9.classification', e.target.value)}>
+            <option value="">Select…</option>{W9_CLASSIFICATIONS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        {/LLC/i.test(cls) && (
+          <Field label="LLC tax classification">
+            <select style={S.input} value={get('tax.w9.llc_tax') || ''} onChange={(e) => setField('tax.w9.llc_tax', e.target.value)}>
+              <option value="">Select…</option>{W9_LLC_TAX.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+        )}
+        <Field label="Business / disregarded-entity name (if different from your name)"><Text value={get('tax.w9.business_name')} onChange={(v) => setField('tax.w9.business_name', v)} /></Field>
+        <Field label="Taxpayer ID number (TIN) type">
+          <select style={S.input} value={tinType} onChange={(e) => setField('tax.w9.tin_type', e.target.value)}>
+            <option value="ssn">SSN (the one I entered earlier)</option>
+            <option value="ein">EIN (business tax ID)</option>
+          </select>
+        </Field>
+        {tinType === 'ein' && (
+          <Field label="Employer Identification Number (EIN)">
+            <Text value={sensitive.ein} onChange={(v) => setSensitive((s) => ({ ...s, ein: v }))} placeholder={sensitiveSet.ein ? '•• (on file)' : '00-0000000'} autoComplete="off" />
+          </Field>
+        )}
+        <div className="onb-row">
+          <div style={{ flex: 1 }}><Field label="Exempt payee code (optional)"><Text value={get('tax.w9.exempt_payee_code')} onChange={(v) => setField('tax.w9.exempt_payee_code', v)} /></Field></div>
+          <div style={{ flex: 1 }}><Field label="FATCA exemption code (optional)"><Text value={get('tax.w9.fatca_code')} onChange={(v) => setField('tax.w9.fatca_code', v)} /></Field></div>
+        </div>
+        <Check checked={get('tax.w9.backup_withholding')} onChange={(v) => setField('tax.w9.backup_withholding', v)}>I have been notified by the IRS that I am currently subject to backup withholding</Check>
+        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>🔒 Your SSN/EIN is encrypted and visible only to payroll/accounting.</div>
+        <SignBlock value={signatures.tax_form} statement={W9_CERTIFICATION} onChange={setSig} />
+      </div>
+    );
+  }
   return (
     <div>
       <H sub="Your federal (W-4) and California (DE 4) withholding elections. If unsure, the defaults withhold at the standard rate — you can update these later with payroll.">Tax Withholding</H>
@@ -466,6 +509,7 @@ function Tax({ get, setField }) {
       </div>
       <Field label="Additional CA amount to withhold ($)"><Text value={get('tax.ca_de4.extra')} onChange={(v) => setField('tax.ca_de4.extra', v)} /></Field>
       <Check checked={get('tax.ca_de4.exempt')} onChange={(v) => setField('tax.ca_de4.exempt', v)}>I claim exemption from California withholding</Check>
+      <SignBlock value={signatures.tax_form} statement="Under penalties of perjury, I declare these withholding elections are true and correct." onChange={setSig} />
     </div>
   );
 }
