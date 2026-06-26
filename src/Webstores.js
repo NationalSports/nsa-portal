@@ -6,7 +6,7 @@ import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, e
 import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap, foldScale, foldedQty, foldedSoon } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -423,15 +423,19 @@ function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image
         onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) upload(f); }}
         style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 12, borderRadius: 12, cursor: 'pointer', border: '1.5px dashed ' + (over ? '#191919' : '#d7dbe2'), background: over ? '#f5f5ff' : '#fafbfc', transition: 'border-color .12s, background .12s' }}>
-        <div style={{ width: 60, height: 60, borderRadius: 10, background: '#fff', border: '1px solid #eef0f3', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 700, textTransform: 'uppercase' }}>none</span>}
+        {/* Thumbnail with the Remove control as a corner ×, so it never overlaps the image
+            even when the uploader is squeezed into a narrow column. */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <div style={{ width: 60, height: 60, borderRadius: 10, background: '#fff', border: '1px solid #eef0f3', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 700, textTransform: 'uppercase' }}>none</span>}
+          </div>
+          {value && <button type="button" title="Remove image" onClick={(e) => { e.stopPropagation(); onChange(null); }} style={{ position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%', border: '1px solid #e2e8f0', background: '#fff', color: '#b91c1c', fontSize: 12, fontWeight: 800, lineHeight: '16px', textAlign: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)', padding: 0 }}>×</button>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>{busy ? 'Uploading…' : over ? 'Drop the image' : value ? 'Replace image' : 'Drag an image here, or click to browse'}</div>
           {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>Using stock photo — drop one to override.</div>}
           {err && <div style={{ fontSize: 11.5, color: '#b91c1c', marginTop: 3 }}>{err}</div>}
         </div>
-        {value && <button type="button" onClick={(e) => { e.stopPropagation(); onChange(null); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '5px 10px', fontSize: 12, fontWeight: 700, color: '#b91c1c', cursor: 'pointer' }}>Remove</button>}
         <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) upload(f); e.target.value = ''; }} />
       </div>
     </div>
@@ -2550,6 +2554,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
+  const [pendingOpenPid, setPendingOpenPid] = useState(null); // product just created — open its card once it lands
   const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
   const [overCat, setOverCat] = useState(null); // category section being dragged over
   const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
@@ -2626,6 +2631,15 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
   useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  // After a custom product is created + added, drop the rep straight into the full item
+  // editor once the reloaded catalog contains it — so they never have to reopen it to
+  // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
+  // wins the selection.
+  useEffect(() => {
+    if (!pendingOpenPid) return;
+    const m = repsList.find((p) => p.product_id === pendingOpenPid);
+    if (m) { setEditId(m.id); setPaneTab('details'); setPendingOpenPid(null); }
+  }, [catalog, pendingOpenPid]);
 
   // Drag-to-reorder: the grab handle on a row starts the drag; every row is a
   // drop target. Hovering the top/bottom half drops the item before/after that
@@ -2686,7 +2700,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} />}
+      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
@@ -2742,7 +2756,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                         <button key={k} type="button" onClick={() => setPaneTab(k)} style={{ background: 'none', border: 'none', borderBottom: '2px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 12.5, padding: '4px 10px', cursor: 'pointer' }}>{lbl}</button>
                       ); })}
                     </div>}
-                    <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto', color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
+                    {onCopyItem && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} title="Duplicate this item — image, price, art & options all copied" onClick={() => onCopyItem(p)}>⧉ Copy</button>}
+                    <button className="btn btn-sm btn-secondary" style={{ marginLeft: onCopyItem ? 0 : 'auto', color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
                     <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
@@ -3974,6 +3989,18 @@ function TemplateEditor({ template, onClose, onSaved }) {
 // On bring-in, pick which colors of each template style to add. Decoration never carries
 // over (templates are product sets) — this only chooses garment colors. Each style's picked
 // colors fold into one multi-color card. Defaults to the color(s) saved in the template.
+// Some vendor feeds (notably adidas team gear) bake the colorway code into the product
+// NAME — "M FLEECE HOOD ROYBLU/WHITE", "…BLACK/WHITE" — instead of leaving it to the color
+// field. That makes every color look like its own one-color style. Strip a trailing
+// ALL-CAPS color code (optionally slash-joined, e.g. ROYBLU/WHITE) so the colorways of a
+// style collapse into one card. Mixed-case names (most of the catalog) keep their color in
+// the color field and are left untouched.
+const styleKey = (name) => {
+  const n = String(name || '').trim();
+  const base = n.replace(/\s+[A-Z]{4,}(?:\/[A-Z0-9]{2,})*$/, '').trim();
+  return base || n;
+};
+
 function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
@@ -3989,23 +4016,36 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       const found = [];
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
-      // Group template items by style (product name); remember the saved colors as defaults.
+      // Group template items by STYLE so every color of a garment folds into one card.
+      // styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
+      // ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
       const styleMap = new Map();
+      const savedByKey = new Map();
       items.forEach((it) => { const p = bySku.get(String(it.sku || '').trim().toUpperCase()); if (!p) return;
-        if (!styleMap.has(p.name)) styleMap.set(p.name, { name: p.name, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() });
-        styleMap.get(p.name).defaults.add(String(p.sku || '').trim().toUpperCase()); });
-      const names = [...styleMap.keys()];
-      const sibs = [];
-      for (let i = 0; i < names.length; i += 100) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('name', names.slice(i, i + 100)).limit(1000); if (data) sibs.push(...data); }
-      const byName = new Map(); sibs.forEach((p) => { if (!byName.has(p.name)) byName.set(p.name, []); byName.get(p.name).push(p); });
-      const built = names.map((nm) => {
-        const s = styleMap.get(nm);
+        const key = styleKey(p.name);
+        if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() }); savedByKey.set(key, []); }
+        styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
+        savedByKey.get(key).push(p); });
+      const keys = [...styleMap.keys()];
+      // Pull every sibling sharing a style's base name (prefix), then keep only those whose
+      // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
+      const byKey = new Map();
+      await Promise.all(keys.map(async (key) => {
+        const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
+        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
+        const sibs = (data || []).filter((p) => styleKey(p.name) === key);
+        const seen = new Set(); const list = [];
+        [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
+        byKey.set(key, list);
+      }));
+      const built = keys.map((key) => {
+        const s = styleMap.get(key);
         // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
         const colMap = new Map();
-        (byName.get(nm) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
+        (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
         const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
         const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: nm, image: s.image, meta: s.meta, colors, picked };
+        return { name: s.name, image: s.image, meta: s.meta, colors, picked };
       });
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
@@ -4299,6 +4339,8 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
   const [price, setPrice] = useState('');
   const [image, setImage] = useState(null);
   const [imgBusy, setImgBusy] = useState(false);
+  const [imageBack, setImageBack] = useState(null);
+  const [imgBackBusy, setImgBackBusy] = useState(false);
   const [alsoAdd, setAlsoAdd] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -4312,7 +4354,9 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
   useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
 
   const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
-  const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes([...sizes, s]); setNewSize(''); };
+  // Keep the size list ordered smallest → largest no matter what order they're typed in.
+  const sortSizes = (arr) => [...arr].sort((a, b) => sizeRank(a) - sizeRank(b));
+  const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes(sortSizes([...sizes, s])); setNewSize(''); };
   const logoUrlOf = (it) => it && (webLogoDefault(it) || it.web_logo_url || it.preview_url || it.art_url);
   const storeLogos = (library || []).filter((it) => it && it.kind !== 'art' && logoUrlOf(it));
   const pickLogoFile = async (file) => {
@@ -4334,22 +4378,29 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
     // Per-size cost overrides (e.g. 2XL/3XL cost more) → products.size_costs.
     const size_costs = {};
     for (const s of sizes) { const v = sizeCost[s]; if (v !== '' && v != null && !Number.isNaN(Number(v))) size_costs[s] = Number(v); }
-    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
+    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, image_back_url: imageBack || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
     const { error } = await supabase.from('products').insert(row);
     if (error) { setSaving(false); setErr('Could not save: ' + error.message); return; }
     // Seed in-house warehouse stock so the item shows as fulfillable right away.
     const invRows = sizes.map((s) => ({ product_id: id, size: s, quantity: Math.max(0, Math.floor(Number(sizeQty[s]) || 0)) })).filter((r) => r.quantity > 0);
     if (invRows.length) { try { await supabase.from('product_inventory').insert(invRows); } catch (e) { /* non-fatal */ } }
-    setSaving(false);
     // Attach the chosen logo as a front decoration (default placement; fine-tune later in Art).
     const decorations = logo ? [{ art_id: logo.art_id || ('cpc-' + Date.now().toString(36)), art_url: logo.art_url, orig_url: logo.art_url, source_url: logo.source_url || logo.art_url, placement: 'full-front', color_label: 'original', side: 'front', x: 50, y: 44, w: 30 }] : [];
     const addToStore = reusable ? alsoAdd : true; // a one-time item only makes sense in this store
-    onCreated && onCreated(row, addToStore, decorations);
+    // Keep the spinner up through the (sometimes slow) add-to-store + catalog reload so it
+    // never looks like nothing happened — onCreated closes the modal when it's done.
+    try { await (onCreated && onCreated(row, addToStore, decorations)); } catch (e) { setSaving(false); setErr('Saved the product, but adding it to the store failed: ' + (e.message || e)); }
   };
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        {saving && (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.78)', borderRadius: 14, zIndex: 5, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+            <span style={{ display: 'inline-block', width: 34, height: 34, border: '3px solid #e2e8f0', borderTop: '3px solid #2563eb', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>Saving the item{reusable ? '' : ' to this store'}…</div>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>New custom product</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
@@ -4358,7 +4409,8 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
           <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{reusable ? 'Saved to the product catalog for reuse in any store.' : 'Created for this store only — not added to the shared catalog.'} Only a name is required.</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <div style={{ flex: '0 0 auto', width: 160 }}>
-              <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Product image" />
+              <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Front image" />
+              <ImageUpload value={imageBack} onChange={setImageBack} onBusy={setImgBackBusy} label="Back image" />
             </div>
             <div style={{ flex: 1, minWidth: 280 }}>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -4440,7 +4492,7 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
           </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" disabled={saving || imgBusy || logoBusy || !name.trim()} onClick={save}>{saving ? 'Saving…' : reusable ? 'Save to catalog' : 'Add to this store'}</button>
+            <button className="btn btn-primary" disabled={saving || imgBusy || imgBackBusy || logoBusy || !name.trim()} onClick={save}>{saving ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />Saving…</span> : reusable ? 'Save to catalog' : 'Add to this store'}</button>
             {reusable && <Toggle label="Also add to this store" checked={alsoAdd} onChange={setAlsoAdd} />}
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           </div>
