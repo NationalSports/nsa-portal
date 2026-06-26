@@ -604,6 +604,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
   // Resolve the best front-image URL for a line item (same priority as itemDetails)
   const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  // Resolve a swatch hex from a color name — local common-color map first, then the shared pantone map.
+  const _swatchHex=(name)=>{const M={navy:'#001f3f',white:'#ffffff',black:'#111827',red:'#dc2626',royal:'#4169e1',blue:'#3b82f6',grey:'#9aa1ac',gray:'#9aa1ac',green:'#166534',forest:'#14532d',kelly:'#16a34a',orange:'#ea580c',gold:'#c9a227',yellow:'#eab308',maroon:'#800000',cardinal:'#8c1515',silver:'#c0c0c0',purple:'#6d28d9',pink:'#ec4899',brown:'#7c4a21',tan:'#d2b48c',cream:'#f5f5dc',teal:'#0d9488',charcoal:'#374151',heather:'#9aa1ac'};const s=String(name||'').trim().toLowerCase();if(!s)return null;if(M[s])return M[s];const hit=Object.keys(M).find(k=>s.includes(k));return hit?M[hit]:(pantoneHex(name)||null)};
+  // Small color thumbnail for a line item: a colored swatch (two-tone split for "Navy,White"),
+  // overlaid with the color-specific product photo when one exists. If the photo fails to load it
+  // hides and the swatch shows through, so a chip always carries a color cue.
+  const _itemSwatch=(it,sz=22)=>{
+    const url=_itemImg(it);
+    const hexes=String(it?.color||'').split(/[\/,]/).map(p=>p.trim()).filter(Boolean).slice(0,2).map(_swatchHex).filter(Boolean);
+    const swBg=hexes.length===2?`linear-gradient(135deg, ${hexes[0]} 0 50%, ${hexes[1]} 50% 100%)`:(hexes[0]||'repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 3px,#e2e8f0 3px,#e2e8f0 6px)');
+    return<span title={it?.color||''} style={{width:sz,height:sz,borderRadius:4,border:'1px solid #cbd5e1',background:swBg,flexShrink:0,display:'inline-block',overflow:'hidden',position:'relative',verticalAlign:'middle'}}>
+      {url&&<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none'}}/>}
+    </span>;
+  };
   // Copy a line item's product image to the clipboard so the rep can paste it to the customer.
   // Tries the actual image first; falls back to copying the URL when the browser/host blocks it (CORS, no ClipboardItem).
   const copyItemImage=async(it)=>{
@@ -10127,6 +10140,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
               {allLines.map((ln,li)=>{const it=o.items[ln.lineIdx];return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:li===activeLineIdx?'2px solid #2563eb':'1px solid #e2e8f0',background:li===activeLineIdx?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
+                {_itemSwatch(it)}
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
                 <span style={{fontWeight:600}}>{it?.name}</span>
                 <span style={{color:'#64748b'}}>{it?.color}</span>
@@ -10135,6 +10149,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
           {/* Product info */}
           {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+            {_itemSwatch(item,26)}
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
             <span className="badge badge-gray">{item.color}</span>
@@ -10523,6 +10538,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
                 {allRecvLines.map(r=>{const isSel=selectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:11,display:'flex',gap:4,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
                   {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>✓</span>:<span style={{color:'#94a3b8',fontSize:13}}>+</span>}
+                  {_itemSwatch(r.item,18)}
                   <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
                   <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
                   <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
@@ -10540,6 +10556,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
               {recvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:4}}>
+                {_itemSwatch(rit,18)}
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{rit.sku}</span>
                 <span style={{fontWeight:600,fontSize:11}}>{rit.name}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{rit.color}</span>
