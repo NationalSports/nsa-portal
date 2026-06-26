@@ -523,6 +523,14 @@ const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_l
 // these vendors server-side. Null-vendor products (Artwork, Wilson balls) are explicitly preserved.
 const API_CATALOG_VENDOR_IDS=['v8','v4','v3'];
 const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_VENDOR_IDS.join(',')+')';
+// Catalog-load column allowlist: every products column EXCEPT description / description_ai. Those two
+// text columns are ~51% of the row width (483B + 257B of ~1460B) yet are never read off the in-memory
+// `prod` catalog — the storefront product pages fetch their own rows (PROD_SELECT) and the client save
+// path (_dbSaveProduct, ~line 2242) writes an explicit column set that already omits them, so trimming
+// the load here can neither break a read nor null a description on write-back. This roughly halves the
+// heaviest recurring query (the full-catalog products fetch, historically ~58% of DB CPU) on heap
+// fetches, JSON serialization and transfer. Keep this list in sync with the products table columns.
+const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_price,nsa_cost,is_active,available_sizes,_colors,created_at,updated_at,image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,size_costs,pricing_group,bin,catalog_sell_price,inventory_source,is_featured,description_ai_at';
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -532,7 +540,7 @@ const _safeQuery=(table,opts)=>{
   // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
   const fetchPage=(start)=>{
-    let q=supabase.from(table).select('*');
+    let q=supabase.from(table).select(opts?.select||'*');
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
@@ -835,7 +843,7 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR}),true),
+      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
       essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
