@@ -12,6 +12,7 @@
     "html2pdf.js": "^0.14.0",
     "imagetracerjs": "^1.2.6",
     "jspdf": "^2.5.2",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.263.1",
     "papaparse": "^5.4.1",
     "pdf-lib": "^1.17.1",
