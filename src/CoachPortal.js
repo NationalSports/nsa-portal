@@ -270,7 +270,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
-  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|shop
+  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
+  const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -293,6 +294,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // long lists (they aggregate every team's orders), expanded for a regular single-team coach.
   const[ordersOpen,setOrdersOpen]=useState(!(isP||activeSOs.length>3));
   const openEstCount=custEsts.filter(e=>e.status==='sent'||e.status==='open').length;
+  // ── Art Locker — every design the team has run, gathered from order artwork & mockups.
+  // Deduped by art name + decoration; each card tracks which teams/orders used it.
+  const artLibrary=(()=>{
+    const map=new Map();
+    custSOs.forEach(so=>{
+      const team=((allCustomers||[]).find(c=>c.id===so.customer_id)||{}).name||customer.name;
+      safeArt(so).forEach(af=>{
+        const imgs=_filterDisplayable([...Object.values(af.item_mockups||{}).flatMap(a=>a||[]),...(af.mockup_files||[]),...(af.files||[])]);
+        const urls=imgs.map(f=>typeof f==='string'?f:((f&&f.url)||'')).filter(u=>u&&isUrl(u));
+        if(!urls.length)return;
+        const name=af.name||af.logo_name||'Artwork';
+        const deco=(af.deco_type||'').replace(/_/g,' ').trim();
+        const key=(name+'|'+(af.deco_type||'')).toLowerCase();
+        let rec=map.get(key);
+        if(!rec){rec={key,name,deco,urls:new Set(),teams:new Set(),orders:new Set(),createdAt:so.created_at||''};map.set(key,rec);}
+        urls.forEach(u=>rec.urls.add(u));if(team)rec.teams.add(team);rec.orders.add(so.id);
+        if((so.created_at||'')>rec.createdAt)rec.createdAt=so.created_at||rec.createdAt;
+      });
+    });
+    return[...map.values()].map(r=>({...r,urls:[...r.urls],teams:[...r.teams],orders:[...r.orders]})).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  })();
   // Recent (last 30 days) not-yet-converted estimates, surfaced in Active Orders.
   const _estRecentCutoff=Date.now()-30*24*60*60*1000;
   const recentEsts=custEsts.filter(e=>{if(e.status==='converted')return false;const t=new Date(e.created_at).getTime();return isFinite(t)&&t>=_estRecentCutoff;});
@@ -1308,6 +1330,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
     {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
+    {key:'art',label:'Art',icon:'🎨'},
     {key:'shop',label:'Shop',icon:'🛍️'},
     ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
   ];
@@ -1378,6 +1401,46 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <span style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'9px 14px',whiteSpace:'nowrap'}}>View →</span>
           </span>
         </button>}
+        {/* ── ART LOCKER (page: art) — gallery of every design the team has run ── */}
+        {page==='art'&&(()=>{
+          const decos=['all',...Array.from(new Set(artLibrary.map(a=>a.deco).filter(Boolean)))];
+          const q=artQuery.trim().toLowerCase();
+          const filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q)));
+          return<div>
+            <style>{`.cp-artgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}.cp-artcard{display:flex;flex-direction:column;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;overflow:hidden;cursor:pointer;padding:0;transition:box-shadow .14s,transform .14s}.cp-artcard:hover{box-shadow:0 8px 22px rgba(0,0,0,.12);transform:translateY(-2px)}`}</style>
+            {artLibrary.length===0?
+              <div style={{color:'#94a3b8',fontSize:14,padding:'48px 16px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:14}}>
+                <div style={{fontSize:40,marginBottom:10}}>🎨</div>
+                <div style={{fontWeight:700,color:'#475569',marginBottom:4}}>Your art locker is empty — for now</div>
+                Every design we mock up for your team gets collected here, ready to view, download &amp; re-order.
+              </div>
+            :<>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:14}}>
+                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 200px',minWidth:160,padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:10,fontSize:13}}/>
+              </div>
+              {decos.length>2&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+                {decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} style={{border:'1px solid '+(on?cpTheme.primary:'#e2e8f0'),background:on?cpTheme.primary:'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'5px 13px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'capitalize'}}>{d==='all'?'All designs':d}</button>})}
+              </div>}
+              {filtered.length===0?<div style={{color:'#94a3b8',fontSize:13,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
+              <div className="cp-artgrid">
+                {filtered.map(a=>{const u=a.urls[0];const isPdf=_isPdfUrl(u);const thumb=isPdf?_cloudinaryPdfThumb(u):u;
+                  return<button key={a.key} className="cp-artcard" onClick={()=>setLightbox(u)}>
+                    <div style={{position:'relative',aspectRatio:'1 / 1',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #f1f5f9'}}>
+                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:34}}>🎨</span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:6,right:6,fontSize:10,fontWeight:800,background:'rgba(15,23,42,.78)',color:'#fff',borderRadius:999,padding:'2px 7px'}}>{a.urls.length}</span>}
+                    </div>
+                    <div style={{padding:'10px 11px'}}>
+                      <div style={{fontSize:13,fontWeight:800,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+                      <div style={{fontSize:11,color:'#94a3b8',marginTop:2,textTransform:'capitalize',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.deco||'Design'}{a.orders.length>1?' · '+a.orders.length+' orders':''}</div>
+                      {isP&&a.teams.length>0&&<div style={{fontSize:10.5,color:cpTheme.primary,fontWeight:700,marginTop:4,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.teams.slice(0,2).join(', ')}{a.teams.length>2?' +'+(a.teams.length-2):''}</div>}
+                    </div>
+                  </button>;
+                })}
+              </div>}
+            </>}
+          </div>;
+        })()}
+
         {page==='home'&&(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
@@ -1710,13 +1773,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
     <nav className="cp-bottomnav" style={{background:`linear-gradient(180deg, ${cpShade(cpTheme.primary,-4)}, ${cpShade(cpTheme.primary,-20)})`,borderTop:`2px solid ${cpTheme.accent}`}}>
-      {cpNav.slice(0,5).map(it=>{const active=page===it.key;return(
+      {cpNav.filter(n=>n.key!=='spend').slice(0,6).map(it=>{const active=page===it.key;return(
         <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.accent:'rgba(255,255,255,.78)'}}>
           <span style={{fontSize:20,position:'relative',lineHeight:1}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-4,right:-10,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:15,textAlign:'center'}}>{it.badge}</span>:null}</span>
           <span>{it.label}</span>
         </button>
       )})}
     </nav>
+
+    {/* Lightbox — full-size art/mockup viewer (Art Locker) */}
+    {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
+      <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
+      {_isPdfUrl(lightbox)?<iframe title="Design preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+      :<img src={lightbox} alt="Design" style={{maxWidth:'95vw',maxHeight:'86vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>}
+      <a href={lightbox} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{position:'absolute',bottom:20,background:'rgba(255,255,255,0.16)',color:'#fff',textDecoration:'none',padding:'9px 18px',borderRadius:999,fontSize:13,fontWeight:700}}>⬇ Download / open full size</a>
+    </div>}
 
     {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
     {payModalEl}
