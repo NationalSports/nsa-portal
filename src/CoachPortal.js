@@ -272,6 +272,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
   const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
+  const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -1334,6 +1335,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'shop',label:'Shop',icon:'🛍️'},
     ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
   ];
+  // Reorder a saved design through Live Look — deep-links the catalog with the artwork so the
+  // coach picks gear and the design rides along to the rep on the order request.
+  const cpOrderWithArt=(a,url)=>{
+    const base=CP_LIVELOOK_URL;const sep=base.includes('?')?'&':'?';
+    const href=base+sep+'art='+encodeURIComponent(url||a.urls[0]||'')+'&an='+encodeURIComponent(a.name||'Design')+(a.deco?'&ad='+encodeURIComponent(a.deco):'');
+    try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
+  };
   return<div className="cp-app" style={{minHeight:'100vh',background:'#eef1f6'}}>
     <style>{`.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1280px;margin:0 auto;background:#eef1f6}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:250px;flex-shrink:0;padding:20px 14px;gap:5px;position:sticky;top:0;height:100vh;overflow-y:auto}}.cp-main{flex:1;min-width:0;padding-bottom:90px}@media(min-width:880px){.cp-main{padding-bottom:28px}}.cp-page{max-width:840px;margin:0 auto;padding:24px 18px 48px}.cp-navbtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:none;background:transparent;color:rgba(255,255,255,.82);border-radius:11px;padding:11px 13px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:rgba(255,255,255,.12);color:#fff}.cp-bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;z-index:40;padding:7px 4px}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:5px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
     <div className="cp-shell">
@@ -1424,17 +1432,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {filtered.length===0?<div style={{color:'#94a3b8',fontSize:13,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
               <div className="cp-artgrid">
                 {filtered.map(a=>{const u=a.urls[0];const isPdf=_isPdfUrl(u);const thumb=isPdf?_cloudinaryPdfThumb(u):u;
-                  return<button key={a.key} className="cp-artcard" onClick={()=>setLightbox(u)}>
-                    <div style={{position:'relative',aspectRatio:'1 / 1',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #f1f5f9'}}>
-                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:34}}>🎨</span>}
-                      {a.urls.length>1&&<span style={{position:'absolute',bottom:6,right:6,fontSize:10,fontWeight:800,background:'rgba(15,23,42,.78)',color:'#fff',borderRadius:999,padding:'2px 7px'}}>{a.urls.length}</span>}
+                  return<div key={a.key} className="cp-artcard" onClick={()=>setArtView({art:a,idx:0})}>
+                    <div style={{position:'relative',aspectRatio:'1 / 1',background:'linear-gradient(135deg,#f8fafc,#eaeef4)',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #f1f5f9',padding:12}}>
+                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 4px 12px rgba(0,0,0,.14))'}}/>:<span style={{fontSize:34}}>🎨</span>}
+                      {a.deco&&<span style={{position:'absolute',top:7,left:7,fontSize:9,fontWeight:800,letterSpacing:'.03em',textTransform:'uppercase',background:'rgba(255,255,255,.92)',color:'#475569',borderRadius:999,padding:'2px 8px',boxShadow:'0 1px 3px rgba(0,0,0,.1)'}}>{a.deco}</span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:7,right:7,fontSize:10,fontWeight:800,background:'rgba(15,23,42,.82)',color:'#fff',borderRadius:999,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
                     </div>
-                    <div style={{padding:'10px 11px'}}>
-                      <div style={{fontSize:13,fontWeight:800,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
-                      <div style={{fontSize:11,color:'#94a3b8',marginTop:2,textTransform:'capitalize',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.deco||'Design'}{a.orders.length>1?' · '+a.orders.length+' orders':''}</div>
-                      {isP&&a.teams.length>0&&<div style={{fontSize:10.5,color:cpTheme.primary,fontWeight:700,marginTop:4,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.teams.slice(0,2).join(', ')}{a.teams.length>2?' +'+(a.teams.length-2):''}</div>}
+                    <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
+                      <div style={{minWidth:0}}>
+                        <div style={{fontSize:13.5,fontWeight:800,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+                        <div style={{fontSize:11,color:'#94a3b8',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.orders.length} order{a.orders.length!==1?'s':''}{isP&&a.teams.length?' · '+a.teams[0]+(a.teams.length>1?' +'+(a.teams.length-1):''):''}</div>
+                      </div>
+                      <button onClick={e=>{e.stopPropagation();cpOrderWithArt(a,u);}} style={{border:'none',borderRadius:9,padding:'8px 10px',fontSize:12,fontWeight:800,cursor:'pointer',color:'#fff',background:cpTheme.primary,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>🛍️ Order with this</button>
                     </div>
-                  </button>;
+                  </div>;
                 })}
               </div>}
             </>}
@@ -1780,6 +1791,29 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </button>
       )})}
     </nav>
+
+    {/* Art Locker — rich design viewer with reorder-into-Live-Look CTA */}
+    {artView&&(()=>{const a=artView.art;const idx=Math.min(artView.idx,a.urls.length-1);const u=a.urls[idx];const isPdf=_isPdfUrl(u);
+      return<div style={{position:'fixed',inset:0,background:'rgba(8,11,18,.93)',zIndex:9999,display:'flex',flexDirection:'column',padding:16}} onClick={()=>setArtView(null)}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',color:'#fff',gap:12,marginBottom:8}} onClick={e=>e.stopPropagation()}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:17,fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+            <div style={{fontSize:12,color:'rgba(255,255,255,.6)',textTransform:'capitalize'}}>{a.deco||'Design'}{a.orders.length>1?' · used on '+a.orders.length+' orders':''}{isP&&a.teams.length?' · '+a.teams.join(', '):''}</div>
+          </div>
+          <button onClick={()=>setArtView(null)} style={{flexShrink:0,background:'rgba(255,255,255,0.14)',border:'none',color:'#fff',fontSize:24,borderRadius:'50%',width:40,height:40,cursor:'pointer'}}>×</button>
+        </div>
+        <div onClick={e=>e.stopPropagation()} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0}}>
+          {isPdf?<iframe title="Design" src={'https://docs.google.com/gview?url='+encodeURIComponent(u)+'&embedded=true'} style={{width:'90vw',height:'70vh',border:'none',borderRadius:10,background:'#fff'}}/>:<img src={u} alt={a.name} style={{maxWidth:'94vw',maxHeight:'64vh',objectFit:'contain',borderRadius:10}}/>}
+        </div>
+        {a.urls.length>1&&<div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap',margin:'10px 0 2px'}}>
+          {a.urls.map((url,i)=>{const t=_isPdfUrl(url)?_cloudinaryPdfThumb(url):url;return<button key={i} onClick={()=>setArtView({art:a,idx:i})} style={{width:48,height:48,borderRadius:8,overflow:'hidden',border:'2px solid '+(i===idx?cpTheme.accent:'rgba(255,255,255,.25)'),background:'#fff',cursor:'pointer',padding:0,flexShrink:0}}>{t&&isUrl(t)?<img src={t} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:18}}>🎨</span>}</button>})}
+        </div>}
+        <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap',marginTop:12}}>
+          <a href={u} target="_blank" rel="noopener noreferrer" style={{background:'rgba(255,255,255,0.16)',color:'#fff',textDecoration:'none',padding:'11px 18px',borderRadius:10,fontSize:14,fontWeight:700}}>⬇ Download</a>
+          <button onClick={()=>cpOrderWithArt(a,u)} style={{background:cpTheme.accent,color:'#fff',border:'none',padding:'11px 22px',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}}>🛍️ Order with this design →</button>
+        </div>
+      </div>;
+    })()}
 
     {/* Lightbox — full-size art/mockup viewer (Art Locker) */}
     {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
