@@ -35,10 +35,12 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
   const em = data.emergency || {};
   const tax = data.tax || {};
 
-  let ssn = '', acct = '', routing = '';
+  const is1099 = invite.employment_type === 'contractor_1099';
+  let ssn = '', acct = '', routing = '', ein = '';
   try { ssn = decryptField(sens.ssn); } catch {}
   try { acct = decryptField(sens.bank_account); } catch {}
   try { routing = decryptField(sens.bank_routing); } catch {}
+  try { ein = decryptField(sens.ein); } catch {}
 
   const sigLine = (key, fallbackName) => {
     const s = sig[key] || {};
@@ -74,7 +76,8 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
   const payRows = (Array.isArray(invite.pay_components) && invite.pay_components.length)
     ? invite.pay_components.map((c, i) => ({ type: 'field', label: `Rate ${i + 1}`, value: formatPayComponents([c]) }))
     : [{ type: 'field', label: 'Rate', value: invite.pay_rate }];
-  docs.push({
+  // Wage Theft Prevention notice is an EMPLOYEE notice — skip for 1099 contractors.
+  if (!is1099) docs.push({
     name: '00b_Wage_Theft_Prevention_Notice.pdf',
     pdf: await renderDocument({
       title: 'Notice to Employee', subtitle: 'California Labor Code § 2810.5 (Wage Theft Prevention Act)',
@@ -175,8 +178,37 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
     }),
   });
 
-  const fed = tax.federal || {}; const de4 = tax.ca_de4 || {};
-  docs.push({
+  const fed = tax.federal || {}; const de4 = tax.ca_de4 || {}; const w9 = tax.w9 || {};
+  if (is1099) {
+    const tinIsEin = w9.tin_type === 'ein';
+    const tinVal = tinIsEin
+      ? (ein ? maskTail(ein, 4) + '  (full EIN on file, encrypted)' : '—')
+      : (ssn ? maskTail(ssn) + '  (full SSN on file, encrypted)' : '—');
+    docs.push({
+      name: '04_Tax_Form_W9.pdf',
+      pdf: await renderDocument({
+        title: 'Substitute Form W-9', subtitle: 'Request for Taxpayer Identification Number and Certification',
+        blocks: [
+          { type: 'field', label: 'Name (as shown on your income tax return)', value: p.full_name || invite.full_name },
+          { type: 'field', label: 'Business / disregarded-entity name', value: w9.business_name },
+          { type: 'field', label: 'Federal Tax Classification', value: [w9.classification, w9.llc_tax].filter(Boolean).join(' — ') },
+          { type: 'field', label: 'Address', value: [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ') },
+          { type: 'field', label: 'Exempt Payee Code', value: w9.exempt_payee_code },
+          { type: 'field', label: 'FATCA Exemption Code', value: w9.fatca_code },
+          { type: 'rule' },
+          { type: 'heading', text: 'Taxpayer Identification Number (TIN)' },
+          { type: 'field', label: 'TIN Type', value: tinIsEin ? 'EIN' : 'SSN' },
+          { type: 'field', label: 'TIN', value: tinVal },
+          { type: 'field', label: 'Subject to backup withholding', value: yn(w9.backup_withholding) },
+          { type: 'spacer', h: 10 },
+          { type: 'para', text: 'Certification: Under penalties of perjury, I certify that (1) the TIN shown is my correct taxpayer identification number; (2) I am not subject to backup withholding unless indicated above; (3) I am a U.S. citizen or other U.S. person; and (4) any FATCA code entered is correct. This is a substitute Form W-9 containing the same information requested on the official form.' },
+          sigLine('tax_form'),
+          { type: 'spacer', h: 6 },
+          { type: 'para', text: 'Note to accounting: retain for year-end 1099-NEC reporting; request the official IRS Form W-9 if your system requires it.' },
+        ],
+      }),
+    });
+  } else docs.push({
     name: '04_Tax_Withholding_W4_DE4.pdf',
     pdf: await renderDocument({
       title: 'Substitute Form W-4 and Form DE 4', subtitle: 'Employee’s Withholding Certificates — Federal (IRS W-4) and California (EDD DE 4)',
@@ -201,7 +233,7 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
         { type: 'field', label: 'Claims Exemption', value: yn(de4.exempt) },
         { type: 'spacer', h: 10 },
         { type: 'para', text: 'Certification: Under penalties of perjury, I declare that I have examined this certificate and, to the best of my knowledge and belief, it is true, correct, and complete. I understand these are substitute Form W-4 and Form DE 4 certificates containing the same information requested on the official forms.' },
-        sigLine('tax_w4'),
+        sigLine('tax_form'),
         { type: 'spacer', h: 6 },
         { type: 'para', text: 'Note to payroll: retain alongside the official IRS W-4 / EDD DE 4 if your payroll system requires the original form.' },
       ],

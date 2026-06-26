@@ -10,7 +10,7 @@
 const { getSupabaseAdmin, corsHeaders, getSiteUrl } = require('./_shared');
 const { encryptField } = require('./_onboardingCrypto');
 
-const SENSITIVE_KEYS = ['ssn', 'bank_account', 'bank_routing'];
+const SENSITIVE_KEYS = ['ssn', 'bank_account', 'bank_routing', 'ein'];
 
 function clientIp(event) {
   const h = event.headers || {};
