@@ -1,5 +1,10 @@
 [build]
-  command = "GENERATE_SOURCEMAP=true npm run build"
+  # Clear the CRA/webpack 5 filesystem cache before each build. Netlify restores
+  # node_modules (incl. node_modules/.cache) between builds; a poisoned webpack
+  # cache was serving a STALE compiled App.js — producing byte-identical bundles
+  # that silently dropped newly merged code (e.g. the /onboarding route) even on
+  # a successful fresh deploy. Wiping the compiler cache forces a clean compile.
+  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
   environment = { NODE_VERSION = "18" }
 
