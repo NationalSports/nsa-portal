@@ -6470,6 +6470,46 @@ export default function App(){
   const _CAT_LABELS={deadline:'📅 Deadlines',art:'🎨 Art / Approvals',follow_up:'⏰ Follow-ups',est:'✅ Estimates',order:'🛒 Orders / Deposits',firm:'📌 Firm Dates',delivery:'🚗 Delivery',issue:'🔴 Issues',other:'📋 Other'};
   const _CAT_ORDER=['deadline','art','follow_up','est','order','firm','delivery','issue','other'];
   const _groupTodos=(arr)=>{const g={};arr.forEach(t=>{const c=_todoCategory(t);(g[c]=g[c]||[]).push(t)});return _CAT_ORDER.filter(c=>g[c]?.length).map(c=>({cat:c,label:_CAT_LABELS[c],items:g[c]}))};
+  // ── Notification grouping (by type) ─────────────────────────────────────────
+  // Each notification has a `type` (items_received, ready_for_deco, art_approved, …).
+  // Group by type for a tidy "by type, then by date" view; unknown types fall through to 'other'.
+  const _NOTIF_TYPE_META={
+    art_approved:{label:'✅ Coach Approved Art',order:1},
+    ready_for_deco:{label:'🎽 Ready for Decoration',order:2},
+    items_received:{label:'📦 Items Received',order:3},
+    job_completed:{label:'🏭 Jobs Completed',order:4},
+    if_pulled:{label:'📦 IFs Pulled',order:5},
+    inv_paid:{label:'💰 Invoices Paid',order:6},
+    _task:{label:'📌 Task Updates',order:7},
+    other:{label:'🔔 Other',order:99},
+  };
+  const _notifTypeKey=(t)=>t.isTaskComplete?'_task':(_NOTIF_TYPE_META[t.type]?t.type:'other');
+  const _notifTs=(t)=>{const d=t.date?new Date(t.date).getTime():0;return isNaN(d)?0:d};
+  // Group notifications by type, order the groups, and sort each group's items newest-first.
+  const _groupNotifs=(arr)=>{const g={};arr.forEach(t=>{const k=_notifTypeKey(t);(g[k]=g[k]||[]).push(t)});
+    return Object.keys(g).sort((a,b)=>(_NOTIF_TYPE_META[a]?.order||50)-(_NOTIF_TYPE_META[b]?.order||50))
+      .map(k=>({cat:k,label:_NOTIF_TYPE_META[k]?.label||'🔔 '+k,items:g[k].slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}))};
+  // Activity Center popup (expanded notifications + to-dos)
+  const[acOpen,setAcOpen]=useState(false);
+  const[acTab,setAcTab]=useState('notifs');// notifs | todos
+  const[acNotifSort,setAcNotifSort]=useState('type');// type | date
+  const[acTodoSort,setAcTodoSort]=useState('category');// category | date | priority
+  const[acSearch,setAcSearch]=useState('');
+  const[acMsgKey,setAcMsgKey]=useState(null);// dismissKey of the row whose message composer is open
+  const[acMsgText,setAcMsgText]=useState('');
+  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcMsgKey(null);setAcMsgText('');setAcOpen(true)};
+  // Post a quick message to a to-do/notification's related sales-order thread (reuses the messages system).
+  const acSendMessage=(t)=>{
+    const txt=(acMsgText||'').trim();if(!txt){nf('Type a message first','error');return}
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    const rep=so.created_by&&so.created_by!==cu.id?[so.created_by]:[];
+    const soMsg={id:'m'+Date.now(),so_id:so.id,author_id:cu.id,text:txt,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'general',tagged_members:rep,entity_type:'so',entity_id:so.id};
+    setMsgs(prev=>[...prev,soMsg]);
+    setAcMsgKey(null);setAcMsgText('');
+    nf('Message sent to '+(c?.name||so.id)+' thread');
+  };
   const snoozeTodo=(t,days)=>{
     const fuAt=new Date(Date.now()+days*86400000).toISOString();
     const nowIso=new Date().toISOString();
@@ -8378,6 +8418,88 @@ export default function App(){
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
 
     return(<>
+    {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
+    {acOpen&&(()=>{
+      const _src=isAdmin?adminTodos:myTodos;
+      const _completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((Date.now()-new Date(t.completed_at))/864e5)<=7).map(t=>{const cb=REPS.find(r=>r.id===t.completed_by);const da=Math.floor((Date.now()-new Date(t.completed_at))/864e5);return{type:'_task',isNotification:true,isTaskComplete:true,todoId:t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(cb?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(da===0?' · Today':' · '+da+'d ago'),action:'View',date:t.completed_at}});
+      const _allNotifs=[..._src.filter(t=>t.isNotification),..._completedTaskNotifs].filter(t=>!dismissedNotifs.includes(t.dismissKey));
+      const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey));
+      const _q=acSearch.trim().toLowerCase();
+      const _matchQ=t=>!_q||((t.msg||'').toLowerCase().includes(_q)||(t.detail||'').toLowerCase().includes(_q));
+      const notifs=_allNotifs.filter(_matchQ),todos=_allTodos.filter(_matchQ);
+      const _rk=t=>t.dismissKey||((t.type||'')+':'+(t.so?.id||t.so_id||'')+':'+(t.date||''));
+      const _hasSO=t=>!!(t.so||t.so_id);
+      // Build display groups for the active tab
+      let groups;
+      if(acTab==='notifs'){
+        groups=acNotifSort==='date'?[{cat:'all',label:'',items:notifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}]:_groupNotifs(notifs);
+      }else{
+        if(acTodoSort==='date')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(b.date?new Date(b.date).getTime():0)-(a.date?new Date(a.date).getTime():0))}];
+        else if(acTodoSort==='priority')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(a.priority||9)-(b.priority||9))}];
+        else groups=_groupTodos(todos);
+      }
+      const _navNotif=t=>{setAcOpen(false);if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _navTodo=t=>{setAcOpen(false);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _msgRow=t=>{const open=acMsgKey===_rk(t);return _hasSO(t)?<div style={{marginTop:open?8:0}}>
+        {!open?<button title="Send a message about this" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setAcMsgKey(_rk(t));setAcMsgText('')}}>💬 Message</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:6,alignItems:'flex-start',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8}}>
+          <textarea autoFocus value={acMsgText} onChange={e=>setAcMsgText(e.target.value)} placeholder={'Message the rep / CSR on '+(t.so?.id||t.so_id)+'…'} rows={2} style={{flex:1,fontSize:12,padding:'6px 8px',border:'1px solid #cbd5e1',borderRadius:6,resize:'vertical',fontFamily:'inherit'}} onKeyDown={e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){acSendMessage(t)}}}/>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSendMessage(t)}>Send</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcMsgKey(null);setAcMsgText('')}}>Cancel</button>
+          </div>
+        </div>}
+      </div>:null};
+      const _markAllRead=()=>{notifs.forEach(t=>t.dismissKey&&dismissNotif(t.dismissKey))};
+      return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setAcOpen(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:'white',borderRadius:14,width:'100%',maxWidth:920,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 60px rgba(0,0,0,.35)',overflow:'hidden'}}>
+          {/* Header + tabs */}
+          <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:14}}>
+            <h2 style={{margin:0,fontSize:18}}>📥 Activity Center</h2>
+            <div style={{display:'flex',gap:4,background:'#f1f5f9',padding:4,borderRadius:10,marginLeft:6}}>
+              <button onClick={()=>{setAcTab('notifs');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='notifs'?'white':'transparent',color:acTab==='notifs'?'#0f172a':'#64748b',boxShadow:acTab==='notifs'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>🔔 Notifications ({notifs.length})</button>
+              <button onClick={()=>{setAcTab('todos');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='todos'?'white':'transparent',color:acTab==='todos'?'#0f172a':'#64748b',boxShadow:acTab==='todos'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>📋 To-Do ({todos.length})</button>
+            </div>
+            <button onClick={()=>setAcOpen(false)} style={{marginLeft:'auto',background:'none',border:'none',fontSize:26,lineHeight:1,color:'#94a3b8',cursor:'pointer'}}>×</button>
+          </div>
+          {/* Toolbar: sort + search + bulk */}
+          <div style={{padding:'10px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>Sort:</span>
+            {acTab==='notifs'?<select value={acNotifSort} onChange={e=>setAcNotifSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="type">By type, then date</option><option value="date">By date (newest)</option>
+            </select>:<select value={acTodoSort} onChange={e=>setAcTodoSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="category">By category</option><option value="date">By date (newest)</option><option value="priority">By priority</option>
+            </select>}
+            <input value={acSearch} onChange={e=>setAcSearch(e.target.value)} placeholder="🔍 Search…" style={{fontSize:12,padding:'5px 10px',borderRadius:6,border:'1px solid #e2e8f0',minWidth:180,flex:'0 1 240px'}}/>
+            {acTab==='notifs'&&notifs.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}} onClick={_markAllRead}>✓ Mark all read</button>}
+          </div>
+          {/* Body */}
+          <div style={{padding:0,overflowY:'auto',flex:1}}>
+            {groups.length===0||groups.every(g=>g.items.length===0)?<div className="empty" style={{padding:40,textAlign:'center',color:'#94a3b8'}}>{acTab==='notifs'?'No notifications':'All clear — no to-do items'}</div>:
+            groups.map(g=><div key={g.cat}>
+              {g.label&&<div style={{padding:'8px 20px',fontSize:11,fontWeight:800,color:'#475569',background:'#f1f5f9',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4,position:'sticky',top:0,zIndex:1}}>{g.label} <span style={{color:'#94a3b8'}}>({g.items.length})</span></div>}
+              {g.items.map((t,i)=>{const isN=acTab==='notifs';const _fmtD=isN?_fmtNotifDT:_fmtTodoDate;
+                return<div key={_rk(t)+i} style={{padding:'12px 20px',borderBottom:'1px solid #f1f5f9',background:isN?'#f0fdf4':'white'}}>
+                  <div style={{display:'flex',alignItems:'flex-start',gap:12,cursor:'pointer'}} onClick={()=>isN?_navNotif(t):_navTodo(t)}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:600,color:'#0f172a'}}>{t.msg}</div>
+                      <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div>
+                      {_msgRow(t)}
+                    </div>
+                    {_fmtD(t.date)&&<span style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',marginTop:2}}>{_fmtD(t.date)}</span>}
+                    <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                      {t.action&&<span style={{fontSize:10,padding:'3px 9px',borderRadius:8,background:isN?'#dcfce7':(t.type==='art'?'#fef3c7':'#eff6ff'),color:isN?'#166534':(t.type==='art'?'#92400e':'#2563eb'),fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>isN?_navNotif(t):(t.type==='rep_delivery'?_repDeliver(t):_navTodo(t))}>{t.action}</span>}
+                      {!isN&&_todoIsFollowUp(t)&&<span style={{display:'flex',gap:2}}>{[1,3,5,7].map(d=><button key={d} title={'Snooze '+d+'d'} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={()=>snoozeTodo(t,d)}>{d}d</button>)}</span>}
+                      {isN?<button title="Mark read" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:13,color:'#16a34a'}} onClick={()=>t.dismissKey&&dismissNotif(t.dismissKey)}>✓</button>:
+                      <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:12,color:'#94a3b8'}} onClick={()=>dismissTodo(t.dismissKey)}>✕</button>}
+                    </div>
+                  </div>
+                </div>})}
+            </div>)}
+          </div>
+        </div>
+      </div>;
+    })()}
     {/* Role Selector — only show tabs relevant to the user's role */}
     {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
       {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
@@ -8398,7 +8520,8 @@ export default function App(){
         </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
-        </select></div></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8419,14 +8542,17 @@ export default function App(){
       {_renderSalesBox(null)}
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
-          visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          notifGroups.map(g=><div key={g.cat}>
+            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            </div>)}
           </div>)}
         </div>
       </div>})()}
@@ -8510,7 +8636,8 @@ export default function App(){
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option>
-        </select></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{marginLeft:6,fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8539,13 +8666,16 @@ export default function App(){
     </div>
     <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
-    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-          {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+        {notifGroups.map(g=><div key={g.cat}>
+          {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+          {g.items.map((t,i)=><div key={t._key||g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
         </div>)}
       </div>
     </div>})()}
