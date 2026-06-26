@@ -5516,6 +5516,42 @@ export default function App(){
   React.useEffect(()=>{if(selV){const u=vend.find(v=>v.id===selV.id);if(u&&u!==selV)setSelV(u);else if(!u)setSelV(null)}},[vend]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
+  // ─── Record-level restore: reopen the exact record across reloads / re-logins ───
+  // The section is URL-driven (?pg=) so a reload already lands on the right tab, but the OPEN record
+  // (a specific order/estimate/customer/vendor/product) lives only in memory. Persist it and reopen it
+  // on boot using the SAME open-by-id logic as the ?so=/?est= deep-link handler, so the idle auto-reload
+  // / a manual refresh / a re-login resume exactly where the rep was. An explicit deep-link (?so= etc.)
+  // always wins; invoices use a separate view state declared later and aren't covered here.
+  const _resumeDone=React.useRef(false);
+  React.useEffect(()=>{
+    if(!_resumeDone.current)return;// don't clobber the saved record before the restore effect below runs
+    try{
+      let r=null;
+      if(eSO?.id)r={t:'so',id:eSO.id};
+      else if(eEst?.id)r={t:'est',id:eEst.id};
+      else if(selC?.id)r={t:'cust',id:selC.id};
+      else if(selV?.id)r={t:'vend',id:selV.id};
+      else if(selP?.id)r={t:'prod',id:selP.id};
+      if(r)localStorage.setItem('nsa_resume',JSON.stringify(r));else localStorage.removeItem('nsa_resume');
+    }catch(_){/* storage unavailable — non-fatal */}
+  },[eSO?.id,eEst?.id,selC?.id,selV?.id,selP?.id]);
+  React.useEffect(()=>{
+    if(dbLoading||_resumeDone.current)return;
+    try{
+      const p=new URLSearchParams(window.location.search);
+      // An explicit deep-link (?so=/?est=/...) takes precedence over the saved resume.
+      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')){_resumeDone.current=true;return;}
+      const raw=localStorage.getItem('nsa_resume');if(!raw){_resumeDone.current=true;return;}
+      const r=JSON.parse(raw);if(!r||!r.id){_resumeDone.current=true;return;}
+      // Wait for the relevant collection to populate before resolving (mirrors the deep-link handler).
+      if(r.t==='so'){if(!sos.length)return;const so=sos.find(s=>s.id===r.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}
+      else if(r.t==='est'){if(!ests.length)return;const e=ests.find(x=>x.id===r.id);if(e){setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')}}
+      else if(r.t==='cust'){if(!cust.length)return;const c2=cust.find(x=>x.id===r.id);if(c2){setSelC(c2);setPg('customers')}}
+      else if(r.t==='vend'){if(!vend.length)return;const v=vend.find(x=>x.id===r.id);if(v){setSelV(v);setPg('vendors')}}
+      else if(r.t==='prod'){if(!prod.length)return;const pr=prod.find(x=>x.id===r.id);if(pr){setSelP(pr);setPg('products')}}
+      _resumeDone.current=true;
+    }catch(_){_resumeDone.current=true;}
+  },[dbLoading,sos,ests,cust,vend,prod]); // eslint-disable-line react-hooks/exhaustive-deps
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
   const _eSOSnapRef=React.useRef(null);
