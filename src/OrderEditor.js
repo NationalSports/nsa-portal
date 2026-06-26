@@ -7765,6 +7765,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // still being worked — e.g. JOB-1171-03 reading "Needs Approval" off the shared Wolf Head FC
       // file that was uploaded for JOB-1171-02. Returns an ART_FILE_LABELS key.
       const jobArtBadgeSt=(jb,artFile)=>{
+        // Coach sent the art back: badge it "Changes Requested" while it's with the artist (still a
+        // Waiting-for-Art job for column/sort purposes — see getArtFileStatus, which is unchanged).
+        if(jb.coach_rejected&&(jb.art_status==='art_requested'||jb.art_status==='art_in_progress'))return'changes_requested';
         if(jb.art_status==='art_requested'||jb.art_status==='art_in_progress')return'waiting_for_art';
         if(jb.art_status==='waiting_approval')return'needs_approval';
         if(PROD_FILES_STATUSES.includes(jb.art_status))return'approved';

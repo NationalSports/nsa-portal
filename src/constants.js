@@ -311,8 +311,10 @@ export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attac
 // job may SKIP the production-files stage — a file merely sitting in prod_files (e.g. an order PDF) is
 // not enough; artProdFilesReady stays the looser gate for marking an already-staged job complete.
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
-export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete'};
-export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'}};
+export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
+// 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
+// dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.
+export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'},changes_requested:{bg:'#fee2e2',c:'#b91c1c'}};
 
 // ═══════════════════════════════════════════════
 // PRINT DOCUMENT HELPER — CSS string
