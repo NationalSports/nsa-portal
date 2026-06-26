@@ -4573,13 +4573,13 @@ export default function App(){
     return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Idle auto-reload: reclaim abandoned/stale tabs (and break any stuck save loop) ───
-  // A tab with no pointer/keyboard input for IDLE_RELOAD_MS auto-saves any pending work, then reloads
-  // onto the latest build. This clears stale code from long-open tabs and, crucially, breaks a client
-  // stuck in a save loop: unlike the deploy-reload above (which waits for saves to be idle — a
-  // *storming* tab can never satisfy that), this does ONE bounded autosave/flush and then reloads
-  // REGARDLESS, so a stuck loop can't hold the tab hostage. Active tabs never reload — any input
-  // resets the timer; idle/abandoned background tabs do, which is the point.
+  // ─── Idle auto-reload: force-reload an idle tab ONLY when it's stuck in a save loop ───
+  // The deploy-reload above already reclaims idle tabs onto a new build (and never loops — it reloads
+  // once per build). Its one blind spot: a tab stuck in a save loop never reaches "saves idle", so it
+  // never reloads to pick up the fix. That is this effect's job, and ONLY that: after IDLE_RELOAD_MS of
+  // no input, if (and only if) saves are stuck/pending, flush briefly then force-reload. A healthy,
+  // current idle tab is left alone — it is not polling, so reloading it would add load for nothing (and
+  // would re-reload every cycle forever). Active tabs never reload — any input resets the timer.
   React.useEffect(()=>{
     if(typeof window==='undefined')return;
     const IDLE_RELOAD_MS=15*60*1000; // 15 minutes of no user input
@@ -4589,6 +4589,9 @@ export default function App(){
     window.addEventListener('keydown',mark,{capture:true,passive:true});
     const tick=async()=>{
       if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
+      // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
+      // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
+      if(!(_dbSavePendingIds.size>0||_bgSync>0))return;
       fired=true; // commit — don't re-fire while we flush
       try{
         window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts
@@ -4597,7 +4600,10 @@ export default function App(){
         const started=Date.now();
         while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
       }catch(_){/* best effort */}
-      try{window.location.reload()}catch(_){/* noop */}
+      // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
+      // reload-and-refetch in the same instant and spike the DB.
+      const jitter=2000+Math.floor(Math.random()*18000);
+      setTimeout(()=>{try{window.location.reload()}catch(_){/* noop */}},jitter);
     };
     const iv=setInterval(tick,60000); // check every minute
     return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
@@ -5605,7 +5611,7 @@ export default function App(){
     try{
       const p=new URLSearchParams(window.location.search);
       // An explicit deep-link (?so=/?est=/...) takes precedence over the saved resume.
-      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')){_resumeDone.current=true;return;}
+      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')){_resumeDone.current=true;return;}
       const raw=localStorage.getItem('nsa_resume');if(!raw){_resumeDone.current=true;return;}
       const r=JSON.parse(raw);if(!r||!r.id){_resumeDone.current=true;return;}
       // Wait for the relevant collection to populate before resolving (mirrors the deep-link handler).
