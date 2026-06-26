@@ -19950,7 +19950,9 @@ export default function App(){
               </div>
               {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
                 <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
-                  onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
+                  onChange={e=>{const id=e.target.value;
+                    if(id==='__custom__'){setManualShipModal(m=>({...m,decoId:'__custom__',destTouched:true,attn:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}}));return}
+                    const dv=decoVendors.find(v=>v.id===id);
                     // Decorator's own saved address wins; otherwise fall back to its linked Vendor record's address.
                     const lv=dv&&dv.vendor_id?vend.find(x=>x.id===dv.vendor_id):null;
                     const addr=(dv&&(dv.address_line1||dv.city))
@@ -19960,8 +19962,9 @@ export default function App(){
                     setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||lv?.contact_name||'',destAddr:addr}))}}>
                   <option value="">Select decorator…</option>
                   {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                  <option value="__custom__">Custom Address…</option>
                 </select>
-                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
+                {manualShipModal.decoId&&manualShipModal.decoId!=='__custom__'&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
               </div>}
               <div style={{display:'grid',gap:6}}>
                 <div style={{display:'flex',gap:6}}>
@@ -20138,7 +20141,7 @@ export default function App(){
                   const _mode=manualShipModal.shipToMode||'customer';
                   const _da=manualShipModal.destAddr||{};
                   const _attn=(manualShipModal.attn||'').trim();
-                  const _destLabel=_mode==='warehouse'?'Our Warehouse':_mode==='deco'?('Decorator: '+((decoVendors.find(v=>v.id===manualShipModal.decoId)?.name)||(_da.company||'').trim()||'Decorator')):(manualShipModal.cust?.name||'Customer');
+                  const _destLabel=_mode==='warehouse'?'Our Warehouse':_mode==='deco'?(manualShipModal.decoId==='__custom__'?('Decorator: '+((_da.company||'').trim()||'Custom Address')):('Decorator: '+((decoVendors.find(v=>v.id===manualShipModal.decoId)?.name)||(_da.company||'').trim()||'Decorator'))):(manualShipModal.cust?.name||'Customer');
                   const _shipTo=(_mode==='customer'&&!manualShipModal.destTouched&&!_attn)?null:{
                     mode:_mode,attention:_attn||'',company:(_da.company||'').trim(),
                     street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),
