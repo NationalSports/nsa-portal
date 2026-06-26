@@ -147,10 +147,8 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
               </button>
             );
           })()}
-          <div style={{ fontSize: 11, color: (!(customer && customer.parent_id)) ? '#94a3b8' : '#b45309', marginTop: 5 }}>
-            {(!(customer && customer.parent_id))
-              ? 'Off by default — enable for athletic directors who should see spend across their teams.'
-              : '⚠️ This is a sub-customer (team). The dashboard only appears on the parent (AD) account.'}
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
+            Off by default. When on, the portal shows spend for the whole department — the parent account and every team beneath it, broken down per team. Enable it on the account the athletic director logs into (the parent or a department sub-account both work).
           </div>
         </div>
 
