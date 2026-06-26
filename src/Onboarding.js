@@ -196,7 +196,7 @@ function DetailModal({ id, onClose, flash, onChanged }) {
   const resend = async () => { const j = await call('resend', { id }); flash(j.emailed ? 'Invite re-sent' : (j.error || 'Resend failed')); };
   const voidIt = async () => { if (!window.confirm('Cancel this invite? Their link will stop working.')) return; const j = await call('void', { id }); if (j.ok) { flash('Invite canceled'); onChanged(); onClose(); } };
 
-  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded' };
+  const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized' };
 
   return (
     <Modal title={inv.full_name} onClose={onClose} wide>

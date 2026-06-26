@@ -7,7 +7,7 @@
 //   save   → upsert form data; SSN/bank are encrypted before storage
 //   submit → mark the packet complete
 //   track  → append review-audit events (section views, scroll-to-end, acks)
-const { getSupabaseAdmin, corsHeaders } = require('./_shared');
+const { getSupabaseAdmin, corsHeaders, getSiteUrl } = require('./_shared');
 const { encryptField } = require('./_onboardingCrypto');
 
 const SENSITIVE_KEYS = ['ssn', 'bank_account', 'bank_routing'];
@@ -172,6 +172,22 @@ exports.handler = async (event) => {
         ref: body.current_step || null,
         meta: { ip: clientIp(event), ua: (event.headers || {})['user-agent'] || '' },
       }]);
+
+      // On final submit, kick the background finalize (build packet → email HR →
+      // copy to the Employee Forms Drive). Fire-and-forget; the hire's request
+      // returns immediately and the background function (15-min budget) does the work.
+      if (action === 'submit') {
+        try {
+          const site = getSiteUrl(event);
+          if (site) {
+            await fetch(`${site}/.netlify/functions/onboarding-finalize-background`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-internal-secret': process.env.SUPABASE_SERVICE_ROLE_KEY || '' },
+              body: JSON.stringify({ token }),
+            });
+          }
+        } catch (e) { /* non-fatal: HR can still download from the portal */ }
+      }
 
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
     }

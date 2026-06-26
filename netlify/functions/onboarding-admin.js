@@ -10,8 +10,7 @@
 //   generate_zip  → decrypt + render the packet PDFs, return a base64 ZIP
 const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
-const { decryptField, maskTail } = require('./_onboardingCrypto');
-const { renderDocument, fmtDate, fmtDateTime } = require('./_onboardingPdf');
+const { buildPacketFiles, zipFiles, safeName } = require('./_onboardingPacket');
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -57,217 +56,6 @@ async function sendInviteEmail(invite) {
   return { emailed: true };
 }
 
-// ── Packet builders ──────────────────────────────────────────────────────
-const yn = (v) => (v ? 'Yes' : 'No');
-
-async function buildPacket(invite, sub, handbookCount) {
-  const data = (sub && sub.data) || {};
-  const sig = (sub && sub.signatures) || {};
-  const ack = (sub && sub.acknowledgments) || {};
-  const sens = (sub && sub.sensitive) || {};
-  const p = data.personal || {};
-  const dd = data.direct_deposit || {};
-  const em = data.emergency || {};
-  const tax = data.tax || {};
-
-  let ssn = '', acct = '', routing = '';
-  try { ssn = decryptField(sens.ssn); } catch {}
-  try { acct = decryptField(sens.bank_account); } catch {}
-  try { routing = decryptField(sens.bank_routing); } catch {}
-
-  const sigLine = (key, fallbackName) => {
-    const s = sig[key] || {};
-    return { type: 'sig', name: s.name || fallbackName || invite.full_name, date: fmtDate(s.signed_at) };
-  };
-
-  const docs = [];
-
-  // 1 — Job Hire Form
-  docs.push({
-    name: '01_Job_Hire_Form.pdf',
-    pdf: await renderDocument({
-      title: 'Job Hire Form', subtitle: 'Employee / Position Overview',
-      blocks: [
-        { type: 'heading', text: 'Position' },
-        { type: 'field', label: 'Position Title', value: invite.position_title },
-        { type: 'field', label: 'Supervisor', value: invite.supervisor },
-        { type: 'field', label: 'Hire Date', value: fmtDate(invite.hire_date) },
-        { type: 'field', label: 'Employment Type', value: invite.employment_type === 'contractor_1099' ? 'Contracted 1099' : 'W-2 Employee' },
-        { type: 'field', label: 'Pay', value: [invite.pay_type, invite.pay_rate].filter(Boolean).join(' — ') },
-        { type: 'field', label: 'Commission Eligible', value: yn(invite.commission_eligible) },
-        { type: 'rule' },
-        { type: 'heading', text: 'Employee Information' },
-        { type: 'field', label: 'Full Legal Name', value: p.full_name || invite.full_name },
-        { type: 'field', label: 'Street Address', value: [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ') },
-        { type: 'field', label: 'Date of Birth', value: fmtDate(p.dob) },
-        { type: 'field', label: 'Gender', value: p.gender },
-        { type: 'field', label: 'Social Security Number', value: ssn ? maskTail(ssn) + '  (full SSN on file, encrypted)' : '—' },
-        { type: 'field', label: 'Email', value: invite.personal_email },
-        { type: 'field', label: 'NSA Email', value: invite.nsa_email },
-        { type: 'field', label: 'Phone', value: p.phone },
-        { type: 'spacer', h: 16 },
-        sigLine('job_hire_form'),
-      ],
-    }),
-  });
-
-  // 2 — Direct Deposit
-  docs.push({
-    name: '02_Direct_Deposit_Authorization.pdf',
-    pdf: await renderDocument({
-      title: 'Direct Deposit Authorization', subtitle: 'Voluntary — you may opt out and receive a paper check',
-      blocks: dd.opt_out ? [
-        { type: 'para', text: 'The employee elected NOT to enroll in direct deposit and will receive pay by paper check.' },
-        { type: 'spacer', h: 16 }, sigLine('direct_deposit'),
-      ] : [
-        { type: 'para', text: 'I authorize National Sports Apparel, LLC, directly or through its payroll provider, to deposit my net pay to the account below, and to reverse any amount deposited in error. This authorization remains in effect until I revoke it in writing.' },
-        { type: 'heading', text: 'Account' },
-        { type: 'field', label: 'Bank Name', value: dd.bank_name },
-        { type: 'field', label: 'Account Type', value: dd.account_type },
-        { type: 'field', label: 'Routing Number', value: routing ? maskTail(routing, 4) : '—' },
-        { type: 'field', label: 'Account Number', value: acct ? maskTail(acct, 4) : '—' },
-        { type: 'field', label: 'Deposit', value: dd.deposit_type === 'partial' ? `$${dd.amount || ''}` : 'Entire net amount' },
-        { type: 'para', text: 'Full routing/account numbers are stored encrypted and available to payroll only.' },
-        { type: 'spacer', h: 14 }, sigLine('direct_deposit'),
-      ],
-    }),
-  });
-
-  // 3 — Emergency Contact
-  docs.push({
-    name: '03_Emergency_Contact.pdf',
-    pdf: await renderDocument({
-      title: 'Emergency Contact Form',
-      blocks: [
-        { type: 'field', label: 'Medical Notes / Restrictions', value: em.medical_notes },
-        { type: 'heading', text: 'Primary Contact' },
-        { type: 'field', label: 'Name', value: (em.primary || {}).name },
-        { type: 'field', label: 'Relationship', value: (em.primary || {}).relationship },
-        { type: 'field', label: 'Phone', value: (em.primary || {}).phone },
-        { type: 'field', label: 'Alternate Phone', value: (em.primary || {}).alt_phone },
-        { type: 'field', label: 'Address', value: (em.primary || {}).address },
-        { type: 'heading', text: 'Secondary Contact' },
-        { type: 'field', label: 'Name', value: (em.secondary || {}).name },
-        { type: 'field', label: 'Relationship', value: (em.secondary || {}).relationship },
-        { type: 'field', label: 'Phone', value: (em.secondary || {}).phone },
-        { type: 'heading', text: 'Physician' },
-        { type: 'field', label: 'Name', value: (em.physician || {}).name },
-        { type: 'field', label: 'Phone', value: (em.physician || {}).phone },
-        { type: 'spacer', h: 14 },
-        { type: 'para', text: 'I have voluntarily provided the above contact information and authorize the Company to contact these individuals on my behalf in an emergency.' },
-        sigLine('emergency'),
-      ],
-    }),
-  });
-
-  // 4 — Tax (W-4 + CA DE 4 elections)
-  const fed = tax.federal || {}; const de4 = tax.ca_de4 || {};
-  docs.push({
-    name: '04_Tax_Withholding_W4_DE4.pdf',
-    pdf: await renderDocument({
-      title: 'Tax Withholding Elections', subtitle: 'Federal Form W-4 and California Form DE 4 elections',
-      blocks: [
-        { type: 'heading', text: 'Federal (W-4)' },
-        { type: 'field', label: 'Filing Status', value: fed.filing_status },
-        { type: 'field', label: 'Multiple Jobs / Spouse Works', value: yn(fed.multiple_jobs) },
-        { type: 'field', label: 'Dependents Amount', value: fed.dependents_amount },
-        { type: 'field', label: 'Other Income', value: fed.other_income },
-        { type: 'field', label: 'Deductions', value: fed.deductions },
-        { type: 'field', label: 'Extra Withholding', value: fed.extra_withholding },
-        { type: 'field', label: 'Claims Exempt', value: yn(fed.exempt) },
-        { type: 'rule' },
-        { type: 'heading', text: 'California (DE 4)' },
-        { type: 'field', label: 'Filing Status', value: de4.filing_status },
-        { type: 'field', label: 'Allowances', value: de4.allowances },
-        { type: 'field', label: 'Additional Amount', value: de4.extra },
-        { type: 'field', label: 'Claims Exempt', value: yn(de4.exempt) },
-        { type: 'spacer', h: 14 },
-        { type: 'para', text: 'Under penalties of perjury, I declare these withholding elections are true and correct.' },
-        sigLine('tax_w4'),
-      ],
-    }),
-  });
-
-  // 5 — Commission Agreement (only if commission-eligible)
-  if (invite.commission_eligible) {
-    docs.push({
-      name: '05_Commission_Agreement.pdf',
-      pdf: await renderDocument({
-        title: 'Commission Pay Agreement', subtitle: 'California Labor Code § 2751',
-        blocks: [
-          { type: 'para', text: 'This agreement sets out the method by which commissions are computed and paid, as required by California Labor Code section 2751.' },
-          { type: 'field', label: 'Base Draw', value: invite.pay_rate },
-          { type: 'field', label: 'Commission Basis', value: data.commission && data.commission.basis },
-          { type: 'para', text: data.commission && data.commission.terms ? String(data.commission.terms) : 'Commission terms as described in the offer and discussed with your supervisor. (Attach the full commission schedule before signing.)' },
-          { type: 'para', text: 'By signing, I acknowledge I received and agree to the commission terms above.' },
-          sigLine('commission_agreement'),
-        ],
-      }),
-    });
-  }
-
-  // 6 — Handbook acknowledgment
-  const hbAcks = Object.keys(ack).filter((k) => k.startsWith('handbook:') && k !== 'handbook:all').length;
-  docs.push({
-    name: '06_Handbook_Acknowledgment.pdf',
-    pdf: await renderDocument({
-      title: 'Employee Handbook Acknowledgment', subtitle: `National Sports Apparel Employee Handbook (2025)`,
-      blocks: [
-        { type: 'para', text: 'I acknowledge that I have received, read, and understand the National Sports Apparel, LLC Employee Handbook (2025 edition). I understand my employment is at-will and that the handbook is not a contract of employment.' },
-        { type: 'field', label: 'Sections opened & read', value: `${hbAcks} of ${handbookCount}` },
-        { type: 'field', label: 'Acknowledged all sections', value: ack['handbook:all'] ? fmtDateTime(ack['handbook:all'].at) : 'No' },
-        { type: 'field', label: 'At-will acknowledgment', value: ack['policy:at_will'] ? fmtDateTime(ack['policy:at_will'].at) : 'No' },
-        { type: 'spacer', h: 14 },
-        sigLine('handbook'),
-      ],
-    }),
-  });
-
-  // 7 — California notices acknowledgment
-  const caItems = [
-    ['ca:wage_theft', 'Wage Theft Prevention Notice (Labor Code 2810.5)'],
-    ['ca:workers_comp', 'Workers’ Compensation rights & treating physician'],
-    ['ca:sdi', 'State Disability Insurance (DE 2515)'],
-    ['ca:pfl', 'Paid Family Leave (DE 2511)'],
-    ['ca:harassment', 'Sexual Harassment pamphlet (DFEH/CRD-185)'],
-    ['ca:sick_leave', 'Paid Sick Leave notice'],
-    ['ca:de35', 'Notice to Employee (DE 35)'],
-    ['ca:dv_rights', 'Victims’ rights / domestic violence notice'],
-    ['ca:workplace_violence', 'Workplace Violence Prevention Plan (SB 553)'],
-    ['ca:calsavers', 'CalSavers retirement savings notice'],
-  ];
-  docs.push({
-    name: '07_California_Notices_Acknowledgment.pdf',
-    pdf: await renderDocument({
-      title: 'California Required Notices', subtitle: 'Acknowledgment of receipt — each item time-stamped',
-      blocks: [
-        { type: 'para', text: 'I acknowledge that I received and reviewed each of the following California new-hire notices and pamphlets:' },
-        ...caItems.map(([k, label]) => ({ type: 'field', label, value: ack[k] ? `Reviewed ${fmtDateTime(ack[k].at)}` : 'Not acknowledged' })),
-        { type: 'spacer', h: 12 },
-        sigLine('ca_notices'),
-      ],
-    }),
-  });
-
-  return docs;
-}
-
-// 8 — Review audit log (proof they looked at everything)
-async function buildAuditDoc(invite, sub, events) {
-  const blocks = [
-    { type: 'para', text: `This log records every documented interaction ${invite.full_name} had with the onboarding packet — section views, scroll-to-end completions, acknowledgments, signatures, saves, and the final submission — as captured by the portal.` },
-    { type: 'field', label: 'Hire', value: `${invite.full_name} <${invite.personal_email}>` },
-    { type: 'field', label: 'Role', value: invite.role },
-    { type: 'field', label: 'Invited', value: fmtDateTime(invite.invited_at) },
-    { type: 'field', label: 'Completed', value: invite.completed_at ? fmtDateTime(invite.completed_at) : 'Not yet' },
-    { type: 'rule' },
-    { type: 'heading', text: `Event trail (${events.length})` },
-  ];
-  for (const ev of events) {
-    blocks.push({ type: 'bullet', text: `${fmtDateTime(ev.created_at)} — ${ev.kind}${ev.ref ? ` · ${ev.ref}` : ''}${ev.meta && ev.meta.scroll_pct != null ? ` · scrolled ${ev.meta.scroll_pct}%` : ''}` });
-  }
-  return renderDocument({ title: 'Onboarding Review Audit Log', subtitle: 'Confidential — retain with the employee record', footer: 'National Sports Apparel, LLC — Onboarding Audit Trail', blocks });
-}
 
 exports.handler = async (event) => {
   const headers = corsHeaders();
@@ -355,29 +143,19 @@ exports.handler = async (event) => {
     }
 
     if (action === 'generate_zip') {
-      const JSZip = require('jszip');
-      // Keep in sync with src/onboardingHandbook.js (HANDBOOK_SECTION_COUNT); used
-      // only for the "N of M sections read" label, so an exact match isn't critical.
-      const HANDBOOK_SECTION_COUNT = 43;
       const id = String(body.id || '');
       const { data: inv } = await admin.from('onboarding_invites').select('*').eq('id', id).maybeSingle();
       if (!inv) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Not found' }) };
       const { data: sub } = await admin.from('onboarding_submissions').select('*').eq('invite_id', id).maybeSingle();
       const { data: events } = await admin.from('onboarding_events').select('kind, ref, meta, created_at').eq('invite_id', id).order('created_at', { ascending: true }).limit(5000);
 
-      const docs = await buildPacket(inv, sub, HANDBOOK_SECTION_COUNT || 43);
-      const auditPdf = await buildAuditDoc(inv, sub, events || []);
-
-      const zip = new JSZip();
-      for (const d of docs) zip.file(d.name, await d.pdf.save());
-      zip.file('08_Review_Audit_Log.pdf', await auditPdf.save());
-      const buf = await zip.generateAsync({ type: 'nodebuffer' });
-      const safeName = (inv.full_name || 'new-hire').replace(/[^a-z0-9]+/gi, '_');
+      const files = await buildPacketFiles(inv, sub, events || []);
+      const buf = await zipFiles(files);
 
       await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'download', ref: 'packet_zip', meta: { by: auth.teamMemberId } }]);
       return {
         statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, filename: `${safeName}_NSA_New_Hire_Packet.zip`, zip_base64: buf.toString('base64') }),
+        body: JSON.stringify({ ok: true, filename: `${safeName(inv.full_name)}_NSA_New_Hire_Packet.zip`, zip_base64: buf.toString('base64') }),
       };
     }
 
