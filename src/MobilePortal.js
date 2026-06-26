@@ -160,7 +160,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const total=+i.total||0;
       const status=i.status==='void'?'cancelled':(i.status||'open');
       const date=i.invoice_date||i.date||null;
-      return{id:i.id,customer_id:i.customer_id,status,total,amount_paid:status==='paid'?total:0,
+      // Honor portal-side partial payments tracked on imported invoices (App.js / mig 00153):
+      // use the recorded `paid` amount when present so a partial payment shows a real balance.
+      const amount_paid=i.paid!=null?+i.paid:(status==='paid'?total:0);
+      return{id:i.id,customer_id:i.customer_id,status,total,amount_paid,paid:amount_paid,payments:Array.isArray(i.payments)?i.payments:[],
         created_at:date,paid_date:status==='paid'?date:null,due_date:i.due_date||null,so_id:null,
         _hist:true,_cname:i.raw_customer_name||null};
     });

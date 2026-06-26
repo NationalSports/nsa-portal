@@ -1017,6 +1017,11 @@ const _dbLoad = async (opts={}) => {
       customer_id:hi.customer_id,
       date:hi.invoice_date,
       total:hi.total!=null?Number(hi.total):null,
+      // Portal-side partial-payment tracking on NetSuite-imported invoices (mig 00153).
+      // NetSuite stores totals only; these let the portal record a payment and show the
+      // remaining balance + a payment breakdown on the invoice detail page.
+      paid:hi.paid!=null?Number(hi.paid):0,
+      payments:Array.isArray(hi.payments)?hi.payments:[],
       memo:hi.memo||'',
       status:hi.status||'paid',
       type:'invoice',
@@ -12609,17 +12614,25 @@ export default function App(){
     const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
     const recordPayment=(inv,amount,method,ref)=>{
-      // NetSuite-imported invoices live in customer_invoices and don't track
-      // a `paid` numeric. We just flip the status locally so the portal stops
-      // showing them as open; reconciliation back to NetSuite is handled there.
+      // NetSuite-imported invoices live in customer_invoices. They store totals only,
+      // but we now track a portal-side `paid` amount + a `payments` breakdown (mig 00153)
+      // so partial payments show a real remaining balance. NetSuite stays the AR system of
+      // record — reconcile the payment there too.
       if(inv._hist){
-        const newStatus=amount>=safeNum(inv.total)?'paid':'partial';
+        const total=safeNum(inv.total);
+        const newPaid=Math.round((safeNum(inv.paid)+amount)*100)/100;
+        const newStatus=newPaid>=total-0.005?'paid':newPaid>0?'partial':'open';
+        const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})};
+        const newPayments=[...(inv.payments||[]),payment];
         if(supabase&&inv.netsuite_internal_id){
-          (async()=>{try{await supabase.from('customer_invoices').update({status:newStatus}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
+          (async()=>{try{await supabase.from('customer_invoices').update({status:newStatus,paid:newPaid,payments:newPayments}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
         }
-        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:newStatus}:i));
+        const _apply=i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:newStatus,paid:newPaid,payments:newPayments}:i;
+        setHistInvs(prev=>prev.map(_apply));
+        setViewInvoice(v=>v&&v.netsuite_internal_id===inv.netsuite_internal_id?_apply(v):v);
         setPayModal(null);
-        nf('Marked '+inv.id+' as '+newStatus+' (NetSuite — please mark paid in NS to keep AR in sync)');
+        const bal=Math.max(0,Math.round((total-newPaid)*100)/100);
+        nf('$'+amount.toLocaleString()+' recorded on '+inv.id+(newStatus==='paid'?' — paid in full':' — $'+bal.toLocaleString()+' remaining')+' (NetSuite — update NS to keep AR in sync)');
         return;
       }
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
