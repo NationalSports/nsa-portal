@@ -3989,6 +3989,7 @@ export default function App(){
   const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('open');// all|open|resolved
+  const[issueAi,setIssueAi]=useState({});// {issueId:{loading,error,result}} — Claude's diagnosis per issue
   const[openIssueThreads,setOpenIssueThreads]=useState({});// {issueId:true} — which issue conversation threads are expanded
   const[issueDrafts,setIssueDrafts]=useState({});// {issueId:draftText} — in-progress reply per issue
   const[issueFocus,setIssueFocus]=useState(null);// issueId to auto-open + scroll to (set when arriving from a dashboard notification)
@@ -4019,6 +4020,29 @@ export default function App(){
   const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recent_errors:consoleErrors.current.slice(0,5)}};
   const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+Date.now(),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reported_by:ctx.user,reported_by_id:cu.id,role:ctx.role,timestamp:ctx.timestamp,recent_errors:ctx.recent_errors,resolved_at:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
   const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolved_at:new Date().toISOString()}:i))};
+  // Ask Claude to investigate an issue right here: it pulls the referenced order/record
+  // from Supabase server-side, diagnoses it, posts a plain-language note into the issue's
+  // conversation thread (which notifies the reporter), and auto-resolves if no action is needed.
+  const runClaudeOnIssue=async(issue)=>{
+    setIssueAi(s=>({...s,[issue.id]:{loading:true,error:null,result:s[issue.id]?.result||null}}));
+    try{
+      const payload={id:issue.id,description:issue.description,priority:issue.priority,page:issue.page,viewing:issue.viewing,reported_by:issue.reported_by||issue.reportedBy,role:issue.role,recent_errors:issue.recent_errors||issue.recentErrors||[]};
+      const res=await authFetch('/.netlify/functions/resolve-issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({issue:payload})});
+      const data=await res.json().catch(()=>({}));
+      if(data&&data.ok===false&&data.reason==='missing_api_key')throw new Error('Claude isn’t configured yet — set ANTHROPIC_API_KEY in Netlify.');
+      if(!res.ok||!data||data.error)throw new Error((data&&data.error)||('Request failed ('+res.status+')'));
+      const r=data.result;
+      setIssueAi(s=>({...s,[issue.id]:{loading:false,error:null,result:r}}));
+      // Auto-message the reporter: post Claude's note into the thread (tags + notifies them).
+      if(r.reporter_message)sendIssueReply(issue,'🤖 Claude’s analysis:\n\n'+r.reporter_message);
+      // If Claude judges there's nothing to fix, close it out automatically.
+      if(r.resolved)resolveIssue(issue.id,'resolved');
+      nf('Claude analyzed '+issue.id);
+    }catch(e){
+      setIssueAi(s=>({...s,[issue.id]:{loading:false,error:e.message||String(e),result:s[issue.id]?.result||null}}));
+      nf('Claude couldn’t analyze the issue: '+(e.message||e),'warn');
+    }
+  };
   // ─── ISSUE CONVERSATIONS ───
   // Two-way threads on issues reuse the messages table (entity_type:'issue', entity_id:issue.id, so_id:null).
   // Replies are auto-persisted by the msgs _diffSave effect and notify via tagged_members (surfaced on the Dashboard).
@@ -29243,6 +29267,7 @@ export default function App(){
               <span style={{background:prioColor[issue.priority]+'20',color:prioColor[issue.priority],borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:600}}>{prioLabel[issue.priority]}</span>
             </div>
             {_isAdminIssues&&issue.status==='open'&&<div style={{display:'flex',gap:4}}>
+              <button className="btn btn-sm" disabled={issueAi[issue.id]?.loading} onClick={()=>runClaudeOnIssue(issue)} style={{fontSize:10,background:'linear-gradient(90deg,#6366f1,#8b5cf6)',color:'#fff',border:'none',opacity:issueAi[issue.id]?.loading?.7:1}}>{issueAi[issue.id]?.loading?'Analyzing…':'✨ Resolve with Claude'}</button>
               <button className="btn btn-sm btn-primary" onClick={()=>resolveIssue(issue.id,'resolved')} style={{fontSize:10}}><Icon name="check" size={12}/> Resolve</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>resolveIssue(issue.id,'wont_fix')} style={{fontSize:10,color:'#94a3b8'}}>Won't Fix</button>
             </div>}
@@ -29261,6 +29286,28 @@ export default function App(){
             </div>
           </details>}
           {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolved_at||issue.resolvedAt).toLocaleString()}</div>}
+          {(()=>{const ai=issueAi[issue.id];if(!ai)return null;const r=ai.result;
+            const vColor={data_issue:'#0ea5e9',code_bug:'#dc2626',user_error:'#f59e0b',not_reproducible:'#94a3b8',question:'#8b5cf6',needs_info:'#f59e0b'};
+            const vLabel={data_issue:'Data issue',code_bug:'Code bug',user_error:'User error',not_reproducible:'Not reproducible',question:'Question',needs_info:'Needs info'};
+            const cColor={high:'#16a34a',medium:'#f59e0b',low:'#94a3b8'};
+            return<div style={{marginTop:10,border:'1px solid #c7d2fe',borderRadius:10,overflow:'hidden'}}>
+              <div style={{background:'linear-gradient(90deg,#6366f1,#8b5cf6)',color:'#fff',padding:'7px 12px',fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>✨ Claude’s Analysis{ai.loading&&<span style={{fontWeight:400,opacity:.85}}>· thinking…</span>}</div>
+              <div style={{padding:12,background:'#f5f7ff'}}>
+                {ai.loading&&!r&&<div style={{fontSize:12,color:'#6366f1'}}>Pulling the related record and investigating…</div>}
+                {ai.error&&<div style={{fontSize:12,color:'#dc2626'}}>{ai.error}</div>}
+                {r&&<div style={{display:'flex',flexDirection:'column',gap:8,fontSize:13,lineHeight:1.5}}>
+                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{background:(vColor[r.verdict]||'#64748b')+'20',color:vColor[r.verdict]||'#64748b',borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:700}}>{vLabel[r.verdict]||r.verdict||'Analysis'}</span>
+                    {r.confidence&&<span style={{fontSize:11,color:cColor[r.confidence]||'#64748b'}}>Confidence: <strong>{r.confidence}</strong></span>}
+                    {r.resolved&&<span className="badge badge-green">Auto-resolved</span>}
+                  </div>
+                  {r.summary&&<div><strong>What’s going on:</strong> {r.summary}</div>}
+                  {r.cause&&<div><strong>Likely cause:</strong> {r.cause}</div>}
+                  {r.fix&&<div style={{background:'#fff',border:'1px solid #e0e7ff',borderRadius:8,padding:'8px 10px'}}><strong>Suggested fix:</strong> {r.fix}</div>}
+                  {r.reporter_message&&<div style={{fontSize:11,color:'#64748b'}}>✓ {issue.reported_by||issue.reportedBy||'The reporter'} was notified in the conversation below.</div>}
+                </div>}
+              </div>
+            </div>;})()}
           {(()=>{const tmsgs=issueThreadMsgs(issue.id);const unread=tmsgs.filter(m=>!(m.read_by||[]).includes(cu?.id)).length;const open=!!openIssueThreads[issue.id];const draft=issueDrafts[issue.id]||'';
             return<div style={{marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:10}}>
               <button onClick={()=>toggleIssueThread(issue.id)} style={{background:'none',border:'none',cursor:'pointer',padding:0,fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}>
