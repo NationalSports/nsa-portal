@@ -4043,6 +4043,27 @@ export default function App(){
       nf('Claude couldn’t analyze the issue: '+(e.message||e),'warn');
     }
   };
+  // Apply a Claude-proposed fix to live data — admin only, explicit confirm, writes one
+  // allowlisted record, then records the diff in the issue thread and resolves it.
+  const applyIssueFix=async(issue,fix)=>{
+    const cols=Object.keys(fix.changes||{});
+    const preview=cols.map(k=>'• '+k+' → '+JSON.stringify(fix.changes[k])).join('\n');
+    if(!window.confirm('Apply Claude’s fix to '+fix.table+' '+fix.id+'?\n\n'+preview+'\n\nThis writes to live data.'))return;
+    setIssueAi(s=>({...s,[issue.id]:{...s[issue.id],applying:true}}));
+    try{
+      const res=await authFetch('/.netlify/functions/apply-issue-fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fix:{table:fix.table,id:fix.id,changes:fix.changes},issue_id:issue.id})});
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok||!data||data.error)throw new Error((data&&data.error)||('Request failed ('+res.status+')'));
+      setIssueAi(s=>({...s,[issue.id]:{...s[issue.id],applying:false,applied:data}}));
+      const changed=cols.map(k=>k+' → '+JSON.stringify(fix.changes[k])).join('; ');
+      sendIssueReply(issue,'✅ Claude applied a fix to '+fix.table+' '+fix.id+':\n'+changed);
+      resolveIssue(issue.id,'resolved');
+      nf('Fix applied to '+fix.id+' — reload to see updated data');
+    }catch(e){
+      setIssueAi(s=>({...s,[issue.id]:{...s[issue.id],applying:false}}));
+      nf('Could not apply fix: '+(e.message||e),'warn');
+    }
+  };
   // ─── ISSUE CONVERSATIONS ───
   // Two-way threads on issues reuse the messages table (entity_type:'issue', entity_id:issue.id, so_id:null).
   // Replies are auto-persisted by the msgs _diffSave effect and notify via tagged_members (surfaced on the Dashboard).
@@ -29304,6 +29325,15 @@ export default function App(){
                   {r.summary&&<div><strong>What’s going on:</strong> {r.summary}</div>}
                   {r.cause&&<div><strong>Likely cause:</strong> {r.cause}</div>}
                   {r.fix&&<div style={{background:'#fff',border:'1px solid #e0e7ff',borderRadius:8,padding:'8px 10px'}}><strong>Suggested fix:</strong> {r.fix}</div>}
+                  {r.proposed_fix&&(()=>{const pf=r.proposed_fix;const entries=Object.entries(pf.changes||{});
+                    return<div style={{background:'#fff',border:'1px solid '+(pf.applicable?'#bbf7d0':'#fde68a'),borderRadius:8,padding:'8px 10px'}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>Proposed change · <span style={{fontFamily:'monospace',color:'#1e40af'}}>{pf.table} {pf.id}</span></div>
+                      {entries.map(([k,v])=><div key={k} style={{fontSize:12,fontFamily:'monospace'}}>{k}: <span style={{color:'#16a34a'}}>{JSON.stringify(v)}</span></div>)}
+                      {pf.explanation&&<div style={{fontSize:11,color:'#64748b',marginTop:4}}>{pf.explanation}</div>}
+                      {ai.applied?<div style={{marginTop:6,fontSize:12,color:'#16a34a',fontWeight:600}}>✅ Applied to live data</div>
+                        :pf.applicable?(_isAdminIssues&&issue.status==='open'&&<button className="btn btn-sm" disabled={ai.applying} onClick={()=>applyIssueFix(issue,pf)} style={{marginTop:6,fontSize:11,background:'#16a34a',color:'#fff',border:'none',opacity:ai.applying?.7:1}}>{ai.applying?'Applying…':'⚡ Apply fix'}</button>)
+                        :<div style={{marginTop:6,fontSize:11,color:'#b45309'}}>Apply manually — this field isn’t auto-editable{pf.reason?' ('+pf.reason+')':''}.</div>}
+                    </div>;})()}
                   {r.reporter_message&&<div style={{fontSize:11,color:'#64748b'}}>✓ {issue.reported_by||issue.reportedBy||'The reporter'} was notified in the conversation below.</div>}
                 </div>}
               </div>

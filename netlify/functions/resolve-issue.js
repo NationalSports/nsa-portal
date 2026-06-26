@@ -13,6 +13,7 @@
 // conversation thread (which notifies the reporter) and optionally marks it
 // resolved. Staff-gated; a graceful no-op until ANTHROPIC_API_KEY is set.
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
+const { ALLOWED, validateFix } = require('./_issueFixPolicy');
 
 const MODEL = 'claude-sonnet-4-6';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -39,8 +40,17 @@ const SYSTEM = [
   '  "fix": "concrete step-by-step fix for a staff member (or what info is needed)",',
   '  "confidence": "high" | "medium" | "low",',
   '  "resolved": true | false,',
-  '  "reporter_message": "a short, friendly note written directly to the person who reported it"',
+  '  "reporter_message": "a short, friendly note written directly to the person who reported it",',
+  '  "proposed_fix": null OR { "table": "...", "id": "...", "changes": { "column": newValue }, "explanation": "what this changes" }',
   '}',
+  '',
+  'About proposed_fix (optional — usually null):',
+  '- Only include it for a clear data_issue where you are confident, AND the fix is a simple field correction.',
+  '- "table" MUST be one of these and "changes" may ONLY use these columns (anything else is ignored):',
+  '  ' + JSON.stringify(ALLOWED),
+  '- "id" must be the exact id of a record shown in the provided data (e.g. "SO-1234").',
+  '- Put the corrected value in changes. Never touch money, pricing, tax, status, ids, or fulfillment fields.',
+  '- If the right fix is outside those columns, leave proposed_fix null and just describe it in "fix".',
 ].join('\n');
 
 // Pull the id tokens (SO-1234 / EST-1234 / INV-1234) out of the free-text context.
@@ -107,7 +117,7 @@ function parseResult(text) {
   const last = t.lastIndexOf('}');
   if (first !== -1 && last !== -1) t = t.slice(first, last + 1);
   const r = JSON.parse(t);
-  return {
+  const out = {
     verdict: r.verdict || 'question',
     summary: r.summary || '',
     cause: r.cause || '',
@@ -115,7 +125,17 @@ function parseResult(text) {
     confidence: r.confidence || 'low',
     resolved: r.resolved === true,
     reporter_message: r.reporter_message || '',
+    proposed_fix: null,
   };
+  // Run any proposed write-back through the same policy the apply endpoint enforces,
+  // so the portal can show an "Apply fix" button only when it's genuinely applicable.
+  if (r.proposed_fix && typeof r.proposed_fix === 'object') {
+    const v = validateFix(r.proposed_fix);
+    out.proposed_fix = v.ok
+      ? { table: v.table, id: v.id, changes: v.changes, rejected: v.rejected, explanation: r.proposed_fix.explanation || '', applicable: true }
+      : { table: r.proposed_fix.table, id: r.proposed_fix.id, changes: r.proposed_fix.changes || {}, explanation: r.proposed_fix.explanation || '', applicable: false, reason: v.reason };
+  }
+  return out;
 }
 
 exports.handler = async (event) => {
