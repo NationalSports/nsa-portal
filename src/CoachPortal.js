@@ -288,6 +288,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   };
   const activeSOs=custSOs.filter(s=>calcSOStatus(s)!=='complete');
   const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
+  // Active orders collapse on the portal — default collapsed for department/parent accounts and
+  // long lists (they aggregate every team's orders), expanded for a regular single-team coach.
+  const[ordersOpen,setOrdersOpen]=useState(!(isP||activeSOs.length>3));
   // Recent (last 30 days) not-yet-converted estimates, surfaced in Active Orders.
   const _estRecentCutoff=Date.now()-30*24*60*60*1000;
   const recentEsts=custEsts.filter(e=>{if(e.status==='converted')return false;const t=new Date(e.created_at).getTime();return isFinite(t)&&t>=_estRecentCutoff;});
@@ -1444,8 +1447,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         {/* Active orders */}
         {(activeSOs.length>0||recentEsts.length>0)&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
-          {activeSOs.map(so=>{
+          <button onClick={()=>setOrdersOpen(o=>!o)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',background:'none',border:'none',padding:0,cursor:'pointer',marginBottom:10}}>
+            <span style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>📦 Active Orders ({activeSOs.length}{recentEsts.length>0?' + '+recentEsts.length+' est':''})</span>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b',display:'inline-flex',alignItems:'center',gap:6,textTransform:'uppercase',letterSpacing:'.04em'}}>{ordersOpen?'Hide':'Show'}<span style={{fontSize:12}}>{ordersOpen?'▾':'▸'}</span></span>
+          </button>
+          {ordersOpen&&activeSOs.map(so=>{
             let totalU=0,fulU=0;
             safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -1484,7 +1490,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
                 📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
             </div>})}
-          {recentEsts.map(est=>{const t=calcEstTotal(est);
+          {ordersOpen&&recentEsts.map(est=>{const t=calcEstTotal(est);
             const _stLabel={sent:'Awaiting Approval',open:'Open',approved:'Approved',draft:'Draft'}[est.status]||est.status;
             const _stStyle={sent:{background:'#fef3c7',color:'#92400e'},open:{background:'#fef3c7',color:'#92400e'},approved:{background:'#dcfce7',color:'#166534'},draft:{background:'#f1f5f9',color:'#64748b'}}[est.status]||{background:'#f1f5f9',color:'#64748b'};
             return<div key={'recest_'+est.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12,cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
