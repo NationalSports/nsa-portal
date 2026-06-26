@@ -20704,6 +20704,9 @@ export default function App(){
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // Re-submitting a mockup for approval supersedes any prior coach rejection — clear the flag so the
+        // workboard status and coach_rejected stay consistent (rejections[] keeps the history).
+        if(newStatus==='waiting_approval')upd.coach_rejected=false;
         if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
           upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
         }
@@ -20726,6 +20729,10 @@ export default function App(){
       else nf('Art status → '+ART_LABELS[newStatus]);
       return true;
     };
+    // Guard against silently clobbering a coach's change-request by re-sending un-revised art.
+    // Returns false if the user cancels. Shows the coach's last feedback so the rep/artist can
+    // confirm the mockup was actually revised before it goes back into the approval queue.
+    const _confirmResendIfRejected=(jb)=>{if(!jb||!jb.coach_rejected)return true;const _lr=(jb.rejections||[]).slice(-1)[0];return window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nMake sure the mockup has been revised — re-sending marks it ready for approval again. Continue?')};
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
@@ -20813,7 +20820,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=(j.coach_rejected&&(j.art_status==='art_requested'||j.art_status==='art_in_progress'))?'changes_requested':getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
@@ -20877,8 +20884,9 @@ export default function App(){
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
                 const missing=skusMissingMockups(j,so2);
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+                if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -21455,8 +21463,9 @@ export default function App(){
               const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
               const missing=skusMissingMockups(j,liveSO);
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+              if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -21834,6 +21843,7 @@ export default function App(){
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
           const missing=skusMissingMockups(j,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          if(!_confirmResendIfRejected(j))return;
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
           const msgs=[...artMessages];
@@ -21843,7 +21853,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',sent_to_coach_at:null}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
@@ -22415,11 +22425,12 @@ export default function App(){
         const doSend=(notifyMethod)=>{
           const missing=skusMissingMockups(aj,aso);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          if(!_confirmResendIfRejected(aj))return;
           // 1. Move art status to waiting_approval
           moveArtStatus(aj,'waiting_approval');
           const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
           const updMsgs=[...(aam||[]),sysMsg];
-          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval'}:jj);
+          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval',coach_rejected:false}:jj);
           savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           // 2. Handle notification
           if(notifyMethod==='email'&&ac.email){

@@ -115,7 +115,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // prod_files is NOT a production separation and must never silently complete the job.
   const _approveArtTo=(jobId,artIds,targetStatus,stampProd)=>{
     const curO=oRef.current;
-    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
+    // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
+    // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
+    const _jb=safeJobs(curO).find(jj=>jj.id===jobId);
+    if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
+    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
     const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
     const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');
@@ -7767,6 +7771,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // still being worked — e.g. JOB-1171-03 reading "Needs Approval" off the shared Wolf Head FC
       // file that was uploaded for JOB-1171-02. Returns an ART_FILE_LABELS key.
       const jobArtBadgeSt=(jb,artFile)=>{
+        // Coach sent the art back: badge it "Changes Requested" while it's with the artist (still a
+        // Waiting-for-Art job for column/sort purposes — see getArtFileStatus, which is unchanged).
+        if(jb.coach_rejected&&(jb.art_status==='art_requested'||jb.art_status==='art_in_progress'))return'changes_requested';
         if(jb.art_status==='art_requested'||jb.art_status==='art_in_progress')return'waiting_for_art';
         if(jb.art_status==='waiting_approval')return'needs_approval';
         if(PROD_FILES_STATUSES.includes(jb.art_status))return'approved';
@@ -8028,7 +8035,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
-            {j.art_status==='art_requested'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
+            {j.art_status==='art_requested'&&!(j.coach_rejected||(j.rejections||[]).length>0)&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <span style={{fontSize:16}}>📨</span>
                 <span style={{fontWeight:700,fontSize:14,color:'#9d174d'}}>Art Request Sent</span>
@@ -8036,6 +8043,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#831843'}}>Waiting for the artist to complete the mockup. You can request updates or send messages below.</div>
             </div>}
+            {/* Coach/rep change-request — keep the reviewed mockup + feedback visible while the art is back with the artist.
+                The Art Dashboard shows the mockup regardless of status; this mirrors it so the job view doesn't go blank. */}
+            {(j.art_status==='art_requested'||j.art_status==='art_in_progress')&&(j.coach_rejected||(j.rejections||[]).length>0)&&(()=>{
+              const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+              (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+              const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+              const _seen=new Set();
+              const mockups=[..._filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])),..._filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()))].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+              const lastRej=(j.rejections||[]).slice(-1)[0];
+              const _isCoach=!!j.coach_rejected||(lastRej&&/coach/i.test(lastRej.by||''));
+              return<div style={{margin:'8px 20px 0',padding:'14px 16px',background:'linear-gradient(135deg,#fef2f2,#fff1f2)',border:'2px solid #fca5a5',borderRadius:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:18}}>{_isCoach?'📝':'🔄'}</span>
+                  <span style={{fontWeight:800,fontSize:15,color:'#b91c1c'}}>{_isCoach?'Coach Requested Changes':'Changes Requested'}</span>
+                  {(j.rejections||[]).length>1&&<span style={{fontSize:10,fontWeight:700,color:'#b91c1c',background:'#fee2e2',padding:'1px 8px',borderRadius:10}}>{j.rejections.length}× sent back</span>}
+                </div>
+                {lastRej&&<div style={{fontSize:13,color:'#7f1d1d',background:'white',border:'1px solid #fecaca',borderRadius:6,padding:'8px 12px',marginBottom:mockups.length?10:0}}>
+                  “{lastRej.reason}”
+                  <span style={{display:'block',fontSize:10,color:'#b91c1c',marginTop:4}}>— {lastRej.by||'Coach'}{lastRej.at?' · '+new Date(lastRej.at).toLocaleDateString():''}</span>
+                </div>}
+                {mockups.length>0&&<div>
+                  <div style={{fontSize:10,fontWeight:700,color:'#b91c1c',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}}>Mockup that was reviewed</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);return<div key={fi} onClick={()=>setMockupLightbox(url)} title="Click to enlarge" style={{cursor:'pointer',borderRadius:8,border:'1px solid #fecaca',overflow:'hidden',background:'white',width:120}}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:120,height:120,objectFit:'contain',display:'block',background:'#fafafa'}}/>:<div style={{width:120,height:120,display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>📄</div>}
+                    </div>})}
+                  </div>
+                  <div style={{fontSize:11,color:'#9a3412',marginTop:6}}>Revise the artwork, then re-send it for approval.</div>
+                </div>}
+              </div>;
+            })()}
             {j.art_status==='art_in_progress'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#dbeafe,#eff6ff)',border:'2px solid #93c5fd',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>🎨</span>
