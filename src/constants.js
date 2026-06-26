@@ -392,7 +392,12 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD
   'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
   'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
   'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA'};  // OSFM = One Size Fits Most (UA)
+  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
+  // Sports Inc's EDI feed truncates spelled-out sizes to 5 chars (seen on Augusta): MEDIUM->MEDIU,
+  // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
+  // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
+  // an Augusta extra-small would truncate the same way and gets caught by the order/over-bill check.)
+  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA'};
 
 // Status color/label map
 export const SC={
