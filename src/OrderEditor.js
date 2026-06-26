@@ -10088,7 +10088,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const hasOpenAnywhere=_poWide.open>0;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
-      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
+      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:880,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(po.po_id||''):Promise.reject()).then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
@@ -10136,14 +10136,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>;
           })()}
           {/* All items on this PO — single list that doubles as the receive selector.
-              Click a chip to view its size table; check the box to add it to the shipment
-              built in the green "Receive Shipment" box below (no duplicate item list there). */}
+              Clicking a chip views its size table AND queues it for the shipment built in the
+              green "Receive Shipment" box below (click again to remove it). Two-column grid;
+              long product names truncate with an ellipsis (full name in the hover title). */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}}>
               <span style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Items on this PO ({allLines.length})</span>
-              {!isDropShip&&hasOpenAnywhere&&<span style={{fontSize:10,fontWeight:600,color:'#16a34a'}}>✓ check items to receive</span>}
+              {!isDropShip&&hasOpenAnywhere&&<span style={{fontSize:10,fontWeight:600,color:'#16a34a'}}>click items to receive</span>}
             </div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(2, minmax(0, 1fr))',gap:6}}>
               {allLines.map((ln,li)=>{
                 const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx]||{};
                 const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number');
@@ -10153,13 +10154,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const canRecv=!isDropShip&&lineOpen>0;
                 const isRecvSel=(editPO._selectedRecvLines||[]).includes(li);
                 const isActive=li===activeLineIdx;
-                return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:isActive?'2px solid #2563eb':isRecvSel?'2px solid #22c55e':'1px solid #e2e8f0',background:isActive?'#dbeafe':isRecvSel?'#f0fdf4':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
-                  {canRecv&&<input type="checkbox" checked={isRecvSel} title="Add to shipment to receive" onClick={e=>e.stopPropagation()} onChange={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isRecvSel?prev.filter(x=>x!==li):[...prev,li]}})} style={{cursor:'pointer',width:15,height:15,accentColor:'#16a34a',flexShrink:0}}/>}
+                return<div key={li} title={(it?.name||'')+(it?.color?' · '+it.color:'')} style={{padding:'6px 8px',borderRadius:6,cursor:'pointer',border:isActive?'2px solid #2563eb':isRecvSel?'2px solid #22c55e':'1px solid #e2e8f0',background:isRecvSel?'#f0fdf4':isActive?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center',minWidth:0}} onClick={()=>setEditPO(p=>{const sel=p._selectedRecvLines||[];const nextSel=canRecv?(sel.includes(li)?sel.filter(x=>x!==li):[...sel,li]):sel;return{...p,_activeLineIdx:li,_selectedRecvLines:nextSel}})}>
+                  {!isDropShip&&<span style={{width:13,flexShrink:0,textAlign:'center',color:'#16a34a',fontWeight:800,fontSize:13}}>{isRecvSel?'✓':''}</span>}
                   {_itemSwatch(it)}
-                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
-                  <span style={{fontWeight:600}}>{it?.name}</span>
-                  <span style={{color:'#64748b'}}>{it?.color}</span>
-                  {lineOpen>0?<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,padding:'1px 6px'}}>{lineOpen} open</span>:lineRcvd>0?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:4,padding:'1px 6px'}}>✓ received</span>:null}
+                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',flexShrink:0}}>{it?.sku}</span>
+                  <span style={{fontWeight:600,flex:1,minWidth:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{it?.name}</span>
+                  <span style={{color:'#64748b',flexShrink:0,fontSize:11,whiteSpace:'nowrap'}}>{it?.color}</span>
+                  {lineOpen>0?<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,padding:'1px 5px',flexShrink:0,whiteSpace:'nowrap'}}>{lineOpen} open</span>:lineRcvd>0?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:4,padding:'1px 5px',flexShrink:0,whiteSpace:'nowrap'}}>✓ received</span>:null}
                 </div>;
               })}
             </div>
@@ -10606,7 +10607,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
             }}>✓ Receive These Items</button>
             </>}
-            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Check items in “Items on this PO” above to receive them.</div>}
+            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Click an item in “Items on this PO” above to receive it.</div>}
           </div>})()}
 
           {/* QR / Print Label for full PO */}
