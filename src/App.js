@@ -1125,6 +1125,21 @@ const _estDiffCmp=(e)=>JSON.stringify({
 // stop counting as changes.
 const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
 const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
+// Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
+// row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
+// the save exactly, INCLUDING the image_url->image_front_url fold, so it detects a change iff the save
+// would write a difference (zero data-loss), while the session-only fields re-derived on every load
+// (_colorImage/_colorBackImage/_ss_live/_sizeCosts/_sizeSells and raw image_url mirrors) no longer count
+// as changes. This stops the products re-save loop — the ~340k single-row product upserts + paired
+// _pimg_ app_state writes that dominated write volume (and WAL) once the catalog grew 4x.
+const _prodDiffCmp=(p)=>JSON.stringify({
+  id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
+  color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
+  is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+  is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
+  image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null,
+  images:p.images||null,_inv:p._inv||{},_alerts:p._alerts||{},
+});
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
   // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
@@ -4595,7 +4610,7 @@ export default function App(){
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;
