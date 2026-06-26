@@ -1344,7 +1344,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   return<div className="cp-app" style={{minHeight:'100vh',background:'#eef2f7'}}>
-    <style>{`.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1260px;margin:0 auto}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:236px;flex-shrink:0;gap:4px;position:sticky;top:18px;align-self:flex-start;max-height:calc(100vh - 36px);overflow-y:auto;margin:18px 0 18px 18px;padding:16px 13px;background:#fff;border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.08)}}.cp-main{flex:1;min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:18px 20px 28px}}.cp-page{max-width:820px;margin:0 auto;padding:16px 0 48px}.cp-navbtn{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:none;background:transparent;color:#64748b;border-radius:14px;padding:9px 11px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:#f1f5f9;color:#1e293b}.cp-navico{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#f1f5f9}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
+    {/* Mock NSA marketing header — preview only on the standalone deploy preview. The real site
+        supplies its own header when the portal is embedded (?embed=1), so it's hidden there. */}
+    {!CP_EMBEDDED&&<div>
+      <div style={{background:'#0b1f3a',color:'#fff',fontSize:12,fontWeight:700,letterSpacing:'.03em',padding:'7px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+        <span><span style={{color:'#C8102E'}}>★</span> CALIFORNIA'S LARGEST INDEPENDENT TEAM DEALER <span style={{color:'#C8102E'}}>★</span></span>
+        <span style={{display:'flex',gap:18,fontWeight:600,opacity:.92}}><span>hello@nationalsportsapparel.com</span><span>(714) 279-8777</span></span>
+      </div>
+      <div style={{background:'#fff',borderBottom:'3px solid #C8102E',padding:'10px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:16}}>
+        <div className="cp-mkt-links" style={{display:'flex',gap:26,alignItems:'center',flex:1}}>
+          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>SHOP BY SPORT</span>
+          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>TEAM STORES</span>
+        </div>
+        <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{height:46,objectFit:'contain',flexShrink:0}}/>
+        <div className="cp-mkt-links" style={{display:'flex',gap:22,alignItems:'center',flex:1,justifyContent:'flex-end'}}>
+          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>CHECKLISTS</span>
+          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>ABOUT</span>
+          <span style={{background:'#C8102E',color:'#fff',fontWeight:800,letterSpacing:'.04em',fontSize:13,padding:'10px 18px',borderRadius:3}}>GET A QUOTE</span>
+        </div>
+      </div>
+    </div>}
+    <style>{`@media(max-width:760px){.cp-mkt-links{display:none!important}}.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1260px;margin:0 auto}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:236px;flex-shrink:0;gap:4px;position:sticky;top:18px;align-self:flex-start;max-height:calc(100vh - 36px);overflow-y:auto;margin:18px 0 18px 18px;padding:16px 13px;background:#fff;border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.08)}}.cp-main{flex:1;min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:18px 20px 28px}}.cp-page{max-width:820px;margin:0 auto;padding:16px 0 48px}.cp-navbtn{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:none;background:transparent;color:#64748b;border-radius:14px;padding:9px 11px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:#f1f5f9;color:#1e293b}.cp-navico{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#f1f5f9}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
     <div className="cp-shell">
       {/* ── SIDEBAR (desktop) — wears the team's colors ── */}
       <div className="cp-side">
@@ -1507,19 +1527,24 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Estimates awaiting approval — needs coach attention */}
-        {(page==='home'||page==='estimates')&&(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
-          const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':'#64748b'});
+        {page==='estimates'&&(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
           return openEsts.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates to Approve ({openEsts.length})</div>
-          {openEsts.map(est=>{const t=calcEstTotal(est);
-            return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,...estBadge(est.status)}}>{est.status==='sent'?'Awaiting Approval':est.status}</span></div>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+          <div style={{fontSize:12,fontWeight:800,letterSpacing:'.03em',color:'#b45309',marginBottom:10,display:'inline-flex',alignItems:'center',gap:8}}>📋 Awaiting your approval <span style={{background:'#fef3c7',color:'#92400e',borderRadius:999,fontSize:11,fontWeight:800,padding:'1px 8px'}}>{openEsts.length}</span></div>
+          {openEsts.map(est=>{const t=calcEstTotal(est);const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const teamName=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):null):null;
+            return<div key={est.id} style={{position:'relative',border:'1px solid #e2e8f0',borderRadius:12,padding:'13px 15px 13px 18px',marginBottom:9,background:'#fff',cursor:'pointer',boxShadow:'0 1px 2px rgba(15,23,42,.04)',overflow:'hidden'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+              <div style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:'#f59e0b'}}/>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+                <div style={{minWidth:0}}>
+                  {teamName&&<div style={{display:'inline-block',fontSize:10,fontWeight:800,letterSpacing:'.03em',textTransform:'uppercase',color:cpTheme.primary,background:cpTint,borderRadius:999,padding:'2px 9px',marginBottom:5}}>{teamName}</div>}
+                  <div style={{fontWeight:800,fontSize:14,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id}</div>
+                  <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontSize:16,fontWeight:900,color:'#1e293b'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:999,fontSize:9.5,fontWeight:800,background:'#fef3c7',color:'#92400e',marginTop:2}}>{est.status==='sent'?'Awaiting approval':'Open'}</span>
+                  </div>
+                  <span style={{color:'#cbd5e1',fontSize:16}}>›</span>
                 </div>
               </div></div>})}
           </>})()}
