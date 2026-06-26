@@ -135,7 +135,9 @@ const _availForSize = (p, size) => {
 };
 
 // Mirrors the storefront's verifyStock(): on-hand + vendor stock per size (incl. tall
-// twin), with incoming/ETA items allowed as backorders. Read through the storefront view.
+// twin), with incoming/ETA items allowed as backorders. Read through the storefront
+// view — whose vendor stock/ETA now span every synced vendor (inventory_unified, not
+// just Adidas), so non-Adidas items are validated against real vendor availability.
 async function checkStock(sb, store, lines) {
   const singles = lines.filter((l) => l.kind === 'single' && l.size);
   if (!singles.length) return null;
@@ -552,3 +554,15 @@ async function updateShip(sb, body) {
   if (upErr) return bad(502, 'Could not save the address: ' + upErr.message);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, ship_address: addr }) };
 }
+
+// ── Test surface ─────────────────────────────────────────────────────
+// Exported only so the unit tests can exercise the pricing/stock math in
+// isolation. Netlify invokes `handler`; these extra exports are inert in prod.
+module.exports.priceCart = priceCart;
+module.exports.checkStock = checkStock;
+module.exports.checkNumberRange = checkNumberRange;
+module.exports.couponDiscount = couponDiscount;
+module.exports._availForSize = _availForSize;
+module.exports.effFund = effFund;
+module.exports.shipFee = shipFee;
+module.exports.r2 = r2;
