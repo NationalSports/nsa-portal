@@ -40,6 +40,11 @@
 [functions]
   directory = "netlify/functions"
 
+# New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
+# who were invited but haven't finished (capped at 3 reminders, 3 days apart).
+[functions."onboarding-reminder"]
+  schedule = "7 16 * * *"
+
 [functions."vectorizer-proxy"]
   timeout = 26
 
