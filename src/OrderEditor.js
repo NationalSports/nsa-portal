@@ -10135,24 +10135,43 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>})}
             </div>;
           })()}
-          {/* All items on this PO */}
+          {/* All items on this PO — single list that doubles as the receive selector.
+              Click a chip to view its size table; check the box to add it to the shipment
+              built in the green "Receive Shipment" box below (no duplicate item list there). */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Items on this PO ({allLines.length})</span>
+              {!isDropShip&&hasOpenAnywhere&&<span style={{fontSize:10,fontWeight:600,color:'#16a34a'}}>✓ check items to receive</span>}
+            </div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {allLines.map((ln,li)=>{const it=o.items[ln.lineIdx];return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:li===activeLineIdx?'2px solid #2563eb':'1px solid #e2e8f0',background:li===activeLineIdx?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
-                {_itemSwatch(it)}
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
-                <span style={{fontWeight:600}}>{it?.name}</span>
-                <span style={{color:'#64748b'}}>{it?.color}</span>
-              </div>})}
+              {allLines.map((ln,li)=>{
+                const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx]||{};
+                const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number');
+                const rc=pl.received||{},cn=pl.cancelled||{};
+                const lineOpen=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-(rc[sz]||0)-(cn[sz]||0)),0);
+                const lineRcvd=sk.reduce((a,sz)=>a+(rc[sz]||0),0);
+                const canRecv=!isDropShip&&lineOpen>0;
+                const isRecvSel=(editPO._selectedRecvLines||[]).includes(li);
+                const isActive=li===activeLineIdx;
+                return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:isActive?'2px solid #2563eb':isRecvSel?'2px solid #22c55e':'1px solid #e2e8f0',background:isActive?'#dbeafe':isRecvSel?'#f0fdf4':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
+                  {canRecv&&<input type="checkbox" checked={isRecvSel} title="Add to shipment to receive" onClick={e=>e.stopPropagation()} onChange={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isRecvSel?prev.filter(x=>x!==li):[...prev,li]}})} style={{cursor:'pointer',width:15,height:15,accentColor:'#16a34a',flexShrink:0}}/>}
+                  {_itemSwatch(it)}
+                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
+                  <span style={{fontWeight:600}}>{it?.name}</span>
+                  <span style={{color:'#64748b'}}>{it?.color}</span>
+                  {lineOpen>0?<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,padding:'1px 6px'}}>{lineOpen} open</span>:lineRcvd>0?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:4,padding:'1px 6px'}}>✓ received</span>:null}
+                </div>;
+              })}
             </div>
           </div>}
           {/* Product info */}
-          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
             {_itemSwatch(item,26)}
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
             <span className="badge badge-gray">{item.color}</span>
+            <span style={{flex:1,minWidth:8}}/>
+            {totalOpen>0?<span style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{totalOpen} open<span style={{fontWeight:600,color:'#94a3b8',fontSize:11,marginLeft:3}}>of {totalOrdered}</span></span>:totalReceived>0?<span style={{fontSize:13,fontWeight:800,color:'#166534'}}>✓ Fully received</span>:null}
           </div>}
 
           {/* Tracking Numbers */}
@@ -10172,11 +10191,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
               <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800}}>${poTotal.toFixed(2)}</td></tr>
-              {(isDropShip||totalBilled>0)&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
-              {!isDropShip&&<tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>}
+              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
+              {!isDropShip&&totalReceived>0&&<tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>}
               {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>${(totalCancelled*unitCost).toFixed(2)}</td></tr>}
               {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#7c3aed'}}>${(totalInTransit*unitCost).toFixed(2)}</td></tr>}
-              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
+              {hasOpen&&(totalReceived>0||totalCancelled>0||totalInTransit>0)&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12,flexWrap:'wrap',gap:8}}>
@@ -10529,22 +10548,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // For single-item POs, auto-select that item
             const selectedIdxs=allLines.length<=1?[activeLineIdx]:(editPO._selectedRecvLines||[]);
             const recvLines=allRecvLines.filter(r=>selectedIdxs.includes(r.li));
-            const unselectedLines=allRecvLines.filter(r=>!selectedIdxs.includes(r.li));
             return<div key={'recv-multi'} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment{recvLines.length>1?' ('+recvLines.length+' items)':''}</div>
-            {/* Clickable item pills to add/remove from receive */}
-            {allLines.length>1&&<div style={{marginBottom:10}}>
-              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Click items to add to this shipment:</div>
-              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                {allRecvLines.map(r=>{const isSel=selectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:11,display:'flex',gap:4,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
-                  {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>✓</span>:<span style={{color:'#94a3b8',fontSize:13}}>+</span>}
-                  {_itemSwatch(r.item,18)}
-                  <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
-                  <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
-                  <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
-                </div>})}
-              </div>
-            </div>}
             {recvLines.length>0&&<>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
@@ -10601,7 +10606,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
             }}>✓ Receive These Items</button>
             </>}
-            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
+            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Check items in “Items on this PO” above to receive them.</div>}
           </div>})()}
 
           {/* QR / Print Label for full PO */}
