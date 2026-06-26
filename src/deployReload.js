@@ -61,18 +61,28 @@ export function startDeployReloadWatcher(opts = {}) {
   _started = true;
   const intervalMs = Math.max(60000, opts.intervalMs || 180000);
   const isSafe = typeof opts.isSafe === 'function' ? opts.isSafe : () => true;
+  // Upper bound on how long we defer the reload waiting for isSafe(). A tab stuck in a failed-save
+  // retry loop NEVER becomes safe (it always has a pending/failed save) — and that is exactly the tab
+  // whose stale requests hammer the API. Deferring forever means the one tab that most needs the fixed
+  // build is the one that never reloads (the root cause of the recurring save_estimate storms). Past
+  // this deadline we reload regardless: a doomed/looping save will not succeed, and its estimate's
+  // authoritative copy already lives in the DB, which the reload re-fetches. A healthy tab finishes its
+  // save in seconds and reloads via the normal safe path long before this fires.
+  const maxDeferMs = Math.max(30000, opts.maxDeferMs || 90000);
+  let _reloadDeadline = 0;
+  const canReload = () => isSafe() || (_reloadDeadline > 0 && Date.now() >= _reloadDeadline);
 
   // Seed the baseline from the same source we'll compare against, so a freshly-opened tab
   // never reloads on its first read.
   _fingerprint().then((fp) => { if (_baseline == null) _baseline = fp; });
 
   const reloadWhenSafe = () => {
-    if (!isSafe()) { setTimeout(reloadWhenSafe, 5000); return; } // wait for quiescence
+    if (!canReload()) { setTimeout(reloadWhenSafe, 5000); return; } // wait for quiescence (bounded by deadline)
     // Small random delay so a fleet of tabs doesn't reload — and then re-fetch all data —
     // at the same instant, which would itself spike the DB.
     const jitter = 2000 + Math.floor(Math.random() * 18000); // 2–20s
     setTimeout(() => {
-      if (!isSafe()) { reloadWhenSafe(); return; } // re-check right before reloading
+      if (!canReload()) { reloadWhenSafe(); return; } // re-check right before reloading
       try { window.location.reload(); } catch (_) { /* noop */ }
     }, jitter);
   };
@@ -84,6 +94,7 @@ export function startDeployReloadWatcher(opts = {}) {
     if (_baseline == null) { _baseline = fp; return; }
     if (fp === _baseline) return;                 // same build — nothing to do
     _committed = true;
+    _reloadDeadline = Date.now() + maxDeferMs;    // force reload past this point even if never "safe"
     try { console.warn('[deploy-reload] new build detected — reloading when idle'); } catch (_) { /* noop */ }
     reloadWhenSafe();
   }, intervalMs);

@@ -1234,6 +1234,12 @@ const _dbSaveEstimateInner = async (est) => {
   // selecting a customer fires another _diffSave that persists it. This also blocks a stale save from
   // nulling an already-saved estimate's customer.
   if(!est.customer_id){if(!_bgSync&&typeof _dbNotify==='function')_dbNotify('Add a customer before this estimate can be saved.','error');return;}
+  // Stale-write circuit breaker: if a recent save for this estimate was rejected as STALE, don't re-POST
+  // until the cooldown elapses (realtime/poll should have healed the copy by then). Prevents a re-firing
+  // save effect from flooding the DB with STALE_ESTIMATE_WRITE rejections. Treated as a non-failure 'stale'
+  // result so it clears pending and never lands in the failed banner.
+  const _cd=_dbStaleCooldown.get(est.id);
+  if(_cd&&Date.now()<_cd){return 'stale';}
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
@@ -1392,6 +1398,7 @@ const _dbSaveEstimateInner = async (est) => {
         // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
         // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
         return 'stale';
       }
       if(_rpcErr){
@@ -1449,7 +1456,7 @@ const _dbSaveEstimateInner = async (est) => {
     // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
     // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
     if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
-    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(est._version)est._version=est._version+1;
     return true;
@@ -2522,6 +2529,13 @@ const _dbRecentSaves={};// {id: timestamp}
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
 // letting another user's/tab's legitimate art deletions reconcile normally instead of being resurrected.
 const _recentlySavedByMe=id=>!!_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000;
+// Stale-write circuit breaker. When save_estimate rejects a write as STALE (the client's copy is older
+// than the DB), re-POSTing the same copy can never succeed — only reloading the newer rows (realtime/poll)
+// heals it. A save effect that keeps re-firing on a stale estimate therefore floods the API with rejected
+// writes (the ~1000/sec STALE_ESTIMATE_WRITE storms). After a stale rejection we skip further save attempts
+// for that estimate until the cooldown elapses, capping a misbehaving tab at a trickle instead of a storm.
+const _dbStaleCooldown=new Map();// {estimateId: epoch-ms until which to skip saving}
+const _STALE_COOLDOWN_MS=10000;
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
 // not real server-side errors. Backoff: 400ms, 1.2s.
 const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
