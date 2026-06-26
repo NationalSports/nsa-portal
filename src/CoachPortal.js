@@ -269,6 +269,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
+  const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -309,6 +310,36 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const coachAiBuilder=!!customer.coach_ai_builder;
   const coachLivelook=!!customer.coach_livelook;
   const coachBuildOrders=!!customer.coach_build_orders;
+
+  // ── Athletic-director Spend & Promo dashboard data (opt-in via customer.ad_spend_tracking) ──
+  // Rolls up the family root (parent_id||id) + every team beneath it. Spend uses calcOrderTotals
+  // (products + decoration; shipping & tax excluded). Promo reads the owner's merged periods.
+  // Dates are parsed with Date() — order_date/created_at are stored M/D/YYYY, so an ISO string
+  // compare would wrongly drop everything from the current-period filter.
+  const adData=customer.ad_spend_tracking?(()=>{
+    const now=new Date();const y=now.getFullYear();const h1=now.getMonth()<6;
+    const period=h1?{start:y+'-01-01',end:y+'-06-30',label:'Jan–Jun '+y}:{start:y+'-07-01',end:y+'-12-31',label:'Jul–Dec '+y};
+    const pStart=new Date(period.start+'T00:00:00').getTime();const pEnd=new Date(period.end+'T23:59:59').getTime();
+    const parse=v=>{if(!v)return null;let d=new Date(v);if(isNaN(d.getTime()))d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?null:d.getTime();};
+    const inRange=so=>{if(adRange==='all')return true;const t=parse(so.order_date||so.created_at);return t!=null&&t>=pStart&&t<=pEnd;};
+    const adRoot=customer.parent_id||customer.id;
+    const adFamily=(allCustomers||[]).filter(c=>c.id===adRoot||c.parent_id===adRoot);
+    const deptName=(adFamily.find(c=>c.id===adRoot)||customer).name||'Athletic department';
+    const teamCount=adFamily.filter(c=>c.id!==adRoot).length;
+    const teams=adFamily.map(c=>{const isDept=c.id===adRoot;const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);return{id:c.id,name:c.name||'Team',isDept,spend,orders:tSOs.length};}).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
+    const totalSpend=teams.reduce((a,t)=>a+t.spend,0);
+    const maxSpend=teams.reduce((a,t)=>Math.max(a,t.spend),0)||1;
+    const periods=customer.promo_periods||[];
+    const scoped=adRange==='all'?periods:periods.filter(p=>p.period_start===period.start);
+    const allocated=scoped.reduce((a,p)=>a+(p.allocated||0),0);
+    const used=scoped.reduce((a,p)=>a+(p.used||0),0);
+    const remaining=allocated-used;const remainingDisplay=Math.max(0,remaining);const overspent=remaining<0;
+    const hasPromo=periods.length>0;
+    const usedPct=allocated>0?Math.min(100,Math.round(used/allocated*100)):0;
+    const money=n=>'$'+Math.round(n||0).toLocaleString();
+    const money2=n=>'$'+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    return{period,teams,totalSpend,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2};
+  })():null;
 
   // Track portal visit — mark sent documents as viewed by coach
   const _portalTracked=useRef(false);
@@ -1185,6 +1216,85 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Coach store builder — full-screen guided flow
   if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
+  // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
+  if(spendView&&adData){
+    const cpTheme=cpTeamTheme(customer);
+    const{period,teams,totalSpend,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
+    const teamsActive=teams.filter(t=>t.orders>0);
+    const teamsZero=teams.filter(t=>t.orders===0);
+    const kpis=[{label:'Department Spend',value:money(totalSpend),color:cpTheme.primary,sub:(adRange==='all'?'All time':period.label)+' · '+teamsActive.length+' active'}];
+    if(hasPromo){
+      kpis.push({label:'Promo Remaining',value:money2(remainingDisplay),color:remainingDisplay>0?'#15803d':'#64748b',sub:overspent?('Over by '+money2(-remaining)):'Available to use'});
+      kpis.push({label:'Promo Used',value:money2(used),color:'#b45309',sub:'Applied to orders'});
+      kpis.push({label:'Promo Allocated',value:money2(allocated),color:'#1e293b',sub:adRange==='all'?'All periods':period.label});
+    }
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',padding:'32px 16px'}}>
+      <style>{`.ad-teams{display:grid;grid-template-columns:1fr;column-gap:30px}@media(min-width:680px){.ad-teams{grid-template-columns:1fr 1fr}}`}</style>
+      <div style={{maxWidth:960,margin:'0 auto'}}>
+        <button onClick={()=>setSpendView(false)} style={{border:'none',background:'none',color:'#475569',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:14,display:'inline-flex',alignItems:'center',gap:6,padding:0}}>‹ Back to portal</button>
+        <div style={{background:'white',borderRadius:16,overflow:'hidden',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}}>
+          <div style={{background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'22px 26px',borderBottom:`4px solid ${cpTheme.accent}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:14,flexWrap:'wrap'}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:11,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>Athletic Department</div>
+                <div style={{fontSize:21,fontWeight:800,marginTop:3}}>📊 Spend &amp; Promo</div>
+                <div style={{fontSize:12.5,opacity:.85,marginTop:2}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
+              </div>
+              <div style={{display:'inline-flex',background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.25)',borderRadius:999,padding:3,gap:2}}>
+                {[['period',period.label],['all','All time']].map(([k,lbl])=>(
+                  <button key={k} onClick={()=>setAdRange(k)} style={{border:'none',cursor:'pointer',borderRadius:999,padding:'6px 14px',fontSize:12,fontWeight:700,background:adRange===k?'#fff':'transparent',color:adRange===k?cpTheme.primary:'rgba(255,255,255,.92)'}}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{padding:'22px 26px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12}}>
+              {kpis.map((k,i)=>(
+                <div key={i} style={{background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:12,padding:'14px 16px'}}>
+                  <div style={{fontSize:10.5,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>{k.label}</div>
+                  <div style={{fontSize:24,fontWeight:900,color:k.color,marginTop:4,lineHeight:1.05}}>{k.value}</div>
+                  <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>{k.sub}</div>
+                </div>
+              ))}
+            </div>
+            {hasPromo&&allocated>0&&<div style={{marginTop:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,fontWeight:700,color:'#64748b',marginBottom:5}}>
+                <span>Promo balance — {adRange==='all'?'all periods':period.label}</span>
+                <span style={{color:overspent?'#b45309':'#64748b'}}>{money2(used)} of {money2(allocated)}{overspent?' · over budget':''}</span>
+              </div>
+              <div style={{height:10,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}>
+                <div style={{height:'100%',width:usedPct+'%',background:overspent?'linear-gradient(90deg,#f59e0b,#b45309)':'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999}}/>
+              </div>
+            </div>}
+            <div style={{marginTop:22,marginBottom:8,fontSize:12,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>Spend by team</div>
+            {teamsActive.length===0?
+              <div style={{color:'#94a3b8',fontSize:13,padding:'20px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend {adRange==='all'?'on record yet':'in '+period.label}.{adRange!=='all'?<> Try <button onClick={()=>setAdRange('all')} style={{border:'none',background:'none',color:cpTheme.primary,fontWeight:700,cursor:'pointer',textDecoration:'underline',padding:0,font:'inherit'}}>All time</button>.</>:null}</div>:
+              <div className="ad-teams">
+                {teamsActive.map(t=>{const w=Math.round(t.spend/maxSpend*100);const share=totalSpend>0?Math.round(t.spend/totalSpend*100):0;
+                  return<div key={t.id} style={{padding:'11px 0',borderTop:'1px solid #f1f5f9'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:6}}>
+                      <span style={{fontWeight:700,fontSize:13.5,color:'#1e293b',minWidth:0,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}</span>
+                      <span style={{textAlign:'right',flexShrink:0,whiteSpace:'nowrap'}}><span style={{fontWeight:800,fontSize:13.5,color:cpTheme.primary}}>{money2(t.spend)}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:6}}>{t.orders} · {share}%</span></span>
+                    </div>
+                    <div style={{height:7,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:w+'%',background:cpTheme.accent,borderRadius:999}}/></div>
+                  </div>;
+                })}
+              </div>}
+            {teamsZero.length>0&&<details style={{marginTop:16}}>
+              <summary style={{cursor:'pointer',fontSize:12.5,fontWeight:700,color:'#64748b'}}>{teamsZero.length} team{teamsZero.length!==1?'s':''} with no orders {adRange==='all'?'on record':'in '+period.label}</summary>
+              <div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:6}}>
+                {teamsZero.map(t=><span key={t.id} style={{fontSize:12,color:'#64748b',background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:999,padding:'4px 11px'}}>{t.name}</span>)}
+              </div>
+            </details>}
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:20,lineHeight:1.5,borderTop:'1px solid #f1f5f9',paddingTop:14}}>
+              Spend reflects products &amp; decoration only — shipping and tax are excluded.{hasPromo?' Promo dollars are shared across the whole department.':' No promo program is on file for this account.'}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>;
+  }
+
   // Main portal view — header wears the team's own colors
   const cpTheme = cpTeamTheme(customer);
   return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
@@ -1207,104 +1317,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       <div style={{padding:'20px 28px'}}>
         <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
 
-        {/* ── Athletic-director "Team Spend & Promo" dashboard — opt-in (customer.ad_spend_tracking).
-            Rolls up the whole department (parent + every team under it), so it works whether the AD
-            logs into the parent account or a department sub-account that sits alongside the teams.
-            Spend = products + decoration; shipping & tax are excluded. ── */}
-        {customer.ad_spend_tracking&&(()=>{
-          const now=new Date();const y=now.getFullYear();const h1=now.getMonth()<6;
-          const period=h1?{start:y+'-01-01',end:y+'-06-30',label:'Jan–Jun '+y}:{start:y+'-07-01',end:y+'-12-31',label:'Jul–Dec '+y};
-          const inRange=so=>{if(adRange==='all')return true;const d=(so.order_date||so.created_at||'').slice(0,10);return d>=period.start&&d<=period.end;};
-          // The athletic department = this account's family root (the parent customer) plus every
-          // team beneath it. Using the root means a department sub-account (e.g. "…Athletics") that
-          // is itself a child still rolls up all of its sibling teams, not just its own orders.
-          const adRoot=customer.parent_id||customer.id;
-          const adFamily=(allCustomers||[]).filter(c=>c.id===adRoot||c.parent_id===adRoot);
-          const deptName=(adFamily.find(c=>c.id===adRoot)||customer).name||'Athletic department';
-          // One row per team, plus the department account's own direct orders when present.
-          const teams=adFamily.map(c=>{
-            const isDept=c.id===adRoot;
-            const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));
-            const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);
-            return{id:c.id,name:c.name||'Team',isDept,spend,orders:tSOs.length};
-          }).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
-          const totalSpend=teams.reduce((a,t)=>a+t.spend,0);
-          const maxSpend=teams.reduce((a,t)=>Math.max(a,t.spend),0)||1;
-          // Promo balance is owned by the AD (parent) and tracked per 6-month period.
-          const periods=customer.promo_periods||[];
-          const scoped=adRange==='all'?periods:periods.filter(p=>p.period_start===period.start);
-          const allocated=scoped.reduce((a,p)=>a+(p.allocated||0),0);
-          const used=scoped.reduce((a,p)=>a+(p.used||0),0);
-          const remaining=allocated-used;
-          const hasPromo=periods.length>0;
-          const money=n=>'$'+Math.round(n||0).toLocaleString();
-          const money2=n=>'$'+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-          const kpis=[{label:'Department Spend',value:money(totalSpend),color:cpTheme.primary,sub:adRange==='all'?'All time · all teams':period.label+' · all teams'}];
-          if(hasPromo){
-            kpis.push({label:'Promo Remaining',value:money2(remaining),color:remaining>0?'#15803d':'#64748b',sub:'Available to use'});
-            kpis.push({label:'Promo Used',value:money2(used),color:'#b45309',sub:'Applied to orders'});
-            kpis.push({label:'Promo Allocated',value:money2(allocated),color:'#1e293b',sub:adRange==='all'?'All periods':period.label});
-          }
-          const usedPct=allocated>0?Math.min(100,Math.round(used/allocated*100)):0;
-          return<div style={{border:'1px solid #e2e8f0',borderRadius:16,overflow:'hidden',marginBottom:24,boxShadow:'0 2px 14px rgba(15,23,42,.06)'}}>
-            {/* Themed header strip */}
-            <div style={{background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'14px 18px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:15,fontWeight:800,letterSpacing:'.01em'}}>📊 Team Spend &amp; Promo</div>
-                <div style={{fontSize:11.5,opacity:.85,marginTop:1}}>Athletic department overview · {teams.filter(t=>!t.isDept).length} team{teams.filter(t=>!t.isDept).length!==1?'s':''}</div>
-              </div>
-              <div style={{display:'inline-flex',background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.25)',borderRadius:999,padding:3,gap:2}}>
-                {[['period',period.label],['all','All time']].map(([k,lbl])=>(
-                  <button key={k} onClick={()=>setAdRange(k)} style={{border:'none',cursor:'pointer',borderRadius:999,padding:'5px 13px',fontSize:11.5,fontWeight:700,background:adRange===k?'#fff':'transparent',color:adRange===k?cpTheme.primary:'rgba(255,255,255,.92)',transition:'background .12s'}}>{lbl}</button>
-                ))}
-              </div>
-            </div>
-            <div style={{padding:'18px',background:'#fff'}}>
-              {/* KPI row */}
-              <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
-                {kpis.map((k,i)=>(
-                  <div key={i} style={{flex:'1 1 150px',minWidth:140,background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:12,padding:'13px 15px'}}>
-                    <div style={{fontSize:10.5,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>{k.label}</div>
-                    <div style={{fontSize:23,fontWeight:900,color:k.color,marginTop:4,lineHeight:1.05}}>{k.value}</div>
-                    <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>{k.sub}</div>
-                  </div>
-                ))}
-              </div>
-              {/* Promo balance bar */}
-              {hasPromo&&allocated>0&&<div style={{marginTop:14}}>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:11,fontWeight:700,color:'#64748b',marginBottom:5}}>
-                  <span>Promo balance — {adRange==='all'?'all periods':period.label}</span><span>{money2(used)} used of {money2(allocated)}</span>
-                </div>
-                <div style={{height:10,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}>
-                  <div style={{height:'100%',width:usedPct+'%',background:'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999,transition:'width .3s'}}/>
-                </div>
-              </div>}
-              {/* Spend by team */}
-              <div style={{marginTop:18}}>
-                <div style={{fontSize:12,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8',marginBottom:6}}>Spend by team</div>
-                {teams.length===0?
-                  <div style={{color:'#94a3b8',fontSize:13,padding:'18px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend in this period yet.</div>:
-                  teams.map(t=>{const w=Math.round(t.spend/maxSpend*100);const share=totalSpend>0?Math.round(t.spend/totalSpend*100):0;
-                    return<div key={t.id} style={{padding:'10px 0',borderTop:'1px solid #f1f5f9'}}>
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:6}}>
-                        <div style={{fontWeight:700,fontSize:13.5,color:'#1e293b',minWidth:0,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}{t.isDept?<span style={{fontSize:10.5,fontWeight:700,color:'#94a3b8'}}> · Dept. direct</span>:null}</div>
-                        <div style={{textAlign:'right',flexShrink:0,whiteSpace:'nowrap'}}>
-                          <span style={{fontWeight:800,fontSize:14,color:cpTheme.primary}}>{money2(t.spend)}</span>
-                          <span style={{fontSize:11,color:'#94a3b8',marginLeft:7}}>{t.orders} order{t.orders!==1?'s':''}{totalSpend>0?' · '+share+'%':''}</span>
-                        </div>
-                      </div>
-                      <div style={{height:8,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}>
-                        <div style={{height:'100%',width:w+'%',background:cpTheme.accent,borderRadius:999,transition:'width .3s'}}/>
-                      </div>
-                    </div>;
-                  })}
-              </div>
-              <div style={{fontSize:11,color:'#94a3b8',marginTop:14,lineHeight:1.5}}>
-                Spend reflects products &amp; decoration only — shipping and tax are excluded.{hasPromo?' Promo dollars are shared across the whole department.':' No promo program is on file for this account.'}
-              </div>
-            </div>
-          </div>;
-        })()}
+        {/* AD Spend & Promo — compact entry point; the full dashboard opens as its own view. */}
+        {adData&&<button onClick={()=>setSpendView(true)} style={{width:'100%',textAlign:'left',cursor:'pointer',border:'none',borderRadius:14,marginBottom:20,padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,color:'#fff',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,boxShadow:'0 2px 12px rgba(15,23,42,.12)'}}>
+          <span style={{display:'flex',alignItems:'center',gap:12,minWidth:0}}>
+            <span style={{fontSize:24}}>📊</span>
+            <span style={{minWidth:0}}>
+              <span style={{display:'block',fontSize:15,fontWeight:800}}>Spend &amp; Promo Dashboard</span>
+              <span style={{display:'block',fontSize:12,opacity:.85}}>{adData.deptName} · {adData.teamCount} team{adData.teamCount!==1?'s':''}</span>
+            </span>
+          </span>
+          <span style={{display:'flex',alignItems:'center',gap:14,flexShrink:0}}>
+            {adData.hasPromo&&<span style={{textAlign:'right'}}>
+              <span style={{display:'block',fontSize:10,fontWeight:700,letterSpacing:'.06em',opacity:.8}}>PROMO LEFT</span>
+              <span style={{display:'block',fontSize:16,fontWeight:800}}>{adData.money2(adData.remainingDisplay)}</span>
+            </span>}
+            <span style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'9px 14px',whiteSpace:'nowrap'}}>View →</span>
+          </span>
+        </button>}
 
         <div className="cp-grid">
 
