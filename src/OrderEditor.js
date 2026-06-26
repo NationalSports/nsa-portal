@@ -96,7 +96,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -184,7 +184,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -2849,6 +2849,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isSO&&o.omg_store_id&&onNavOmgStore&&<div style={{fontSize:11,color:'#166534'}}>🏪 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">OMG Store</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
+          {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
+            <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Rep:</span>
+            {editingRep
+              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}>
+                <option value="">— None —</option>
+                {REPS.filter(r=>r.is_active!==false&&(r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#94a3b8'}} onClick={()=>setEditingRep(false)}>Cancel</button></>
+              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
+          </div>}
           {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
