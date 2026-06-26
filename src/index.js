@@ -46,6 +46,12 @@ const isTeamStores = _path === '/team-stores' || _path === '/team-stores/';
 // App short-circuits these to its own landing page BEFORE any login gate, so
 // they must load App directly rather than the pre-auth gate below.
 const isAuthFlow = _path === '/auth/setup' || _path === '/auth/reset';
+// /onboarding is the invite-only new-hire packet. App short-circuits this to the
+// token-gated OnboardingWizard BEFORE any login gate, so — like the auth flows —
+// it must load App directly. Without this it falls through to MainApp →
+// LoginGate, which is exactly what a logged-out new hire (and the /welcome
+// iframe) was hitting.
+const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
 // site at /coach. It's login-free: App short-circuits to the read-only
 // CoachPortal for this param (data via anon RLS), so like the auth flows it must
@@ -170,7 +176,7 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow || isCoachPortal
+        : isAuthFlow || isCoachPortal || isOnboarding
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>
