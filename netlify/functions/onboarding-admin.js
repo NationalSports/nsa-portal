@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
 const { buildPacketFiles, zipFiles, safeName, formatPayComponents } = require('./_onboardingPacket');
 const { decryptField } = require('./_onboardingCrypto');
+const { brandedEmail } = require('./_onboardingEmail');
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -38,26 +39,17 @@ async function sendInviteEmail(invite) {
       sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: invite.personal_email, name: invite.full_name || invite.personal_email }],
       subject: 'Welcome to National Sports Apparel — complete your new-hire paperwork',
-      htmlContent: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto">
-          <div style="background:#191919;color:white;padding:20px 22px;border-radius:8px 8px 0 0">
-            <h2 style="margin:0;font-size:18px">Welcome to the team 🎉</h2>
-          </div>
-          <div style="background:white;padding:22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px">
-            <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 14px">${hello}</p>
-            <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 16px">
-              We're excited to have you joining National Sports Apparel${invite.position_title ? ` as our <strong>${esc(invite.position_title)}</strong>` : ''}.
-              Before your first day, please complete your new-hire paperwork online — your personal info, direct deposit,
-              emergency contacts, tax forms, the employee handbook, and a few required California notices. It takes about 15–20 minutes.
-            </p>
-            <a href="${esc(link)}" style="display:inline-block;background:#191919;color:#fff;border-radius:8px;padding:12px 26px;font-weight:700;text-decoration:none;font-size:15px">Start my paperwork</a>
-            <p style="font-size:12.5px;color:#64748b;line-height:1.6;margin:18px 0 0">
-              This secure link is just for you (<strong>${esc(invite.personal_email)}</strong>) and expires in 30 days.
-              You can save and come back anytime.
-            </p>
-            <p style="font-size:11.5px;color:#94a3b8;margin-top:16px">Questions? Just reply to this email.</p>
-          </div>
-        </div>`,
+      htmlContent: brandedEmail({
+        preheader: 'Complete your new-hire paperwork online — about 15–20 minutes.',
+        heading: 'Welcome to the Team',
+        bodyHtml:
+          `<p style="margin:0 0 14px;">${hello}</p>` +
+          `<p style="margin:0 0 8px;">We're excited to have you joining National Sports Apparel${invite.position_title ? ` as our <strong>${esc(invite.position_title)}</strong>` : ''}.</p>` +
+          `<p style="margin:0;">Before your first day, please complete your new-hire paperwork online — your personal info, direct deposit, emergency contacts, tax forms, the employee handbook, and a few required California notices. It takes about 15–20 minutes.</p>`,
+        ctaText: 'Start My Paperwork',
+        ctaUrl: esc(link),
+        note: `This secure link is just for you (<strong>${esc(invite.personal_email)}</strong>) and expires in 30 days. You can save and come back anytime. Questions? Just reply to this email.`,
+      }),
     }),
   });
   if (!res.ok) { return { emailed: false, error: `Send failed (${res.status})` }; }

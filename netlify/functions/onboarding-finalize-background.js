@@ -13,6 +13,7 @@
 //      by _googleDrive.js (Drive copy is skipped if those are absent).
 const { getSupabaseAdmin } = require('./_shared');
 const { buildPacketFiles, zipFiles, safeName } = require('./_onboardingPacket');
+const { brandedEmail } = require('./_onboardingEmail');
 const drive = require('./_googleDrive');
 
 const HR_EMAIL = () => process.env.ONBOARDING_HR_EMAIL || 'steve@nationalsportsapparel.com';
@@ -30,17 +31,15 @@ async function emailPacketToHr(invite, zipBuffer, filename, driveUrl) {
       sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: HR_EMAIL() }],
       subject: `New-hire packet complete — ${invite.full_name}`,
-      htmlContent: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto">
-          <h2 style="font-size:17px;color:#0f172a">${invite.full_name} finished onboarding ✅</h2>
-          <p style="font-size:14px;color:#334155;line-height:1.6">
-            ${invite.full_name}${invite.position_title ? ` (${invite.position_title})` : ''} completed their new-hire paperwork.
-            The full packet — forms, tax elections, handbook acknowledgment, California notices, and the review audit log —
-            is attached as a ZIP.
-          </p>
-          ${driveLine}
-          <p style="font-size:12px;color:#94a3b8">Sensitive fields (SSN, bank) are included in the packet for payroll and should be handled accordingly.</p>
-        </div>`,
+      htmlContent: brandedEmail({
+        preheader: `${invite.full_name} finished onboarding — packet attached.`,
+        heading: 'New-Hire Packet Complete',
+        bodyHtml:
+          `<p style="margin:0 0 12px;"><strong>${invite.full_name}</strong>${invite.position_title ? ` (${invite.position_title})` : ''} completed their new-hire paperwork.</p>` +
+          `<p style="margin:0;">The full packet — forms, tax elections, handbook acknowledgment, California notices, and the review audit log — is attached as a ZIP.</p>` +
+          driveLine,
+        note: 'Sensitive fields (SSN, bank) are included in the packet for payroll and should be handled accordingly.',
+      }),
       attachment: [{ content: zipBuffer.toString('base64'), name: filename }],
     }),
   });
