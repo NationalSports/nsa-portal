@@ -6504,12 +6504,13 @@ export default function App(){
   const[acTab,setAcTab]=useState('notifs');// notifs | todos
   const[acNotifSort,setAcNotifSort]=useState('type');// type | date
   const[acTodoSort,setAcTodoSort]=useState('category');// category | date | priority
+  const[acTodoCats,setAcTodoCats]=useState([]);// selected to-do categories ([] = show all)
   const[acSearch,setAcSearch]=useState('');
   const[acMsgKey,setAcMsgKey]=useState(null);// dismissKey of the row whose message composer is open
   const[acMsgText,setAcMsgText]=useState('');
   const[acDateKey,setAcDateKey]=useState(null);// dismissKey of the row whose expected-date editor is open
   const[acDateVal,setAcDateVal]=useState('');
-  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
+  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcTodoCats([]);setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
   // Change a to-do's linked sales order's "expected by" date (e.g. custom uniforms need a longer lead time).
   // Applies immediately (val passed in) so it doesn't depend on a separate Save click — native date
   // pickers can swallow the first click after the calendar closes.
@@ -8450,7 +8451,11 @@ export default function App(){
       const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
       const _q=acSearch.trim().toLowerCase();
       const _matchQ=t=>!_q||((t.msg||'').toLowerCase().includes(_q)||(t.detail||'').toLowerCase().includes(_q));
-      const notifs=_allNotifs.filter(_matchQ),todos=_allTodos.filter(_matchQ);
+      const notifs=_allNotifs.filter(_matchQ);
+      // To-do category filter chips ([] = show all). Counts come from the pre-search set so chips stay stable.
+      const _todoCatCounts={};_allTodos.forEach(t=>{const c=_todoCategory(t);_todoCatCounts[c]=(_todoCatCounts[c]||0)+1});
+      const _todoCatChips=_CAT_ORDER.filter(c=>_todoCatCounts[c]).map(c=>({cat:c,label:_CAT_LABELS[c],n:_todoCatCounts[c]}));
+      const todos=_allTodos.filter(_matchQ).filter(t=>!acTodoCats.length||acTodoCats.includes(_todoCategory(t)));
       const _rk=t=>t.dismissKey||((t.type||'')+':'+(t.so?.id||t.so_id||'')+':'+(t.date||''));
       const _hasSO=t=>!!(t.so||t.so_id);
       // Build display groups for the active tab
@@ -8508,6 +8513,13 @@ export default function App(){
             <input value={acSearch} onChange={e=>setAcSearch(e.target.value)} placeholder="🔍 Search…" style={{fontSize:12,padding:'5px 10px',borderRadius:6,border:'1px solid #e2e8f0',minWidth:180,flex:'0 1 240px'}}/>
             {acTab==='notifs'&&notifs.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}} onClick={_markAllRead}>✓ Mark all read</button>}
           </div>
+          {/* To-do type filter chips */}
+          {acTab==='todos'&&_todoCatChips.length>0&&<div style={{padding:'8px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b',marginRight:2}}>Show:</span>
+            <button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(acTodoCats.length===0?'#1e293b':'#cbd5e1'),background:acTodoCats.length===0?'#1e293b':'white',color:acTodoCats.length===0?'white':'#475569'}}>All ({_allTodos.length})</button>
+            {_todoCatChips.map(ch=>{const on=acTodoCats.includes(ch.cat);return<button key={ch.cat} type="button" onClick={()=>setAcTodoCats(prev=>prev.includes(ch.cat)?prev.filter(c=>c!==ch.cat):[...prev,ch.cat])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(on?'#2563eb':'#cbd5e1'),background:on?'#eff6ff':'white',color:on?'#1e40af':'#475569'}}>{ch.label} ({ch.n})</button>})}
+            {acTodoCats.length>0&&<button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 8px',borderRadius:6,cursor:'pointer',border:'none',background:'none',color:'#94a3b8',marginLeft:2}}>Clear</button>}
+          </div>}
           {/* Body */}
           <div style={{padding:0,overflowY:'auto',flex:1}}>
             {groups.length===0||groups.every(g=>g.items.length===0)?<div className="empty" style={{padding:40,textAlign:'center',color:'#94a3b8'}}>{acTab==='notifs'?'No notifications':'All clear — no to-do items'}</div>:
