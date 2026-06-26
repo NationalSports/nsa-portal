@@ -1114,6 +1114,17 @@ const _estDiffCmp=(e)=>JSON.stringify({
   items:(e.items||[]).map(it=>({..._pick(it,_itemCols),decorations:(it.decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))})),
   art_files:(e.art_files||[]).map(a=>_pick(a,_artCols)),
 });
+// Phantom-save guard for sales orders — DELIBERATELY CONSERVATIVE because the SO save is the most
+// data-loss-sensitive path in the app. It differs from _diffCmp ONLY by stripping, from each line
+// item, the scalar fields that are NOT in _itemCols — i.e. exactly the fields the SO save itself
+// discards (_pick(itemData,_itemCols) in _dbSaveSOInner). Those fields (recomputed-every-load
+// _sizeCosts/_sizeSells/_colorImage/etc.) can never be persisted, so dropping them from change-
+// detection can never hide a savable change → zero data-loss risk by construction. EVERYTHING else —
+// all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
+// is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
+// stop counting as changes.
+const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
   // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
@@ -4269,7 +4280,8 @@ export default function App(){
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
-      const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReloadGroups=(groups,delay=10000)=>{groups.forEach(g=>_rtPending.add(g));if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReload=(tbl,delay=10000)=>debouncedReloadGroups([_RT_GROUP[tbl]||'__all__'],delay);
       // Subscribe to core tables + pick_lines for instant warehouse sync.
       // products is intentionally excluded: the full 53k-row catalog re-download triggered
       // on every product realtime event consumed ~34% of DB CPU. The 60s poll keeps
@@ -4285,9 +4297,12 @@ export default function App(){
         });
         channels.push(ch);
       });
-      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
-      // Tab regained focus: full reload, short 1s debounce — a deliberate user action, keep it snappy
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload(null,1000)}};
+      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff.
+      // Keep focus refresh scoped to operational tables. A full reload also drags the cold catalog
+      // (products/product_inventory + app_state image rows), so normal tab switching can otherwise
+      // multiply into a large PostgREST burst across every open portal tab.
+      const _FOCUS_RELOAD_GROUPS=['estimates','sales_orders','invoices','messages','assigned_todos'];
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReloadGroups(_FOCUS_RELOAD_GROUPS,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -4344,6 +4359,11 @@ export default function App(){
     const schedulePoll=()=>{if(cancelled)return;const interval=_getPollInterval();pollTimer=setTimeout(runPoll,interval)};
     const runPoll=async()=>{
       if(cancelled)return;
+      // Skip polling while the tab is hidden — a backgrounded tab nobody's looking at would only
+      // add redundant DB load. onVis (realtime effect) refreshes the operational tables the moment
+      // the tab is shown again, so freshness on return is covered. Keep the timer alive so polling
+      // auto-resumes (cold catalog data refreshes on the poll's periodic full-sync cycle).
+      if(typeof document!=='undefined'&&document.hidden){schedulePoll();return}
       if(!_dbReady.current){schedulePoll();return}
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
@@ -4538,6 +4558,36 @@ export default function App(){
     return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── Idle auto-reload: reclaim abandoned/stale tabs (and break any stuck save loop) ───
+  // A tab with no pointer/keyboard input for IDLE_RELOAD_MS auto-saves any pending work, then reloads
+  // onto the latest build. This clears stale code from long-open tabs and, crucially, breaks a client
+  // stuck in a save loop: unlike the deploy-reload above (which waits for saves to be idle — a
+  // *storming* tab can never satisfy that), this does ONE bounded autosave/flush and then reloads
+  // REGARDLESS, so a stuck loop can't hold the tab hostage. Active tabs never reload — any input
+  // resets the timer; idle/abandoned background tabs do, which is the point.
+  React.useEffect(()=>{
+    if(typeof window==='undefined')return;
+    const IDLE_RELOAD_MS=15*60*1000; // 15 minutes of no user input
+    let lastAct=Date.now();let fired=false;
+    const mark=()=>{lastAct=Date.now()};
+    window.addEventListener('pointerdown',mark,{capture:true,passive:true});
+    window.addEventListener('keydown',mark,{capture:true,passive:true});
+    const tick=async()=>{
+      if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
+      fired=true; // commit — don't re-fire while we flush
+      try{
+        window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts
+        // Wait briefly for pending saves to drain, but NEVER block forever — a stuck/looping save must
+        // not prevent the reload (that is exactly what pins a storming tab). Hard 5s cap.
+        const started=Date.now();
+        while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
+      }catch(_){/* best effort */}
+      try{window.location.reload()}catch(_){/* noop */}
+    };
+    const iv=setInterval(tick,60000); // check every minute
+    return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
@@ -4619,7 +4669,7 @@ export default function App(){
   };
 
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
-  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
