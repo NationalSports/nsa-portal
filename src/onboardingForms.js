@@ -30,6 +30,34 @@ export const PAY_TYPES = [
   { key: 'draw_commission', label: 'Draw + Commission' },
 ];
 
+// Pay can stack — a hire might be salary + commission, hourly + commission, a
+// 1099 with a draw, etc. Each selected component captures its own amount/basis.
+export const PAY_COMPONENT_TYPES = [
+  { key: 'salary', label: 'Salary', amount: true, periods: ['year', 'month'], defPeriod: 'year' },
+  { key: 'hourly', label: 'Hourly', amount: true, periods: ['hour'], defPeriod: 'hour' },
+  { key: 'commission', label: 'Commission', basis: true },
+  { key: 'draw', label: 'Draw', amount: true, periods: ['month', 'week'], defPeriod: 'month', recoverable: true },
+  { key: 'flat_1099', label: '1099 Contract', amount: true, periods: ['project', 'month', 'year'], defPeriod: 'project' },
+  { key: 'bonus', label: 'Bonus', amount: true, periods: ['year', 'quarter'], defPeriod: 'year' },
+];
+
+const _money = (a) => { const n = Number(String(a).replace(/[^0-9.]/g, '')); return isNaN(n) ? String(a || '') : '$' + n.toLocaleString(); };
+
+// Human summary, e.g. "Salary $60,000/year + Commission (30% of gross profit)".
+export function formatPayComponents(components) {
+  if (!Array.isArray(components) || !components.length) return '';
+  return components.map((c) => {
+    if (!c || !c.type) return '';
+    if (c.type === 'commission') return `Commission (${c.basis || 'see agreement'})`;
+    if (c.type === 'hourly') return `${_money(c.amount)}/hr`;
+    if (c.type === 'draw') return `${_money(c.amount)}/${c.period || 'month'} draw${c.recoverable ? ' (recoverable)' : ''}`;
+    if (c.type === 'salary') return `Salary ${_money(c.amount)}/${c.period || 'year'}`;
+    if (c.type === 'flat_1099') return `1099 ${_money(c.amount)}${c.period ? '/' + c.period : ''}`;
+    if (c.type === 'bonus') return `Bonus ${_money(c.amount)}${c.period ? '/' + c.period : ''}`;
+    return `${c.type} ${_money(c.amount)}`;
+  }).filter(Boolean).join('  +  ');
+}
+
 // California new-hire notices. `key` matches the acknowledgments keys the wizard
 // and the packet PDF use (ca:<...>).
 export const CA_NOTICES = [

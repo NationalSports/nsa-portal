@@ -10,7 +10,7 @@ import { NSA } from './constants';
 import { HANDBOOK, HANDBOOK_SECTION_COUNT } from './onboardingHandbook';
 import {
   CA_NOTICES, AT_WILL_STATEMENT, WIZARD_STEPS, FILING_STATUSES, ACCOUNT_TYPES,
-  ESIGN_CONSENT, CPRA_NOTICE,
+  ESIGN_CONSENT, CPRA_NOTICE, formatPayComponents,
 } from './onboardingForms';
 
 const API = '/.netlify/functions/onboarding-public';
@@ -19,6 +19,8 @@ const nowISO = () => new Date().toISOString();
 // page already shows the NSA header/footer, so we drop our own dark header and
 // just keep a slim progress bar.
 const EMBED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
+// Pull the staff-entered commission basis (if any) to prefill the commission step.
+const _commissionBasis = (invite) => { const c = (invite?.pay_components || []).find((x) => x && x.type === 'commission'); return c ? (c.basis || '') : ''; };
 
 // ── styles ────────────────────────────────────────────────────────────────
 const C = {
@@ -310,6 +312,7 @@ function Welcome({ invite }) {
         <div><strong>Position:</strong> {invite?.position_title || '—'}</div>
         <div><strong>Supervisor:</strong> {invite?.supervisor || '—'}</div>
         {invite?.hire_date && <div><strong>Start date:</strong> {new Date(invite.hire_date).toLocaleDateString()}</div>}
+        {formatPayComponents(invite?.pay_components) && <div><strong>Compensation:</strong> {formatPayComponents(invite.pay_components)}</div>}
         <div><strong>Email on file:</strong> {invite?.personal_email}</div>
         {invite?.nsa_email && <div><strong>Your NSA email:</strong> {invite.nsa_email}</div>}
       </div>
@@ -447,8 +450,8 @@ function Commission({ invite, get, setField, signatures, setSig, acks, setAck })
     <div>
       <H sub="California Labor Code § 2751 requires a signed written commission agreement.">Commission Agreement</H>
       <div style={{ background: '#f8fafc', border: '1px solid ' + C.line, borderRadius: 10, padding: 16, fontSize: 13.5, color: '#334155', lineHeight: 1.7 }}>
-        <div><strong>Base draw:</strong> {invite?.pay_rate || '—'}</div>
-        <Field label="Commission is calculated on"><Text value={get('commission.basis')} onChange={(v) => setField('commission.basis', v)} placeholder="e.g. 30% of gross profit on your sales" /></Field>
+        <div><strong>Your compensation:</strong> {formatPayComponents(invite?.pay_components) || invite?.pay_rate || '—'}</div>
+        <Field label="Commission is calculated on"><Text value={get('commission.basis') || _commissionBasis(invite)} onChange={(v) => setField('commission.basis', v)} placeholder="e.g. 30% of gross profit on your sales" /></Field>
         <Field label="Additional commission terms (as discussed with your supervisor)"><Text value={get('commission.terms')} onChange={(v) => setField('commission.terms', v)} placeholder="Draw recovery, payment timing, chargebacks, etc." /></Field>
       </div>
       <Check checked={!!acks.commission_agreement} onChange={(v) => setAck(v ? { at: nowISO() } : undefined)}>

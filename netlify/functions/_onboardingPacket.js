@@ -8,6 +8,23 @@ const { decryptField, maskTail } = require('./_onboardingCrypto');
 const HANDBOOK_SECTION_COUNT = 43; // keep in sync with src/onboardingHandbook.js
 const yn = (v) => (v ? 'Yes' : 'No');
 
+// Mirror of formatPayComponents in src/onboardingForms.js (kept in sync by hand;
+// frontend is ESM, functions are CJS). Pay can stack, so we summarize the set.
+const _money = (a) => { const n = Number(String(a).replace(/[^0-9.]/g, '')); return isNaN(n) ? String(a || '') : '$' + n.toLocaleString(); };
+function formatPayComponents(components) {
+  if (!Array.isArray(components) || !components.length) return '';
+  return components.map((c) => {
+    if (!c || !c.type) return '';
+    if (c.type === 'commission') return `Commission (${c.basis || 'see agreement'})`;
+    if (c.type === 'hourly') return `${_money(c.amount)}/hr`;
+    if (c.type === 'draw') return `${_money(c.amount)}/${c.period || 'month'} draw${c.recoverable ? ' (recoverable)' : ''}`;
+    if (c.type === 'salary') return `Salary ${_money(c.amount)}/${c.period || 'year'}`;
+    if (c.type === 'flat_1099') return `1099 ${_money(c.amount)}${c.period ? '/' + c.period : ''}`;
+    if (c.type === 'bonus') return `Bonus ${_money(c.amount)}${c.period ? '/' + c.period : ''}`;
+    return `${c.type} ${_money(c.amount)}`;
+  }).filter(Boolean).join('  +  ');
+}
+
 async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) {
   const data = (sub && sub.data) || {};
   const sig = (sub && sub.signatures) || {};
@@ -54,6 +71,9 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
     phone: process.env.EMPLOYER_PHONE || '',
     wc: process.env.WORKERS_COMP_CARRIER || '',
   };
+  const payRows = (Array.isArray(invite.pay_components) && invite.pay_components.length)
+    ? invite.pay_components.map((c, i) => ({ type: 'field', label: `Rate ${i + 1}`, value: formatPayComponents([c]) }))
+    : [{ type: 'field', label: 'Rate', value: invite.pay_rate }];
   docs.push({
     name: '00b_Wage_Theft_Prevention_Notice.pdf',
     pdf: await renderDocument({
@@ -63,8 +83,7 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
         { type: 'field', label: 'Name', value: p.full_name || invite.full_name },
         { type: 'field', label: 'Start Date', value: fmtDate(invite.hire_date) },
         { type: 'heading', text: 'Rate(s) of Pay' },
-        { type: 'field', label: 'Pay Basis', value: invite.pay_type === 'draw_commission' ? 'Draw + commission' : (invite.pay_type || '') },
-        { type: 'field', label: 'Rate', value: invite.pay_rate },
+        ...payRows,
         { type: 'field', label: 'Overtime Rate (if non-exempt)', value: 'Per California law (1.5× / 2× regular rate as applicable)' },
         { type: 'field', label: 'Regular Payday', value: process.env.EMPLOYER_PAYDAY || 'As posted by the employer' },
         { type: 'field', label: 'Allowances claimed against minimum wage', value: 'None' },
@@ -91,7 +110,7 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
         { type: 'field', label: 'Supervisor', value: invite.supervisor },
         { type: 'field', label: 'Hire Date', value: fmtDate(invite.hire_date) },
         { type: 'field', label: 'Employment Type', value: invite.employment_type === 'contractor_1099' ? 'Contracted 1099' : 'W-2 Employee' },
-        { type: 'field', label: 'Pay', value: [invite.pay_type, invite.pay_rate].filter(Boolean).join(' — ') },
+        { type: 'field', label: 'Compensation', value: formatPayComponents(invite.pay_components) || [invite.pay_type, invite.pay_rate].filter(Boolean).join(' — ') },
         { type: 'field', label: 'Commission Eligible', value: yn(invite.commission_eligible) },
         { type: 'rule' },
         { type: 'heading', text: 'Employee Information' },
@@ -285,4 +304,4 @@ async function zipFiles(files) {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
-module.exports = { buildPacket, buildAuditDoc, buildPacketFiles, zipFiles, safeName, HANDBOOK_SECTION_COUNT };
+module.exports = { buildPacket, buildAuditDoc, buildPacketFiles, zipFiles, safeName, formatPayComponents, HANDBOOK_SECTION_COUNT };

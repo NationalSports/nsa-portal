@@ -64,6 +64,7 @@ exports.handler = async (event) => {
       employment_type: invite.employment_type,
       pay_type: invite.pay_type,
       pay_rate: invite.pay_rate,
+      pay_components: invite.pay_components || [],
       commission_eligible: invite.commission_eligible,
       work_state: invite.work_state || 'CA',
       status: invite.status,

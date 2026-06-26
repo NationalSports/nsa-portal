@@ -10,7 +10,7 @@
 //   generate_zip  → decrypt + render the packet PDFs, return a base64 ZIP
 const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
-const { buildPacketFiles, zipFiles, safeName } = require('./_onboardingPacket');
+const { buildPacketFiles, zipFiles, safeName, formatPayComponents } = require('./_onboardingPacket');
 const { decryptField } = require('./_onboardingCrypto');
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -91,8 +91,10 @@ exports.handler = async (event) => {
         nsa_email: body.nsa_email || null, role: body.role || null,
         position_title: body.position_title || null, supervisor: body.supervisor || null,
         hire_date: body.hire_date || null, employment_type: body.employment_type || 'w2_employee',
-        pay_type: body.pay_type || null, pay_rate: body.pay_rate || null,
-        commission_eligible: !!body.commission_eligible, work_state: body.work_state || 'CA',
+        pay_components: Array.isArray(body.pay_components) ? body.pay_components : [],
+        pay_type: body.pay_type || null, pay_rate: body.pay_rate || formatPayComponents(body.pay_components) || null,
+        commission_eligible: !!body.commission_eligible || (Array.isArray(body.pay_components) && body.pay_components.some((c) => c && c.type === 'commission')),
+        work_state: body.work_state || 'CA',
         created_by: auth.teamMemberId ? String(body.created_by_name || '') : null, created_by_id: String(auth.teamMemberId || ''),
       };
       const { data: inserted, error } = await admin.from('onboarding_invites').insert(row).select().maybeSingle();

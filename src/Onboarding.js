@@ -6,7 +6,7 @@
 // user's Supabase JWT (admin-gated server-side).
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabase';
-import { ONBOARDING_ROLES, EMPLOYMENT_TYPES, PAY_TYPES } from './onboardingForms';
+import { ONBOARDING_ROLES, EMPLOYMENT_TYPES, PAY_COMPONENT_TYPES, formatPayComponents } from './onboardingForms';
 
 const FN = '/.netlify/functions/onboarding-admin';
 
@@ -131,8 +131,59 @@ function DownloadBtn({ id, name, flash }) {
   return <button className="btn btn-primary" disabled={busy} onClick={go}>{busy ? 'Building…' : '⬇ Packet'}</button>;
 }
 
+function PayComponentsEditor({ value, onChange }) {
+  const comps = Array.isArray(value) ? value : [];
+  const has = (k) => comps.some((c) => c.type === k);
+  const toggle = (t) => {
+    if (has(t.key)) onChange(comps.filter((c) => c.type !== t.key));
+    else onChange([...comps, { type: t.key, amount: '', period: t.defPeriod || '', basis: '', ...(t.recoverable ? { recoverable: true } : {}) }]);
+  };
+  const upd = (k, patch) => onChange(comps.map((c) => (c.type === k ? { ...c, ...patch } : c)));
+  const active = PAY_COMPONENT_TYPES.filter((t) => has(t.key));
+  return (
+    <div style={{ marginTop: 14 }}>
+      <label style={lbl}>Compensation — select all that apply (pay can stack)</label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        {PAY_COMPONENT_TYPES.map((t) => (
+          <button type="button" key={t.key} onClick={() => toggle(t)}
+            style={{ fontSize: 12.5, fontWeight: 600, padding: '6px 12px', borderRadius: 20, cursor: 'pointer',
+              background: has(t.key) ? '#0f172a' : '#fff', color: has(t.key) ? '#fff' : '#475569', border: '1px solid ' + (has(t.key) ? '#0f172a' : '#cbd5e1') }}>
+            {has(t.key) ? '✓ ' : '+ '}{t.label}
+          </button>
+        ))}
+      </div>
+      {active.map((t) => {
+        const c = comps.find((x) => x.type === t.key) || {};
+        return (
+          <div key={t.key} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px' }}>
+            <div style={{ width: 92, fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{t.label}</div>
+            {t.basis ? (
+              <input style={{ ...inp, flex: 1 }} value={c.basis || ''} onChange={(e) => upd(t.key, { basis: e.target.value })} placeholder="e.g. 30% of gross profit on your sales" />
+            ) : (
+              <>
+                <input style={{ ...inp, width: 120 }} value={c.amount || ''} onChange={(e) => upd(t.key, { amount: e.target.value })} placeholder={t.key === 'hourly' ? '$/hr' : '$ amount'} />
+                {t.periods && (
+                  <select style={{ ...inp, width: 110 }} value={c.period || ''} onChange={(e) => upd(t.key, { period: e.target.value })}>
+                    {t.periods.map((p) => <option key={p} value={p}>per {p}</option>)}
+                  </select>
+                )}
+                {t.recoverable && (
+                  <label style={{ fontSize: 12, color: '#475569', display: 'flex', gap: 4, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                    <input type="checkbox" checked={!!c.recoverable} onChange={(e) => upd(t.key, { recoverable: e.target.checked })} /> recoverable
+                  </label>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {active.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8' }}>No pay components yet — pick one or more above.</div>}
+    </div>
+  );
+}
+
 function NewInvite({ cu, onClose, onCreated }) {
-  const [f, setF] = useState({ full_name: '', personal_email: '', nsa_email: '', role: '', position_title: '', supervisor: cu?.name || '', hire_date: '', employment_type: 'w2_employee', pay_type: 'hourly', pay_rate: '', commission_eligible: false, work_state: 'CA' });
+  const [f, setF] = useState({ full_name: '', personal_email: '', nsa_email: '', role: '', position_title: '', supervisor: cu?.name || '', hire_date: '', employment_type: 'w2_employee', pay_components: [], work_state: 'CA' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
@@ -141,7 +192,8 @@ function NewInvite({ cu, onClose, onCreated }) {
     if (!f.full_name.trim()) return setErr('Enter the hire\'s full name.');
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.personal_email)) return setErr('Enter a valid personal email.');
     setBusy(true);
-    const j = await call('create_invite', { ...f, created_by_name: cu?.name || '' });
+    const commission_eligible = (f.pay_components || []).some((c) => c.type === 'commission');
+    const j = await call('create_invite', { ...f, commission_eligible, created_by_name: cu?.name || '' });
     setBusy(false);
     if (!j.ok) return setErr(j.error || 'Could not create invite.');
     onCreated(j.emailed ? `Invite emailed to ${f.personal_email}` : `Invite created — email not sent (${j.emailError || 'email off'}). Copy the link from View.`);
@@ -161,15 +213,12 @@ function NewInvite({ cu, onClose, onCreated }) {
         <div><label style={lbl}>Employment type</label>
           <select style={inp} value={f.employment_type} onChange={(e) => set('employment_type', e.target.value)}>{EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}</select>
         </div>
-        <div><label style={lbl}>Pay type</label>
-          <select style={inp} value={f.pay_type} onChange={(e) => set('pay_type', e.target.value)}>{PAY_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}</select>
-        </div>
-        <div><label style={lbl}>Pay rate</label><input style={inp} value={f.pay_rate} onChange={(e) => set('pay_rate', e.target.value)} placeholder="e.g. $20.00/hr or $1,500/mo draw" /></div>
       </div>
-      <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '14px 0 0', fontSize: 13.5, color: '#334155' }}>
-        <input type="checkbox" checked={f.commission_eligible} onChange={(e) => set('commission_eligible', e.target.checked)} />
-        Commission-eligible (adds a California-required written commission agreement to their packet)
-      </label>
+
+      <PayComponentsEditor value={f.pay_components} onChange={(v) => set('pay_components', v)} />
+      {(f.pay_components || []).some((c) => c.type === 'commission') && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: '#166534' }}>✓ Commission selected — a California-required written commission agreement will be added to their packet.</div>
+      )}
       {f.employment_type === 'contractor_1099' && (
         <div style={{ marginTop: 12, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 12px', fontSize: 12.5, color: '#92400e', lineHeight: 1.5 }}>
           ⚠️ Heads up: under California's AB 5 / ABC test, sales staff representing NSA are usually <strong>W-2 employees</strong>, not 1099 contractors. Confirm classification with counsel before issuing a 1099 onboarding packet.
@@ -212,6 +261,9 @@ function DetailModal({ id, onClose, flash, onChanged }) {
           <Sec title="Hire">
             <KV k="Role" v={(ONBOARDING_ROLES.find((r) => r.key === inv.role) || {}).label || inv.role} />
             <KV k="Position" v={inv.position_title} /><KV k="Supervisor" v={inv.supervisor} />
+            <KV k="Start date" v={inv.hire_date ? new Date(inv.hire_date + 'T00:00').toLocaleDateString() : '—'} />
+            <KV k="Compensation" v={formatPayComponents(inv.pay_components) || inv.pay_rate} />
+            <KV k="Type" v={inv.employment_type === 'contractor_1099' ? '1099' : 'W-2'} />
             <KV k="Personal email" v={inv.personal_email} /><KV k="NSA email" v={inv.nsa_email} />
             <KV k="Invited" v={inv.invited_at && new Date(inv.invited_at).toLocaleString()} />
             <KV k="Completed" v={inv.completed_at ? new Date(inv.completed_at).toLocaleString() : 'Not yet'} />
