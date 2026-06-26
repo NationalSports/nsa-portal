@@ -6511,12 +6511,15 @@ export default function App(){
   const[acDateVal,setAcDateVal]=useState('');
   const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
   // Change a to-do's linked sales order's "expected by" date (e.g. custom uniforms need a longer lead time).
-  const acSetExpectedDate=(t)=>{
+  // Applies immediately (val passed in) so it doesn't depend on a separate Save click — native date
+  // pickers can swallow the first click after the calendar closes.
+  const acSetExpectedDate=(t,val,close)=>{
     const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
     if(!so){nf('No order linked to this item','error');return}
-    const v=acDateVal||'';
+    const v=(val!==undefined?val:acDateVal)||'';
+    setAcDateVal(v);
     setSOs(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
-    setAcDateKey(null);setAcDateVal('');
+    if(close)setAcDateKey(null);
     nf(v?('Expected date set to '+v):'Expected date cleared');
   };
   // Post a quick message to a to-do/notification's related sales-order thread (reuses the messages system).
@@ -8477,9 +8480,9 @@ export default function App(){
         {!open?<button title="Change the expected-by date on this order" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fff7ed',color:'#c2410c',border:'1px solid #fed7aa',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer',marginRight:6}} onClick={e=>{e.stopPropagation();setAcDateKey(_rk(t));setAcDateVal(cur)}}>📅 {cur?'Expected '+cur:'Set expected date'}</button>:
         <div onClick={e=>e.stopPropagation()} style={{display:'inline-flex',gap:6,alignItems:'center',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 8px'}}>
           <span style={{fontSize:11,fontWeight:700,color:'#c2410c'}}>Expected by:</span>
-          <input type="date" autoFocus value={acDateVal} onChange={e=>setAcDateVal(e.target.value)} style={{fontSize:12,padding:'4px 6px',border:'1px solid #fdba74',borderRadius:6}}/>
-          <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSetExpectedDate(t)}>Save</button>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcDateKey(null);setAcDateVal('')}}>Cancel</button>
+          <input type="date" autoFocus value={acDateVal} onChange={e=>acSetExpectedDate(t,e.target.value,false)} style={{fontSize:12,padding:'4px 6px',border:'1px solid #fdba74',borderRadius:6}}/>
+          <button type="button" className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSetExpectedDate(t,acDateVal,true)}>Save</button>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcDateKey(null);setAcDateVal('')}}>Done</button>
         </div>}
       </div>:null};
       const _markAllRead=()=>{notifs.forEach(t=>t.dismissKey&&dismissNotif(t.dismissKey))};
