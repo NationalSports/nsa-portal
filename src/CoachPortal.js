@@ -1207,15 +1207,24 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       <div style={{padding:'20px 28px'}}>
         <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
 
-        {/* ── Athletic-director "Team Spend & Promo" dashboard — opt-in (customer.ad_spend_tracking),
-            parent/AD accounts only. Spend = products + decoration; shipping & tax are excluded. ── */}
-        {isP&&customer.ad_spend_tracking&&(()=>{
+        {/* ── Athletic-director "Team Spend & Promo" dashboard — opt-in (customer.ad_spend_tracking).
+            Rolls up the whole department (parent + every team under it), so it works whether the AD
+            logs into the parent account or a department sub-account that sits alongside the teams.
+            Spend = products + decoration; shipping & tax are excluded. ── */}
+        {customer.ad_spend_tracking&&(()=>{
           const now=new Date();const y=now.getFullYear();const h1=now.getMonth()<6;
           const period=h1?{start:y+'-01-01',end:y+'-06-30',label:'Jan–Jun '+y}:{start:y+'-07-01',end:y+'-12-31',label:'Jul–Dec '+y};
           const inRange=so=>{if(adRange==='all')return true;const d=(so.order_date||so.created_at||'').slice(0,10);return d>=period.start&&d<=period.end;};
-          // One row per team (sub-customer), plus the AD's own direct orders when present.
-          const teams=[{c:customer,isDept:true},...subs.map(c=>({c,isDept:false}))].map(({c,isDept})=>{
-            const tSOs=custSOs.filter(s=>s.customer_id===c.id&&inRange(s));
+          // The athletic department = this account's family root (the parent customer) plus every
+          // team beneath it. Using the root means a department sub-account (e.g. "…Athletics") that
+          // is itself a child still rolls up all of its sibling teams, not just its own orders.
+          const adRoot=customer.parent_id||customer.id;
+          const adFamily=(allCustomers||[]).filter(c=>c.id===adRoot||c.parent_id===adRoot);
+          const deptName=(adFamily.find(c=>c.id===adRoot)||customer).name||'Athletic department';
+          // One row per team, plus the department account's own direct orders when present.
+          const teams=adFamily.map(c=>{
+            const isDept=c.id===adRoot;
+            const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));
             const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);
             return{id:c.id,name:c.name||'Team',isDept,spend,orders:tSOs.length};
           }).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
