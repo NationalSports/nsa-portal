@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles } from './safeHelpers';
 import { calcSOStatus } from './components';
-import { dP, rQ, SP, calcOrderTotals } from './pricing';
+import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
@@ -273,6 +273,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
   const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
   const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
+  const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -354,8 +355,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const adFamily=(allCustomers||[]).filter(c=>c.id===adRoot||c.parent_id===adRoot);
     const deptName=(adFamily.find(c=>c.id===adRoot)||customer).name||'Athletic department';
     const teamCount=adFamily.filter(c=>c.id!==adRoot).length;
-    const teams=adFamily.map(c=>{const isDept=c.id===adRoot;const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);return{id:c.id,name:c.name||'Team',isDept,spend,orders:tSOs.length};}).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
+    const teams=adFamily.map(c=>{const isDept=c.id===adRoot;const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);const adidas=tSOs.reduce((a,s)=>a+(calcAdidasItemSpend(s)||0),0);return{id:c.id,name:c.name||'Team',isDept,spend,adidas,orders:tSOs.length};}).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
     const totalSpend=teams.reduce((a,t)=>a+t.spend,0);
+    const adidasTotal=teams.reduce((a,t)=>a+t.adidas,0);
     const maxSpend=teams.reduce((a,t)=>Math.max(a,t.spend),0)||1;
     const periods=customer.promo_periods||[];
     const scoped=adRange==='all'?periods:periods.filter(p=>p.period_start===period.start);
@@ -366,7 +368,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const usedPct=allocated>0?Math.min(100,Math.round(used/allocated*100)):0;
     const money=n=>'$'+Math.round(n||0).toLocaleString();
     const money2=n=>'$'+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    return{period,teams,totalSpend,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2};
+    return{period,teams,totalSpend,adidasTotal,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2};
   })():null;
 
   // Track portal visit — mark sent documents as viewed by coach
@@ -1247,10 +1249,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
   if(spendView&&adData){
     const cpTheme=cpTeamTheme(customer);
-    const{period,teams,totalSpend,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
+    const{period,teams,totalSpend,adidasTotal,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
     const teamsActive=teams.filter(t=>t.orders>0);
     const teamsZero=teams.filter(t=>t.orders===0);
-    const kpis=[{label:'Department Spend',value:money(totalSpend),color:cpTheme.primary,sub:(adRange==='all'?'All time':period.label)+' · '+teamsActive.length+' active'}];
+    const adiAvail=adidasTotal>0;const isAdi=adiAvail&&spendMode==='adidas';const metric=isAdi?'adidas':'spend';
+    const modeMax=Math.max(1,...teamsActive.map(t=>t[metric]||0));const modeTotal=isAdi?adidasTotal:totalSpend;
+    const kpis=[{label:isAdi?'Adidas Item Spend':'Department Spend',value:money(isAdi?adidasTotal:totalSpend),color:cpTheme.primary,sub:(isAdi?'Adidas items · no deco':(adRange==='all'?'All time':period.label))+' · '+teamsActive.length+' active'}];
+    if(adiAvail&&!isAdi)kpis.push({label:'Adidas Items',value:money(adidasTotal),color:'#0f172a',sub:'Items only · no deco'});
     if(hasPromo){
       kpis.push({label:'Promo Remaining',value:money2(remainingDisplay),color:remainingDisplay>0?'#15803d':'#64748b',sub:overspent?('Over by '+money2(-remaining)):'Available to use'});
       kpis.push({label:'Promo Used',value:money2(used),color:'#b45309',sub:'Applied to orders'});
@@ -1294,15 +1299,22 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div style={{height:'100%',width:usedPct+'%',background:overspent?'linear-gradient(90deg,#f59e0b,#b45309)':'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999}}/>
               </div>
             </div>}
-            <div style={{marginTop:22,marginBottom:8,fontSize:12,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>Spend by team</div>
+            <div style={{marginTop:22,marginBottom:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+              <div style={{fontSize:12,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>{isAdi?'Adidas spend by team':'Spend by team'}</div>
+              {adiAvail&&<div style={{display:'inline-flex',background:'#f1f5f9',borderRadius:999,padding:3,gap:2}}>
+                {[['all','All spend'],['adidas','Adidas only']].map(([k,lbl])=>(
+                  <button key={k} onClick={()=>setSpendMode(k)} style={{border:'none',cursor:'pointer',borderRadius:999,padding:'5px 12px',fontSize:11.5,fontWeight:700,background:spendMode===k?'#fff':'transparent',color:spendMode===k?cpTheme.primary:'#64748b',boxShadow:spendMode===k?'0 1px 3px rgba(0,0,0,.12)':'none'}}>{lbl}</button>
+                ))}
+              </div>}
+            </div>
             {teamsActive.length===0?
               <div style={{color:'#94a3b8',fontSize:13,padding:'20px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend {adRange==='all'?'on record yet':'in '+period.label}.{adRange!=='all'?<> Try <button onClick={()=>setAdRange('all')} style={{border:'none',background:'none',color:cpTheme.primary,fontWeight:700,cursor:'pointer',textDecoration:'underline',padding:0,font:'inherit'}}>All time</button>.</>:null}</div>:
               <div className="ad-teams">
-                {teamsActive.map(t=>{const w=Math.round(t.spend/maxSpend*100);const share=totalSpend>0?Math.round(t.spend/totalSpend*100):0;
+                {teamsActive.map(t=>{const val=t[metric]||0;const w=Math.round(val/modeMax*100);const share=modeTotal>0?Math.round(val/modeTotal*100):0;
                   return<div key={t.id} style={{padding:'11px 0',borderTop:'1px solid #f1f5f9'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:6}}>
                       <span style={{fontWeight:700,fontSize:13.5,color:'#1e293b',minWidth:0,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}</span>
-                      <span style={{textAlign:'right',flexShrink:0,whiteSpace:'nowrap'}}><span style={{fontWeight:800,fontSize:13.5,color:cpTheme.primary}}>{money2(t.spend)}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:6}}>{t.orders} · {share}%</span></span>
+                      <span style={{textAlign:'right',flexShrink:0,whiteSpace:'nowrap'}}><span style={{fontWeight:800,fontSize:13.5,color:cpTheme.primary}}>{money2(val)}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:6}}>{t.orders} · {share}%</span></span>
                     </div>
                     <div style={{height:7,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:w+'%',background:cpTheme.accent,borderRadius:999}}/></div>
                   </div>;
@@ -1315,7 +1327,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
             </details>}
             <div style={{fontSize:11,color:'#94a3b8',marginTop:20,lineHeight:1.5,borderTop:'1px solid #f1f5f9',paddingTop:14}}>
-              Spend reflects products &amp; decoration only — shipping and tax are excluded.{hasPromo?' Promo dollars are shared across the whole department.':' No promo program is on file for this account.'}
+              {isAdi?'Adidas items only — decoration, shipping & tax are excluded.':'Spend reflects products & decoration only — shipping and tax are excluded.'}{hasPromo?' Promo dollars are shared across the whole department.':''}
             </div>
           </div>
         </div>
@@ -1400,7 +1412,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{position:'absolute',right:-8,top:-34,fontSize:150,fontWeight:900,color:cpTheme.primary,opacity:.06,lineHeight:1,letterSpacing:'-.05em',pointerEvents:'none',userSelect:'none'}}>{cpMonogram}</div>
           <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
             <div style={{display:'flex',alignItems:'center',gap:14,minWidth:0}}>
-              <div style={{width:54,height:54,borderRadius:16,background:`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:19,flexShrink:0,boxShadow:`0 6px 16px ${cpTheme.primary}40`}}>{cpMonogram}</div>
+              <div style={{width:54,height:54,borderRadius:16,background:customer.logo_url?'#fff':`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:19,flexShrink:0,boxShadow:`0 6px 16px ${cpTheme.primary}40`,overflow:'hidden'}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:4}}/>:cpMonogram}</div>
               <div style={{minWidth:0}}>
                 <div style={{fontSize:12,fontWeight:700,color:'#94a3b8'}}>Welcome back 👋</div>
                 <div style={{fontSize:23,fontWeight:900,lineHeight:1.1,color:'#0f172a',letterSpacing:'-.01em'}}>{customer.name}</div>
@@ -1426,7 +1438,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{position:'relative'}}>
                 <div style={{fontSize:11,fontWeight:800,letterSpacing:'.16em',textTransform:'uppercase',color:cpTheme.accent}}>★ Team HQ ★</div>
                 <div style={{display:'flex',alignItems:'center',gap:14,marginTop:14}}>
-                  <div style={{width:64,height:64,borderRadius:18,background:'rgba(255,255,255,.12)',border:`2px solid ${cpTheme.accent}`,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:23,flexShrink:0}}>{cpMonogram}</div>
+                  <div style={{width:64,height:64,borderRadius:18,background:customer.logo_url?'rgba(255,255,255,.96)':'rgba(255,255,255,.12)',border:`2px solid ${cpTheme.accent}`,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:23,flexShrink:0,overflow:'hidden'}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:5}}/>:cpMonogram}</div>
                   <div style={{minWidth:0}}>
                     <div style={{fontSize:25,fontWeight:900,lineHeight:1.05,letterSpacing:'-.01em'}}>{customer.name}</div>
                     <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>{isP?(adData?adData.teamCount:subs.length)+' teams · powered by NSA':'Powered by NSA'}</div>

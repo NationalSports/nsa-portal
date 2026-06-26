@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
+import { cloudUpload } from './utils';
 
 // Catalog color families (must match src/storefront/AdidasInventory.js).
 const FAMILIES = ['Black', 'White', 'Grey', 'Navy', 'Royal', 'Blue', 'Red', 'Maroon', 'Orange', 'Gold', 'Yellow', 'Green', 'Purple', 'Pink', 'Brown'];
@@ -89,10 +90,43 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     else note(next ? 'Enabled' : 'Disabled', 'success');
   };
 
+  // School logo — uploaded to Cloudinary, saved on the customer, shown in the coach-portal hero.
+  const setLogo = async (file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type || '')) return note('Use an image file (PNG, JPG, SVG)', 'error');
+    note('Uploading logo…');
+    try {
+      const url = await cloudUpload(file, 'nsa-school-logos');
+      if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: url });
+      const { error } = await supabase.from('customers').update({ logo_url: url }).eq('id', customer.id);
+      if (error) throw error;
+      note('School logo saved', 'success');
+    } catch (e) { note('Logo upload failed: ' + (e.message || e), 'error'); }
+  };
+  const removeLogo = async () => {
+    if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: null });
+    const { error } = await supabase.from('customers').update({ logo_url: null }).eq('id', customer.id);
+    if (error) note(error.message, 'error'); else note('Logo removed', 'success');
+  };
+  const pickLogo = () => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) setLogo(f); }; inp.click(); };
+
   return (
     <div className="card">
       <div className="card-header"><h2>🎽 Catalog Access</h2></div>
       <div className="card-body">
+        {/* School logo — used in the coach-portal hero (monogram fallback when empty) */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>School logo</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {customer && customer.logo_url
+              ? <img src={customer.logo_url} alt="School logo" style={{ height: 54, maxWidth: 170, objectFit: 'contain', border: '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff' }} />
+              : <div style={{ height: 54, width: 54, borderRadius: 10, border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 22 }}>🏫</div>}
+            <button className="btn btn-sm btn-secondary" onClick={pickLogo}>{customer && customer.logo_url ? 'Replace logo' : 'Upload logo'}</button>
+            {customer && customer.logo_url && <button className="btn btn-sm" style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }} onClick={removeLogo}>Remove</button>}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shown in the coach portal hero. A transparent PNG/SVG looks best.</div>
+        </div>
+
         <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px', lineHeight: 1.5 }}>
           Invite this customer's coaches to the live adidas team catalog. They sign in with a one-tap email link (no password)
           and automatically see <strong>{customer && customer.name}</strong>'s pricing
