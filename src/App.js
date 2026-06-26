@@ -6505,6 +6505,38 @@ export default function App(){
   },[cu?.id,cu?.role]);
   const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+  // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
+  // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
+  // clears the session for EVERY tab — so an idle background tab must never boot a user who's active in
+  // another. Only when there's been no input in ANY tab for the full window do we flush pending work and
+  // sign out (same path as handleLogout → the UI falls back to the sign-in screen). Opening the portal
+  // after being away longer than the window signs you straight out, which is the intent. pointermove/
+  // scroll count as activity (a rep reading a screen isn't "away"); the localStorage write is throttled.
+  React.useEffect(()=>{
+    if(typeof window==='undefined')return;
+    const IDLE_LOGOUT_MS=60*60*1000; // 1 hour with no activity in any tab
+    const KEY='nsa_last_activity';
+    let firing=false;let lastWrite=0;
+    try{if(!localStorage.getItem(KEY))localStorage.setItem(KEY,String(Date.now()))}catch(_){/* first load = activity */}
+    const mark=()=>{firing=false;const t=Date.now();if(t-lastWrite<30000)return;lastWrite=t;try{localStorage.setItem(KEY,String(t))}catch(_){}};
+    const EVENTS=['pointerdown','keydown','pointermove','scroll','touchstart'];
+    EVENTS.forEach(ev=>window.addEventListener(ev,mark,{capture:true,passive:true}));
+    const doLogout=async()=>{
+      if(firing)return;firing=true;
+      try{
+        window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts first
+        const started=Date.now();
+        while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
+      }catch(_){/* best effort */}
+      try{setCu(null)}catch(_){}
+      try{localStorage.removeItem('nsa_user')}catch(_){}
+      try{await _sbSignOut()}catch(_){}
+    };
+    const tick=()=>{let last;try{last=Number(localStorage.getItem(KEY))||Date.now()}catch(_){last=Date.now()}if(Date.now()-last>=IDLE_LOGOUT_MS)doLogout()};
+    tick(); // also check on mount — opening after a long absence signs out promptly
+    const iv=setInterval(tick,60000); // re-check every minute
+    return()=>{clearInterval(iv);EVENTS.forEach(ev=>window.removeEventListener(ev,mark,{capture:true}))};
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
   // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
   _forceReauth=()=>{
