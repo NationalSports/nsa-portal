@@ -91,9 +91,9 @@ Ranked by payoff. Each is scoped to be a focused change.
 
 ### 🔴 High impact
 
-**A. Collapse the two‑modal "request art" into one.**
-`🎨 Set up job` opens the Job Wizard, and you then click **Send to Artist** to open the *Request Art* modal (`OrderEditor.js:8538` → `9345` → `8807 submitArtReq2`). Two modals to do one thing.
-→ Make `🎨 Set up job` open the Request Art form directly when the job has one decoration (the common case), reserving the wizard only for multi‑deco grouping. **Saves 1 click + 1 modal on most jobs.**
+**A. Keep the wizard — but cut the friction inside it.**
+The wizard stays (it's the right home for multi‑deco grouping and reference uploads). The cost today is *within* it: `🎨 Set up job` → Job Wizard → **Send to Artist** opens the *Request Art* modal where the rep must re‑pick the artist every time (`OrderEditor.js:8538` → `9345` → `8835` artist dropdown → `8807 submitArtReq2`).
+→ **Pre‑fill the artist** (remember the last artist used for that customer + deco type) so it's confirm‑not‑choose, and let **Send to Artist** submit directly when the artist is already set instead of opening a second modal. **Saves ~1 click + the artist hunt on most jobs, wizard intact.**
 
 **B. Add one "Approve & Send to Coach" button on the rep card.**
 Today **✅ Approve Artwork** (`OrderEditor.js:8303`) and **📤 Send to Coach** (`8304`) are mutually exclusive buttons — a rep who wants the coach to sign off can't "approve internally and forward" in one move; they're really *either/or* gates. For most orders the rep is just forwarding.
@@ -137,7 +137,7 @@ flowchart TD
     classDef coach fill:#fef3c7,stroke:#d97706,color:#78350f;
 
     SO([SO created → jobs auto-built]):::status
-    SO --> R1["REP: 🎨 Set up job<br/>= Request Art form (1 modal, artist remembered)"]:::rep
+    SO --> R1["REP: 🎨 Set up job → Job Wizard<br/>(kept; artist pre-filled) → Send to Artist"]:::rep
     R1 --> S1([art_requested]):::status
     S1 --> A1["ARTIST: upload mockup + prod files together<br/>(Start Working implicit)"]:::artist
     A1 --> A2["ARTIST: Send for Approval"]:::artist
@@ -149,14 +149,38 @@ flowchart TD
     C1 -->|Approve| DONE([art_complete — prod files already attached,<br/>auto-advances → Ready for Production]):::status
 ```
 
-**Net effect:** artist touched **once** instead of twice; rep forward is **one** button instead of an either/or pair; request art is **one** modal instead of two; the prod‑file gate and Start Working clicks disappear on the common path. Roughly **~14 → ~7 required clicks** with one fewer artist round‑trip — without removing any of the safety rails added in the SO‑1199 audit (coach‑rejection guard, mockup‑present check, feedback visibility).
+### Plain-text version
+
+```
+  SO created ──► jobs auto-built
+       │
+       ▼
+  REP: 🎨 Set up job → Job Wizard → Send to Artist   ◄── A: wizard KEPT, artist pre-filled
+       │  [art_requested]
+       ▼
+  ARTIST: upload mockup + prod files together         ◄── C+E: prod files up front, Start Working implicit
+       │
+       ▼
+  ARTIST: Send for Approval   [waiting_approval]
+       │
+       ▼
+  REP: ✅ Approve & Send to Coach                      ◄── B: one button (skippable per-customer)
+       │     └─ 🔄 Request Update ─► back to upload
+       ▼
+  COACH portal: ✅ Approve / ❌ Request Changes
+       │
+       ▼
+  art_complete  (prod files already attached → auto-advances → Ready for Production)   ◄── C: no 2nd artist trip
+```
+
+**Net effect:** wizard stays, but the artist is pre‑filled inside it; artist touched **once** instead of twice; rep forward is **one** button instead of an either/or pair; the prod‑file gate and Start Working clicks disappear on the common path. Roughly **~14 → ~8 required clicks** with one fewer artist round‑trip — without removing any of the safety rails added in the SO‑1199 audit (coach‑rejection guard, mockup‑present check, feedback visibility).
 
 ---
 
 ## 5. Suggested sequencing
 
 1. **E, D, F** — pure click removals, low risk, no schema change.
-2. **A** — one‑modal request art (UI restructure in `OrderEditor.js`).
+2. **A** — pre‑fill the artist in the wizard's Request Art step (no wizard removal; small change in `OrderEditor.js`).
 3. **C** — allow early prod‑file upload + auto‑advance (touches the approval transition; test against the embroidery DST auto‑complete that already exists).
 4. **B** — combined/forwarded approval. This one changes *who approves what*, so confirm the business rule first: should the rep gate be skippable, and for which customers?
 
