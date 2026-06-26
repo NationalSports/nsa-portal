@@ -498,30 +498,42 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
-  // Honor the store's per-product size selection (sizes_offered); null = all. Talls fold
-  // into their regular twin (LT → L), so we compare on the folded label — a legacy
-  // sizes_offered that still lists "LT" keeps matching the offered "L".
-  const _offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered.map(regularSize) : null;
-  const _scale = foldScale(p.available_sizes).filter((s) => !_offered || _offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
-  // Only surface sizes a shopper can actually get: in stock now (warehouse or
-  // vendor) OR restocking within ~2 weeks. A vendor lists a full scale (e.g.
-  // 3XL–6XL) for some styles but carries zero with the next delivery months out, so
-  // those would otherwise render as dead, struck-through buttons. If nothing
-  // qualifies yet but the item is on the way, fall back to the full scale so
-  // backorderable items stay orderable.
-  const _avail = _scale.filter((s) => sizeSellable(p, s));
-  const sizesArr = _avail.length ? _avail : (isIncoming(p) ? _scale : _avail);
+  // Fit/gender variants (Adult / Women's / Youth) carry a variant_label and share
+  // one image. Unlike colors, they get no picker — each fit renders as its own
+  // labeled size row, and a size click resolves to that fit's own SKU.
+  const isFitGroup = colorRows.length > 1 && colorRows.some((r) => r.variant_label);
+  // Sellable sizes for one variant row. Honors the store's per-product size
+  // selection (sizes_offered; null = all). Talls fold into their regular twin
+  // (LT → L), so we compare on the folded label — a legacy sizes_offered that
+  // still lists "LT" keeps matching the offered "L". Only surfaces sizes a shopper
+  // can actually get (in stock now, warehouse or vendor, OR restocking within
+  // ~2 weeks); if nothing qualifies yet but the item is on the way, fall back to
+  // the full scale so backorderable items stay orderable.
+  const sizesFor = (c) => {
+    const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
+    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
+    const avail = scale.filter((s) => sizeSellable(c, s));
+    return avail.length ? avail : (isIncoming(c) ? scale : avail);
+  };
+  const sizesArr = sizesFor(p);
+  // One reusable set of size buttons for a variant row. A click selects both the
+  // variant (its SKU) and the size, so a fit row resolves to the right SKU.
+  const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+      style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
+  });
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
-  const needSize = sizesArr.length > 0;
+  const needSize = isFitGroup ? true : sizesArr.length > 0;
   const needNumber = !!p.takes_number;
   const isPersonalized = needNumber || !!p.takes_name;
   const canAdd = isOpen && (!needSize || size) && (!needNumber || num.trim());
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
-      name: p.name, color: p.color || null, image: p.image_front_url || null, size: size || null,
+      name: p.name, color: p.color || null, variant_label: p.variant_label || null, image: ((isFitGroup ? rep : p).image_front_url) || null, size: size || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       size_extra: upNow,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
@@ -541,7 +553,10 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const hasBackDeco = Array.isArray(p.decorations) && p.decorations.some((d) => d && d.art_url && d.side === 'back');
   // Number/name personalization previews on the back, so make the back viewable for it too.
   const isPerso = !!(p.takes_number || p.takes_name);
-  const imgUrl = img === 'back' ? (p.image_back_url || p.image_front_url) : p.image_front_url;
+  // Fits share one image — keep the representative row's image no matter which
+  // fit's size is selected (each fit is a different product with its own photo).
+  const imgRow = isFitGroup ? rep : p;
+  const imgUrl = img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
     <div style={{ paddingTop: 26 }}>
@@ -563,7 +578,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: '#64748b', fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 
-          {colorRows.length > 1 && <div style={{ margin: '4px 0 20px' }}>
+          {!isFitGroup && colorRows.length > 1 && <div style={{ margin: '4px 0 20px' }}>
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Color{p.color ? ` · ${p.color}` : ''}</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {colorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
@@ -577,18 +592,26 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           </div>}
 
-          <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
+          {!isFitGroup && <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />}
 
-          {sizes.length > 0 && <div style={{ margin: '22px 0' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {sizes.map((sz) => {
-                const q = effSizeQty(p, sz); const soon = sizeSoon(p, sz); const etaD = (p.vendor_size_eta || {})[sz] || Object.entries(p.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const sel = size === sz; const out = q <= 0 && !soon && !incoming; const up = sizeUp(p, sz);
-                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : incoming ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
-                  style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
+          {isFitGroup ? (
+            <div style={{ margin: '22px 0' }}>
+              <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 12 }}>Select fit &amp; size</div>
+              {colorRows.map((c) => {
+                const cs = sizesFor(c);
+                if (!cs.length) return null;
+                return (
+                  <div key={c.webstore_product_id} style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: '#475569', marginBottom: 8 }}>{c.variant_label || c.name}</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(c, cs)}</div>
+                  </div>
+                );
               })}
             </div>
-          </div>}
+          ) : (sizes.length > 0 && <div style={{ margin: '22px 0' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(p, sizes)}</div>
+          </div>)}
 
           {(p.takes_number || p.takes_name) && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
@@ -742,7 +765,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
 function lineDetail(l) {
   if (l.kind === 'bundle') return (l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`);
   return [
-    [l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · '),
+    [l.variant_label, l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · '),
     Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
   ].filter(Boolean);
 }
@@ -1005,7 +1028,7 @@ function OrderStatusPage({ store, theme, orderId }) {
       </div>
       {items.filter((i) => !i.is_bundle_parent).map((i) => (
         <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #eef1f5', fontSize: 14 }}>
-          <div>{i.sku}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}</div>
+          <div>{i.sku}{i.variant_label ? ' · ' + i.variant_label : ''}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}</div>
           <div style={{ color: '#64748b' }}>{(i.line_status || 'pending').replace(/_/g, ' ')}</div>
         </div>
       ))}
