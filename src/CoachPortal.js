@@ -270,6 +270,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
+  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|shop
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -291,6 +292,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Active orders collapse on the portal — default collapsed for department/parent accounts and
   // long lists (they aggregate every team's orders), expanded for a regular single-team coach.
   const[ordersOpen,setOrdersOpen]=useState(!(isP||activeSOs.length>3));
+  const openEstCount=custEsts.filter(e=>e.status==='sent'||e.status==='open').length;
   // Recent (last 30 days) not-yet-converted estimates, surfaced in Active Orders.
   const _estRecentCutoff=Date.now()-30*24*60*60*1000;
   const recentEsts=custEsts.filter(e=>{if(e.status==='converted')return false;const t=new Date(e.created_at).getTime();return isFinite(t)&&t>=_estRecentCutoff;});
@@ -1298,30 +1300,69 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     </div>;
   }
 
-  // Main portal view — header wears the team's own colors
+  // Main portal view — a branded "Team HQ" shell: team-colored sidebar + bottom nav, paged content.
   const cpTheme = cpTeamTheme(customer);
-  return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
-    <div style={{width:'100%',maxWidth:1100,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-      <div style={{background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'24px 28px',position:'relative',borderBottom:`4px solid ${cpTheme.accent}`,boxShadow:'0 2px 14px rgba(11,18,32,.18)'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16}}>
+  const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
+  const cpNav=[
+    {key:'home',label:'Home',icon:'🏠'},
+    {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
+    {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
+    {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
+    {key:'shop',label:'Shop',icon:'🛍️'},
+    ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
+  ];
+  return<div className="cp-app" style={{minHeight:'100vh',background:'#eef1f6'}}>
+    <style>{`.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1280px;margin:0 auto;background:#eef1f6}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:250px;flex-shrink:0;padding:20px 14px;gap:5px;position:sticky;top:0;height:100vh;overflow-y:auto}}.cp-main{flex:1;min-width:0;padding-bottom:90px}@media(min-width:880px){.cp-main{padding-bottom:28px}}.cp-page{max-width:840px;margin:0 auto;padding:24px 18px 48px}.cp-navbtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:none;background:transparent;color:rgba(255,255,255,.82);border-radius:11px;padding:11px 13px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:rgba(255,255,255,.12);color:#fff}.cp-bottomnav{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;z-index:40;padding:7px 4px}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:5px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
+    <div className="cp-shell">
+      {/* ── SIDEBAR (desktop) — wears the team's colors ── */}
+      <div className="cp-side" style={{background:`linear-gradient(180deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-22)})`}}>
+        <div style={{display:'flex',alignItems:'center',gap:11,padding:'4px 8px 18px'}}>
+          <div style={{width:42,height:42,borderRadius:12,background:cpTheme.accent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:15,flexShrink:0,boxShadow:'0 2px 8px rgba(0,0,0,.25)'}}>{cpMonogram}</div>
           <div style={{minWidth:0}}>
-            <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:34,filter:'brightness(0) invert(1)',marginBottom:8,opacity:.95}}/>
-            <div style={{fontSize:23,fontWeight:800,lineHeight:1.15}}>{customer.name}</div>
-            <div style={{display:'inline-flex',alignItems:'center',gap:8,marginTop:7}}>
-              <span style={{width:22,height:3,borderRadius:2,background:cpTheme.accent,display:'inline-block'}} />
-              <span style={{fontSize:11.5,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>Customer Portal</span>
-            </div>
-          </div>
-          <div style={{textAlign:'right',flexShrink:0}}>
-            {totalDue>0&&<><div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:0.8}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
+            <div style={{color:'#fff',fontSize:13.5,fontWeight:800,lineHeight:1.18,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
+            <div style={{color:cpTheme.accent,fontSize:9.5,fontWeight:800,letterSpacing:'.13em',textTransform:'uppercase',marginTop:1}}>Team HQ</div>
           </div>
         </div>
+        <div style={{display:'flex',flexDirection:'column',gap:4,flex:1}}>
+          {cpNav.map(it=>{const active=page===it.key;return(
+            <button key={it.key} className="cp-navbtn" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:'rgba(255,255,255,.17)',color:'#fff',boxShadow:`inset 3px 0 0 ${cpTheme.accent}`}:undefined}>
+              <span style={{fontSize:18,width:22,textAlign:'center'}}>{it.icon}</span>
+              <span style={{flex:1}}>{it.label}</span>
+              {it.badge>0?<span style={{fontSize:11,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'1px 8px',minWidth:20,textAlign:'center'}}>{it.badge}</span>:null}
+            </button>
+          )})}
+        </div>
+        <div style={{marginTop:14,padding:'12px 13px',background:'rgba(0,0,0,.18)',borderRadius:12}}>
+          <div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.1em',color:cpTheme.accent,textTransform:'uppercase'}}>Your NSA Rep</div>
+          <div style={{fontSize:13,fontWeight:700,color:'#fff',marginTop:3}}>{rep?.name||'NSA Team'}</div>
+          <div style={{fontSize:11,color:'rgba(255,255,255,.7)',marginTop:1}}>team@nsa-teamwear.com</div>
+        </div>
       </div>
-      <div style={{padding:'20px 28px'}}>
-        <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
 
-        {/* AD Spend & Promo — compact entry point; the full dashboard opens as its own view. */}
-        {adData&&<button onClick={()=>setSpendView(true)} style={{width:'100%',textAlign:'left',cursor:'pointer',border:'none',borderRadius:14,marginBottom:20,padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,color:'#fff',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,boxShadow:'0 2px 12px rgba(15,23,42,.12)'}}>
+      {/* ── MAIN ── */}
+      <div className="cp-main">
+        {/* Branded hero — large team identity with a watermark monogram */}
+        <div style={{position:'relative',overflow:'hidden',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'26px 26px 24px',borderBottom:`4px solid ${cpTheme.accent}`,boxShadow:'0 2px 14px rgba(11,18,32,.18)'}}>
+          <div style={{position:'absolute',right:-12,top:-46,fontSize:180,fontWeight:900,opacity:.08,lineHeight:1,letterSpacing:'-.05em',userSelect:'none',pointerEvents:'none'}}>{cpMonogram}</div>
+          <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap'}}>
+            <div style={{minWidth:0}}>
+              <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:26,filter:'brightness(0) invert(1)',marginBottom:9,opacity:.9}}/>
+              <div style={{fontSize:27,fontWeight:900,lineHeight:1.08,letterSpacing:'-.01em'}}>{customer.name}</div>
+              <div style={{display:'inline-flex',alignItems:'center',gap:8,marginTop:8}}>
+                <span style={{width:20,height:3,borderRadius:2,background:cpTheme.accent,display:'inline-block'}} />
+                <span style={{fontSize:11,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>{(cpNav.find(n=>n.key===page)||{}).label||'Home'}</span>
+              </div>
+            </div>
+            {totalDue>0&&<div style={{textAlign:'right',flexShrink:0}}><div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:.8}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:900}}>${totalDue.toLocaleString()}</div></div>}
+          </div>
+        </div>
+        <div className="cp-page">
+        <div className="cp-grid">
+
+        {/* ── content sections (each gated to a nav page) ── */}
+        <div className="cp-col">
+        {/* AD Spend & Promo — compact entry on Home; the full dashboard opens as its own view. */}
+        {page==='home'&&adData&&<button onClick={()=>setSpendView(true)} style={{width:'100%',textAlign:'left',cursor:'pointer',border:'none',borderRadius:14,marginBottom:18,padding:'15px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,color:'#fff',background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,boxShadow:'0 2px 12px rgba(15,23,42,.12)'}}>
           <span style={{display:'flex',alignItems:'center',gap:12,minWidth:0}}>
             <span style={{fontSize:24}}>📊</span>
             <span style={{minWidth:0}}>
@@ -1337,17 +1378,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <span style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'9px 14px',whiteSpace:'nowrap'}}>View →</span>
           </span>
         </button>}
-
-        <div className="cp-grid">
-
-        {/* ── LEFT COLUMN — Orders & Billing ── */}
-        <div className="cp-col">
-        <div className="cp-colhead">Orders &amp; Billing</div>
-        {(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
+        {page==='home'&&(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
-        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+        {page==='home'&&paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
           <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
@@ -1365,7 +1400,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>}
 
         {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}
-        {waitingArtJobs.length>0&&<>
+        {page==='home'&&waitingArtJobs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>🎨 Artwork to Approve ({waitingArtJobs.length})</div>
           {waitingArtJobs.map(j=>{const so=j.so;const soAF=safeArt(so);
             const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
@@ -1395,7 +1430,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Estimates awaiting approval — needs coach attention */}
-        {(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
+        {(page==='home'||page==='estimates')&&(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
           const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':'#64748b'});
           return openEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates to Approve ({openEsts.length})</div>
@@ -1413,7 +1448,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </>})()}
 
         {/* Open invoices — payment needed */}
-        {openInvs.length>0&&<>
+        {page==='billing'&&openInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
           <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden',marginBottom:10}}>
             {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
@@ -1446,7 +1481,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Active orders */}
-        {(activeSOs.length>0||recentEsts.length>0)&&<>
+        {page==='orders'&&(activeSOs.length>0||recentEsts.length>0)&&<>
           <button onClick={()=>setOrdersOpen(o=>!o)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',background:'none',border:'none',padding:0,cursor:'pointer',marginBottom:10}}>
             <span style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>📦 Active Orders ({activeSOs.length}{recentEsts.length>0?' + '+recentEsts.length+' est':''})</span>
             <span style={{fontSize:11,fontWeight:700,color:'#64748b',display:'inline-flex',alignItems:'center',gap:6,textTransform:'uppercase',letterSpacing:'.04em'}}>{ordersOpen?'Hide':'Show'}<span style={{fontSize:12}}>{ordersOpen?'▾':'▸'}</span></span>
@@ -1511,7 +1546,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Approved estimates — no action needed, listed for reference */}
-        {(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
+        {page==='estimates'&&(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
           return approvedEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Approved Estimates ({approvedEsts.length})</div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
@@ -1531,7 +1566,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </>})()}
 
         {/* Paid invoices — historical reference */}
-        {paidInvs.length>0&&<>
+        {page==='billing'&&paidInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Paid Invoices</div>
             <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
               {paidInvs.slice(0,10).map((inv,i,arr)=>
@@ -1548,7 +1583,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </>}
 
         {/* Completed orders — below invoices for reference */}
-        {completedSOs.length>0&&<>
+        {page==='orders'&&completedSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
           {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
@@ -1556,7 +1591,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Past Estimates — converted/draft, de-emphasized at bottom */}
-        {(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
+        {page==='estimates'&&(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
           const estBadge=(st)=>({background:st==='converted'?'#dbeafe':'#f1f5f9',color:st==='converted'?'#1e40af':'#64748b'});
           return pastEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#94a3b8',marginBottom:10,marginTop:16}}>📋 Past Estimates ({pastEsts.length})</div>
@@ -1578,12 +1613,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         </div>{/* ── /LEFT COLUMN ── */}
 
-        {/* ── RIGHT COLUMN — Team Store & Tools ── */}
+        {/* ── Team store, shop & home tools ── */}
         <div className="cp-col">
-        <div className="cp-colhead">Team Store</div>
 
         {/* Build a team store — coach self-serve entry (invite-only) */}
-        {coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
+        {page==='shop'&&coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
           <div>
             <div style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.8}}>New</div>
             <div style={{fontSize:18,fontWeight:800,marginTop:2}}>✨ Build your team store</div>
@@ -1593,10 +1627,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </button>}
 
         {/* Team store — read-only order tracking for the coach */}
-        <CoachStore customer={customer} />
+        {page==='shop'&&<CoachStore customer={customer} />}
 
         {/* Shop & order — invite-gated live-look + order building */}
-        {(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
+        {page==='shop'&&(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>🛍️ Shop &amp; Order</div>
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {coachLivelook&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
@@ -1612,8 +1646,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>}
 
-        {/* Catalogs — always-available browse links (open on the marketing site) */}
-        <div style={{marginTop:16}}>
+        {/* Catalogs */}
+        {page==='shop'&&<div style={{marginTop:16}}>
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📚 Catalogs</div>
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             <a className="cp-tool" href={CP_MARKETING+'/team-stores'} target={CP_LINK_TARGET} rel="noopener noreferrer">
@@ -1639,18 +1673,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{fontSize:22,opacity:.85,paddingRight:14}}>›</span>
             </a>
           </div>
-        </div>
+        </div>}
 
-        {/* Your rep */}
-        <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
+        {/* Your rep — also pinned in the sidebar */}
+        {page==='home'&&<div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
           <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
           <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
-        </div>
+        </div>}
 
         {/* Contact update */}
-        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
+        {page==='home'&&<div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
           <div style={{fontSize:12,fontWeight:600,color:'#374151',marginBottom:6}}>📋 Update Contact / Shipping Info</div>
           {!contactEdit?<>
             <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Current: {(customer.contacts||[])[0]?.name} · {(customer.contacts||[])[0]?.email}{customer.shipping_city&&' · '+customer.shipping_city+', '+customer.shipping_state}</div>
@@ -1667,11 +1701,22 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Changes will be reviewed by your rep before updating</div>
           </>}
-        </div>
-        </div>{/* ── /RIGHT COLUMN ── */}
-        </div>{/* ── /cp-grid ── */}
-      </div>
-    </div>
+        </div>}
+        </div>{/* /RIGHT */}
+        </div>{/* /cp-grid */}
+        </div>{/* /cp-page */}
+      </div>{/* /cp-main */}
+    </div>{/* /cp-shell */}
+
+    {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
+    <nav className="cp-bottomnav" style={{background:`linear-gradient(180deg, ${cpShade(cpTheme.primary,-4)}, ${cpShade(cpTheme.primary,-20)})`,borderTop:`2px solid ${cpTheme.accent}`}}>
+      {cpNav.slice(0,5).map(it=>{const active=page===it.key;return(
+        <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.accent:'rgba(255,255,255,.78)'}}>
+          <span style={{fontSize:20,position:'relative',lineHeight:1}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-4,right:-10,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:15,textAlign:'center'}}>{it.badge}</span>:null}</span>
+          <span>{it.label}</span>
+        </button>
+      )})}
+    </nav>
 
     {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
     {payModalEl}
