@@ -4067,17 +4067,26 @@ export default function App(){
     let cancelled=false;
     (async()=>{
       try{
-        let _loadTimerId;
-        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        const d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // Auto-retry a couple times before surfacing the hard error banner: a transient network blip or a
+        // single slow query tripping the 45s timeout on one device would otherwise leave the user staring
+        // at a blank board with all of their data missing (e.g. an artist opening the Art Dashboard sees
+        // none of the jobs assigned to them). Each attempt gets its own 45s timeout; backoff 2s then 4s.
+        let d=null;
+        for(let _attempt=0;_attempt<3&&!cancelled;_attempt++){
+          if(_attempt>0){console.warn('[DB] Initial load returned null — retrying ('+_attempt+'/2)');await new Promise(r=>setTimeout(r,_attempt*2000));if(cancelled)return}
+          let _loadTimerId;
+          const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
+          d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+          if(d)break;
+        }
         if(cancelled)return;
         if(!d){
-          // Supabase connected but query failed — do NOT allow writes that could overwrite real data
+          // Supabase connected but query failed after retries — do NOT allow writes that could overwrite real data
           setDbError('Could not load data from Supabase. Changes will only be saved locally until this is resolved.');
-          console.error('[DB] Load returned null — blocking Supabase writes');
+          console.error('[DB] Load returned null after retries — blocking Supabase writes');
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
