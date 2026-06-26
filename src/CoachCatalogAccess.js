@@ -126,6 +126,34 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Off by default — turn on per team. Saves automatically.</div>
         </div>
 
+        {/* Athletic-director tools — only meaningful on a parent (AD) account, which
+            rolls up the teams beneath it. Same optimistic toggle as the portal caps. */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Athletic-director tools</div>
+          {(() => {
+            const field = 'ad_spend_tracking';
+            const on = !!(customer && customer[field]);
+            const isParent = !(customer && customer.parent_id);
+            return (
+              <button onClick={() => togglePortalCap(field)}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '9px 12px', cursor: 'pointer' }}>
+                <span style={{ width: 36, height: 20, borderRadius: 999, background: on ? '#22c55e' : '#cbd5e1', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
+                  <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .15s' }} />
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#1e293b' }}>📊 Team Spend &amp; Promo dashboard</span>
+                  <span style={{ display: 'block', fontSize: 11, color: '#94a3b8' }}>Shows the AD per-team spend (excl. shipping/tax) + promo balance in their portal.</span>
+                </span>
+              </button>
+            );
+          })()}
+          <div style={{ fontSize: 11, color: (!(customer && customer.parent_id)) ? '#94a3b8' : '#b45309', marginTop: 5 }}>
+            {(!(customer && customer.parent_id))
+              ? 'Off by default — enable for athletic directors who should see spend across their teams.'
+              : '⚠️ This is a sub-customer (team). The dashboard only appears on the parent (AD) account.'}
+          </div>
+        </div>
+
         {/* Brand access */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
