@@ -5993,6 +5993,15 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
   const paid = orders.filter((o) => o.payment_mode === 'paid');
   const lines = orderItems.filter((i) => !i.is_bundle_parent);
   const units = lines.reduce((a, i) => a + (i.qty || 1), 0);
+  // Packages: each purchased package is one bundle-parent line. Reported for
+  // reference + club fundraising (we sometimes pay the club per package). The
+  // components still ship/report as individual items via the non-parent lines.
+  const liveIds = new Set(orders.map((o) => o.id));
+  const pkgLines = orderItems.filter((i) => i.is_bundle_parent && liveIds.has(i.order_id));
+  const packagesSold = pkgLines.reduce((a, i) => a + (i.qty || 1), 0);
+  const pkgFund = pkgLines.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (i.qty || 1), 0);
+  const byPkg = {}; pkgLines.forEach((i) => { const k = i.name || 'Package'; byPkg[k] = (byPkg[k] || 0) + (i.qty || 1); });
+  const pkgRows = Object.entries(byPkg).sort((a, b) => b[1] - a[1]);
 
   const bySku = {}; lines.forEach((i) => { const k = i.sku || i.product_id || '?'; bySku[k] = (bySku[k] || 0) + (i.qty || 1); });
   const topSellers = Object.entries(bySku).map(([sku, q]) => ({ sku, q, name: nameBySku[sku] || sku })).sort((a, b) => b.q - a.q).slice(0, 8);
@@ -6009,7 +6018,7 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
           ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
@@ -6020,8 +6029,18 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
           <div style={{ fontSize: 11, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Club fundraising payout</div>
           <div style={{ fontSize: 26, fontWeight: 900, color: '#166534' }}>{money(fundPaid)}</div>
           <div style={{ fontSize: 12, color: '#64748b' }}>collected & owed to the club{fundPending > 0.005 ? ` · ${money(fundPending)} pending on unpaid/team-tab orders` : ''}</div>
+          {pkgFund > 0.005 && <div style={{ fontSize: 12, color: '#15803d', fontWeight: 600, marginTop: 4 }}>Includes {money(pkgFund)} from {packagesSold} package{packagesSold === 1 ? '' : 's'}.</div>}
         </div>
         <button className="btn btn-secondary" onClick={() => printPayout(store, { fundPaid, fundPending, orders: orders.length })}>🖨️ Print payout statement</button>
+      </div></div>}
+
+      {packagesSold > 0 && <div className="card"><div style={{ padding: 16 }}>
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>Packages sold</div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>For reference & club fundraising — components still report &amp; ship as individual items.</div>
+        {pkgRows.map(([nm, q]) => <div key={nm} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}>
+          <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={nm}>{nm}</div>
+          <Bar frac={q / Math.max(...pkgRows.map((r) => r[1]))} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{q}</div>
+        </div>)}
       </div></div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
