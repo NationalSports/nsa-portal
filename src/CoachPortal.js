@@ -1418,53 +1418,104 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* ── content sections (each gated to a nav page) ── */}
         <div className="cp-col">
         {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
-        {page==='home'&&<div style={{marginBottom:18}}>
-          <style>{`.cp-hub{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:780px){.cp-hub{grid-template-columns:minmax(0,1fr) minmax(0,1.05fr)}}.cp-tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cp-tile{position:relative;text-align:left;border:none;border-radius:18px;padding:15px 16px;cursor:pointer;display:flex;flex-direction:column;min-height:116px;transition:transform .12s,box-shadow .12s}.cp-tile:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(15,23,42,.12)}`}</style>
-          <div className="cp-hub">
-            {/* School hero — athletic, team-colored, monogram badge + watermark */}
-            <div style={{position:'relative',overflow:'hidden',borderRadius:24,background:`linear-gradient(150deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-22)})`,color:'#fff',boxShadow:'0 14px 36px rgba(15,23,42,.18)',minHeight:296,display:'flex',flexDirection:'column',justifyContent:'space-between',padding:'24px'}}>
-              <div style={{position:'absolute',right:-26,bottom:-46,fontSize:230,fontWeight:900,color:cpTheme.accent,opacity:.16,lineHeight:.8,letterSpacing:'-.06em',pointerEvents:'none',userSelect:'none'}}>{cpMonogram}</div>
-              <div style={{position:'absolute',left:0,right:0,top:0,height:6,background:cpTheme.accent}}/>
-              <div style={{position:'relative'}}>
-                <div style={{fontSize:11,fontWeight:800,letterSpacing:'.16em',textTransform:'uppercase',color:cpTheme.accent}}>★ Team HQ ★</div>
-                <div style={{display:'flex',alignItems:'center',gap:14,marginTop:14}}>
-                  <div style={{width:64,height:64,borderRadius:18,background:customer.logo_url?'rgba(255,255,255,.96)':'rgba(255,255,255,.12)',border:`2px solid ${cpTheme.accent}`,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:23,flexShrink:0,overflow:'hidden'}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:5}}/>:cpMonogram}</div>
-                  <div style={{minWidth:0}}>
-                    <div style={{fontSize:25,fontWeight:900,lineHeight:1.05,letterSpacing:'-.01em'}}>{customer.name}</div>
-                    <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>{isP?(adData?adData.teamCount:subs.length)+' teams · powered by NSA':'Powered by NSA'}</div>
-                  </div>
-                </div>
-              </div>
-              <div style={{position:'relative',display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
-                <div style={{display:'flex',alignItems:'center',gap:7}}>
-                  <span style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',opacity:.7,textTransform:'uppercase'}}>Colors</span>
-                  {[cpTheme.primary,cpTheme.accent,'#ffffff'].map((c,i)=><span key={i} style={{width:17,height:17,borderRadius:'50%',background:c,border:'2px solid rgba(255,255,255,.45)'}}/>)}
-                </div>
-                <div style={{textAlign:'right'}}>
-                  <div style={{fontSize:10,fontWeight:700,letterSpacing:'.06em',opacity:.7,textTransform:'uppercase'}}>Your Rep</div>
-                  <div style={{fontSize:13,fontWeight:800}}>{rep?.name||'NSA Team'}</div>
-                </div>
+        {page==='home'&&<div>
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}`}</style>
+          {/* ── Pennant hero ── */}
+          <div style={{position:'relative',overflow:'hidden',borderRadius:8,minHeight:320,boxShadow:'0 16px 40px rgba(0,0,0,.25)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'46%',background:tAccent,opacity:.14,clipPath:'polygon(28% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+            <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
+              <div style={{width:'100%',height:'100%',borderRadius:10,background:'rgba(255,255,255,.05)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                {customer.logo_url?<img src={customer.logo_url} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
               </div>
             </div>
-            {/* Section tiles */}
-            <div className="cp-tiles">
-              {(()=>{const tiles=[
-                {key:'orders',label:'Orders',icon:'📦',color:cpTheme.primary,stat:(activeSOs.length||'No')+' active'},
-                {key:'estimates',label:'Estimates',icon:'📋',color:'#d97706',stat:openEstCount?openEstCount+' to approve':'All clear'},
-                {key:'art',label:'Art Locker',icon:'🎨',color:cpTheme.accent,stat:artLibrary.length+' design'+(artLibrary.length!==1?'s':'')},
-                {key:'shop',label:'Shop',icon:'🛍️',color:'#0f172a',stat:'Browse gear'},
-                {key:'billing',label:'Billing',icon:'💳',color:'#dc2626',stat:totalDue>0?'$'+totalDue.toLocaleString()+' due':'Up to date'},
-                ...(adData?[{key:'spend',label:adData.hasPromo?'Promo & Spend':'Sales Report',icon:'📊',color:'#15803d',stat:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo':'View report',onClick:()=>setSpendView(true)}]:[]),
-              ];
-              return tiles.map(t=>(
-                <button key={t.key} className="cp-tile" onClick={t.onClick||(()=>setPage(t.key))} style={{background:t.color+'14'}}>
-                  <span style={{width:42,height:42,borderRadius:12,background:t.color,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,boxShadow:`0 4px 12px ${t.color}44`}}>{t.icon}</span>
-                  <span style={{marginTop:'auto'}}>
-                    <span style={{display:'block',fontSize:15,fontWeight:800,color:'#1e293b'}}>{t.label}</span>
-                    <span style={{display:'block',fontSize:12,fontWeight:700,color:t.color,marginTop:1}}>{t.stat}</span>
-                  </span>
-                </button>
-              ));})()}
+            <div className="nsa-heroleft" style={{position:'relative',maxWidth:'56%',padding:'40px',color:'#fff'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'1px',color:tAccentLight,textTransform:'uppercase'}}>★ Team HQ ★</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:48,lineHeight:.98,textTransform:'uppercase',margin:'10px 0 0'}}>{customer.name}</h1>
+              <div style={{fontSize:15,color:'rgba(255,255,255,.78)',marginTop:10}}>{isP?(adData?adData.teamCount:subs.length)+' teams · ':''}Powered by National Sports Apparel</div>
+              <div style={{display:'flex',alignItems:'center',gap:12,marginTop:18}}>
+                <span className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Team Colors</span>
+                {[tPrimary,tAccent,'#ffffff'].map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
+              </div>
+              {totalDue>0&&<><div style={{height:1,background:'rgba(255,255,255,.15)',margin:'22px 0 18px',maxWidth:400}}/>
+              <div style={{display:'flex',alignItems:'center',gap:22,flexWrap:'wrap'}}>
+                <div><div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Balance Due</div><div className="nsa-disp" style={{fontWeight:800,fontSize:38,color:tAccentLight,lineHeight:1}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+                <button className="nsa-skew nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 22px',borderRadius:4,cursor:'pointer'}}><span>Pay Balance →</span></button>
+              </div></>}
+            </div>
+          </div>
+          {/* ── Quick Access ── */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary,margin:'8px 0 16px'}}>Quick Access</div>
+          <div className="nsa-qa">
+            {(()=>{const qa=[
+              {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
+              {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
+              {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
+              {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
+              {k:'shop',t:'Shop Gear',sub:'Browse the team store',icon:'🛍️',accent:false},
+              ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
+            ];
+            return qa.map(q=>(
+              <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
+                <span style={{width:50,height:50,flexShrink:0,borderRadius:6,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>{q.icon}</span>
+                <span style={{minWidth:0}}>
+                  <span className="nsa-disp" style={{display:'block',fontWeight:700,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>{q.t}</span>
+                  <span style={{display:'block',fontSize:13,color:q.sa?tAccent:'#5A6075',fontWeight:q.sa?700:400,marginTop:4}}>{q.sub}</span>
+                </span>
+              </button>
+            ));})()}
+          </div>
+          {/* ── Needs Your Attention ── */}
+          <div className="nsa-attn" style={{marginTop:28}}>
+            {(()=>{const openE=custEsts.filter(e=>e.status==='sent'||e.status==='open').slice(0,3);return(
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
+                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
+              </div>
+              {openE.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>You're all caught up — nothing waiting.</div>:
+               openE.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id} · ${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                  </div>
+                  <button className="nsa-skew nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                </div>})}
+            </div>);})()}
+            {(()=>{const jobs=waitingArtJobs.slice(0,3);return(
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review</div>
+                <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
+              </div>
+              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>No proofs waiting on you right now.</div>:
+               jobs.map((j,ix)=>{const so=j.so;
+                return<div key={j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
+                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:4,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16,clipPath:'polygon(0 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px))'}}>{String(ix+1).padStart(2,'0')}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{j.art_name||so.memo||'Artwork'}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||so.id}</div>
+                  </div>
+                  <button className="nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:4,cursor:'pointer'}}>Review</button>
+                </div>})}
+            </div>);})()}
+          </div>
+          {/* ── Rep + Contact ── */}
+          <div className="nsa-rep" style={{marginTop:24}}>
+            <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
+              <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+              <div style={{position:'relative',minWidth:0}}>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:tAccentLight}}>Your Dedicated Rep</div>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
+                <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
+              </div>
+              <a href="mailto:team@nsa-teamwear.com" className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+            </div>
+            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
+              <div style={{fontSize:13,color:'#5A6075',margin:'6px 0 12px'}}>{(customer.contacts||[])[0]?.name||'—'}{(customer.contacts||[])[0]?.email?' · '+(customer.contacts||[])[0].email:''}{customer.shipping_city?' · '+customer.shipping_city+', '+(customer.shipping_state||''):''}</div>
+              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:4,cursor:'pointer'}}>Request Update</button>
             </div>
           </div>
         </div>}
@@ -1511,7 +1562,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>;
         })()}
 
-        {page==='home'&&(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
+        {false&&(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
@@ -1532,8 +1583,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
         </div>}
 
-        {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}
-        {page==='home'&&waitingArtJobs.length>0&&<>
+        {/* Artwork awaiting approval — now surfaced via the Dashboard "Designs to Review" card */}
+        {false&&waitingArtJobs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>🎨 Artwork to Approve ({waitingArtJobs.length})</div>
           {waitingArtJobs.map(j=>{const so=j.so;const soAF=safeArt(so);
             const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
@@ -1821,8 +1872,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
         </div>}
 
-        {/* Contact update */}
-        {page==='home'&&<div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
+        {/* Contact update — summary lives in the Dashboard; this is the edit form when active */}
+        {page==='home'&&contactEdit&&<div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
           <div style={{fontSize:12,fontWeight:600,color:'#374151',marginBottom:6}}>📋 Update Contact / Shipping Info</div>
           {!contactEdit?<>
             <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Current: {(customer.contacts||[])[0]?.name} · {(customer.contacts||[])[0]?.email}{customer.shipping_city&&' · '+customer.shipping_city+', '+customer.shipping_state}</div>
