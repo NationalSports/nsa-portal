@@ -3169,8 +3169,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   };
   const endDrag = () => { drag.current = null; };
   const current = decos[sel];
-  const currentOnSide = current && sideOf(current) === side;
-  const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side);
+  const currentOnSide = current && sideOf(current) === side && !isPerso(current);
+  const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side && !isPerso(d));
+  // Explicit perso placements (number/name) live in decorations as tokens.
+  const persoIdx = (kind) => decos.findIndex((d) => d.kind === kind);
+  const addPerso = (kind) => { const p = persoDefault(kind); onChange([...decos, { kind, side: 'back', x: p.x, y: p.y, w: p.w }]); setSel(decos.length); };
+  const removePerso = (kind) => { const idx = persoIdx(kind); if (idx >= 0) { setSel(-1); onChange(decos.filter((_, i) => i !== idx)); } };
   const card = { background: '#fff', border: '1px solid #eef2f7', borderRadius: 12, padding: 12, marginBottom: 10 };
   const cardTitle = { fontSize: 11, fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 8 };
   const cardHint = { fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' };
@@ -3190,15 +3194,16 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
-          {decos.map((d, i) => (sideOf(d) === side ? (
+          {decos.map((d, i) => (sideOf(d) === side && !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName) ? (
             <div key={i}
               onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = { i, mode: 'move' }; }}
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, touchAction: 'none' }}>
-              <img src={d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+              {isPerso(d)
+                ? <PersoArt kind={d.kind} />
+                : <img src={d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
               {i === sel && <div onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setSel(i); drag.current = { i, mode: 'resize' }; }} title="Drag to resize" style={{ position: 'absolute', right: -8, bottom: -8, width: 16, height: 16, borderRadius: 4, background: '#2563eb', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />}
             </div>
           ) : null))}
-          {side === 'back' && <PersoMock takesNumber={takesNumber} takesName={takesName} />}
         </div>
         {side === 'back' && onBackImageChange && stageUrl && <div style={{ textAlign: 'center', marginTop: 8 }}><button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : 'Replace back image'}</button></div>}
         <input ref={backRef} type="file" accept="image/*,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadBack(f); e.target.value = ''; }} />
@@ -3248,6 +3253,30 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           {dragOver && <div style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, marginTop: 6 }}>Drop to add to the library</div>}
           {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginTop: 8 }}>{note}</div>}
         </div>
+
+        {(takesNumber || takesName) && (
+          <div style={card}>
+            <div style={cardTitle}>Number &amp; name on the mockup <span style={cardHint}>· sample preview shoppers see on the back</span></div>
+            {side !== 'back'
+              ? <div style={{ fontSize: 12, color: '#94a3b8' }}>Switch the mockup to <b>Back</b> to place the number/name.</div>
+              : [takesNumber && 'perso_number', takesName && 'perso_name'].filter(Boolean).map((kind) => {
+                  const idx = persoIdx(kind); const label = kind === 'perso_number' ? 'Number' : 'Name'; const placed = idx >= 0;
+                  return (
+                    <div key={kind} style={{ marginBottom: 8 }}>
+                      {placed ? (<>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: '#191919' }}>{label} placed <span style={{ color: '#94a3b8', fontWeight: 500 }}>· drag it, corner to resize</span></span>
+                          <button type="button" onClick={() => removePerso(kind)} style={{ background: 'none', border: 'none', color: '#b91c1c', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Remove</button>
+                        </div>
+                        <input type="range" min={8} max={80} value={Math.round((decos[idx] && decos[idx].w) || persoDefault(kind).w)} onChange={(e) => update(idx, { w: Number(e.target.value) })} style={{ width: '100%' }} />
+                      </>) : (
+                        <button type="button" onClick={() => addPerso(kind)} className="btn btn-sm btn-secondary">+ Add {label.toLowerCase()} to mockup</button>
+                      )}
+                    </div>
+                  );
+                })}
+          </div>
+        )}
 
         {shown.length === 0 ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '6px 2px' }}>No logo on the {side} yet — tap a logo above to drop it on the garment, then position &amp; recolor it here.</div> : currentOnSide && <React.Fragment>
           <div style={card}>
@@ -3402,6 +3431,19 @@ function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber
     {takesName && tok(PERSO_DEFAULTS.name, 26, 20, 20, String(sampleName).toUpperCase())}
     {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
   </>;
+}
+// A perso placement lives in the item's `decorations` as a token (no art_url), so
+// it flows editor → DB → storefront with the logos and is ignored by DecoOverlay.
+const isPerso = (d) => d && (d.kind === 'perso_number' || d.kind === 'perso_name');
+const persoDefault = (kind) => ({ ...(kind === 'perso_number' ? PERSO_DEFAULTS.number : PERSO_DEFAULTS.name) });
+// Sample text token that fills its container's width (so resizing the box resizes the text).
+function PersoArt({ kind, sampleName = 'PLAYER', sampleNumber = '00' }) {
+  const isNum = kind === 'perso_number';
+  const vb = isNum ? 64 : 26, ty = isNum ? 52 : 20, fs = isNum ? 58 : 20;
+  const body = isNum ? sampleNumber : String(sampleName).toUpperCase();
+  return <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible', pointerEvents: 'none' }}>
+    <text x="50" y={ty} textAnchor="middle" fontFamily="'Barlow Condensed',Oswald,Impact,sans-serif" fontWeight="800" fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.6)" strokeWidth="1.3" paintOrder="stroke" letterSpacing="1">{body}</text>
+  </svg>;
 }
 
 // Fit/size variants of one garment. A jersey is the same design across Adult /
@@ -3632,7 +3674,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
-      fields.decorations = decorations;
+      // Drop a perso placement if its toggle was turned back off.
+      fields.decorations = decorations.filter((d) => !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName));
       // null = every available size (default). Store a subset only when one is set.
       const _allOn = allSizes.length === 0 || offeredSizes.length === 0 || offeredSizes.length >= allSizes.length;
       fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));

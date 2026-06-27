@@ -670,8 +670,10 @@ function DecoOverlay({ decorations, side = 'front', colorName }) {
 // Sample number/name on the garment mockup so shoppers see an item is personalized.
 // Default back placement; the real value is entered at checkout. Mirrors the builder.
 const PERSO_DEFAULTS = { name: { x: 50, y: 22, w: 64 }, number: { x: 50, y: 51, w: 34 } };
-function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber = '00' }) {
+function PersoMock({ takesNumber, takesName, decorations = [], sampleName = 'PLAYER', sampleNumber = '00' }) {
   if (!takesNumber && !takesName) return null;
+  // Honor the rep's placed/resized perso token when present; else the default.
+  const place = (kind, def) => { const d = (decorations || []).find((x) => x && x.kind === kind); return d ? { x: d.x != null ? d.x : def.x, y: d.y != null ? d.y : def.y, w: d.w != null ? d.w : def.w } : def; };
   const tok = (p, vb, ty, fs, body) => (
     <div style={{ position: 'absolute', left: p.x + '%', top: p.y + '%', width: p.w + '%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 1 }}>
       <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible' }}>
@@ -680,8 +682,8 @@ function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber
     </div>
   );
   return <>
-    {takesName && tok(PERSO_DEFAULTS.name, 26, 20, 20, String(sampleName).toUpperCase())}
-    {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
+    {takesName && tok(place('perso_name', PERSO_DEFAULTS.name), 26, 20, 20, String(sampleName).toUpperCase())}
+    {takesNumber && tok(place('perso_number', PERSO_DEFAULTS.number), 64, 52, 58, sampleNumber)}
   </>;
 }
 
@@ -875,7 +877,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
-            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} />}
+            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} decorations={p.decorations} />}
           </div>
           {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
