@@ -3705,7 +3705,7 @@ function AuthSetupPage({mode}){
       <div style={{width:420,padding:0}}>
         <div style={{textAlign:'center',marginBottom:32}}>
           <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
-          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
+          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Connect</div>
         </div>
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
           {checking?(

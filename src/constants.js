@@ -291,7 +291,7 @@ export const DEFAULT_REPS=[
 export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'2238 N Glassell St Ste E',city:'Orange',state:'CA',zip:'92865',
   fullAddr:'2238 N Glassell St Ste E, Orange, CA 92865',
-  logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
+  logo:'NSA',logoUrl:'/NEW%20NSA%20Logo%20on%20white.png',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
 // Physical warehouse / receiving address (where goods ship back to). Distinct from the
