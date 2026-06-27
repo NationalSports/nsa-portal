@@ -2221,6 +2221,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
+  // Decorator drop-ship resolver: when the given SO item indexes are drop-shipped to an outside
+  // decorator (a deco PO with drop_ship covering any of them), return the decorator's saved
+  // ship-to address so blank POs can default Ship To to the decorator instead of NSA/customer.
+  const decoShipForItems=useCallback((itemIdxs)=>{
+    const idxs=itemIdxs||[];if(idxs.length===0)return null;
+    for(const dp of (o.deco_pos||[])){
+      if(!dp||!dp.drop_ship)continue;
+      if(!(dp.item_idxs||[]).some(i=>idxs.includes(i)))continue;
+      const dv=decoVendors.find(v=>v.id===dp.deco_vendor_id||v.name===dp.vendor);
+      // Decorator address is stored as STRUCTURED fields (migration 00141: address_line1/city/...);
+      // assemble a single ship-to line. Fall back to any ship_address stamped on the PO itself.
+      const structured=dv?[dv.address_line1,dv.address_line2,[dv.city,dv.state].filter(Boolean).join(', '),dv.zip].filter(Boolean).join(', '):'';
+      const addr=String(structured||dp.ship_address||'').trim();
+      if(addr)return{name:dp.vendor||dv?.name||'Decorator',addr,id:dv?.id||null};
+    }
+    return null;
+  },[o,decoVendors]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
   // Combined deco COST tier qty for manually-linked jobs that share a screen across orders
   // (so_jobs.link_group). Lowers the rep's cost/margin so one shared setup isn't paid twice;
@@ -5393,12 +5410,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const unitCost=safeNum(dp.unit_cost||0);
           const expected=safeNum(dp.expected_cost||qty*unitCost);
           const actual=safeNum(dp._bill_cost||0);
-          if(expected===0&&actual===0)return;
-          const skus=(dp.item_idxs||[]).map(ii=>safeItems(o)[ii]?.sku).filter(Boolean);
+          // Show every created deco PO as its own cost slot — even before a rate/bill is entered
+          // (expected & actual both $0). The PO exists, so the rep needs a row for it. Only skip
+          // truly-empty phantom records that were never assigned a PO number.
+          if(!dp.po_id&&expected===0&&actual===0)return;
+          // Covered items + sizes for the hover panel — instead of dumping every SKU inline,
+          // the row shows the decorator (vendor col) and reveals items/sizes on hover.
+          const decoItemRows=(dp.item_idxs||[]).map(ii=>{const it=safeItems(o)[ii];if(!it)return null;
+            const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+':'+safeNum(v)).join(' ');
+            const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            return{sku:it.sku||'—',name:it.name||'',color:it.color||'',sizes,qty:q}}).filter(Boolean);
           const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
           const tsLabel=dp.topstar_service?(dp.topstar_service==='vector'?'Vector Logo':'DST File'):'';
           costLines.push({category:dp.topstar_service?'Digitizing':'Outside Deco',
-            sku:skus.join(', ')||'—',
+            sku:'',
             name:dp.topstar_service?'Topstar Digitizing — '+tsLabel:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
             vendor:dp.vendor||'—',
             qty,
@@ -5406,6 +5431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             actual:Math.round(actual*100)/100,
             poCount:1,
             poIds:dp.po_id||'',
+            _decoItems:decoItemRows,
             allReceived:dp.status==='received'});
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
@@ -5481,7 +5507,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                   background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
                   color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
-                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}</td>
+                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}
+                  {l._decoItems&&l._decoItems.length>0&&<span className="nsa-tip" style={{marginLeft:8,fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',border:'1px solid #ede9fe',borderRadius:10,padding:'1px 8px'}}>{l._decoItems.length} item{l._decoItems.length!==1?'s':''} ⓘ
+                    <span className="nsa-tip-body"><strong style={{display:'block',marginBottom:4,color:'#c4b5fd'}}>Items on this PO</strong>{l._decoItems.map((di,k)=><span key={k} style={{display:'block',marginBottom:2}}><strong style={{color:'#fff'}}>{di.sku}</strong> {di.name}{di.color?' · '+di.color:''} <span style={{color:'#a5b4fc'}}>({di.sizes||di.qty})</span></span>)}</span>
+                  </span>}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
@@ -6941,6 +6970,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           status:'waiting',created_at:new Date().toLocaleDateString(),
           _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
       };
+      // Decorator drop-ship default: when this PO's blanks are headed to an outside decorator —
+      // either an inline deco PO is being created in this same modal, or an existing drop-ship deco
+      // PO already covers these items — surface the decorator's saved address as the Ship To and
+      // default to it when the rep picks Drop Ship.
+      const _poSelIdxs=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx);
+      const _decoForPo=(()=>{
+        if(poDecoInline){const dv=decoVendors.find(v=>v.name===poDecoInline.vendor);const addr=String(dv?.address||'').trim();if(addr)return{name:poDecoInline.vendor,addr,id:dv?.id||null}}
+        return decoShipForItems(_poSelIdxs);
+      })();
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
         <div className="modal-body">
@@ -6954,7 +6992,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true)}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&String(_dv?.address||'').trim())setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -7022,9 +7060,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
             <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<div style={{display:'flex',alignItems:'stretch',border:'1px solid #d1d5db',borderRadius:6,overflow:'hidden',flex:1}}><span style={{padding:'6px 8px',background:'#f1f5f9',borderRight:'1px solid #d1d5db',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,whiteSpace:'nowrap',display:'flex',alignItems:'center'}}>PO {poCounter}</span><input value={poAlphaSuffix} onChange={e=>setPoAlphaSuffix(e.target.value)} placeholder={cust?.alpha_tag||'suffix'} style={{border:'none',outline:'none',padding:'6px 8px',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,flex:1,minWidth:60,background:'white'}}/></div>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{_decoForPo&&<option value="deco">🎨 {_decoForPo.name} (decorator)</option>}{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='deco'?(_decoForPo?.addr||''):poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
-          <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(addrs[0]?.id||'warehouse'):'warehouse')}}
+          {_decoForPo&&poShipTo==='deco'&&<div style={{marginTop:-8,marginBottom:12,fontSize:11,color:'#7c3aed',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'6px 10px'}}>🎨 Drop-shipping blanks to <strong>{_decoForPo.name}</strong>: {_decoForPo.addr}</div>}
+          <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(_decoForPo?'deco':(addrs[0]?.id||'warehouse')):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
             dsSub='Ships direct to school/decorator — warehouse will NOT receive or count this in'/>
           {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
@@ -9836,7 +9875,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
         }});
       });
-      if(allPickIds.length===0&&allPoIds.length===0)return null;
+      // SO-level decoration POs (outside-decorator cost buckets) live on o.deco_pos, not under
+      // items — surface them in Linked Documents too so they're not invisible here.
+      const allDecoPos=(o.deco_pos||[]).filter(dp=>dp&&dp.po_id);
+      if(allPickIds.length===0&&allPoIds.length===0&&allDecoPos.length===0)return null;
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
         {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Item Fulfillments</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:allPoIds.length>0?16:0}}>
@@ -9872,6 +9914,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               {po.memo&&<div style={{fontSize:11,color:'#475569',marginTop:3,fontStyle:'italic'}}>💬 {po.memo}</div>}
             </div>)}
+          </div></>}
+        {allDecoPos.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',margin:(allPoIds.length>0||allPickIds.length>0)?'16px 0 6px':'0 0 6px'}}>Decoration POs</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {allDecoPos.map(dp=>{const exp=safeNum(dp.expected_cost||safeNum(dp.qty)*safeNum(dp.unit_cost));const act=safeNum(dp._bill_cost||0);const cnt=(dp.item_idxs||[]).length;const st=dp.status||'waiting';
+              return<div key={dp.id||dp.po_id} style={{padding:'10px 14px',border:'1px solid #ede9fe',borderRadius:8,cursor:'pointer',background:st==='received'||st==='billed'?'#f0fdf4':'#faf5ff',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:13}}>🎨</span><span style={{fontWeight:800,color:'#7c3aed',fontSize:14}}>{dp.po_id}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{dp.vendor||'Decorator'}</span>
+                  <span className="badge badge-blue" style={{fontSize:9}}>Decoration PO</span>
+                  {dp.drop_ship&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                  <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#64748b'}}>{act>0?'$'+act.toFixed(2)+' billed':exp>0?'$'+exp.toFixed(2)+' exp':'cost TBD'}</span>
+                </div>
+                <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
+                  <span style={{textTransform:'capitalize'}}>{(dp.deco_type||'').replace(/_/g,' ')||'—'}</span>
+                  <span>{safeNum(dp.qty)||0} units · {cnt} item{cnt!==1?'s':''}</span>
+                  <span className={`badge ${st==='received'||st==='billed'?'badge-green':st==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:9}}>{st.replace(/^./,c=>c.toUpperCase())}</span>
+                  {dp.created_at&&<span>📅 {dp.created_at}</span>}
+                </div>
+              </div>})}
           </div></>}
       </div></div>})()}
 
@@ -10658,8 +10719,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const isDPO=po.po_type==='outside_deco';
               // Drop-ship POs ship directly from the vendor to the customer, so the Ship To
               // on the PO should be the customer's shipping address, not NSA's address.
+              // Blanks drop-shipped to an outside decorator ship to the decorator's address, not the
+              // customer's. Null when no decorator covers these items (or it has no saved address).
+              const _decoDest=isDropShip?decoShipForItems(allLines.map(ln=>ln.lineIdx)):null;
               const _shipTo=(()=>{
                 if(!isDropShip)return{name:_ci.name,sub:_ci.fullAddr};
+                if(_decoDest)return{name:_decoDest.name+' (Decorator)',sub:String(_decoDest.addr).replace(/\n/g,'<br/>')};
                 let addr='';
                 if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
                 else{
@@ -10735,7 +10800,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     ]
                   },
                 ],
-                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer address above.');return parts.length?parts.join('<br/>'):null})(),
+                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the '+(_decoDest?'decorator':'customer')+' address above.');return parts.length?parts.join('<br/>'):null})(),
                 footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.',
                 companyInfo:_ci
               });
