@@ -128,6 +128,9 @@ const catalogPath = () => window.location.pathname.replace(/\/+$/, '') || '/adid
 // the site header isn't doubled up. A cross-origin iframe can't be styled from
 // the parent page, so this has to be opted into here.
 const isEmbedded = () => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } };
+// Reorder deep-link from the coach portal Art Locker: /adidas?art=<url>&an=<name>&ad=<deco>.
+// Carries a saved design into the order so the artwork reaches the rep on the request.
+const REORDER_ART = (() => { try { const p = new URLSearchParams(window.location.search); const url = p.get('art'); if (!url) return null; return { url, name: p.get('an') || 'Your design', deco: (p.get('ad') || '').trim() }; } catch { return null; } })();
 
 // "Adidas" + "W LS Pregame" → "Adidas W LS Pregame". Won't double up when the
 // name already leads with the brand (only a leading "adidas" is stripped for
@@ -1065,7 +1068,7 @@ const parseDeco = (s) => new Set(String(s || '').split(',').map((x) => x.trim())
 
 // ── Order list drawer: review lines, coach info, send to rep ─────────
 function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onClose, notify, account,
-  savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
+  savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder, reorderArt = null }) {
   const [coach, setCoach] = useState(() => {
     const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
     // Signed-in coach account prefills anything the browser doesn't remember
@@ -1091,6 +1094,14 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
     if (o) { setOrderName(o.name && o.name !== 'Untitled order' ? o.name : ''); setNotes(o.notes || ''); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeOrderId]);
+
+  // Reorder deep-link: pre-attach the carried design to a fresh cart's notes so the rep gets it.
+  useEffect(() => {
+    if (reorderArt && !activeOrderId) {
+      setNotes((n) => n ? n : ('Reorder of our design "' + reorderArt.name + '"' + (reorderArt.deco ? ' (' + reorderArt.deco + ')' : '') + '. Please apply this artwork. Logo on file: ' + reorderArt.url));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -1356,6 +1367,14 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                 <input className="ai-input" placeholder="Email *" type="email" value={coach.email} onChange={setField('email')} />
                 <input className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
               </div>
+              {reorderArt && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '9px 11px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10 }}>
+                  {/\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(reorderArt.url)
+                    ? <img src={reorderArt.url} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, background: '#fff', border: '1px solid #E2E5EA', flexShrink: 0 }} />
+                    : <span style={{ fontSize: 26 }}>🎨</span>}
+                  <div style={{ fontSize: 12, color: '#166534', lineHeight: 1.35 }}><b>{reorderArt.name}</b> is attached to this order{reorderArt.deco ? ' (' + reorderArt.deco + ')' : ''}. Your rep will apply this artwork.</div>
+                </div>
+              )}
               <textarea className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 {images.map((im, i) => (
@@ -2290,6 +2309,7 @@ export default function AdidasInventory() {
           onRenameOrder={renameOrder}
           onDeleteOrder={deleteOrder}
           onNewOrder={newBlankOrder}
+          reorderArt={REORDER_ART}
         />
       )}
 
