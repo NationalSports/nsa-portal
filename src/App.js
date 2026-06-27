@@ -19290,17 +19290,21 @@ export default function App(){
                               setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                           } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                         }}>Print Label</button>}
+                      {shp.label_url&&<button style={{fontSize:9,background:'#0369a1',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{
+                          const _u=shp.label_url;
+                          if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
+                          else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
+                        }}>📄 Download</button>}
                       <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           if(!window.confirm('Delete this shipment?'))return;
                           const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
-                          // Revert jobs from 'shipped' back to 'completed' and recalc shipping fields
                           const so2=shp.so;
                           const revertedJobs=safeJobs(so2).map(jj=>{
                             if(jj.prod_status!=='shipped')return jj;
-                            // Check if this job still has all units shipped after removing this shipment
                             const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
                               const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                             })});
@@ -19328,6 +19332,10 @@ export default function App(){
                         }}>Confirm Picked Up</button>
                     </div>
                   </div>
+                  {(shp.ship_to_label||shp.ship_to)&&<div style={{marginTop:4,fontSize:9,color:'#475569'}}>
+                    <span style={{fontWeight:700,color:'#92400e'}}>→ {shp.ship_to_label||'Customer'}</span>
+                    {shp.ship_to&&shp.ship_to.street1&&<span style={{marginLeft:6,color:'#64748b'}}>{[shp.ship_to.street1,shp.ship_to.street2,shp.ship_to.city,shp.ship_to.state,shp.ship_to.zip].filter(Boolean).join(', ')}</span>}
+                  </div>}
                 </div>})}
             </div>
           </div>})()}
@@ -20297,7 +20305,7 @@ export default function App(){
                   <input className="form-input" type="number" min="1" placeholder="H" value={(manualShipModal.dimensions||{}).height||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
                     onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),height:e.target.value}})}/>
                 </div>
-                {ssConnected&&manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other'&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
+                {manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other'&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
                   onClick={async()=>{
                     try{
                       const so=manualShipModal.so;
@@ -20453,6 +20461,7 @@ export default function App(){
                   const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
                   nf('Manual ship recorded → '+_destLabel+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
                   addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',dest:_destLabel,tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
+                  if(manualShipModal.labelUrl){const _lUrl=manualShipModal.labelUrl;if(_lUrl.startsWith('data:application/pdf;base64,')){try{const _b64=_lUrl.replace('data:application/pdf;base64,','');const _bin=atob(_b64);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bUrl=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bUrl;_a.download='shipping-label-'+so.id+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bUrl),5000)}catch(_e){const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}else{const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}
                   setManualShipModal(null);
                 }}>⚡ Confirm Manual Ship</button>
               <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
@@ -20602,6 +20611,12 @@ export default function App(){
                             setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                         } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }}>Print Label</button>}
+                    {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#0369a1',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{
+                        const _u=shp.label_url;
+                        if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
+                        else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
+                      }}>📄 Download Label</button>}
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -20640,6 +20655,10 @@ export default function App(){
                 </div>
                 {(shp.items||[]).length>0&&<div style={{marginTop:6,fontSize:10,color:'#64748b'}}>
                   {(shp.items||[]).map((it,ii)=><span key={ii} style={{marginRight:8}}><strong>{it.sku}</strong> {it.name} — {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ')}</span>)}
+                </div>}
+                {(shp.ship_to_label||shp.ship_to)&&<div style={{marginTop:4,fontSize:9,color:'#475569'}}>
+                  <span style={{fontWeight:700,color:'#92400e'}}>→ {shp.ship_to_label||'Customer'}</span>
+                  {shp.ship_to&&shp.ship_to.street1&&<span style={{marginLeft:6,color:'#64748b'}}>{[shp.ship_to.street1,shp.ship_to.street2,shp.ship_to.city,shp.ship_to.state,shp.ship_to.zip].filter(Boolean).join(', ')}</span>}
                 </div>}
               </div>})}
           </div>})()}
