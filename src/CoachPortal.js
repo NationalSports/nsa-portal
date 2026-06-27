@@ -1614,27 +1614,45 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Estimates awaiting approval — needs coach attention */}
-        {page==='estimates'&&(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
-          return openEsts.length>0&&<>
-          <div style={{fontSize:12,fontWeight:800,letterSpacing:'.03em',color:'#b45309',marginBottom:10,display:'inline-flex',alignItems:'center',gap:8}}>📋 Awaiting your approval <span style={{background:'#fef3c7',color:'#92400e',borderRadius:999,fontSize:11,fontWeight:800,padding:'1px 8px'}}>{openEsts.length}</span></div>
-          {openEsts.map(est=>{const t=calcEstTotal(est);const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const teamName=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):null):null;
-            return<div key={est.id} style={{position:'relative',border:'1px solid #e2e8f0',borderRadius:12,padding:'13px 15px 13px 18px',marginBottom:9,background:'#fff',cursor:'pointer',boxShadow:'0 1px 2px rgba(15,23,42,.04)',overflow:'hidden'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
-              <div style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:'#f59e0b'}}/>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
-                <div style={{minWidth:0}}>
-                  {teamName&&<div style={{display:'inline-block',fontSize:10,fontWeight:800,letterSpacing:'.03em',textTransform:'uppercase',color:cpTheme.primary,background:cpTint,borderRadius:999,padding:'2px 9px',marginBottom:5}}>{teamName}</div>}
-                  <div style={{fontWeight:800,fontSize:14,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id}</div>
-                  <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-                  <div style={{textAlign:'right'}}>
-                    <div style={{fontSize:16,fontWeight:900,color:'#1e293b'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:999,fontSize:9.5,fontWeight:800,background:'#fef3c7',color:'#92400e',marginTop:2}}>{est.status==='sent'?'Awaiting approval':'Open'}</span>
+        {page==='estimates'&&(()=>{
+          const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
+          const approvedEsts=custEsts.filter(e=>e.status==='approved');
+          const cards=[...openEsts.map(e=>({e,ap:false})),...approvedEsts.map(e=>({e,ap:true}))];
+          return<div>
+            <style>{`.nsa-estgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:760px){.nsa-estgrid{grid-template-columns:1fr}}`}</style>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
+              <div>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Awaiting Your Approval</div>
+                <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Estimates</h1>
+                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              </div>
+              {openEsts.length>0&&<div className="nsa-disp" style={{transform:'skewX(-6deg)',background:tAccent,color:'#fff',padding:'10px 18px',borderRadius:4}}><div style={{transform:'skewX(6deg)',textAlign:'center'}}><div style={{fontWeight:800,fontSize:30,lineHeight:1}}>{openEsts.length}</div><div style={{fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',opacity:.9}}>to approve</div></div></div>}
+            </div>
+            {cards.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No estimates right now — your rep will post quotes here.</div>:
+            <div className="nsa-estgrid">
+              {cards.map(({e:est,ap})=>{const t=calcEstTotal(est);const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';
+                return<div key={est.id} style={{position:'relative',background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${ap?'#1F7A43':tAccent}`,borderRadius:6,padding:'20px 22px',boxShadow:'0 2px 12px rgba(0,0,0,.06)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+                    <div style={{minWidth:0}}>
+                      <div className="nsa-disp" style={{fontWeight:800,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1.05}}>{tn||est.memo||est.id}</div>
+                      <div style={{fontSize:13,color:'#5A6075',marginTop:3}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div>
+                      <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                    </div>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary,textAlign:'right',flexShrink:0}}>${t.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                   </div>
-                  <span style={{color:'#cbd5e1',fontSize:16}}>›</span>
-                </div>
-              </div></div>})}
-          </>})()}
+                  <div style={{marginTop:16}}>
+                    {ap?
+                      <div className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',borderRadius:4,padding:'10px',textAlign:'center',fontWeight:800,fontSize:14}}>✓ Approved</div>
+                    :<div style={{display:'flex',gap:10}}>
+                      <button className="nsa-skew nsa-disp" onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flex:1,background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px',borderRadius:4,cursor:'pointer'}}><span>Approve Estimate</span></button>
+                      <button className="nsa-disp" onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:14,textTransform:'uppercase',padding:'11px 16px',borderRadius:4,cursor:'pointer'}}>Details</button>
+                    </div>}
+                  </div>
+                </div>;
+              })}
+            </div>}
+          </div>;
+        })()}
 
         {/* Open invoices — payment needed */}
         {page==='billing'&&openInvs.length>0&&<>
@@ -1771,7 +1789,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Approved estimates — no action needed, listed for reference */}
-        {page==='estimates'&&(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
+        {false&&(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
           return approvedEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Approved Estimates ({approvedEsts.length})</div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
@@ -1816,7 +1834,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Past Estimates — converted/draft, de-emphasized at bottom */}
-        {page==='estimates'&&(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
+        {false&&(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
           const estBadge=(st)=>({background:st==='converted'?'#dbeafe':'#f1f5f9',color:st==='converted'?'#1e40af':'#64748b'});
           return pastEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#94a3b8',marginBottom:10,marginTop:16}}>📋 Past Estimates ({pastEsts.length})</div>
