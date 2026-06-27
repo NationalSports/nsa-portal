@@ -277,6 +277,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
+  // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
+  const cpTheme=cpTeamTheme(customer);
+  const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
+  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
+  const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
+  const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
+  const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
+  const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
+  const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
+  const _nsaFont="'Source Sans 3',system-ui,sans-serif";
+  const _nsaImport="@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');";
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
@@ -557,22 +568,30 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
       });
     };
-    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
-      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-        <div style={{background:'linear-gradient(135deg,#92400e,#d97706)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setEstView(null)}>← Back</button>
-          <div style={{textAlign:'center',paddingTop:16}}>
-            <div style={{fontSize:10,opacity:0.6}}>ESTIMATE</div>
-            <div style={{fontSize:20,fontWeight:800}}>{est.memo||est.id}</div>
-            <div style={{fontSize:12,opacity:0.8}}>{est.id} · {est.created_at?.split(' ')[0]}</div>
+    const _estStatusPill=est.status==='approved'?['Approved','#1F7A43','#E8F5EC']:est.status==='converted'?['Converted to Order','#1A3A6B','#E6ECF5']:['Open',tAccent,tAccentSoft];
+    return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:_nsaFont,color:'#2A2F3E',display:'flex',justifyContent:'center',padding:'32px 16px'}}>
+      <style>{_nsaImport+`.nsa-disp{font-family:'Barlow Condensed',sans-serif}.nsa-skew{transform:skewX(-3deg)}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}`}</style>
+      <div style={{width:'100%',maxWidth:660}}>
+        <button className="nsa-disp" onClick={()=>setEstView(null)} style={{display:'inline-flex',alignItems:'center',gap:8,background:'#fff',border:'1px solid #EEF1F6',color:tPrimary,fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 16px',borderRadius:4,cursor:'pointer',marginBottom:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>← Back to Estimates</button>
+        <div style={{background:'#fff',borderRadius:8,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{position:'relative',overflow:'hidden',padding:'28px 28px 24px',color:'#fff',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`}}>
+          <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+          <div style={{position:'absolute',top:0,right:0,width:120,height:'100%',background:tAccent,opacity:.9,clipPath:'polygon(38% 0, 100% 0, 100% 100%, 0 100%)'}}/>
+          <div style={{position:'relative'}}>
+            <div className="nsa-disp" style={{fontSize:12,letterSpacing:'2px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Estimate</div>
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:34,textTransform:'uppercase',lineHeight:1.02,marginTop:2}}>{est.memo||est.id}</div>
+            <div style={{width:60,height:4,background:tAccentLight,transform:'skewX(-12deg)',margin:'10px 0 8px'}}/>
+            <div style={{fontSize:13,color:'rgba(255,255,255,.8)'}}>{est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
           </div>
         </div>
-        <div style={{padding:'20px 24px'}}>
-          <div style={{textAlign:'center',padding:16,marginBottom:16}}>
-            <div style={{fontSize:12,color:'#64748b'}}>Estimated Total</div>
-            <div style={{fontSize:36,fontWeight:800,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-            <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:est.status==='approved'?'#dcfce7':est.status==='converted'?'#dbeafe':'#fef3c7',color:est.status==='approved'?'#166534':est.status==='converted'?'#1e40af':'#92400e'}}>{est.status==='converted'?'Converted to Order':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
-            <div style={{marginTop:10}}><button style={{background:'#1e3a5f',color:'white',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:'pointer'}} onClick={downloadEstPdf}>📄 Download Estimate PDF</button></div>
+        <div style={{padding:'22px 28px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap',padding:'4px 0 18px',borderBottom:'1px solid #EEF1F6',marginBottom:18}}>
+            <div>
+              <div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0'}}>Estimated Total</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:44,color:tPrimary,lineHeight:1}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+              <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:_estStatusPill[2],color:_estStatusPill[1],fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px',borderRadius:4,marginTop:8}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{_estStatusPill[0]}</span></span>
+            </div>
+            <button className="nsa-disp" onClick={downloadEstPdf} style={{background:'#fff',color:tPrimary,border:`2px solid ${tPrimary}`,borderRadius:4,padding:'11px 18px',fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}}>📄 Download PDF</button>
           </div>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
           {(est.items||[]).map((it,i)=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qty=_sq>0?_sq:safeNum(it.est_qty);const lineTotal=qty*safeNum(it.unit_sell);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))});
@@ -610,15 +629,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   return<div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>{d.kind==='numbers'?'#️⃣':d.kind==='names'?'🏷️':'🎨'} {decoLabel}</span>{decoLine>0&&<span style={{fontWeight:600}}>{eq2} × ${dp2.sell.toFixed(2)}/ea = +${decoLine.toFixed(2)}</span>}</div>})}
               </div>}
             </div>})}
-          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
-            {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
-            {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
-              <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <div style={{borderTop:'1px solid #EEF1F6',paddingTop:14,marginBottom:18}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Subtotal</span><span style={{fontWeight:700,color:'#2A2F3E'}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
+            {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'12px 0 4px',borderTop:`2px solid ${tPrimary}`,marginTop:8}}>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimated Total</span><span className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
-          {canApprove&&<button id="est-approve-btn" style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={async()=>{
+          {canApprove&&<button id="est-approve-btn" className="nsa-skew nsa-disp" style={{width:'100%',padding:'15px 20px',background:tAccent,color:'white',border:'none',borderRadius:4,fontSize:17,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer',marginBottom:10}} onClick={async()=>{
             const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
             const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
@@ -635,8 +654,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
             if(!_res.ok)alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));
-          }}>✅ Approve This Estimate</button>}
-          {canApprove&&<div id="est-request-box" style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
+          }}><span>✅ Approve This Estimate</span></button>}
+          {canApprove&&<div id="est-request-box" style={{border:'1px solid #EEF1F6',borderRadius:6,padding:18,marginBottom:10,background:'#F7F8FB'}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
             {updateRequestSent?<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:600}}>Your update request has been sent to your rep!</div>
             :<>
@@ -679,11 +698,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {canApprove&&<div style={{height:64}}/>}
         </div>
       </div>
+      </div>
       {/* Sticky action bar — keeps Approve / Request changes reachable on long estimates without forcing the coach to commit before reviewing the items above */}
-      {canApprove&&<div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',padding:'10px 16px',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(6px)',borderTop:'1px solid #e2e8f0',boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',zIndex:50}}>
-        <div style={{width:'100%',maxWidth:640,display:'flex',gap:10}}>
-          <button style={{flex:1,padding:'12px 16px',background:'white',color:'#d97706',border:'1px solid #d97706',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>document.getElementById('est-request-box')?.scrollIntoView({behavior:'smooth',block:'center'})}>✏️ Request changes</button>
-          <button style={{flex:1,padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>document.getElementById('est-approve-btn')?.scrollIntoView({behavior:'smooth',block:'center'})}>✅ Approve</button>
+      {canApprove&&<div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',padding:'10px 16px',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(6px)',borderTop:'1px solid #EEF1F6',boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',zIndex:50}}>
+        <div style={{width:'100%',maxWidth:660,display:'flex',gap:10}}>
+          <button className="nsa-disp" style={{flex:1,padding:'13px 16px',background:'#fff',color:tAccent,border:`2px solid ${tAccent}`,borderRadius:4,fontSize:14,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}} onClick={()=>document.getElementById('est-request-box')?.scrollIntoView({behavior:'smooth',block:'center'})}>✏️ Request changes</button>
+          <button className="nsa-skew nsa-disp" style={{flex:1,padding:'13px 16px',background:tAccent,color:'#fff',border:'none',borderRadius:4,fontSize:14,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}} onClick={()=>document.getElementById('est-approve-btn')?.scrollIntoView({behavior:'smooth',block:'center'})}><span>✅ Approve</span></button>
         </div>
       </div>}
     </div>
@@ -1337,8 +1357,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   }
 
   // Main portal view — a branded "Team HQ" shell: team-colored sidebar + bottom nav, paged content.
-  const cpTheme = cpTeamTheme(customer);
-  const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
   const cpTint=cpShade(cpTheme.primary,84);// light team-tint for active nav pills & highlights
   const cpNav=[
     {key:'home',label:'Home',icon:'🏠'},
@@ -1356,13 +1374,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const href=base+sep+'art='+encodeURIComponent(url||a.urls[0]||'')+'&an='+encodeURIComponent(a.name||'Design')+(a.deco?'&ad='+encodeURIComponent(a.deco):'');
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
-  // ── NSA design tokens — portal themes off the school's colors, NSA navy/red fallback ──
-  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
-  const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
-  const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
-  const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
-  const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
-  const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
+  // ── NSA nav (design tokens are hoisted to the top of the component) ──
   const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
