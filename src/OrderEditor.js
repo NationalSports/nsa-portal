@@ -4076,8 +4076,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Art</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
-            {/* Routing (item-level — applies to ALL art on this item): one toggle that opens the Deco PO module. */}
-            {(()=>{const _dp=(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx));const _hasArt=safeDecos(item).some(d=>d.kind==='art');if(!_hasArt&&!_dp)return null;return _dp
+            {/* Routing (item-level — applies to ALL art on this item): SO-only — POs are never created on an estimate. */}
+            {isSO&&(()=>{const _dp=(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx));const _hasArt=safeDecos(item).some(d=>d.kind==='art');if(!_hasArt&&!_dp)return null;return _dp
               ? <button className="btn btn-sm btn-secondary" onClick={()=>setShowPO('select')} title={'On '+(_dp.po_id||'a Deco PO')+' — produced by '+(_dp.vendor||'the decorator')+'. Click to view / edit the PO.'} style={{fontSize:11,fontWeight:700,background:'#ede9fe',borderColor:'#ddd6fe',color:'#6d28d9'}}>🎨 Outside · {_dp.vendor||'Decorator'}</button>
               : <button className="btn btn-sm btn-secondary" onClick={()=>setShowPO('select')} title="All art on this item is produced in-house (default). Click to send it out to a decorator — opens the Deco PO module." style={{fontSize:11,fontWeight:700,background:'#eff6ff',borderColor:'#bfdbfe',color:'#1e40af'}}>🏭 In-house</button>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
