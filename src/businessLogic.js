@@ -176,6 +176,41 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
 };
 
+// ── ONE asset resolver (Layer 3 of the one-process art model) ──
+// Resolve a design's image for a given color way, keyed on the STABLE `color_way_id` (never the CW
+// label string). One function for BOTH the web logo (the standalone cutout placed on a garment
+// color) and the mock (the approval proof) so Webstores / OrderEditor / CoachPortal all agree on
+// one fallback chain instead of five ad-hoc ones. Returns a url string, or '' when nothing resolves.
+//   sel = { kind: 'web_logo' | 'mock', colorWayId, sku, color }
+const _assetUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+function pickCwAsset(art, sel) {
+  if (!art || !sel) return '';
+  const cwId = sel.colorWayId || null;
+  if (sel.kind === 'web_logo') {
+    const wl = safeArr(art.web_logos).filter((w) => w && w.url);
+    if (cwId) { const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url; }
+    // blank/default web logo applies to all garments; then legacy single, then design-level default
+    const def = wl.find((w) => w.is_default || (!w.color_way_id && !w.color_way));
+    if (def) return def.url;
+    if (wl.length && !cwId) return wl[0].url;
+    return safeStr(art.web_logo_url) || safeStr(art.preview_url) || '';
+  }
+  // mock: per-garment mockups first (sku|color, with legacy plain-sku fallback), then general bucket
+  const im = safeObj(art.item_mockups);
+  const pool = [];
+  if (sel.sku != null) {
+    const ck = sel.sku + '|' + (sel.color || '');
+    if (Array.isArray(im[ck])) pool.push(...im[ck]);
+    if (Array.isArray(im[sel.sku])) pool.push(...im[sel.sku]);
+  }
+  if (Array.isArray(art.mockup_files)) pool.push(...art.mockup_files);
+  // A CW-tagged mock matches only its own color way; if none matches, fall back to UNTAGGED mocks
+  // only — a color-specific mock must never bleed onto a non-matching garment (mirrors #942).
+  if (cwId) { const m = pool.find((f) => f && f.color_way_id === cwId); if (m) return _assetUrl(m); }
+  const untagged = pool.find((f) => f && !(typeof f === 'object' && f.color_way_id));
+  return untagged ? _assetUrl(untagged) : '';
+}
+
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
@@ -847,7 +882,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
