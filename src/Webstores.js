@@ -3750,7 +3750,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
-            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={setRequired} /></div>
+            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit’s items Mandatory to require them at checkout.</div>
         </ItemSection>
