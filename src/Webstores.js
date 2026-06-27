@@ -3659,6 +3659,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Replace the main front photo (e.g. after copying an item that kept the
   // source garment's image). Empty = fall back to the catalog stock photo.
   const mainImgRef = useRef();
+  const [mainDragOver, setMainDragOver] = useState(false);
   const setMainFile = async (file) => {
     if (!file || !file.type.startsWith('image/')) return;
     setImgBusy(true);
@@ -3773,13 +3774,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
       {page === 'art' && !isBundle && <React.Fragment>
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: 10, border: '1px solid #e5e8ec', borderRadius: 10, background: '#fff' }}>
+        <div
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
+          onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); }}
+          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const fl = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (fl) setMainFile(fl); }}
+          style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: 10, border: `1.5px dashed ${mainDragOver ? '#2563eb' : '#d7dbe2'}`, borderRadius: 10, background: mainDragOver ? '#eff4ff' : '#fff', transition: 'background .12s, border-color .12s' }}>
           <div style={{ width: 48, height: 48, borderRadius: 8, overflow: 'hidden', background: '#f1f5f9', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
             {(image || stockImg || item.image_url) ? <img src={image || stockImg || item.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#94a3b8' }}>No photo</span>}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Garment photo</div>
-            <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{image ? 'Custom photo for this item' : 'Using the catalog stock photo'}</div>
+            <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{mainDragOver ? 'Drop to set as the garment photo' : (image ? 'Custom photo · drag a new image here or click Change' : 'Stock photo · drag an image here to override')}</div>
           </div>
           <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
           <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => mainImgRef.current?.click()}>{imgBusy ? 'Uploading…' : 'Change photo'}</button>
@@ -3839,6 +3844,13 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         <ItemSection title="Additional images" hint="· extra angles / back views shown on the product page">
           <div onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); [...(e.dataTransfer.files || [])].forEach(addExtraFile); }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
+            {(image || stockImg || item.image_url) && (
+              <div style={{ position: 'relative' }} title="Main garment photo">
+                <img src={image || stockImg || item.image_url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #cbd5e1' }} />
+                <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
+                {image && <button type="button" title="Remove custom photo (revert to stock)" onClick={() => setImage(null)} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
+              </div>
+            )}
             {extraImages.map((url, i) => (
               <div key={i} style={{ position: 'relative' }}>
                 <img src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
