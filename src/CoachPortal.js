@@ -11,6 +11,7 @@ import { supabase } from './lib/supabase';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
+import { RosterOrdersCoach } from './RosterOrders';
 
 // The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
@@ -1459,6 +1460,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* Team store — read-only order tracking for the coach */}
         <CoachStore customer={customer} />
 
+        {/* Roster orders — spreadsheet-style kit ordering per team */}
+        <RosterOrdersCoach customer={customer} />
+
         {/* Shop & order — invite-gated live-look + order building */}
         {(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>🛍️ Shop &amp; Order</div>
@@ -1509,7 +1513,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
           <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
-          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
+          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel{rep?.email?' · '+rep.email:''}</div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
         </div>
 
