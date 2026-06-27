@@ -68,6 +68,63 @@ flowchart TD
 
 ---
 
+## 1A. Alternate entry: reusing previously‑approved art
+
+The fresh‑art path above is the long way round. When the customer has approved this design before, the rep can **skip the artist entirely**. There are three entry points today, and the friction depends on whether the garment color‑way matches what was approved.
+
+```mermaid
+flowchart TD
+    classDef status fill:#eef2ff,stroke:#6366f1,color:#1e1b4b;
+    classDef rep fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    classDef coach fill:#fef3c7,stroke:#d97706,color:#78350f;
+
+    START([Rep on the order, design used before]):::status
+    START --> P1["REP: 📂 Previous Artwork<br/>(Art tab) → filter → + Add"]:::rep
+    P1 --> Q{Same garment /<br/>color-way as approved?}:::rep
+    Q -->|Yes — mock already covers it| SKIP["REP: Set up job → wizard →<br/>Skip Artist (Art already approved)"]:::rep
+    SKIP --> DONE([art_complete → Ready for Production]):::status
+    Q -->|No — new color/style| CM["Job shows 'Check Mock' banner"]:::status
+    CM --> CM2["REP: Set up job → wizard →<br/>🔍 Reuse an approved mock → ✓ Use for {color}"]:::rep
+    CM2 --> MAM{mockApplyModal:<br/>already approved vs send to coach}:::rep
+    MAM -->|Already approved| DONE
+    MAM -->|Send to coach| COACH["COACH: portal → Approve"]:::coach
+    COACH --> DONE
+```
+
+### Plain-text version
+
+```
+  Design used before
+       │
+       ▼
+  REP: 📂 Previous Artwork → filter by deco → + Add   (clones art + prod files)
+       │
+       ▼
+   Same garment / color-way as approved?
+       │
+   ┌───┴─────────────────────────┐
+   │ YES                          │ NO (new color/style)
+   ▼                              ▼
+  REP: wizard → Skip Artist      Job shows "Check Mock" banner
+       │                              │
+       │                              ▼
+       │                         REP: wizard → 🔍 Reuse an approved mock
+       │                              → ✓ Use for {color}  → mockApplyModal
+       │                              ├─ already approved ─────────┐
+       │                              └─ send to coach → Coach: Approve
+       ▼                                                            │
+   art_complete  ◄───────────────────────────────────────────────┘
+```
+
+**Click cost:** the clean reuse (same color‑way) is ~**3 clicks** and never touches the artist — by far the cheapest path. The Check‑Mock branch (different color‑way) adds the wizard reuse‑pick + the *already‑approved‑vs‑coach* modal decision.
+
+**Simplification notes for the reuse path:**
+- **R1 — Surface reuse earlier.** Today the rep has to know to open **📂 Previous Artwork** before they think to request art. When a design name/deco matches a prior approved art, prompt *"Reuse approved art from SO‑xxxx?"* right on the `needs_art` job, so reuse is offered instead of discovered. **Turns the cheapest path into the default.**
+- **R2 — Auto‑match the color‑way in Check Mock.** When exactly one prior mock matches the target color‑way (the `✓` case), pre‑select it so "✓ Use for {color}" is one confirm, not a hunt through CW groups (`OrderEditor.js:9327` already computes the match — let it auto‑pick when unambiguous).
+- **R3 — Default the `mockApplyModal` decision.** If the reused mock was already coach‑approved on the same color‑way, default to *already approved* and skip the send‑to‑coach prompt (`OrderEditor.js:422` / `9334`). **Removes a modal on the common reuse.**
+
+---
+
 ## 2. Click budget (today)
 
 Happy path, screen print, sent to coach — counting only required taps:
