@@ -274,6 +274,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
   const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
+  const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -1363,6 +1364,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
   const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
   const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
+  const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
+  const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
+  const _teamSort=(a,b)=>(_teamName(a.customer_id)||'').localeCompare(_teamName(b.customer_id)||'');
+  const _teamSelect=(<select value={teamFilter} onChange={e=>setTeamFilter(e.target.value)} className="nsa-disp" style={{border:'1px solid #EEF1F6',borderRadius:4,padding:'10px 12px',fontSize:13,fontWeight:700,textTransform:'uppercase',letterSpacing:'.3px',color:tPrimary,background:'#fff',cursor:'pointer',maxWidth:260}}><option value="all">All teams</option>{_teamOpts.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select>);
   return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:"'Source Sans 3',system-ui,sans-serif",color:'#2A2F3E'}}>
     <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');
       .nsa-disp{font-family:'Barlow Condensed','Source Sans 3',system-ui,sans-serif}
@@ -1523,7 +1529,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {page==='art'&&(()=>{
           const decos=['all',...Array.from(new Set(artLibrary.map(a=>a.deco).filter(Boolean)))];
           const q=artQuery.trim().toLowerCase();
-          const filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q)));
+          const _tfName=isP&&teamFilter!=='all'?_teamName(teamFilter):null;
+          let filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q))&&(!_tfName||(a.teams||[]).includes(_tfName)));
+          if(isP)filtered=[...filtered].sort((a,b)=>((a.teams||[])[0]||'').localeCompare((b.teams||[])[0]||''));
           return<div>
             <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:6px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}`}</style>
             <div style={{marginBottom:24}}>
@@ -1536,6 +1544,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             :<>
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
                 <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:6,fontSize:14,fontFamily:'inherit'}}/>
+                {isP&&_teamSelect}
                 {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:4,padding:'9px 14px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
               </div>
               {filtered.length===0?<div style={{color:'#5A6075',fontSize:14,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
@@ -1615,8 +1624,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         {/* Estimates awaiting approval — needs coach attention */}
         {page==='estimates'&&(()=>{
-          const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
-          const approvedEsts=custEsts.filter(e=>e.status==='approved');
+          const _tf=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
+          const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tf(e));
+          const approvedEsts=custEsts.filter(e=>e.status==='approved'&&_tf(e));
+          if(isP){openEsts.sort(_teamSort);approvedEsts.sort(_teamSort);}
           const cards=[...openEsts.map(e=>({e,ap:false})),...approvedEsts.map(e=>({e,ap:true}))];
           return<div>
             <style>{`.nsa-estgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:760px){.nsa-estgrid{grid-template-columns:1fr}}`}</style>
@@ -1626,7 +1637,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Estimates</h1>
                 <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
               </div>
-              {openEsts.length>0&&<div className="nsa-disp" style={{transform:'skewX(-6deg)',background:tAccent,color:'#fff',padding:'10px 18px',borderRadius:4}}><div style={{transform:'skewX(6deg)',textAlign:'center'}}><div style={{fontWeight:800,fontSize:30,lineHeight:1}}>{openEsts.length}</div><div style={{fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',opacity:.9}}>to approve</div></div></div>}
+              <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                {isP&&_teamSelect}
+                {openEsts.length>0&&<div className="nsa-disp" style={{transform:'skewX(-6deg)',background:tAccent,color:'#fff',padding:'10px 18px',borderRadius:4}}><div style={{transform:'skewX(6deg)',textAlign:'center'}}><div style={{fontWeight:800,fontSize:30,lineHeight:1}}>{openEsts.length}</div><div style={{fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',opacity:.9}}>to approve</div></div></div>}
+              </div>
             </div>
             {cards.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No estimates right now — your rep will post quotes here.</div>:
             <div className="nsa-estgrid">
@@ -1698,13 +1712,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* ── ORDERS (NSA spec table) ── */}
         {page==='orders'&&(()=>{
           const statusMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging','#1A3A6B','#E6ECF5'],in_production:['In Production','#1A3A6B','#E6ECF5'],received:['Received','#1A3A6B','#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
-          const rows=[...activeSOs,...completedSOs];
+          let rows=[...activeSOs,...completedSOs];
+          if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
+          if(isP)rows=[...rows].sort(_teamSort);
           return<div>
             <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}`}</style>
-            <div style={{marginBottom:24}}>
-              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
-              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
-              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
+              <div>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
+                <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
+                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              </div>
+              {isP&&_teamSelect}
             </div>
             {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
