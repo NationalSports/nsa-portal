@@ -139,6 +139,8 @@ The reuse path is the highest‑leverage place to improve the whole workflow (it
 
 `priorMocks` — the data behind Check Mock — is rebuilt on every order load by querying `so_art_files` on the customer's *other* orders and matching on **lowercased `name` + `deco_type`** (`OrderEditor.js:222‑229`).
 
+> ⚠️ **Verified data bug (see `ARTWORK_RECOMMENDATIONS.md` §0):** the garment‑link map `mock_links` is **never persisted** — it's stripped by the `_artCols` allowlist and has **no column in the live `so_art_files` table**. Garment links work in‑session but vanish on reload, reverting linked garments to "missing mockup." This is the core argument for moving to a **logo‑based** model.
+
 ### The five root causes
 
 **RC‑1 — Art has no stable identity.** Reuse is reconstructed by *string‑matching the art name*. Rename "Eagle Logo" → "Eagles Logo," or let two reps spell it differently, and reuse silently finds **nothing** — no error, just an empty picker. Every downstream capability (discovery, dedup, "correct it once") is capped by this.
