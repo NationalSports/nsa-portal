@@ -1927,6 +1927,7 @@ const BLANK = {
   public_listed: true,
   decoration_mode: 'in_house',
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
+  featured_product_ids: null,
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
@@ -1944,6 +1945,18 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   // upload otherwise: the small logo lands, the larger banner doesn't).
   const [uploading, setUploading] = useState(0);
   const onUpBusy = (b) => setUploading((n) => Math.max(0, n + (b ? 1 : -1)));
+  // Products for the "Featured items" hero picker (only meaningful once the
+  // store exists and has products). Loaded lazily on the branding page.
+  const [featProducts, setFeatProducts] = useState([]);
+  useEffect(() => {
+    if (!store?.id) return;
+    let live = true;
+    supabase.from('webstore_storefront_products')
+      .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
+      .eq('store_id', store.id).order('sort_order')
+      .then(({ data }) => { if (live) setFeatProducts((data || []).filter((p) => p.kind !== 'bundle')); });
+    return () => { live = false; };
+  }, [store?.id]);
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || 'team');
@@ -2235,6 +2248,45 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           </div>
           <textarea className="form-input" rows={3} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official team store — gear up for the season!" />
         </div>
+
+        {/* Featured items — curate the hero collage. null = auto (first 3); [] = none; [ids] = those. */}
+        {(() => {
+          const featOn = Array.isArray(f.featured_product_ids);
+          const featSel = featOn ? f.featured_product_ids : [];
+          return (
+            <div style={{ marginTop: 4 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180', display: 'block', marginBottom: 6 }}>Featured items · hero collage</label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginBottom: 8, color: '#3A4150' }}>
+                <input type="checkbox" checked={featOn} onChange={(e) => set('featured_product_ids', e.target.checked ? [] : null)} />
+                Choose specific items{featOn ? '' : ' — auto: first 3 products'}
+              </label>
+              {featOn && (
+                !store?.id ? <div style={{ fontSize: 12, color: '#94a3b8' }}>Save the store and add products first, then pick up to 3 featured items.</div>
+                : featProducts.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No products in this store yet.</div>
+                : <>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 8 }}>{featSel.length ? `${featSel.length} of 3 selected — shown in the hero collage.` : 'None selected — the hero shows no collage.'}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(86px,1fr))', gap: 8 }}>
+                      {featProducts.map((p) => {
+                        const idx = featSel.indexOf(p.webstore_product_id);
+                        const on = idx >= 0;
+                        const full = featSel.length >= 3 && !on;
+                        return (
+                          <button key={p.webstore_product_id} type="button" disabled={full} onClick={() => set('featured_product_ids', on ? featSel.filter((x) => x !== p.webstore_product_id) : [...featSel, p.webstore_product_id])}
+                            style={{ position: 'relative', border: `2px solid ${on ? '#191919' : '#e2e6ec'}`, borderRadius: 8, background: '#fff', padding: 4, cursor: full ? 'not-allowed' : 'pointer', opacity: full ? 0.5 : 1, textAlign: 'left' }}>
+                            <div style={{ width: '100%', aspectRatio: '1', borderRadius: 6, overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
+                              {p.image_front_url ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>No photo</span>}
+                            </div>
+                            {on && <span style={{ position: 'absolute', top: 6, right: 6, width: 18, height: 18, borderRadius: '50%', background: '#191919', color: '#fff', fontSize: 11, display: 'grid', placeItems: 'center', fontWeight: 800 }}>{idx + 1}</span>}
+                            <div style={{ fontSize: 10.5, fontWeight: 700, color: '#3A4150', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+              )}
+            </div>
+          );
+        })()}
       </Section>
 
       </div>
@@ -2892,7 +2944,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
                     <div onClick={() => setEditId(null)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
                       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1240, margin: 'auto' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', background: '#fff', borderRadius: '14px 14px 0 0' }}>
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
@@ -3562,6 +3614,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setImgBusy(false);
   };
 
+  // Replace the main front photo (e.g. after copying an item that kept the
+  // source garment's image). Empty = fall back to the catalog stock photo.
+  const mainImgRef = useRef();
+  const setMainFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    setImgBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-webstores'); setImage(url); }
+    catch (x) { /* cloudUpload surfaces error via toast */ }
+    setImgBusy(false);
+  };
+
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
@@ -3583,6 +3646,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const kitListId = 'kit-suggest-' + item.id;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, position: 'sticky', top: 0, zIndex: 5, background: '#f6f7f9', paddingBottom: 12, borderBottom: '1px solid #e5e8ec' }}>
+        {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
+        <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={onCancel}>{justSaved ? 'Close' : 'Cancel'}</button>
+        <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
+      </div>
       {!isBundle && !setPageProp && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
           {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
@@ -3662,6 +3730,18 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
       {page === 'art' && !isBundle && <React.Fragment>
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, padding: 10, border: '1px solid #e5e8ec', borderRadius: 10, background: '#fff' }}>
+          <div style={{ width: 48, height: 48, borderRadius: 8, overflow: 'hidden', background: '#f1f5f9', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
+            {(image || stockImg || item.image_url) ? <img src={image || stockImg || item.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#94a3b8' }}>No photo</span>}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>Garment photo</div>
+            <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{image ? 'Custom photo for this item' : 'Using the catalog stock photo'}</div>
+          </div>
+          <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
+          <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => mainImgRef.current?.click()}>{imgBusy ? 'Uploading…' : 'Change photo'}</button>
+          {image && <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => setImage(null)}>Reset to stock</button>}
+        </div>
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName} />
       </ItemSection>
       {!isBundle && (
@@ -3730,11 +3810,6 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       </div>
       </React.Fragment>}
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, position: 'sticky', bottom: 0, background: '#f6f7f9', paddingTop: 12, borderTop: '1px solid #e5e8ec' }}>
-        <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
-        <button className="btn btn-secondary" onClick={onCancel}>{justSaved ? 'Close' : 'Cancel'}</button>
-        {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
-      </div>
     </div>
   );
 }

@@ -454,52 +454,66 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = '
   );
 }
 
-// Open hero — cream, two-column, product collage on the right.
+// Open hero — team-color gradient, two-column, curated product collage on the right.
 function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
-  const imgs = products.filter((p) => p.kind !== 'bundle' && p.image_front_url).slice(0, 3);
+  const imgs = featuredHeroImgs(store, products);
+  const showCollage = imgs.length > 0;
   return (
-    <section style={{ background: theme.cream }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(28px,4vw,52px) 24px', display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }} className="sf-hero-grid">
+    <section style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(135deg, ${theme.primary}, ${theme.deep})`, color: '#fff' }}>
+      <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
+      <div style={{ position: 'relative', zIndex: 1, maxWidth: 1240, margin: '0 auto', padding: 'clamp(32px,4vw,56px) 24px', display: 'grid', gridTemplateColumns: showCollage ? 'minmax(0,1.05fr) minmax(0,0.95fr)' : '1fr', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }} className="sf-hero-grid">
         <div>
-          <span style={{ display: 'inline-block', background: theme.primary, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-block', background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{closes && closes.urgent ? closes.text : 'Spirit Pack · Now Open'}</span>
           </span>
-          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(40px,5.2vw,72px)', lineHeight: 0.95, textTransform: 'uppercase', margin: '0 0 18px', color: theme.primary }}>
-            {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accentDeep }}>{tail}</em></> : tail}
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(40px,5.2vw,72px)', lineHeight: 0.95, textTransform: 'uppercase', margin: '0 0 18px', color: '#fff' }}>
+            {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accent }}>{tail}</em></> : tail}
           </h1>
-          <p style={{ margin: '0 0 26px', maxWidth: 480, fontSize: 17, lineHeight: 1.6, color: theme.subText }}>{lead}</p>
+          <p style={{ margin: '0 0 26px', maxWidth: 480, fontSize: 17, lineHeight: 1.6, color: 'rgba(255,255,255,0.86)' }}>{lead}</p>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            {goBundle && <SkewBtn theme={theme} variant="primary" onClick={goBundle}>Build the Player Pack →</SkewBtn>}
-            <SkewBtn theme={theme} variant="outline" onClick={scrollGrid}>Shop the Collection</SkewBtn>
+            {goBundle && <SkewBtn theme={theme} variant="accent" onClick={goBundle}>Build the Player Pack →</SkewBtn>}
+            <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
             {[['No', 'Minimums'], ['Top', 'Brands'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
               <div key={l}>
-                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: theme.primary, lineHeight: 1 }}>{n}</div>
-                <div style={{ fontSize: 12.5, color: theme.subText, fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
+                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
+                <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
               </div>
             ))}
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }} className="sf-hero-collage">
-          {[0, 1, 2].map((i) => {
-            const p = imgs[i];
-            const tall = i === 0;
-            return (
-              <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: theme.warm, borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.12)', border: `1px solid ${theme.line}` }}>
-                <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                  {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                     : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
+        {showCollage && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }} className="sf-hero-collage">
+            {[0, 1, 2].map((i) => {
+              const p = imgs[i];
+              const tall = i === 0;
+              return (
+                <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
+                  <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
+                    {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                       : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </section>
   );
+}
+
+// Hero collage images: an admin-curated list of webstore_product_ids when set,
+// else the first 3 in-stock products. featured_product_ids semantics:
+//   null/undefined → auto (top 3) · [] → none (no collage) · [ids] → those (≤3).
+function featuredHeroImgs(store, products) {
+  const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
+  const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
+  if (!featured) return pool.slice(0, 3);
+  return featured.map((id) => pool.find((p) => p.webstore_product_id === id)).filter(Boolean).slice(0, 3);
 }
 
 // Bold hero — full-bleed team gradient, hash + diagonal wedge.
