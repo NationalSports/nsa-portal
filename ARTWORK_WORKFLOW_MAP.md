@@ -125,6 +125,85 @@ flowchart TD
 
 ---
 
+## 1B. Deep dive: the reuse flow — root causes and a target design
+
+The reuse path is the highest‑leverage place to improve the whole workflow (it's the only path that skips the artist entirely), but today it's three half‑built mechanisms layered on a data model that has no concept of a reusable design. Below is what's actually happening under the hood and where it breaks, then a target design and concrete recommendations.
+
+### How reuse actually works today (three mechanisms, none complete)
+
+| Mechanism | Trigger | What it does | Residue it leaves |
+|---|---|---|---|
+| **Clone** | 📂 Previous Artwork → **+ Add** (`OrderEditor.js:4765`) | Deep‑clones the *entire* prior `art_file` (incl. `files`, `prod_files`, `item_mockups`, `mock_links`) with a new id; strips only `_so_id`/`_so_memo` | Decorations are **not** re‑pointed (rep wires each item by hand); inherits the source's stale `status`, stale `mock_links` (may point at garments not on this order), and production files land **silently unreviewed** |
+| **Apply mock** | Check Mock → **✓ Use for {color}** → `applyPriorMock` (`OrderEditor.js:255`) | Pulls prior mock URLs into `item_mockups[sku\|color]`, tags an inherited color‑way, sets art `approved`/`needs_approval` and the job forward | Append‑only (no dedup/replace if a wrong mock already there); does **not** clear `coach_rejected` |
+| **Program library** | "Add to library" → `promoteArtToLibrary` (`OrderEditor.js:2159`) | Copies art into the parent customer's `art_files` for sub‑teams; **strips the source files** (`files:[]`) | Sub‑teams get mocks + prod files but **no editable source**; no cascade if the library entry changes |
+
+`priorMocks` — the data behind Check Mock — is rebuilt on every order load by querying `so_art_files` on the customer's *other* orders and matching on **lowercased `name` + `deco_type`** (`OrderEditor.js:222‑229`).
+
+### The five root causes
+
+**RC‑1 — Art has no stable identity.** Reuse is reconstructed by *string‑matching the art name*. Rename "Eagle Logo" → "Eagles Logo," or let two reps spell it differently, and reuse silently finds **nothing** — no error, just an empty picker. Every downstream capability (discovery, dedup, "correct it once") is capped by this.
+
+**RC‑2 — Three divergent mechanisms.** Clone duplicates everything and re‑points nothing; Apply‑mock references just the image; Library copies and strips the source. A rep has to know which to reach for, and each leaves different residue. There is no single "reuse this design" action.
+
+**RC‑3 — Color‑way matching is a guess shown as a fact.** A hardcoded light/dark regex (`white|natural|cream|…`) is **duplicated** at `OrderEditor.js:248` and `:9326`. Common colors outside the list — Charcoal, Maroon, Royal — fall through to the *first* color‑way (`cws[0]`). The UI then shows a green **✓** ("color‑way matched") that the rep trusts, even when the match is just `cws[0]`. Nothing blocks applying a white‑garment mock to a navy garment.
+
+**RC‑4 — No approval provenance.** When a coach approves a mock, nothing records *which design, which color‑way, which order* was approved. So same‑color‑way reuse can't auto‑confirm "already approved" (the rep re‑decides every time), cross‑color‑way reuse gives the coach no context, and re‑sending to the coach doesn't tag *which* mock version they're now looking at.
+
+**RC‑5 — Reuse bypasses the SO‑1199 guards.** The 2026‑06‑25 audit added guards so moving a job forward clears (or confirms) a stranded `coach_rejected`. But `applyPriorMock("already approved")` and the wizard's **Skip Artist** release jump straight to `approved`/`art_complete` **without** clearing `coach_rejected` or confirming a mock exists — re‑opening the exact stranded‑flag class of bug the audit closed elsewhere.
+
+### Target design
+
+Introduce a real **design asset** as the unit of reuse, and make all three mechanisms reference it:
+
+```mermaid
+flowchart LR
+    classDef asset fill:#ede9fe,stroke:#7c3aed,color:#3b0764;
+    classDef order fill:#eef2ff,stroke:#6366f1,color:#1e1b4b;
+
+    subgraph LIB[Design asset  ·  stable design_id]
+      D[name, deco_type, color_ways<br/>approved mocks BY color-way<br/>source files + prod files<br/>approval provenance]:::asset
+    end
+    O1[Order A art_file<br/>design_id → ●]:::order --> LIB
+    O2[Order B art_file<br/>design_id → ●]:::order --> LIB
+    O3[Order C art_file<br/>design_id → ●]:::order --> LIB
+    LIB -.correct once, propagates.-> O1 & O2 & O3
+```
+
+An art file carries a `design_id` pointer instead of being an island. The asset owns the approved mocks **keyed by color‑way** and the approval provenance. Reuse becomes "point this order's art at design ●, inherit the approved mock for this garment's color‑way" — a reference, not a copy.
+
+### Recommendations (deep)
+
+Ordered foundational‑first; each notes payoff and risk.
+
+**REUSE‑1 — Give art a stable `design_id` (foundational).**
+Stamp a `design_id` when art is first created and carry it on clone/convert/reuse. Back‑fill existing rows by `name+deco_type` once. Then `priorMocks` matches on `design_id`, not a lowercased name string.
+*Payoff:* reuse stops silently missing on renames/typos; enables dedup and correct‑once. *Risk:* low‑medium — additive column + a one‑time backfill; matching falls back to the name heuristic when `design_id` is absent.
+
+**REUSE‑2 — One "Reuse design" action, reference not clone.**
+Collapse 📂 Previous Artwork + Check Mock + Library into a single picker that *links* the order's art to a `design_id` and pulls the color‑way‑matched approved mock in by reference. Keep clone only as an explicit "duplicate & detach" escape hatch. Re‑point the item decorations automatically on reuse (the step reps do by hand today).
+*Payoff:* removes the manual decoration‑wiring and the "which tool?" decision; kills duplicate art rows; corrections propagate. *Risk:* medium — touches the picker UI and the decoration‑assignment write.
+
+**REUSE‑3 — Make color‑way matching trustworthy.**
+Replace the duplicated light/dark regex with one shared `garmentColorClass()` util backed by a color→shade table (covering Charcoal, Maroon, Royal, etc., and an explicit per‑garment override). When the match is only a `cws[0]` fallback, **don't** show the green ✓ — show the *source* color ("approved on White") and ask the rep to confirm.
+*Payoff:* no more silently wrong color‑way; the ✓ means something. *Risk:* low — pure logic + label change; no schema.
+
+**REUSE‑4 — Record approval provenance, then use it.**
+On coach approval, stamp the mock with `{design_id, color_way_id, approved_at, order_id}`. Then: (a) same‑color‑way reuse auto‑offers "already approved by coach on SO‑xxxx" and skips the decision modal; (b) cross‑color‑way reuse sends the coach a contextual "you approved this design in Royal — confirm it in White" with both images.
+*Payoff:* removes a modal on the common reuse, and turns cross‑color approvals from a cold re‑review into a one‑glance confirm. *Risk:* medium — needs a small provenance field and portal copy.
+
+**REUSE‑5 — Make reuse proactive, not discovered.**
+When a `needs_art` job's `design_id` (or name) matches a prior approved design, surface "♻️ Reuse approved art from SO‑xxxx?" right on the job — instead of the rep having to know to open 📂 Previous Artwork. Reuse becomes the default suggestion, request‑from‑artist the fallback.
+*Payoff:* the cheapest path becomes the one reps actually take. *Risk:* low — read‑only suggestion using data already fetched.
+
+**REUSE‑6 — Close the reuse guard gaps (correctness, do first regardless).**
+Independent of the redesign, three data‑integrity fixes: (1) `applyPriorMock` and **Skip Artist** must clear `coach_rejected` (and confirm, per the SO‑1199 pattern) when moving forward; (2) Skip Artist should refuse to reach `art_complete` with **zero** mocks present; (3) the Clone "+ Add" should **review** the inherited production files (they currently attach silently and could be the wrong deco type) and drop inherited `mock_links` that reference garments not on this order.
+*Payoff:* prevents the stranded‑state and wrong‑file bugs the reuse paths can currently create. *Risk:* low — guards/validation only; ship ahead of the bigger redesign.
+
+### If you do only three things
+**REUSE‑6** (stop the data‑integrity bugs now), **REUSE‑3** (make color‑way matching honest), then **REUSE‑1** (stable `design_id`) as the foundation everything else builds on. REUSE‑2/4/5 are the high‑value follow‑ons once identity exists.
+
+---
+
 ## 2. Click budget (today)
 
 Happy path, screen print, sent to coach — counting only required taps:
