@@ -18,7 +18,7 @@
  * SAFE: pure functions from businessLogic.js — no Supabase, no UI, no network.
  */
 
-const { outsourcedDecoTypes, decoIsOutsourced } = require('../businessLogic');
+const { outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced } = require('../businessLogic');
 
 describe('outsourcedDecoTypes — per-item set of outsourced deco types', () => {
   test('SO-level deco PO records its deco_type against every covered item', () => {
@@ -88,6 +88,80 @@ describe('decoIsOutsourced — per-decoration gate', () => {
     // Avoids spawning a mistyped placeholder job; once art is assigned, a non-matching type un-suppresses.
     expect(decoIsOutsourced(emb, null)).toBe(true);
     expect(decoIsOutsourced(emb, undefined)).toBe(true);
+  });
+});
+
+describe('decoConcreteType — resolve a decoration to its concrete deco type', () => {
+  const o = { art_files: [{ id: 'af1', deco_type: 'embroidery' }] };
+  test('an art deco resolves to its art file type (source of truth once attached)', () => {
+    expect(decoConcreteType(o, { kind: 'art', art_file_id: 'af1' })).toBe('embroidery');
+  });
+  test('an art deco with no file falls back to its own type hint, else null', () => {
+    expect(decoConcreteType(o, { kind: 'art', deco_type: 'dtf' })).toBe('dtf');
+    expect(decoConcreteType(o, { kind: 'art' })).toBeNull();
+  });
+  test('numbers / names resolve to their method (with the same defaults syncJobs uses)', () => {
+    expect(decoConcreteType(o, { kind: 'numbers', num_method: 'sublimated' })).toBe('sublimated');
+    expect(decoConcreteType(o, { kind: 'numbers' })).toBe('heat_transfer');
+    expect(decoConcreteType(o, { kind: 'names', name_method: 'sublimated' })).toBe('sublimated');
+    expect(decoConcreteType(o, { kind: 'names' })).toBe('heat_press');
+  });
+});
+
+describe('isDecoOutsourced — unified job+cost gate (the branch lives on the deco PO)', () => {
+  test('legacy kind:outside_deco is always outside', () => {
+    expect(isDecoOutsourced({}, 0, { kind: 'outside_deco' })).toBe(true);
+  });
+  test('an art deco routed onto a SO-level deco PO of the SAME type is outside (no job, cost comes from the PO)', () => {
+    const o = {
+      deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }],
+      art_files: [{ id: 'afEMB', deco_type: 'embroidery' }],
+      items: [{ decorations: [{ kind: 'art', art_file_id: 'afEMB' }] }],
+    };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+  });
+  test('a different-type deco on the same covered item stays in-house — cost is counted here (SO-1199 fix parity)', () => {
+    const o = {
+      deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }],
+      art_files: [{ id: 'afSP', deco_type: 'screen_print' }],
+      items: [{ decorations: [{ kind: 'art', art_file_id: 'afSP' }] }],
+    };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(false);
+  });
+  test('a deco on an item covered by no PO is in-house', () => {
+    const o = {
+      deco_pos: [{ deco_type: 'embroidery', item_idxs: [1] }],
+      art_files: [{ id: 'afSP', deco_type: 'screen_print' }],
+      items: [{ decorations: [{ kind: 'art', art_file_id: 'afSP' }] }],
+    };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(false);
+  });
+  test('a precomputed outByItem map is honored (the loop optimization the Costs tab uses)', () => {
+    const o = {
+      deco_pos: [{ deco_type: 'dtf', item_idxs: [0] }],
+      art_files: [{ id: 'afDTF', deco_type: 'dtf' }],
+      items: [{ decorations: [{ kind: 'art', art_file_id: 'afDTF' }] }],
+    };
+    const map = outsourcedDecoTypes(o);
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0], map)).toBe(true);
+  });
+  test('art with no concrete type yet on an outsourced item is treated as outside (no mistyped placeholder cost/job)', () => {
+    const o = { deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }], items: [{ decorations: [{ kind: 'art' }] }] };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+  });
+  test('an item-level outside-deco PO line outsources only its own type, not the whole item', () => {
+    const o = {
+      art_files: [{ id: 'afSP', deco_type: 'screen_print' }, { id: 'afEMB', deco_type: 'embroidery' }],
+      items: [{
+        po_lines: [{ po_type: 'outside_deco', deco_type: 'embroidery' }],
+        decorations: [
+          { kind: 'art', art_file_id: 'afEMB' }, // matches the outside-deco line → outside
+          { kind: 'art', art_file_id: 'afSP' },  // different type → in-house
+        ],
+      }],
+    };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[1])).toBe(false);
   });
 });
 
