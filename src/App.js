@@ -19307,9 +19307,27 @@ export default function App(){
                         }}>📄 Download</button>}
                       <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
+                      {shp.shipstation_shipment_id&&<button style={{fontSize:9,background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={async(e)=>{
+                          if(!window.confirm('Void this label in ShipStation (requests a refund) and clear it from this shipment? The shipment record stays so you can re-create a label.'))return;
+                          const btn=e.currentTarget;btn.disabled=true;btn.style.opacity='0.5';
+                          try{
+                            if(ssConnected)await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});
+                            const oldCost=safeNum(shp.shipping_cost||0);
+                            const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:'',tracking_url:'',label_url:null,shipstation_shipment_id:null,shipping_cost:0}:s);
+                            const firstShp=updatedShipments.find(s=>s.tracking_number);
+                            const newCost=Math.max(0,safeNum(shp.so._shipping_cost||shp.so._shipstation_cost||0)-oldCost);
+                            savSO({...shp.so,_shipments:updatedShipments,_tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',_tracking_url:firstShp?.tracking_url||'',_shipping_cost:newCost||null,_shipstation_cost:newCost||null});
+                            addWhAction({type:'label_voided',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',cost:oldCost?'$'+oldCost.toFixed(2):'',by:cu?.id||'warehouse'});
+                            nf('Label voided'+(ssConnected?' in ShipStation':'')+' & cleared'+(oldCost?' · refund $'+oldCost.toFixed(2)+' requested':''));
+                          }catch(err){btn.disabled=false;btn.style.opacity='1';nf('Void failed: '+err.message+' — void manually in ShipStation if needed','error')}
+                        }}>↩️ Void Label</button>}
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
+                        onClick={async()=>{
                           if(!window.confirm('Delete this shipment?'))return;
+                          if(shp.shipstation_shipment_id&&ssConnected&&window.confirm('This shipment has a ShipStation label. Void it (request a refund) before deleting?')){
+                            try{await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});nf('Label voided in ShipStation')}catch(err){nf('Could not void label ('+err.message+') — void manually in ShipStation if needed','error')}
+                          }
                           const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
                           const so2=shp.so;
                           const revertedJobs=safeJobs(so2).map(jj=>{
@@ -20414,9 +20432,9 @@ export default function App(){
             </div>
 
             {/* Actions */}
-            <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
-              <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
-                onClick={()=>{
+            {(()=>{
+              const _emailVal=manualShipModal.emailTo!==undefined?manualShipModal.emailTo:(manualShipModal.cust?.contacts?.[0]?.email||'');
+              const _doConfirmManualShip=async(emailTo)=>{
                   const so=manualShipModal.so;
                   const cost=parseFloat(manualShipModal.cost)||0;
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
@@ -20470,11 +20488,39 @@ export default function App(){
                   const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
                   nf('Manual ship recorded → '+_destLabel+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
                   addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',dest:_destLabel,tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
-                  if(manualShipModal.labelUrl){const _lUrl=manualShipModal.labelUrl;if(_lUrl.startsWith('data:application/pdf;base64,')){try{const _b64=_lUrl.replace('data:application/pdf;base64,','');const _bin=atob(_b64);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bUrl=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bUrl;_a.download='shipping-label-'+so.id+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bUrl),5000)}catch(_e){const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}else{const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}
+                  // Email the label PDF to the customer/rep, OR download it locally — not both.
+                  if(emailTo){
+                    const _lUrl=manualShipModal.labelUrl;
+                    let _att=null;
+                    if(_lUrl){_att=[_lUrl.startsWith('data:application/pdf;base64,')
+                      ?{name:'shipping-label-'+so.id+'.pdf',content:_lUrl.replace('data:application/pdf;base64,','')}
+                      :{name:'shipping-label-'+so.id+'.pdf',url:_lUrl}]}
+                    const _trk=shipment.tracking_number||'';const _trkUrl=shipment.tracking_url||'';
+                    const _bodyInner='<p>Hi,</p><p>A shipment for <strong>'+(manualShipModal.cust?.name||'your order')+'</strong> ('+so.id+') is on its way.</p>'
+                      +(_trk?'<p><strong>Carrier:</strong> '+(shipment.carrier||'').toUpperCase()+'<br/><strong>Tracking #:</strong> '+(_trkUrl?'<a href="'+_trkUrl+'">'+_trk+'</a>':_trk)+'</p>':'')
+                      +'<p>The shipping label is attached as a PDF.</p>';
+                    let _html=_bodyInner;try{_html=buildBrandedEmailHtml(_bodyInner,companyInfo)}catch(_e){}
+                    const _senderEmail=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
+                    try{
+                      const _res=await sendBrevoEmail({to:[{email:emailTo}],subject:'Your shipping label — '+so.id,htmlContent:_html,senderName:'National Sports Apparel',senderEmail:_senderEmail,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,attachment:_att||undefined});
+                      if(_res.ok){nf('📧 Label emailed to '+emailTo)}else{nf('Ship saved but email failed: '+(_res.error||'unknown')+' — download instead','error')}
+                    }catch(_e){nf('Ship saved but email failed: '+_e.message,'error')}
+                    addWhAction({type:'manual_label_emailed',soId:so.id,customer:manualShipModal.cust?.name||'',tracking:_trk,carrier:shipment.carrier||'',emailedTo:emailTo,by:cu?.id||'warehouse'});
+                  } else if(manualShipModal.labelUrl){const _lUrl=manualShipModal.labelUrl;if(_lUrl.startsWith('data:application/pdf;base64,')){try{const _b64=_lUrl.replace('data:application/pdf;base64,','');const _bin=atob(_b64);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bUrl=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bUrl;_a.download='shipping-label-'+so.id+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bUrl),5000)}catch(_e){const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}else{const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}
                   setManualShipModal(null);
-                }}>⚡ Confirm Manual Ship</button>
-              <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
-            </div>
+              };
+              return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
+                <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
+                  onClick={()=>_doConfirmManualShip(null)}>⚡ Confirm Manual Ship</button>
+                {manualShipModal.labelUrl&&<>
+                  <input className="form-input" type="email" placeholder="email@customer.com" style={{fontSize:11,width:190}}
+                    value={_emailVal} onChange={e=>setManualShipModal(m=>({...m,emailTo:e.target.value}))}/>
+                  <button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
+                    onClick={()=>{const _to=(_emailVal||'').trim();if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(_to)){nf('Enter a valid email address to send the label','error');return}_doConfirmManualShip(_to)}}>📧 Confirm &amp; Email Label</button>
+                </>}
+                <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+              </div>;
+            })()}
           </>}
         </div>
       </div></div>}
@@ -20630,9 +20676,27 @@ export default function App(){
                       onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
+                    {shp.shipstation_shipment_id&&<button className="btn btn-sm" style={{fontSize:10,background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',fontWeight:700}}
+                      onClick={async(e)=>{
+                        if(!window.confirm('Void this label in ShipStation (requests a refund) and clear it from this shipment? The shipment record stays so you can re-create a label.'))return;
+                        const btn=e.currentTarget;btn.disabled=true;btn.style.opacity='0.5';
+                        try{
+                          if(ssConnected)await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});
+                          const oldCost=safeNum(shp.shipping_cost||0);
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:'',tracking_url:'',label_url:null,shipstation_shipment_id:null,shipping_cost:0}:s);
+                          const firstShp=updatedShipments.find(s=>s.tracking_number);
+                          const newCost=Math.max(0,safeNum(shp.so._shipping_cost||shp.so._shipstation_cost||0)-oldCost);
+                          savSO({...shp.so,_shipments:updatedShipments,_tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',_tracking_url:firstShp?.tracking_url||'',_shipping_cost:newCost||null,_shipstation_cost:newCost||null});
+                          addWhAction({type:'label_voided',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',cost:oldCost?'$'+oldCost.toFixed(2):'',by:cu?.id||'warehouse'});
+                          nf('Label voided'+(ssConnected?' in ShipStation':'')+' & cleared'+(oldCost?' · refund $'+oldCost.toFixed(2)+' requested':''));
+                        }catch(err){btn.disabled=false;btn.style.opacity='1';nf('Void failed: '+err.message+' — void manually in ShipStation if needed','error')}
+                      }}>↩️ Void Label</button>}
                     <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
+                      onClick={async()=>{
                         if(!window.confirm('Delete this shipment?'))return;
+                        if(shp.shipstation_shipment_id&&ssConnected&&window.confirm('This shipment has a ShipStation label. Void it (request a refund) before deleting?')){
+                          try{await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});nf('Label voided in ShipStation')}catch(err){nf('Could not void label ('+err.message+') — void manually in ShipStation if needed','error')}
+                        }
                         const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
                         const so2=shp.so;
                         const revertedJobs=safeJobs(so2).map(jj=>{
