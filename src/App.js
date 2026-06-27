@@ -5,6 +5,7 @@ import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
+import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
@@ -458,6 +459,11 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
+
+// Global request circuit breaker (see ./lib/requestBreaker): short-circuits any /rest/v1 endpoint
+// a render/effect bug puts into a runaway loop, so a stale tab can never flood the DB again.
+const _breakerFetch = makeBreakerFetch({ label: 'circuit-breaker' });
+
 // Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
 // client and the lib client (same Supabase storage key) serialize auth ops
 // through ONE lock, instead of contending on the cross-tab Navigator
@@ -472,6 +478,7 @@ try {
         detectSessionInUrl: true,
         lock: _sbAuthLock,
       },
+      global: { fetch: _breakerFetch },
     });
   }
 }
