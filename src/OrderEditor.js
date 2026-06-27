@@ -2572,16 +2572,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
-    // Released jobs keep their frozen unit snapshot (what was sent to production), EXCEPT a job that
-    // snapshotted 0 total units is never a valid snapshot. qty_only items (Custom — no size breakdown)
-    // carry their quantity in est_qty with an empty size grid, so a job released before the est_qty
-    // fallback existed froze its total at 0 and reads "0/0" forever even after receipt. Re-derive units
-    // (mirroring recalcedMerged) for these zero-total jobs only — genuine snapshots stay untouched.
+    // Released jobs re-derive their unit totals from live item data (like recalcedMerged) so that
+    // adding more units to a line item after release updates the job quantity. If the live total is
+    // LESS than the frozen snapshot (e.g. units were removed), keep the frozen value — the art
+    // department already committed to printing that many. Zero-total snapshots (legacy jobs released
+    // before the est_qty fallback existed) are always healed up.
     const recalcedReleased=releasedJobs.map(j=>{
-      if(safeNum(j.total_units)>0)return j;
       let total=0,fulfilled=0;
-      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
       if(total===0)return j;// no real units anywhere — leave the (empty) snapshot as-is
+      const frozenTotal=safeNum(j.total_units);
+      if(frozenTotal>0&&total<frozenTotal)return j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
