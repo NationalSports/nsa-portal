@@ -401,6 +401,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
+    const[pickDecoFor,setPickDecoFor]=useState(null);// item idx awaiting a decorator pick when first flagged Outside
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
     const[podDropShip,setPodDropShip]=useState(true);// inline deco PO — deco POs are always drop ship
@@ -2137,7 +2138,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
-  const setItemFulfillment=(ii,val)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,fulfillment:val||undefined}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?'🎨 Outside — produced by a decorator. Add a Deco PO to bundle & cost it.':'🏭 In-house')};
+  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>{if(d.kind!=='art')return d;const nd={...d,fulfillment:val||undefined};if(val==='outside'){if(vendor)nd.vendor=vendor}else{nd.vendor=undefined}return nd})}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator. Add a Deco PO to bundle & cost it.'):'🏭 In-house')};
+  // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
+  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[])[0]?.vendor||''};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
@@ -4084,11 +4087,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx));if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
               <span style={{display:'inline-flex',border:'1px solid #cbd5e1',borderRadius:6,overflow:'hidden'}}>
                 <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,null)} disabled={!!_dp} title={_dp?'On a Deco PO — remove it from the PO to set back in-house':'Produced in-house'} style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderRadius:0,cursor:_dp?'not-allowed':'pointer',background:!_outside?'#3b82f6':'#fff',color:!_outside?'#fff':'#64748b'}}>🏭 In-house</button>
-                <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,'outside')} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
+                <button className="btn btn-sm" onClick={()=>{const exV=_orderOutsideVendor();if(exV)setItemFulfillment(idx,'outside',exV);else setPickDecoFor(idx)}} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
               </span>
               {_outside&&(_dp
                 ? <span onClick={()=>setShowPO('select')} title="On a Deco PO — click to view / edit" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
-                : <span onClick={()=>setShowPO('select')} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
+                : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
             </>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
               if(activeSizes.length===0)return null;
@@ -6737,13 +6740,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const autoPoId='DPO '+poCounter+(cust?.alpha_tag?' '+cust.alpha_tag:'');
         const poId=preexistingPO?preexistingPOId:autoPoId;
         const dv=decoVendors.find(v=>v.name===decoVendor);
-        const _initialDpoQty=allItems.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
-        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:_initialDpoQty}):null;
+        // If items were flagged Outside on the line, default the PO to exactly those (else all items).
+        const _dpoFlaggedOut=new Set(safeItems(o).map((_,i)=>i).filter(i=>safeDecos(safeItems(o)[i]).some(d=>d.kind==='art'&&d.fulfillment==='outside')));
+        const _initialSel=allItems.filter(it=>_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true);
+        const _initialDpoQty=_initialSel.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
+        const _initialDpoStitches=Math.max(0,...(_initialSel.flatMap(it=>safeDecos(safeItems(o)[it._idx]||{}).filter(d=>d.kind==='art').map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0})).filter(n=>n>0)),0);
+        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
         const _recalcDpo=()=>{
           let qty=0;const selected=[];
           allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);selected.push(vi)}});
           const dt=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
-          const price=dv?_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty}):null;
+          // Price the right tier: max ink-colors (SP) / max stitches (EMB) of the selected designs,
+          // and underbase when any selected garment is darker than white/light grey/vegas gold.
+          const _selDecos=selected.flatMap(vi=>safeDecos(safeItems(o)[allItems[vi]?._idx]||{}).filter(d=>d.kind==='art'));
+          const _cols=Math.max(1,...(_selDecos.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return a&&a.ink_colors?a.ink_colors.split('\n').filter(l=>l.trim()).length:safeNum(d.tbd_colors)||0}).filter(n=>n>0)),1);
+          const _st=Math.max(0,...(_selDecos.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0}).filter(n=>n>0)),0);
+          const _ub=dt==='screen_print'&&selected.some(vi=>garmentNeedsUnderbase(allItems[vi]?.color));
+          const price=dv?_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty,colors:_cols,stitches:_st,underbase:_ub}):null;
           const qtyEl=document.getElementById('dpo-total-qty');if(qtyEl)qtyEl.value=qty;
           const ucEl=document.getElementById('dpo-unit-cost');
           if(ucEl&&(ucEl.dataset.auto==='1'||!ucEl.value||ucEl.value==='0'||ucEl.value==='0.00')&&price!==null){ucEl.value=price.toFixed(2);ucEl.dataset.auto='1'}
@@ -6773,7 +6786,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             {allItems.map((it,vi)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               return<div key={vi} style={{padding:'8px 12px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:6,background:'#faf5ff',display:'flex',alignItems:'center',gap:8}}>
-                <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked style={{width:16,height:16}} onChange={_recalcDpo}/>
+                <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked={_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true} style={{width:16,height:16}} onChange={_recalcDpo}/>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                 <strong style={{flex:1}}>{it.name}</strong>
                 <span style={{color:'#64748b',fontSize:12}}>{it.color}</span>
@@ -10875,6 +10888,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div></div>})()}
 
+    {/* Decorator picker — opens when the first item on the order is flagged Outside */}
+    {pickDecoFor!=null&&(()=>{const DV=DECO_VENDORS.filter(v=>v!=='Other');return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setPickDecoFor(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+      <div className="modal-header"><h2 style={{color:'#7c3aed',fontSize:16}}>🎨 Send to which decorator?</h2><button className="modal-close" onClick={()=>setPickDecoFor(null)}>x</button></div>
+      <div className="modal-body">
+        <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Pick the outside decorator for this order. Other items you mark Outside will go to the same one (change it on the Deco PO if needed).</div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+          {DV.map(v=><button key={v} className="btn btn-sm" style={{fontSize:12,padding:'6px 12px',border:'1px solid #cbd5e1',borderRadius:6,background:'#fff',color:'#334155',cursor:'pointer'}} onClick={()=>{setItemFulfillment(pickDecoFor,'outside',v);setPickDecoFor(null)}}>{v}</button>)}
+        </div>
+        <button className="btn btn-sm btn-secondary" style={{marginTop:12,fontSize:11}} onClick={()=>{setItemFulfillment(pickDecoFor,'outside');setPickDecoFor(null)}}>Skip — decide on the PO</button>
+      </div>
+    </div></div>})()}
     {/* PO — Email Vendor modal: sends the same SO-format PDF as Download PDF, pre-fills the vendor's contact_email */}
     {poEmail&&<div className="modal-overlay" onClick={()=>{if(!poEmail.sending)setPoEmail(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
       <div className="modal-header"><h2>📧 Email PO {poEmail.poId} to Vendor</h2><button className="modal-close" onClick={()=>{if(!poEmail.sending)setPoEmail(null)}}>x</button></div>
