@@ -179,6 +179,12 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
 };
 
+// ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
+// a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
+// (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
+const _LIGHT_GARMENT = /white|vegas|(?:light|lt)[\s.]*gr[ae]y/i;
+const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(c) : false; };
+
 // ── ONE asset resolver (Layer 3 of the one-process art model) ──
 // Resolve a design's image for a given color way, keyed on the STABLE `color_way_id` (never the CW
 // label string). One function for BOTH the web logo (the standalone cutout placed on a garment
@@ -885,7 +891,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

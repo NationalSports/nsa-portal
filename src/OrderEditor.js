@@ -17,7 +17,7 @@ import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -6978,7 +6978,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podDefault(idx);
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
       const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
-      const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty}):null;
+      // Pass the covered designs' complexity to the rate lookup so it auto-fills the RIGHT tier, not
+      // the 1-color / base-stitch default: max ink-colors (SP) / max stitches (EMB) across covered
+      // designs, and underbase when any covered garment is darker than white/light grey/vegas gold.
+      const _podCov=podSelIdxs.flatMap(i=>safeDecos(safeItems(o)[i]||{}).filter(d=>d.kind==='art'));
+      const _podColors=Math.max(1,...(_podCov.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return a&&a.ink_colors?a.ink_colors.split('\n').filter(l=>l.trim()).length:safeNum(d.tbd_colors)||0}).filter(n=>n>0)),1);
+      const _podStitches=Math.max(0,...(_podCov.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0}).filter(n=>n>0)),0);
+      const _podUnderbase=podType==='screen_print'&&podSelIdxs.some(i=>garmentNeedsUnderbase(safeItems(o)[i]&&safeItems(o)[i].color));
+      const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty,colors:_podColors,stitches:_podStitches,underbase:_podUnderbase}):null;
       const podUnitCost=podCost!==null?(parseFloat(podCost)||0):(podAutoCost!==null?podAutoCost:0);
       const podExpectedCost=Math.round(podQty*podUnitCost*100)/100;
       // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
