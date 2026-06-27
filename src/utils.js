@@ -186,8 +186,13 @@ export const mergeArtGroupFiles=(ext,loc)=>{
   const mf=_afUnion(ext.mockup_files,loc.mockup_files),pf=_afUnion(ext.prod_files,loc.prod_files),fl=_afUnion(ext.files,loc.files);
   let im=ext.item_mockups||{},imCh=false;const locIM=loc.item_mockups||{};const imKeys=Object.keys(locIM);
   if(imKeys.length){const base={...(ext.item_mockups||{})};imKeys.forEach(k=>{const u=_afUnion(base[k],locIM[k]);if(u!==base[k]){base[k]=u;imCh=true}});if(imCh)im=base}
-  if(mf===ext.mockup_files&&pf===ext.prod_files&&fl===ext.files&&!imCh)return ext;
-  return{...ext,mockup_files:mf,prod_files:pf,files:fl,...(imCh?{item_mockups:im}:{})};
+  // Mock links (garment -> source garment) are a small {key:source} map. Keep any local link the
+  // stale incoming copy is missing so a just-made reuse link isn't dropped by a poll/realtime echo
+  // (mirrors the file union — same symmetric tradeoff: a deliberate unlink can rarely be resurrected).
+  let ml=ext.mock_links,mlCh=false;const locML=loc.mock_links||{};const mlKeys=Object.keys(locML);
+  if(mlKeys.length){const base={...(ext.mock_links||{})};mlKeys.forEach(k=>{if(base[k]!==locML[k]){base[k]=locML[k];mlCh=true}});if(mlCh)ml=base}
+  if(mf===ext.mockup_files&&pf===ext.prod_files&&fl===ext.files&&!imCh&&!mlCh)return ext;
+  return{...ext,mockup_files:mf,prod_files:pf,files:fl,...(imCh?{item_mockups:im}:{}),...(mlCh?{mock_links:ml}:{})};
 };
 // Array-level: superset-merge an incoming art_files array against the local one, grouped by id. Keeps any
 // local-only group (the incoming snapshot is missing it entirely) AND any local-only file within a shared

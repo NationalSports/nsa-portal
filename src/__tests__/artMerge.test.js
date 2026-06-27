@@ -34,6 +34,28 @@ describe('mergeArtGroupFiles', () => {
     const loc = { id: 'a1', mockup_files: [{ url: 'A' }] };
     expect(mergeArtGroupFiles(ext, loc)).toBe(ext);
   });
+
+  test('keeps a local-only mock_links entry the stale incoming copy is missing', () => {
+    const ext = { id: 'a1', mock_links: { 'P2|Black': 'P1|Black' } };
+    const loc = { id: 'a1', mock_links: { 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' } };
+    const m = mergeArtGroupFiles(ext, loc);
+    expect(m.mock_links).toEqual({ 'P2|Black': 'P1|Black', 'P3|Black': 'P1|Black' });
+  });
+
+  test('does not lose mock_links when the incoming copy has none', () => {
+    const ext = { id: 'a1', mockup_files: [{ url: 'A' }] };
+    const loc = { id: 'a1', mockup_files: [{ url: 'A' }], mock_links: { 'P2|Black': 'P1|Black' } };
+    const m = mergeArtGroupFiles(ext, loc);
+    expect(m.mock_links).toEqual({ 'P2|Black': 'P1|Black' });
+  });
+
+  test('mock_links alone with no file changes still returns a merged object', () => {
+    const ext = { id: 'a1', mock_links: {} };
+    const loc = { id: 'a1', mock_links: { 'P2|Black': 'P1|Black' } };
+    const m = mergeArtGroupFiles(ext, loc);
+    expect(m).not.toBe(ext);
+    expect(m.mock_links).toEqual({ 'P2|Black': 'P1|Black' });
+  });
 });
 
 describe('mergeArtFileSuperset', () => {
