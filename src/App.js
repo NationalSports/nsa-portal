@@ -5,6 +5,7 @@ import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
+import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
@@ -265,6 +266,8 @@ const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
+const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
+const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -456,6 +459,11 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
+
+// Global request circuit breaker (see ./lib/requestBreaker): short-circuits any /rest/v1 endpoint
+// a render/effect bug puts into a runaway loop, so a stale tab can never flood the DB again.
+const _breakerFetch = makeBreakerFetch({ label: 'circuit-breaker' });
+
 // Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
 // client and the lib client (same Supabase storage key) serialize auth ops
 // through ONE lock, instead of contending on the cross-tab Navigator
@@ -470,6 +478,7 @@ try {
         detectSessionInUrl: true,
         lock: _sbAuthLock,
       },
+      global: { fetch: _breakerFetch },
     });
   }
 }
@@ -526,6 +535,14 @@ const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_l
 // these vendors server-side. Null-vendor products (Artwork, Wilson balls) are explicitly preserved.
 const API_CATALOG_VENDOR_IDS=['v8','v4','v3'];
 const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_VENDOR_IDS.join(',')+')';
+// Catalog-load column allowlist: every products column EXCEPT description / description_ai. Those two
+// text columns are ~51% of the row width (483B + 257B of ~1460B) yet are never read off the in-memory
+// `prod` catalog — the storefront product pages fetch their own rows (PROD_SELECT) and the client save
+// path (_dbSaveProduct, ~line 2242) writes an explicit column set that already omits them, so trimming
+// the load here can neither break a read nor null a description on write-back. This roughly halves the
+// heaviest recurring query (the full-catalog products fetch, historically ~58% of DB CPU) on heap
+// fetches, JSON serialization and transfer. Keep this list in sync with the products table columns.
+const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_price,nsa_cost,is_active,available_sizes,_colors,created_at,updated_at,image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,size_costs,pricing_group,bin,catalog_sell_price,inventory_source,is_featured,description_ai_at';
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -535,7 +552,7 @@ const _safeQuery=(table,opts)=>{
   // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
   const fetchPage=(start)=>{
-    let q=supabase.from(table).select('*');
+    let q=supabase.from(table).select(opts?.select||'*');
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
@@ -838,7 +855,7 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR}),true),
+      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
       essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
@@ -1103,6 +1120,43 @@ const _diffSaveSkipLogged=new Set();// rate-limit "skipped" warnings to once per
 // every save, so including them causes a phantom save loop: save → version bump → realtime delivers
 // new version → _diffSave sees version change → saves again → repeat indefinitely.
 const _diffCmp=(o)=>{const{_version,updated_at,...r}=o;return JSON.stringify(r)};
+// Phantom-save guard for estimates: compare ONLY the fields save_estimate actually persists.
+// Estimates carry session-only data that is recomputed on every reload and never saved —
+// per-size _sizeCosts/_sizeSells (from vendor-pricing hooks), _colorImage, _ss_live, plus the
+// DB-managed nested _version on art rows. The whole-object _diffCmp counted those as "changes",
+// so each reload re-derived them and re-saved the estimate → a multi-tab save_estimate
+// version-conflict storm. Mirror the save's projection so only real, persistable changes write.
+const _estDiffCmp=(e)=>JSON.stringify({
+  ..._pick(e,_estCols),
+  items:(e.items||[]).map(it=>({..._pick(it,_itemCols),decorations:(it.decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))})),
+  art_files:(e.art_files||[]).map(a=>_pick(a,_artCols)),
+});
+// Phantom-save guard for sales orders — DELIBERATELY CONSERVATIVE because the SO save is the most
+// data-loss-sensitive path in the app. It differs from _diffCmp ONLY by stripping, from each line
+// item, the scalar fields that are NOT in _itemCols — i.e. exactly the fields the SO save itself
+// discards (_pick(itemData,_itemCols) in _dbSaveSOInner). Those fields (recomputed-every-load
+// _sizeCosts/_sizeSells/_colorImage/etc.) can never be persisted, so dropping them from change-
+// detection can never hide a savable change → zero data-loss risk by construction. EVERYTHING else —
+// all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
+// is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
+// stop counting as changes.
+const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
+// Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
+// row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
+// the save exactly, INCLUDING the image_url->image_front_url fold, so it detects a change iff the save
+// would write a difference (zero data-loss), while the session-only fields re-derived on every load
+// (_colorImage/_colorBackImage/_ss_live/_sizeCosts/_sizeSells and raw image_url mirrors) no longer count
+// as changes. This stops the products re-save loop — the ~340k single-row product upserts + paired
+// _pimg_ app_state writes that dominated write volume (and WAL) once the catalog grew 4x.
+const _prodDiffCmp=(p)=>JSON.stringify({
+  id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
+  color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
+  is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+  is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
+  image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null,
+  images:p.images||null,_inv:p._inv||{},_alerts:p._alerts||{},
+});
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
   // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
@@ -1187,6 +1241,12 @@ const _dbSaveEstimateInner = async (est) => {
   // selecting a customer fires another _diffSave that persists it. This also blocks a stale save from
   // nulling an already-saved estimate's customer.
   if(!est.customer_id){if(!_bgSync&&typeof _dbNotify==='function')_dbNotify('Add a customer before this estimate can be saved.','error');return;}
+  // Stale-write circuit breaker: if a recent save for this estimate was rejected as STALE, don't re-POST
+  // until the cooldown elapses (realtime/poll should have healed the copy by then). Prevents a re-firing
+  // save effect from flooding the DB with STALE_ESTIMATE_WRITE rejections. Treated as a non-failure 'stale'
+  // result so it clears pending and never lands in the failed banner.
+  const _cd=_dbStaleCooldown.get(est.id);
+  if(_cd&&Date.now()<_cd){return 'stale';}
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
@@ -1345,6 +1405,7 @@ const _dbSaveEstimateInner = async (est) => {
         // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
         // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
         return 'stale';
       }
       if(_rpcErr){
@@ -1402,7 +1463,7 @@ const _dbSaveEstimateInner = async (est) => {
     // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
     // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
     if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
-    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(est._version)est._version=est._version+1;
     return true;
@@ -2475,6 +2536,13 @@ const _dbRecentSaves={};// {id: timestamp}
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
 // letting another user's/tab's legitimate art deletions reconcile normally instead of being resurrected.
 const _recentlySavedByMe=id=>!!_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000;
+// Stale-write circuit breaker. When save_estimate rejects a write as STALE (the client's copy is older
+// than the DB), re-POSTing the same copy can never succeed — only reloading the newer rows (realtime/poll)
+// heals it. A save effect that keeps re-firing on a stale estimate therefore floods the API with rejected
+// writes (the ~1000/sec STALE_ESTIMATE_WRITE storms). After a stale rejection we skip further save attempts
+// for that estimate until the cooldown elapses, capping a misbehaving tab at a trickle instead of a storm.
+const _dbStaleCooldown=new Map();// {estimateId: epoch-ms until which to skip saving}
+const _STALE_COOLDOWN_MS=10000;
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
 // not real server-side errors. Backoff: 400ms, 1.2s.
 const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
@@ -3644,7 +3712,7 @@ function AuthSetupPage({mode}){
       <div style={{width:420,padding:0}}>
         <div style={{textAlign:'center',marginBottom:32}}>
           <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
-          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
+          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Connect</div>
         </div>
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
           {checking?(
@@ -3724,6 +3792,8 @@ export default function App(){
   const _path=typeof window!=='undefined'?window.location.pathname:'';
   if(_path==='/auth/setup')return<AuthSetupPage mode="setup"/>;
   if(_path==='/auth/reset')return<AuthSetupPage mode="reset"/>;
+  // /onboarding is the invite-only new-hire packet — token-gated, no portal login.
+  if(_path==='/onboarding')return<React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><OnboardingWizard/></React.Suspense>;
 
   const[pg,setPg]=useState(()=>_pgFromUrl()||'dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
@@ -4258,7 +4328,8 @@ export default function App(){
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
-      const debouncedReload=(tbl,delay=10000)=>{_rtPending.add(_RT_GROUP[tbl]||'__all__');if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReloadGroups=(groups,delay=10000)=>{groups.forEach(g=>_rtPending.add(g));if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const debouncedReload=(tbl,delay=10000)=>debouncedReloadGroups([_RT_GROUP[tbl]||'__all__'],delay);
       // Subscribe to core tables + pick_lines for instant warehouse sync.
       // products is intentionally excluded: the full 53k-row catalog re-download triggered
       // on every product realtime event consumed ~34% of DB CPU. The 60s poll keeps
@@ -4274,9 +4345,12 @@ export default function App(){
         });
         channels.push(ch);
       });
-      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
-      // Tab regained focus: full reload, short 1s debounce — a deliberate user action, keep it snappy
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload(null,1000)}};
+      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff.
+      // Keep focus refresh scoped to operational tables. A full reload also drags the cold catalog
+      // (products/product_inventory + app_state image rows), so normal tab switching can otherwise
+      // multiply into a large PostgREST burst across every open portal tab.
+      const _FOCUS_RELOAD_GROUPS=['estimates','sales_orders','invoices','messages','assigned_todos'];
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReloadGroups(_FOCUS_RELOAD_GROUPS,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -4333,6 +4407,11 @@ export default function App(){
     const schedulePoll=()=>{if(cancelled)return;const interval=_getPollInterval();pollTimer=setTimeout(runPoll,interval)};
     const runPoll=async()=>{
       if(cancelled)return;
+      // Skip polling while the tab is hidden — a backgrounded tab nobody's looking at would only
+      // add redundant DB load. onVis (realtime effect) refreshes the operational tables the moment
+      // the tab is shown again, so freshness on return is covered. Keep the timer alive so polling
+      // auto-resumes (cold catalog data refreshes on the poll's periodic full-sync cycle).
+      if(typeof document!=='undefined'&&document.hidden){schedulePoll();return}
       if(!_dbReady.current){schedulePoll();return}
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
@@ -4527,14 +4606,50 @@ export default function App(){
     return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── Idle auto-reload: force-reload an idle tab ONLY when it's stuck in a save loop ───
+  // The deploy-reload above already reclaims idle tabs onto a new build (and never loops — it reloads
+  // once per build). Its one blind spot: a tab stuck in a save loop never reaches "saves idle", so it
+  // never reloads to pick up the fix. That is this effect's job, and ONLY that: after IDLE_RELOAD_MS of
+  // no input, if (and only if) saves are stuck/pending, flush briefly then force-reload. A healthy,
+  // current idle tab is left alone — it is not polling, so reloading it would add load for nothing (and
+  // would re-reload every cycle forever). Active tabs never reload — any input resets the timer.
+  React.useEffect(()=>{
+    if(typeof window==='undefined')return;
+    const IDLE_RELOAD_MS=15*60*1000; // 15 minutes of no user input
+    let lastAct=Date.now();let fired=false;
+    const mark=()=>{lastAct=Date.now()};
+    window.addEventListener('pointerdown',mark,{capture:true,passive:true});
+    window.addEventListener('keydown',mark,{capture:true,passive:true});
+    const tick=async()=>{
+      if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
+      // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
+      // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
+      if(!(_dbSavePendingIds.size>0||_bgSync>0))return;
+      fired=true; // commit — don't re-fire while we flush
+      try{
+        window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts
+        // Wait briefly for pending saves to drain, but NEVER block forever — a stuck/looping save must
+        // not prevent the reload (that is exactly what pins a storming tab). Hard 5s cap.
+        const started=Date.now();
+        while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
+      }catch(_){/* best effort */}
+      // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
+      // reload-and-refetch in the same instant and spike the DB.
+      const jitter=2000+Math.floor(Math.random()*18000);
+      setTimeout(()=>{try{window.location.reload()}catch(_){/* noop */}},jitter);
+    };
+    const iv=setInterval(tick,60000); // check every minute
+    return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||_diffCmp(old)!==_diffCmp(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||_diffCmp(old)!==_diffCmp(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync++;try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSync--}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync++;try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSync--}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;
@@ -4607,8 +4722,8 @@ export default function App(){
     }finally{setAdidasSyncUploading(false)}
   };
 
-  React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
-  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
+  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
@@ -5505,6 +5620,42 @@ export default function App(){
   React.useEffect(()=>{if(selV){const u=vend.find(v=>v.id===selV.id);if(u&&u!==selV)setSelV(u);else if(!u)setSelV(null)}},[vend]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
+  // ─── Record-level restore: reopen the exact record across reloads / re-logins ───
+  // The section is URL-driven (?pg=) so a reload already lands on the right tab, but the OPEN record
+  // (a specific order/estimate/customer/vendor/product) lives only in memory. Persist it and reopen it
+  // on boot using the SAME open-by-id logic as the ?so=/?est= deep-link handler, so the idle auto-reload
+  // / a manual refresh / a re-login resume exactly where the rep was. An explicit deep-link (?so= etc.)
+  // always wins; invoices use a separate view state declared later and aren't covered here.
+  const _resumeDone=React.useRef(false);
+  React.useEffect(()=>{
+    if(!_resumeDone.current)return;// don't clobber the saved record before the restore effect below runs
+    try{
+      let r=null;
+      if(eSO?.id)r={t:'so',id:eSO.id};
+      else if(eEst?.id)r={t:'est',id:eEst.id};
+      else if(selC?.id)r={t:'cust',id:selC.id};
+      else if(selV?.id)r={t:'vend',id:selV.id};
+      else if(selP?.id)r={t:'prod',id:selP.id};
+      if(r)localStorage.setItem('nsa_resume',JSON.stringify(r));else localStorage.removeItem('nsa_resume');
+    }catch(_){/* storage unavailable — non-fatal */}
+  },[eSO?.id,eEst?.id,selC?.id,selV?.id,selP?.id]);
+  React.useEffect(()=>{
+    if(dbLoading||_resumeDone.current)return;
+    try{
+      const p=new URLSearchParams(window.location.search);
+      // An explicit deep-link (?so=/?est=/...) takes precedence over the saved resume.
+      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')){_resumeDone.current=true;return;}
+      const raw=localStorage.getItem('nsa_resume');if(!raw){_resumeDone.current=true;return;}
+      const r=JSON.parse(raw);if(!r||!r.id){_resumeDone.current=true;return;}
+      // Wait for the relevant collection to populate before resolving (mirrors the deep-link handler).
+      if(r.t==='so'){if(!sos.length)return;const so=sos.find(s=>s.id===r.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}
+      else if(r.t==='est'){if(!ests.length)return;const e=ests.find(x=>x.id===r.id);if(e){setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')}}
+      else if(r.t==='cust'){if(!cust.length)return;const c2=cust.find(x=>x.id===r.id);if(c2){setSelC(c2);setPg('customers')}}
+      else if(r.t==='vend'){if(!vend.length)return;const v=vend.find(x=>x.id===r.id);if(v){setSelV(v);setPg('vendors')}}
+      else if(r.t==='prod'){if(!prod.length)return;const pr=prod.find(x=>x.id===r.id);if(pr){setSelP(pr);setPg('products')}}
+      _resumeDone.current=true;
+    }catch(_){_resumeDone.current=true;}
+  },[dbLoading,sos,ests,cust,vend,prod]); // eslint-disable-line react-hooks/exhaustive-deps
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
   const _eSOSnapRef=React.useRef(null);
@@ -6337,7 +6488,17 @@ export default function App(){
   const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_todos',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
   const[todoFilter,setTodoFilter]=useState('all');// all|art|follow_up|order|deadline|booking|delivery|issue|est
   const[snoozeOpenKey,setSnoozeOpenKey]=useState(null);
+  // Generic time-based snooze for any to-do (hides it until the chosen date). Follow-up
+  // types keep their own follow_up_at logic via snoozeTodo; everything else uses this map.
+  const[snoozedTodos,setSnoozedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_snoozed_todos')||'{}')}catch{return{}}});
+  const _todoSnoozed=(key)=>{const u=key&&snoozedTodos[key];return!!u&&u>Date.now()};
+  const snoozeTodoUntil=(t,days)=>{const key=t.dismissKey;if(!key){nf('Cannot snooze this item','error');return}
+    const until=Date.now()+days*86400000;
+    setSnoozedTodos(prev=>{const n={...prev};Object.keys(n).forEach(k=>{if(n[k]<=Date.now())delete n[k]});n[key]=until;_lsSet('nsa_snoozed_todos',JSON.stringify(n));return n});
+    setSnoozeOpenKey(null);nf('Snoozed for '+days+' day'+(days!==1?'s':''))};
   const _todoIsFollowUp=(t)=>t.type==='follow_up'||t.type==='inv_followup'||t.type==='coach_followup';
+  // Unified snooze: follow-ups push their source date; all other to-dos use the snooze map.
+  const doSnooze=(t,days)=>{if(_todoIsFollowUp(t))snoozeTodo(t,days);else snoozeTodoUntil(t,days)};
   const _todoCategory=(t)=>{
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
     if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
@@ -6352,6 +6513,61 @@ export default function App(){
   const _CAT_LABELS={deadline:'📅 Deadlines',art:'🎨 Art / Approvals',follow_up:'⏰ Follow-ups',est:'✅ Estimates',order:'🛒 Orders / Deposits',firm:'📌 Firm Dates',delivery:'🚗 Delivery',issue:'🔴 Issues',other:'📋 Other'};
   const _CAT_ORDER=['deadline','art','follow_up','est','order','firm','delivery','issue','other'];
   const _groupTodos=(arr)=>{const g={};arr.forEach(t=>{const c=_todoCategory(t);(g[c]=g[c]||[]).push(t)});return _CAT_ORDER.filter(c=>g[c]?.length).map(c=>({cat:c,label:_CAT_LABELS[c],items:g[c]}))};
+  // ── Notification grouping (by type) ─────────────────────────────────────────
+  // Each notification has a `type` (items_received, ready_for_deco, art_approved, …).
+  // Group by type for a tidy "by type, then by date" view; unknown types fall through to 'other'.
+  const _NOTIF_TYPE_META={
+    art_approved:{label:'✅ Coach Approved Art',order:1},
+    ready_for_deco:{label:'🎽 Ready for Decoration',order:2},
+    items_received:{label:'📦 Items Received',order:3},
+    job_completed:{label:'🏭 Jobs Completed',order:4},
+    if_pulled:{label:'📦 IFs Pulled',order:5},
+    inv_paid:{label:'💰 Invoices Paid',order:6},
+    _task:{label:'📌 Task Updates',order:7},
+    other:{label:'🔔 Other',order:99},
+  };
+  const _notifTypeKey=(t)=>t.isTaskComplete?'_task':(_NOTIF_TYPE_META[t.type]?t.type:'other');
+  const _notifTs=(t)=>{const d=t.date?new Date(t.date).getTime():0;return isNaN(d)?0:d};
+  // Group notifications by type, order the groups, and sort each group's items newest-first.
+  const _groupNotifs=(arr)=>{const g={};arr.forEach(t=>{const k=_notifTypeKey(t);(g[k]=g[k]||[]).push(t)});
+    return Object.keys(g).sort((a,b)=>(_NOTIF_TYPE_META[a]?.order||50)-(_NOTIF_TYPE_META[b]?.order||50))
+      .map(k=>({cat:k,label:_NOTIF_TYPE_META[k]?.label||'🔔 '+k,items:g[k].slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}))};
+  // Activity Center popup (expanded notifications + to-dos)
+  const[acOpen,setAcOpen]=useState(false);
+  const[acTab,setAcTab]=useState('notifs');// notifs | todos
+  const[acNotifSort,setAcNotifSort]=useState('type');// type | date
+  const[acTodoSort,setAcTodoSort]=useState('category');// category | date | priority
+  const[acTodoCats,setAcTodoCats]=useState([]);// selected to-do categories ([] = show all)
+  const[acSearch,setAcSearch]=useState('');
+  const[acMsgKey,setAcMsgKey]=useState(null);// dismissKey of the row whose message composer is open
+  const[acMsgText,setAcMsgText]=useState('');
+  const[acDateKey,setAcDateKey]=useState(null);// dismissKey of the row whose expected-date editor is open
+  const[acDateVal,setAcDateVal]=useState('');
+  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcTodoCats([]);setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
+  // Change a to-do's linked sales order's "expected by" date (e.g. custom uniforms need a longer lead time).
+  // Applies immediately (val passed in) so it doesn't depend on a separate Save click — native date
+  // pickers can swallow the first click after the calendar closes.
+  const acSetExpectedDate=(t,val,close)=>{
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const v=(val!==undefined?val:acDateVal)||'';
+    setAcDateVal(v);
+    setSOs(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
+    if(close)setAcDateKey(null);
+    nf(v?('Expected date set to '+v):'Expected date cleared');
+  };
+  // Post a quick message to a to-do/notification's related sales-order thread (reuses the messages system).
+  const acSendMessage=(t)=>{
+    const txt=(acMsgText||'').trim();if(!txt){nf('Type a message first','error');return}
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    const rep=so.created_by&&so.created_by!==cu.id?[so.created_by]:[];
+    const soMsg={id:'m'+Date.now(),so_id:so.id,author_id:cu.id,text:txt,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'general',tagged_members:rep,entity_type:'so',entity_id:so.id};
+    setMsgs(prev=>[...prev,soMsg]);
+    setAcMsgKey(null);setAcMsgText('');
+    nf('Message sent to '+(c?.name||so.id)+' thread');
+  };
   const snoozeTodo=(t,days)=>{
     const fuAt=new Date(Date.now()+days*86400000).toISOString();
     const nowIso=new Date().toISOString();
@@ -6360,7 +6576,7 @@ export default function App(){
     }else if(t.type==='inv_followup'&&t.inv){
       setInvs(prev=>prev.map(i=>i.id===t.inv.id?{...i,follow_up_at:fuAt,updated_at:nowIso}:i));
     }else if(t.type==='coach_followup'&&t.so&&t.jobId){
-      setSos(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
+      setSOs(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
     }
     setSnoozeOpenKey(null);
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
@@ -6387,6 +6603,38 @@ export default function App(){
   },[cu?.id,cu?.role]);
   const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+  // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
+  // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
+  // clears the session for EVERY tab — so an idle background tab must never boot a user who's active in
+  // another. Only when there's been no input in ANY tab for the full window do we flush pending work and
+  // sign out (same path as handleLogout → the UI falls back to the sign-in screen). Opening the portal
+  // after being away longer than the window signs you straight out, which is the intent. pointermove/
+  // scroll count as activity (a rep reading a screen isn't "away"); the localStorage write is throttled.
+  React.useEffect(()=>{
+    if(typeof window==='undefined')return;
+    const IDLE_LOGOUT_MS=60*60*1000; // 1 hour with no activity in any tab
+    const KEY='nsa_last_activity';
+    let firing=false;let lastWrite=0;
+    try{if(!localStorage.getItem(KEY))localStorage.setItem(KEY,String(Date.now()))}catch(_){/* first load = activity */}
+    const mark=()=>{firing=false;const t=Date.now();if(t-lastWrite<30000)return;lastWrite=t;try{localStorage.setItem(KEY,String(t))}catch(_){}};
+    const EVENTS=['pointerdown','keydown','pointermove','scroll','touchstart'];
+    EVENTS.forEach(ev=>window.addEventListener(ev,mark,{capture:true,passive:true}));
+    const doLogout=async()=>{
+      if(firing)return;firing=true;
+      try{
+        window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts first
+        const started=Date.now();
+        while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
+      }catch(_){/* best effort */}
+      try{setCu(null)}catch(_){}
+      try{localStorage.removeItem('nsa_user')}catch(_){}
+      try{await _sbSignOut()}catch(_){}
+    };
+    const tick=()=>{let last;try{last=Number(localStorage.getItem(KEY))||Date.now()}catch(_){last=Date.now()}if(Date.now()-last>=IDLE_LOGOUT_MS)doLogout()};
+    tick(); // also check on mount — opening after a long absence signs out promptly
+    const iv=setInterval(tick,60000); // re-check every minute
+    return()=>{clearInterval(iv);EVENTS.forEach(ev=>window.removeEventListener(ev,mark,{capture:true}))};
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
   // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
   _forceReauth=()=>{
@@ -6522,6 +6770,23 @@ export default function App(){
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
+  const changeDocRep=(customer,newRepId,docId)=>{
+    const oldRepId=customer.primary_rep_id;
+    if(!newRepId||oldRepId===newRepId)return;
+    const oldRepName=REPS.find(r=>r.id===oldRepId)?.name||'None';
+    const newRepName=REPS.find(r=>r.id===newRepId)?.name||'Unknown';
+    savC({...customer,primary_rep_id:newRepId});
+    const adminUser=REPS.find(r=>(r.role==='admin'||r.role==='super_admin')&&r.id!==cu.id);
+    if(adminUser){
+      const ts=new Date().toISOString();
+      const todo={id:'todo-rc-'+Date.now(),title:'Rep change: '+customer.name+' → '+newRepName,
+        description:'__rep_change__:'+JSON.stringify({old_rep_id:oldRepId,new_rep_id:newRepId,customer_id:customer.id})+'\nPreviously: '+oldRepName+'. Changed by '+cu.name+' on '+docId+'.',
+        created_by:cu.id,assigned_to:adminUser.id,customer_id:customer.id,priority:1,status:'open',created_at:ts,updated_at:ts};
+      setAssignedTodos(prev=>[...prev,todo]);
+      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] rep change todo:',r.error.message)}));
+    }
+    nf('Rep updated to '+newRepName);
+  };
   const savC=async c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     // Is this a brand-new customer (e.g. created inline while building an estimate)? If so we confirm it
@@ -8260,6 +8525,112 @@ export default function App(){
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
 
     return(<>
+    {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
+    {acOpen&&(()=>{
+      const _src=isAdmin?adminTodos:myTodos;
+      const _completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((Date.now()-new Date(t.completed_at))/864e5)<=7).map(t=>{const cb=REPS.find(r=>r.id===t.completed_by);const da=Math.floor((Date.now()-new Date(t.completed_at))/864e5);return{type:'_task',isNotification:true,isTaskComplete:true,todoId:t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(cb?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(da===0?' · Today':' · '+da+'d ago'),action:'View',date:t.completed_at}});
+      const _allNotifs=[..._src.filter(t=>t.isNotification),..._completedTaskNotifs].filter(t=>!dismissedNotifs.includes(t.dismissKey));
+      const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+      const _q=acSearch.trim().toLowerCase();
+      const _matchQ=t=>!_q||((t.msg||'').toLowerCase().includes(_q)||(t.detail||'').toLowerCase().includes(_q));
+      const notifs=_allNotifs.filter(_matchQ);
+      // To-do category filter chips ([] = show all). Counts come from the pre-search set so chips stay stable.
+      const _todoCatCounts={};_allTodos.forEach(t=>{const c=_todoCategory(t);_todoCatCounts[c]=(_todoCatCounts[c]||0)+1});
+      const _todoCatChips=_CAT_ORDER.filter(c=>_todoCatCounts[c]).map(c=>({cat:c,label:_CAT_LABELS[c],n:_todoCatCounts[c]}));
+      const todos=_allTodos.filter(_matchQ).filter(t=>!acTodoCats.length||acTodoCats.includes(_todoCategory(t)));
+      const _rk=t=>t.dismissKey||((t.type||'')+':'+(t.so?.id||t.so_id||'')+':'+(t.date||''));
+      const _hasSO=t=>!!(t.so||t.so_id);
+      // Build display groups for the active tab
+      let groups;
+      if(acTab==='notifs'){
+        groups=acNotifSort==='date'?[{cat:'all',label:'',items:notifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}]:_groupNotifs(notifs);
+      }else{
+        if(acTodoSort==='date')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(b.date?new Date(b.date).getTime():0)-(a.date?new Date(a.date).getTime():0))}];
+        else if(acTodoSort==='priority')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(a.priority||9)-(b.priority||9))}];
+        else groups=_groupTodos(todos);
+      }
+      const _navNotif=t=>{setAcOpen(false);if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _navTodo=t=>{setAcOpen(false);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _msgRow=t=>{const open=acMsgKey===_rk(t);return _hasSO(t)?<div style={{marginTop:open?8:0}}>
+        {!open?<button title="Send a message about this" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setAcMsgKey(_rk(t));setAcMsgText('')}}>💬 Message</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:6,alignItems:'flex-start',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8}}>
+          <textarea autoFocus value={acMsgText} onChange={e=>setAcMsgText(e.target.value)} placeholder={'Message the rep / CSR on '+(t.so?.id||t.so_id)+'…'} rows={2} style={{flex:1,fontSize:12,padding:'6px 8px',border:'1px solid #cbd5e1',borderRadius:6,resize:'vertical',fontFamily:'inherit'}} onKeyDown={e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){acSendMessage(t)}}}/>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSendMessage(t)}>Send</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcMsgKey(null);setAcMsgText('')}}>Cancel</button>
+          </div>
+        </div>}
+      </div>:null};
+      // "Expected by" date editor — for order/deadline to-dos tied to a sales order (e.g. custom uniforms with longer lead times).
+      const _expectedBy=t=>!!(t.so&&(t.type==='order'||t.type==='deadline'||t.type==='firm'));
+      const _dateRow=t=>{const open=acDateKey===_rk(t);const cur=t.so?.expected_date||'';return _expectedBy(t)?<div style={{marginTop:open?8:0,display:'inline-block'}}>
+        {!open?<button title="Change the expected-by date on this order" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fff7ed',color:'#c2410c',border:'1px solid #fed7aa',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer',marginRight:6}} onClick={e=>{e.stopPropagation();setAcDateKey(_rk(t));setAcDateVal(cur)}}>📅 {cur?'Expected '+cur:'Set expected date'}</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'inline-flex',gap:6,alignItems:'center',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 8px'}}>
+          <span style={{fontSize:11,fontWeight:700,color:'#c2410c'}}>Expected by:</span>
+          <input type="date" autoFocus value={acDateVal} onChange={e=>acSetExpectedDate(t,e.target.value,false)} style={{fontSize:12,padding:'4px 6px',border:'1px solid #fdba74',borderRadius:6}}/>
+          <button type="button" className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSetExpectedDate(t,acDateVal,true)}>Save</button>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcDateKey(null);setAcDateVal('')}}>Done</button>
+        </div>}
+      </div>:null};
+      const _markAllRead=()=>{notifs.forEach(t=>t.dismissKey&&dismissNotif(t.dismissKey))};
+      return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setAcOpen(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:'white',borderRadius:14,width:'100%',maxWidth:920,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 60px rgba(0,0,0,.35)',overflow:'hidden'}}>
+          {/* Header + tabs */}
+          <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:14}}>
+            <h2 style={{margin:0,fontSize:18}}>📥 Activity Center</h2>
+            <div style={{display:'flex',gap:4,background:'#f1f5f9',padding:4,borderRadius:10,marginLeft:6}}>
+              <button onClick={()=>{setAcTab('notifs');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='notifs'?'white':'transparent',color:acTab==='notifs'?'#0f172a':'#64748b',boxShadow:acTab==='notifs'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>🔔 Notifications ({notifs.length})</button>
+              <button onClick={()=>{setAcTab('todos');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='todos'?'white':'transparent',color:acTab==='todos'?'#0f172a':'#64748b',boxShadow:acTab==='todos'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>📋 To-Do ({todos.length})</button>
+            </div>
+            <button onClick={()=>setAcOpen(false)} style={{marginLeft:'auto',background:'none',border:'none',fontSize:26,lineHeight:1,color:'#94a3b8',cursor:'pointer'}}>×</button>
+          </div>
+          {/* Toolbar: sort + search + bulk */}
+          <div style={{padding:'10px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>Sort:</span>
+            {acTab==='notifs'?<select value={acNotifSort} onChange={e=>setAcNotifSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="type">By type, then date</option><option value="date">By date (newest)</option>
+            </select>:<select value={acTodoSort} onChange={e=>setAcTodoSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="category">By category</option><option value="date">By date (newest)</option><option value="priority">By priority</option>
+            </select>}
+            <input value={acSearch} onChange={e=>setAcSearch(e.target.value)} placeholder="🔍 Search…" style={{fontSize:12,padding:'5px 10px',borderRadius:6,border:'1px solid #e2e8f0',minWidth:180,flex:'0 1 240px'}}/>
+            {acTab==='notifs'&&notifs.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}} onClick={_markAllRead}>✓ Mark all read</button>}
+          </div>
+          {/* To-do type filter chips */}
+          {acTab==='todos'&&_todoCatChips.length>0&&<div style={{padding:'8px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b',marginRight:2}}>Show:</span>
+            <button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(acTodoCats.length===0?'#1e293b':'#cbd5e1'),background:acTodoCats.length===0?'#1e293b':'white',color:acTodoCats.length===0?'white':'#475569'}}>All ({_allTodos.length})</button>
+            {_todoCatChips.map(ch=>{const on=acTodoCats.includes(ch.cat);return<button key={ch.cat} type="button" onClick={()=>setAcTodoCats(prev=>prev.includes(ch.cat)?prev.filter(c=>c!==ch.cat):[...prev,ch.cat])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(on?'#2563eb':'#cbd5e1'),background:on?'#eff6ff':'white',color:on?'#1e40af':'#475569'}}>{ch.label} ({ch.n})</button>})}
+            {acTodoCats.length>0&&<button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 8px',borderRadius:6,cursor:'pointer',border:'none',background:'none',color:'#94a3b8',marginLeft:2}}>Clear</button>}
+          </div>}
+          {/* Body */}
+          <div style={{padding:0,overflowY:'auto',flex:1}}>
+            {groups.length===0||groups.every(g=>g.items.length===0)?<div className="empty" style={{padding:40,textAlign:'center',color:'#94a3b8'}}>{acTab==='notifs'?'No notifications':'All clear — no to-do items'}</div>:
+            groups.map(g=><div key={g.cat}>
+              {g.label&&<div style={{padding:'8px 20px',fontSize:11,fontWeight:800,color:'#475569',background:'#f1f5f9',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4,position:'sticky',top:0,zIndex:1}}>{g.label} <span style={{color:'#94a3b8'}}>({g.items.length})</span></div>}
+              {g.items.map((t,i)=>{const isN=acTab==='notifs';const _fmtD=isN?_fmtNotifDT:_fmtTodoDate;
+                return<div key={_rk(t)+i} style={{padding:'12px 20px',borderBottom:'1px solid #f1f5f9',background:isN?'#f0fdf4':'white'}}>
+                  <div style={{display:'flex',alignItems:'flex-start',gap:12,cursor:'pointer'}} onClick={()=>isN?_navNotif(t):_navTodo(t)}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:600,color:'#0f172a'}}>{t.msg}</div>
+                      <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div>
+                      {!isN&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:6,alignItems:'center'}}>{_msgRow(t)}{_dateRow(t)}</div>}
+                      {isN&&_msgRow(t)}
+                    </div>
+                    {_fmtD(t.date)&&<span style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',marginTop:2}}>{_fmtD(t.date)}</span>}
+                    <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                      {t.action&&<span style={{fontSize:10,padding:'3px 9px',borderRadius:8,background:isN?'#dcfce7':(t.type==='art'?'#fef3c7':'#eff6ff'),color:isN?'#166534':(t.type==='art'?'#92400e':'#2563eb'),fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>isN?_navNotif(t):(t.type==='rep_delivery'?_repDeliver(t):_navTodo(t))}>{t.action}</span>}
+                      {!isN&&t.type!=='rep_delivery'&&(snoozeOpenKey===_rk(t)?<span style={{display:'flex',gap:2,alignItems:'center'}}><button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={()=>setSnoozeOpenKey(null)}>←</button>{[1,3,5,7].map(d=><button key={d} title={'Snooze '+d+'d'} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={()=>doSnooze(t,d)}>{d}d</button>)}</span>:<button title="Snooze — hide for a few days" style={{fontSize:10,padding:'3px 8px',background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer',fontWeight:600,whiteSpace:'nowrap'}} onClick={()=>setSnoozeOpenKey(_rk(t))}>💤 Snooze</button>)}
+                      {!isN&&t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button title="Assign this to a CSR" style={{fontSize:10,padding:'3px 9px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',cursor:'pointer',fontWeight:600}} onClick={()=>{setAcOpen(false);setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
+                      {isN?<button title="Mark read" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:13,color:'#16a34a'}} onClick={()=>t.dismissKey&&dismissNotif(t.dismissKey)}>✓</button>:
+                      <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:12,color:'#94a3b8'}} onClick={()=>dismissTodo(t.dismissKey)}>✕</button>}
+                    </div>
+                  </div>
+                </div>})}
+            </div>)}
+          </div>
+        </div>
+      </div>;
+    })()}
     {/* Role Selector — only show tabs relevant to the user's role */}
     {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
       {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
@@ -8272,7 +8643,7 @@ export default function App(){
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8280,7 +8651,8 @@ export default function App(){
         </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
-        </select></div></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8301,14 +8673,17 @@ export default function App(){
       {_renderSalesBox(null)}
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
-          visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          notifGroups.map(g=><div key={g.cat}>
+            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            </div>)}
           </div>)}
         </div>
       </div>})()}
@@ -8350,7 +8725,8 @@ export default function App(){
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
-              <button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
+              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
               <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
             </div>
           </div>})}
@@ -8387,12 +8763,13 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option>
-        </select></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{marginLeft:6,fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8421,13 +8798,16 @@ export default function App(){
     </div>
     <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
-    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-          {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+        {notifGroups.map(g=><div key={g.cat}>
+          {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+          {g.items.map((t,i)=><div key={t._key||g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
         </div>)}
       </div>
     </div>})()}
@@ -8786,7 +9166,7 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
     </div>
     {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
       <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
@@ -9062,7 +9442,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend}/></React.Suspense></ComponentErrorBoundary>
+      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} onChangeRep={newRepId=>{if(eSOC)changeDocRep(eSOC,newRepId,eSO.id)}}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
@@ -12400,6 +12780,7 @@ export default function App(){
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
   const[viewInvoice,setViewInvoice]=useState(null);
+  const[editingInvRep,setEditingInvRep]=useState(false);
   const[splitModal,setSplitModal]=useState(null);// {inv, selItems:[indices], memo:''}
   const[invEditModal,setInvEditModal]=useState(null);// {inv, memo, due_date}
   const[invSendModalDirect,setInvSendModalDirect]=useState(null);// {inv, email, msg}
@@ -12615,6 +12996,18 @@ export default function App(){
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Rep field */}
+          <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
+            {editingInvRep
+              ?<><select className="form-select" style={{width:180,fontSize:12,padding:'2px 6px'}} defaultValue={repObj?.id||''} onChange={e=>{changeDocRep(ic,e.target.value,inv.id);setEditingInvRep(false)}}>
+                <option value="">— None —</option>
+                {REPS.filter(r=>r.is_active!==false&&(r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button></>
+              :<><span style={{fontSize:12,color:'#1e293b'}}>{repObj?.name||'—'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change rep" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
           </div>
 
           {/* Sent History */}
@@ -16075,12 +16468,12 @@ export default function App(){
       const invLines=invs.filter(inv=>{
         if(inv.status==='paid')return false;
         const so=sos.find(s=>s.id===inv.so_id);
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(cc?.primary_rep_id||so?.created_by)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(so?.created_by||cc?.primary_rep_id)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so?.created_by));
+        const rep=REPS.find(r=>r.id===(so?.created_by||c?.primary_rep_id));
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
@@ -16088,7 +16481,7 @@ export default function App(){
         const expRate=willBeLate?0.15:0.30;
         const expComm=Math.round(gp.gp*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(c?.primary_rep_id||so?.created_by),type:'invoice'};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(so?.created_by||c?.primary_rep_id),type:'invoice'};
       });
       // IDs of SOs that already have invoices
       const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
@@ -19832,7 +20225,9 @@ export default function App(){
               </div>
               {manualShipModal.shipToMode==='deco'&&<div style={{marginBottom:8}}>
                 <select className="form-select" value={manualShipModal.decoId||''} style={{width:'100%',fontSize:11}}
-                  onChange={e=>{const id=e.target.value;const dv=decoVendors.find(v=>v.id===id);
+                  onChange={e=>{const id=e.target.value;
+                    if(id==='__custom__'){setManualShipModal(m=>({...m,decoId:'__custom__',destTouched:true,attn:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}}));return}
+                    const dv=decoVendors.find(v=>v.id===id);
                     // Decorator's own saved address wins; otherwise fall back to its linked Vendor record's address.
                     const lv=dv&&dv.vendor_id?vend.find(x=>x.id===dv.vendor_id):null;
                     const addr=(dv&&(dv.address_line1||dv.city))
@@ -19842,8 +20237,9 @@ export default function App(){
                     setManualShipModal(m=>({...m,decoId:id,destTouched:true,attn:m.attn||dv?.contact_name||lv?.contact_name||'',destAddr:addr}))}}>
                   <option value="">Select decorator…</option>
                   {decoVendors.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                  <option value="__custom__">Custom Address…</option>
                 </select>
-                {manualShipModal.decoId&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
+                {manualShipModal.decoId&&manualShipModal.decoId!=='__custom__'&&!(manualShipModal.destAddr||{}).street1&&<div style={{fontSize:10,color:'#b45309',marginTop:4}}>No saved address for this decorator — enter it below, or add it on the linked Vendor (or Settings → Deco Vendors) to save for next time.</div>}
               </div>}
               <div style={{display:'grid',gap:6}}>
                 <div style={{display:'flex',gap:6}}>
@@ -20020,7 +20416,7 @@ export default function App(){
                   const _mode=manualShipModal.shipToMode||'customer';
                   const _da=manualShipModal.destAddr||{};
                   const _attn=(manualShipModal.attn||'').trim();
-                  const _destLabel=_mode==='warehouse'?'Our Warehouse':_mode==='deco'?('Decorator: '+((decoVendors.find(v=>v.id===manualShipModal.decoId)?.name)||(_da.company||'').trim()||'Decorator')):(manualShipModal.cust?.name||'Customer');
+                  const _destLabel=_mode==='warehouse'?'Our Warehouse':_mode==='deco'?(manualShipModal.decoId==='__custom__'?('Decorator: '+((_da.company||'').trim()||'Custom Address')):('Decorator: '+((decoVendors.find(v=>v.id===manualShipModal.decoId)?.name)||(_da.company||'').trim()||'Decorator'))):(manualShipModal.cust?.name||'Customer');
                   const _shipTo=(_mode==='customer'&&!manualShipModal.destTouched&&!_attn)?null:{
                     mode:_mode,attention:_attn||'',company:(_da.company||'').trim(),
                     street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),
@@ -20693,6 +21089,9 @@ export default function App(){
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // Re-submitting a mockup for approval supersedes any prior coach rejection — clear the flag so the
+        // workboard status and coach_rejected stay consistent (rejections[] keeps the history).
+        if(newStatus==='waiting_approval')upd.coach_rejected=false;
         if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
           upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
         }
@@ -20715,6 +21114,10 @@ export default function App(){
       else nf('Art status → '+ART_LABELS[newStatus]);
       return true;
     };
+    // Guard against silently clobbering a coach's change-request by re-sending un-revised art.
+    // Returns false if the user cancels. Shows the coach's last feedback so the rep/artist can
+    // confirm the mockup was actually revised before it goes back into the approval queue.
+    const _confirmResendIfRejected=(jb)=>{if(!jb||!jb.coach_rejected)return true;const _lr=(jb.rejections||[]).slice(-1)[0];return window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nMake sure the mockup has been revised — re-sending marks it ready for approval again. Continue?')};
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
@@ -20802,7 +21205,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=(j.coach_rejected&&(j.art_status==='art_requested'||j.art_status==='art_in_progress'))?'changes_requested':getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
@@ -20866,8 +21269,9 @@ export default function App(){
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
                 const missing=skusMissingMockups(j,so2);
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+                if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -21444,8 +21848,9 @@ export default function App(){
               const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
               const missing=skusMissingMockups(j,liveSO);
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+              if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -21823,6 +22228,7 @@ export default function App(){
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
           const missing=skusMissingMockups(j,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          if(!_confirmResendIfRejected(j))return;
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
           const msgs=[...artMessages];
@@ -21832,7 +22238,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',sent_to_coach_at:null}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
@@ -22404,11 +22810,12 @@ export default function App(){
         const doSend=(notifyMethod)=>{
           const missing=skusMissingMockups(aj,aso);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          if(!_confirmResendIfRejected(aj))return;
           // 1. Move art status to waiting_approval
           moveArtStatus(aj,'waiting_approval');
           const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
           const updMsgs=[...(aam||[]),sysMsg];
-          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval'}:jj);
+          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval',coach_rejected:false}:jj);
           savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           // 2. Handle notification
           if(notifyMethod==='email'&&ac.email){
@@ -28907,7 +29314,8 @@ export default function App(){
         <div style={{display:'flex',gap:6}}>
           {isAdmin&&<button className={`btn btn-sm ${activeTab==='access'?'btn-primary':'btn-secondary'}`} onClick={()=>{setTeamTab('access');if(teamAuthData==null&&!teamAuthLoading)loadTeamAuth()}}>Access Management</button>}
           <button className={`btn btn-sm ${activeTab==='directory'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('directory')}>Team Directory</button>
-          {isAdmin&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>}
+          {isAdmin&&<button className={`btn btn-sm ${activeTab==='onboarding'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('onboarding')}>Onboarding</button>}
+          {isAdmin&&activeTab!=='onboarding'&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>}
         </div>
       </div>
 
@@ -28970,6 +29378,8 @@ export default function App(){
           </div>
         </div>
       </>}
+
+      {activeTab==='onboarding'&&<ComponentErrorBoundary name="Onboarding"><React.Suspense fallback={<LazyFallback/>}><OnboardingAdmin cu={cu}/></React.Suspense></ComponentErrorBoundary>}
 
       {activeTab==='directory'&&<>
         <div className="stats-row">

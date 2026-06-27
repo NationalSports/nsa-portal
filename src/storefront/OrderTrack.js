@@ -176,7 +176,7 @@ export default function OrderTrack() {
             const missing = Number(i.missing_qty) > 0;
             const qty = i.qty || 1;
             const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
-            const attrs = [i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
+            const attrs = [i.variant_label, i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
             return (
               <div key={i.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
                 {/* Image with a quantity badge, like an order line */}

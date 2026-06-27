@@ -96,7 +96,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -115,7 +115,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // prod_files is NOT a production separation and must never silently complete the job.
   const _approveArtTo=(jobId,artIds,targetStatus,stampProd)=>{
     const curO=oRef.current;
-    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
+    // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
+    // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
+    const _jb=safeJobs(curO).find(jj=>jj.id===jobId);
+    if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
+    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
     const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
     const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');
@@ -180,7 +184,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -357,7 +361,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sendTopstarPO=async(dp)=>{
       const svc=TOPSTAR_SERVICES[dp.topstar_service]||TOPSTAR_SERVICES.dst;
       const imgs=dp.images||[];
-      if(imgs.length===0){nf('Add at least one artwork image to this PO before sending to Topstar','error');return false}
+      if(imgs.length===0){nf('Add at least one artwork file (image, PDF, or vector) to this PO before sending to Topstar','error');return false}
       const custName=cust?.name||cust?.alpha_tag||'';
       const imgList=imgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
       const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -600,6 +604,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
   // Resolve the best front-image URL for a line item (same priority as itemDetails)
   const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  // Resolve a swatch hex from a color name — local common-color map first, then the shared pantone map.
+  const _swatchHex=(name)=>{const M={navy:'#001f3f',white:'#ffffff',black:'#111827',red:'#dc2626',royal:'#4169e1',blue:'#3b82f6',grey:'#9aa1ac',gray:'#9aa1ac',green:'#166534',forest:'#14532d',kelly:'#16a34a',orange:'#ea580c',gold:'#c9a227',yellow:'#eab308',maroon:'#800000',cardinal:'#8c1515',silver:'#c0c0c0',purple:'#6d28d9',pink:'#ec4899',brown:'#7c4a21',tan:'#d2b48c',cream:'#f5f5dc',teal:'#0d9488',charcoal:'#374151',heather:'#9aa1ac'};const s=String(name||'').trim().toLowerCase();if(!s)return null;if(M[s])return M[s];const hit=Object.keys(M).find(k=>s.includes(k));return hit?M[hit]:(pantoneHex(name)||null)};
+  // Small color thumbnail for a line item: a colored swatch (two-tone split for "Navy,White"),
+  // overlaid with the color-specific product photo when one exists. If the photo fails to load it
+  // hides and the swatch shows through, so a chip always carries a color cue.
+  const _itemSwatch=(it,sz=22)=>{
+    const url=_itemImg(it);
+    const hexes=String(it?.color||'').split(/[\/,]/).map(p=>p.trim()).filter(Boolean).slice(0,2).map(_swatchHex).filter(Boolean);
+    const swBg=hexes.length===2?`linear-gradient(135deg, ${hexes[0]} 0 50%, ${hexes[1]} 50% 100%)`:(hexes[0]||'repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 3px,#e2e8f0 3px,#e2e8f0 6px)');
+    return<span title={it?.color||''} style={{width:sz,height:sz,borderRadius:4,border:'1px solid #cbd5e1',background:swBg,flexShrink:0,display:'inline-block',overflow:'hidden',position:'relative',verticalAlign:'middle'}}>
+      {url&&<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none'}}/>}
+    </span>;
+  };
   // Copy a line item's product image to the clipboard so the rep can paste it to the customer.
   // Tries the actual image first; falls back to copying the URL when the browser/host blocks it (CORS, no ClipboardItem).
   const copyItemImage=async(it)=>{
@@ -2555,16 +2572,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
-    // Released jobs keep their frozen unit snapshot (what was sent to production), EXCEPT a job that
-    // snapshotted 0 total units is never a valid snapshot. qty_only items (Custom — no size breakdown)
-    // carry their quantity in est_qty with an empty size grid, so a job released before the est_qty
-    // fallback existed froze its total at 0 and reads "0/0" forever even after receipt. Re-derive units
-    // (mirroring recalcedMerged) for these zero-total jobs only — genuine snapshots stay untouched.
+    // Released jobs re-derive their unit totals from live item data (like recalcedMerged) so that
+    // adding more units to a line item after release updates the job quantity. If the live total is
+    // LESS than the frozen snapshot (e.g. units were removed), keep the frozen value — the art
+    // department already committed to printing that many. Zero-total snapshots (legacy jobs released
+    // before the est_qty fallback existed) are always healed up.
     const recalcedReleased=releasedJobs.map(j=>{
-      if(safeNum(j.total_units)>0)return j;
       let total=0,fulfilled=0;
-      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
       if(total===0)return j;// no real units anywhere — leave the (empty) snapshot as-is
+      const frozenTotal=safeNum(j.total_units);
+      if(frozenTotal>0&&total<frozenTotal)return j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
@@ -2845,6 +2863,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isSO&&o.omg_store_id&&onNavOmgStore&&<div style={{fontSize:11,color:'#166534'}}>🏪 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">OMG Store</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
+          {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
+            <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Rep:</span>
+            {editingRep
+              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}>
+                <option value="">— None —</option>
+                {REPS.filter(r=>r.is_active!==false&&(r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#94a3b8'}} onClick={()=>setEditingRep(false)}>Cancel</button></>
+              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
+          </div>}
           {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
@@ -6763,8 +6791,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div><label className="form-label">PO Number</label><input className="form-input" value={tsPoId} readOnly style={{color:'#0891b2',fontWeight:700}}/></div>
               <div><label className="form-label">Customer Bill</label><input className="form-input" value={'$'+svc.sell.toFixed(2)} readOnly style={{color:'#166534',fontWeight:800}}/></div>
             </div>
-            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Images{planOnly?' (optional now — add before sending)':''}</label>
-              <ImgGallery images={topstarImgs} onUpdate={setTopstarImgs} onError={e=>nf(e,'error')} maxImages={10}/>
+            <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Files{planOnly?' (optional now — add before sending)':''}</label>
+              <ImgGallery images={topstarImgs} onUpdate={setTopstarImgs} onError={e=>nf(e,'error')} maxImages={10} allowVector/>
             </div>
             <div><label className="form-label">Explanation / Instructions for Topstar</label><textarea className="form-input" rows={4} value={topstarNotes} onChange={e=>setTopstarNotes(e.target.value)} placeholder="Describe the logo/name, thread colors, sizing, file format needed, etc." style={{resize:'vertical'}}/></div>
           </div>
@@ -6772,7 +6800,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {!planOnly&&<button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO('select')}>← Back</button>}
             <button className="btn btn-secondary" disabled={topstarSending} onClick={()=>setShowPO(null)}>Cancel</button>
             <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2'}} disabled={topstarSending} onClick={async()=>{
-              if(!planOnly&&topstarImgs.length===0){nf('Add at least one artwork image for Topstar','error');return}
+              if(!planOnly&&topstarImgs.length===0){nf('Add at least one artwork file (image, PDF, or vector) for Topstar','error');return}
               setTopstarSending(true);
               const tsPoIdFinal=tsPoId;
               const decoPO={id:'TS-'+Date.now()+'-'+Math.floor(Math.random()*10000),
@@ -7767,6 +7795,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // still being worked — e.g. JOB-1171-03 reading "Needs Approval" off the shared Wolf Head FC
       // file that was uploaded for JOB-1171-02. Returns an ART_FILE_LABELS key.
       const jobArtBadgeSt=(jb,artFile)=>{
+        // Coach sent the art back: badge it "Changes Requested" while it's with the artist (still a
+        // Waiting-for-Art job for column/sort purposes — see getArtFileStatus, which is unchanged).
+        if(jb.coach_rejected&&(jb.art_status==='art_requested'||jb.art_status==='art_in_progress'))return'changes_requested';
         if(jb.art_status==='art_requested'||jb.art_status==='art_in_progress')return'waiting_for_art';
         if(jb.art_status==='waiting_approval')return'needs_approval';
         if(PROD_FILES_STATUSES.includes(jb.art_status))return'approved';
@@ -8028,7 +8059,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
-            {j.art_status==='art_requested'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
+            {j.art_status==='art_requested'&&!(j.coach_rejected||(j.rejections||[]).length>0)&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <span style={{fontSize:16}}>📨</span>
                 <span style={{fontWeight:700,fontSize:14,color:'#9d174d'}}>Art Request Sent</span>
@@ -8036,6 +8067,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#831843'}}>Waiting for the artist to complete the mockup. You can request updates or send messages below.</div>
             </div>}
+            {/* Coach/rep change-request — keep the reviewed mockup + feedback visible while the art is back with the artist.
+                The Art Dashboard shows the mockup regardless of status; this mirrors it so the job view doesn't go blank. */}
+            {(j.art_status==='art_requested'||j.art_status==='art_in_progress')&&(j.coach_rejected||(j.rejections||[]).length>0)&&(()=>{
+              const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+              (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+              const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+              const _seen=new Set();
+              const mockups=[..._filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])),..._filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()))].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+              const lastRej=(j.rejections||[]).slice(-1)[0];
+              const _isCoach=!!j.coach_rejected||(lastRej&&/coach/i.test(lastRej.by||''));
+              return<div style={{margin:'8px 20px 0',padding:'14px 16px',background:'linear-gradient(135deg,#fef2f2,#fff1f2)',border:'2px solid #fca5a5',borderRadius:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:18}}>{_isCoach?'📝':'🔄'}</span>
+                  <span style={{fontWeight:800,fontSize:15,color:'#b91c1c'}}>{_isCoach?'Coach Requested Changes':'Changes Requested'}</span>
+                  {(j.rejections||[]).length>1&&<span style={{fontSize:10,fontWeight:700,color:'#b91c1c',background:'#fee2e2',padding:'1px 8px',borderRadius:10}}>{j.rejections.length}× sent back</span>}
+                </div>
+                {lastRej&&<div style={{fontSize:13,color:'#7f1d1d',background:'white',border:'1px solid #fecaca',borderRadius:6,padding:'8px 12px',marginBottom:mockups.length?10:0}}>
+                  “{lastRej.reason}”
+                  <span style={{display:'block',fontSize:10,color:'#b91c1c',marginTop:4}}>— {lastRej.by||'Coach'}{lastRej.at?' · '+new Date(lastRej.at).toLocaleDateString():''}</span>
+                </div>}
+                {mockups.length>0&&<div>
+                  <div style={{fontSize:10,fontWeight:700,color:'#b91c1c',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}}>Mockup that was reviewed</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);return<div key={fi} onClick={()=>setMockupLightbox(url)} title="Click to enlarge" style={{cursor:'pointer',borderRadius:8,border:'1px solid #fecaca',overflow:'hidden',background:'white',width:120}}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:120,height:120,objectFit:'contain',display:'block',background:'#fafafa'}}/>:<div style={{width:120,height:120,display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>📄</div>}
+                    </div>})}
+                  </div>
+                  <div style={{fontSize:11,color:'#9a3412',marginTop:6}}>Revise the artwork, then re-send it for approval.</div>
+                </div>}
+              </div>;
+            })()}
             {j.art_status==='art_in_progress'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#dbeafe,#eff6ff)',border:'2px solid #93c5fd',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>🎨</span>
@@ -10037,7 +10099,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const hasOpenAnywhere=_poWide.open>0;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
-      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
+      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:880,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(po.po_id||''):Promise.reject()).then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
@@ -10084,22 +10146,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>})}
             </div>;
           })()}
-          {/* All items on this PO */}
+          {/* All items on this PO — single list that doubles as the receive selector.
+              Clicking a chip views its size table AND queues it for the shipment built in the
+              green "Receive Shipment" box below (click again to remove it). Two-column grid;
+              long product names truncate with an ellipsis (full name in the hover title). */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {allLines.map((ln,li)=>{const it=o.items[ln.lineIdx];return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:li===activeLineIdx?'2px solid #2563eb':'1px solid #e2e8f0',background:li===activeLineIdx?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
-                <span style={{fontWeight:600}}>{it?.name}</span>
-                <span style={{color:'#64748b'}}>{it?.color}</span>
-              </div>})}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Items on this PO ({allLines.length})</span>
+              {!isDropShip&&hasOpenAnywhere&&<span style={{fontSize:10,fontWeight:600,color:'#16a34a'}}>click items to receive</span>}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(2, minmax(0, 1fr))',gap:6}}>
+              {allLines.map((ln,li)=>{
+                const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx]||{};
+                const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number');
+                const rc=pl.received||{},cn=pl.cancelled||{};
+                const lineOpen=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-(rc[sz]||0)-(cn[sz]||0)),0);
+                const lineRcvd=sk.reduce((a,sz)=>a+(rc[sz]||0),0);
+                const canRecv=!isDropShip&&lineOpen>0;
+                const isRecvSel=(editPO._selectedRecvLines||[]).includes(li);
+                const isActive=li===activeLineIdx;
+                return<div key={li} title={(it?.name||'')+(it?.color?' · '+it.color:'')} style={{padding:'6px 8px',borderRadius:6,cursor:'pointer',border:isActive?'2px solid #2563eb':isRecvSel?'2px solid #22c55e':'1px solid #e2e8f0',background:isRecvSel?'#f0fdf4':isActive?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center',minWidth:0}} onClick={()=>setEditPO(p=>{const sel=p._selectedRecvLines||[];const nextSel=canRecv?(sel.includes(li)?sel.filter(x=>x!==li):[...sel,li]):sel;return{...p,_activeLineIdx:li,_selectedRecvLines:nextSel}})}>
+                  {!isDropShip&&<span style={{width:13,flexShrink:0,textAlign:'center',color:'#16a34a',fontWeight:800,fontSize:13}}>{isRecvSel?'✓':''}</span>}
+                  {_itemSwatch(it)}
+                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',flexShrink:0}}>{it?.sku}</span>
+                  <span style={{fontWeight:600,flex:1,minWidth:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{it?.name}</span>
+                  <span style={{color:'#64748b',flexShrink:0,fontSize:11,whiteSpace:'nowrap'}}>{it?.color}</span>
+                  {lineOpen>0?<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,padding:'1px 5px',flexShrink:0,whiteSpace:'nowrap'}}>{lineOpen} open</span>:lineRcvd>0?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:4,padding:'1px 5px',flexShrink:0,whiteSpace:'nowrap'}}>✓ received</span>:null}
+                </div>;
+              })}
             </div>
           </div>}
           {/* Product info */}
-          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            {_itemSwatch(item,26)}
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
             <span className="badge badge-gray">{item.color}</span>
+            <span style={{flex:1,minWidth:8}}/>
+            {totalOpen>0?<span style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{totalOpen} open<span style={{fontWeight:600,color:'#94a3b8',fontSize:11,marginLeft:3}}>of {totalOrdered}</span></span>:totalReceived>0?<span style={{fontSize:13,fontWeight:800,color:'#166534'}}>✓ Fully received</span>:null}
           </div>}
 
           {/* Tracking Numbers */}
@@ -10119,11 +10203,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
               <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800}}>${poTotal.toFixed(2)}</td></tr>
-              {(isDropShip||totalBilled>0)&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
-              {!isDropShip&&<tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>}
+              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
+              {!isDropShip&&totalReceived>0&&<tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>}
               {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>${(totalCancelled*unitCost).toFixed(2)}</td></tr>}
               {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#7c3aed'}}>${(totalInTransit*unitCost).toFixed(2)}</td></tr>}
-              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
+              {hasOpen&&(totalReceived>0||totalCancelled>0||totalInTransit>0)&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12,flexWrap:'wrap',gap:8}}>
@@ -10476,21 +10560,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // For single-item POs, auto-select that item
             const selectedIdxs=allLines.length<=1?[activeLineIdx]:(editPO._selectedRecvLines||[]);
             const recvLines=allRecvLines.filter(r=>selectedIdxs.includes(r.li));
-            const unselectedLines=allRecvLines.filter(r=>!selectedIdxs.includes(r.li));
             return<div key={'recv-multi'} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment{recvLines.length>1?' ('+recvLines.length+' items)':''}</div>
-            {/* Clickable item pills to add/remove from receive */}
-            {allLines.length>1&&<div style={{marginBottom:10}}>
-              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Click items to add to this shipment:</div>
-              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                {allRecvLines.map(r=>{const isSel=selectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:11,display:'flex',gap:4,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
-                  {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>✓</span>:<span style={{color:'#94a3b8',fontSize:13}}>+</span>}
-                  <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
-                  <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
-                  <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
-                </div>})}
-              </div>
-            </div>}
             {recvLines.length>0&&<>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
@@ -10502,6 +10573,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
               {recvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:4}}>
+                {_itemSwatch(rit,18)}
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{rit.sku}</span>
                 <span style={{fontWeight:600,fontSize:11}}>{rit.name}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{rit.color}</span>
@@ -10546,7 +10618,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
             }}>✓ Receive These Items</button>
             </>}
-            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
+            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Click an item in “Items on this PO” above to receive it.</div>}
           </div>})()}
 
           {/* QR / Print Label for full PO */}
