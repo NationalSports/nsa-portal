@@ -1867,6 +1867,26 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* ── Team store, shop & home tools ── */}
         <div className="cp-col">
 
+        {/* ── SHOP (NSA spec — team-store hero) ── */}
+        {page==='shop'&&<div style={{marginBottom:24}}>
+          <div style={{marginBottom:22}}>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>{customer.name} Team Store</div>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Shop Gear</h1>
+            <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+          </div>
+          <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',minHeight:260,display:'flex',flexDirection:'column',justifyContent:'center'}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'40%',background:tAccent,opacity:.12,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+            <div style={{position:'relative',maxWidth:560}}>
+              <h2 className="nsa-disp" style={{fontWeight:800,fontSize:44,lineHeight:.98,textTransform:'uppercase',margin:0}}>Outfit Your Team <em style={{fontStyle:'italic',color:tAccentLight}}>The Right Way</em></h2>
+              <div style={{fontSize:16,color:'rgba(255,255,255,.8)',marginTop:14,maxWidth:480}}>Browse live inventory at your team pricing and colors, build an order, or open a spirit-pack store — all in your team's gear.</div>
+              <div style={{display:'flex',gap:12,marginTop:24,flexWrap:'wrap'}}>
+                <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-skew nsa-disp" style={{background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'14px 26px',borderRadius:4}}><span>Browse Gear</span></a>
+                <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-disp" style={{background:'transparent',color:'#fff',border:'2px solid rgba(255,255,255,.6)',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 24px',borderRadius:4}}>Custom Quote</a>
+              </div>
+            </div>
+          </div>
+        </div>}
         {/* Build a team store — coach self-serve entry (invite-only) */}
         {page==='shop'&&coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
           <div>
