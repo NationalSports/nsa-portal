@@ -6970,7 +6970,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
       // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
       const podPoSel=new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)));
-      const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podPoSel.has(idx);
+      // If items were flagged Outside on the line (fulfillment), the deco PO defaults to exactly those —
+      // the rep doesn't re-pick. Falls back to mirroring the product PO when nothing is flagged.
+      // podOverrides still wins either way, so others can be added / flagged ones dropped.
+      const _flaggedOutsideIdx=new Set(safeItems(o).map((_,i)=>i).filter(i=>safeDecos(safeItems(o)[i]).some(d=>d.kind==='art'&&d.fulfillment==='outside')));
+      const podDefault=idx=>_flaggedOutsideIdx.size>0?_flaggedOutsideIdx.has(idx):podPoSel.has(idx);
+      const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podDefault(idx);
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
       const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
       const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty}):null;
@@ -7028,7 +7033,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
-                <span style={{color:'#94a3b8'}}>mirrors the items selected on this {vn} PO — toggle any item to override</span>
+                <span style={{color:'#94a3b8'}}>{_flaggedOutsideIdx.size>0?'pre-selected from the items you marked Outside — toggle any to override':'mirrors the items selected on this '+vn+' PO — toggle any item to override'}</span>
                 <span style={{flex:1}}/>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=true});setPodOverrides(ov)}}>Select All</button>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov)}}>Deselect All</button>
