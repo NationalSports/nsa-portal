@@ -3443,8 +3443,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
       if(collapsedItems[idx]){
-        const decoLabels=decoBreak.map(d=>d.label).filter(Boolean);
-        const decoSub=decoLabels.length?decoLabels.join(' · '):(item.no_deco?'No decoration':'No deco assigned');
         return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
           <div style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
@@ -3454,7 +3452,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
                 {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
               </div>
-              <div style={{fontSize:11,color:decoLabels.length?'#7c3aed':'#94a3b8',fontWeight:600,marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={decoSub}>🎨 {decoSub}</div>
+              {/* Collapsed-row deco strip: see + change selected artwork, and the PO#(s) this line is ordered on, without expanding. */}
+              <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:4}} onClick={e=>e.stopPropagation()}>
+                {(()=>{
+                  const artDecos=safeDecos(item).map((d,di)=>({d,di})).filter(x=>x.d.kind==='art');
+                  if(!artDecos.length)return<span style={{fontSize:11,color:'#94a3b8',fontWeight:600}}>🎨 {item.no_deco?'No decoration':'No deco assigned'}</span>;
+                  return artDecos.map(({d,di})=>{
+                    const artF=af.find(f=>f.id===d.art_file_id);
+                    const _itemMock=(artF?.item_mockups||{})[item.sku+'|'+(item.color||'')];
+                    const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';
+                    const _thumb=_itemMockUrl||artF?.preview_url||d.web_url||artF?.web_logo_url||'';
+                    const icon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'🎨';
+                    return<span key={di} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'1px 6px 1px 1px'}}>
+                      <span title={artF?.name||'No artwork selected'} style={{width:22,height:22,borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,overflow:'hidden',background:_thumb?'white':(!d.art_file_id||d.art_file_id==='__tbd')?'#fef3c7':'#ede9fe',border:_thumb?'1px solid #e2e8f0':'none'}}>{_thumb?<img src={_thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:icon}</span>
+                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else{changeArtFileId(idx,di,v||null)}}}>
+                        <option value="">⚠️ Select artwork...</option>
+                        <option value="__tbd">🎨 Art TBD</option>
+                        {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
+                      </select>
+                      {d.position&&<span style={{fontSize:10,color:'#7c3aed',fontWeight:600,whiteSpace:'nowrap'}}>{d.position}</span>}
+                    </span>;
+                  });
+                })()}
+                {(()=>{const seen=new Set();return safePOs(item).filter(po=>{const k=po.po_id||'';if(!k||seen.has(k))return false;seen.add(k);return true}).map((po,pi)=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});return<span key={'po'+pi} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700,cursor:'pointer',border:'1px solid #bfdbfe',whiteSpace:'nowrap'}} title={'Ordered on supplier PO '+(po.po_id||'')+(po.vendor?' · '+po.vendor:'')+' — click to edit'} onClick={()=>setEditPO({lineIdx:idx,poIdx:(item.po_lines||[]).findIndex(p=>p.po_id===po.po_id),po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:0}]})}>🧾 {po.po_id}</span>})})()}
+                {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
+              </div>
             </div>
             <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
               <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
@@ -6824,8 +6846,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setO(updated);onSave(updated);
               if(!preexistingPO)setPOCounter(c=>c+1);
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
-              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'sent')+' to '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ($'+expectedCost.toFixed(2)+')');
-            }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO — Send to '+decoVendor}</button>
+              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ($'+expectedCost.toFixed(2)+')');
+            }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO for '+decoVendor}</button>
           </div>
         </div></div>;
       }
@@ -7204,7 +7226,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -7282,7 +7304,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const counterBump=(preexistingPO?0:1)+(podRes?1:0);
           if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' sent to '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
           if(newPoLines.length>0&&!preexistingPO){
             const first=newPoLines[0];
