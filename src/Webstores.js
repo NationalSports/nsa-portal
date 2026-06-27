@@ -1418,7 +1418,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
-      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
+      const rows = components.map((c, i) => ({ bundle_id: bundle.id, webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
       const { error: e2 } = await supabase.from('webstore_bundle_items').insert(rows);
       if (e2) { flash('Bundle created but items failed: ' + e2.message); loadDetail(sel); return; }
     }
@@ -2802,7 +2802,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ webstore_product_id: c.id, product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku, image: c.image_url || stockByWp[c.id]?.image_front_url || null }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '34px 16px', border: '1.5px dashed #d7dbe2', borderRadius: 14, background: '#fafbfc' }}>
@@ -5846,8 +5846,10 @@ function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], o
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
   // ProductSearch returns {id,sku,name}; store items already carry {product_id,sku,name}.
-  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
-  const addedKeys = new Set(components.map((c) => c.product_id));
+  const addComp = (p) => { setComponents((c) => [...c, { webstore_product_id: p.webstore_product_id || null, product_id: p.product_id || p.id, sku: p.sku, name: p.name, image: p.image || null, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
+  // Dedupe on the specific store item when known (so two color variants of the
+  // same base product can both be added), else on the base product.
+  const addedKeys = new Set(components.map((c) => c.webstore_product_id || c.product_id));
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
   const valid = name.trim() && Number(price) > 0 && components.length > 0;
@@ -5882,8 +5884,8 @@ function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], o
         <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Add from items already in this store:</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {storeItems.map((it) => {
-            const added = addedKeys.has(it.product_id);
-            return <button key={it.product_id} disabled={added} onClick={() => addComp(it)}
+            const added = addedKeys.has(it.webstore_product_id || it.product_id);
+            return <button key={it.webstore_product_id || it.product_id} disabled={added} onClick={() => addComp(it)}
               style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: added ? '#f1f5f9' : '#fff', color: added ? '#94a3b8' : '#1e40af', cursor: added ? 'default' : 'pointer' }}>
               {added ? '✓ ' : '+ '}{it.name}</button>;
           })}

@@ -294,7 +294,7 @@ export default function Storefront() {
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={products} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
@@ -396,6 +396,7 @@ function splitHeadline(name) {
 // ── Home: hero + grid ────────────────────────────────────────────────
 function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = 'all', query = '' }) {
   const grouped = groupProducts(products);
+  const wpById = buildWpById(products);
   const firstBundle = products.find((p) => p.kind === 'bundle');
   const goBundle = firstBundle ? () => navTo(`/shop/${store.slug}/b/${firstBundle.webstore_product_id}`) : null;
   const scrollGrid = () => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' });
@@ -427,7 +428,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = '
           ? <Splash>No gear matches that search.</Splash>
           : (() => {
               const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(232px,1fr))', gap: 20 };
-              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />;
+              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
               // When filtered to one category (or searching), show a single grid; the
               // full "All Gear" view splits into the store's category sections.
               const byCat = new Map();
@@ -728,12 +729,23 @@ function ColorDots({ rows, theme, max = 4 }) {
   );
 }
 
-function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {} }) {
+// Resolve a package component's display meta. When the component is linked to a
+// specific in-store item (webstore_product_id), use that item's custom photo,
+// name, color and sizes; otherwise fall back to the base catalog product.
+function compMeta(c, wpById, compInfo) {
+  const wp = c && c.webstore_product_id && wpById ? wpById[c.webstore_product_id] : null;
+  if (wp) return { name: wp.name, image: wp.image_front_url, sizes: wp.available_sizes, color: wp.color, decorations: wp.decorations };
+  const base = (compInfo || {})[c.product_id] || {};
+  return { name: base.name || c.sku, image: base.image_front_url, sizes: base.available_sizes, color: null, decorations: null };
+}
+const buildWpById = (products) => { const m = {}; (products || []).forEach((p) => { m[p.webstore_product_id] = p; }); return m; };
+
+function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
   const isBundle = p.kind === 'bundle';
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
     ? bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-        .map((c) => ({ img: compInfo[c.product_id]?.image_front_url, name: compInfo[c.product_id]?.name || c.sku }))
+        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; })
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
@@ -948,13 +960,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen, onAdd }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
   const [added, setAdded] = useState(false);
+  const wpById = buildWpById(products);
+  const meta = (c) => compMeta(c, wpById, compInfo);
   if (!p) return <Splash>Package not found.</Splash>;
-  const compSizesArr = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
+  const compSizesArr = (c) => foldScale(meta(c).sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
   const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
@@ -962,22 +976,22 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
   const addToCart = () => {
     onAdd({
       kind: 'bundle', webstore_product_id: p.webstore_product_id, product_id: null, sku: null,
-      name: p.name, image: p.image_front_url || (components.map((c) => compInfo[c.product_id]?.image_front_url).find(Boolean)) || null,
+      name: p.name, image: p.image_front_url || (components.map((c) => meta(c).image).find(Boolean)) || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra,
-      components: components.map((c) => ({
-        bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: compInfo[c.product_id]?.name || c.sku,
+      components: components.map((c) => { const m = meta(c); return {
+        bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: m.name, image: m.image || null,
         size: picks[c.id] || null,
         player_number: c.takes_number ? (nums[c.id] || '').trim() : null,
         player_name: c.takes_name ? (names[c.id] || '').trim() : null,
-      })),
+      }; }),
       qty: 1,
     });
     setAdded(true); setTimeout(() => setAdded(false), 1500);
   };
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
-  const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
-  const compImg = (c) => compInfo[c.product_id]?.image_front_url;
-  const compSizes = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
+  const compName = (c) => meta(c).name || c.sku || 'Item';
+  const compImg = (c) => meta(c).image;
+  const compSizes = (c) => foldScale(meta(c).sizes);
   // A step is complete when every required input on it is satisfied.
   const isComplete = (c) => (!(c.size_required && compSizes(c).length > 0) || !!picks[c.id]) && (!c.takes_number || (nums[c.id] || '').trim());
   const total = components.length;
