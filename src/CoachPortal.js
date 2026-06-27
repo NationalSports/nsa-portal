@@ -1654,38 +1654,46 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>;
         })()}
 
-        {/* Open invoices — payment needed */}
-        {page==='billing'&&openInvs.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
-          <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
-              return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
-                <div>
-                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
-                  <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
-                  {!ccDisabled&&<button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setPayLoading(true);setShowPay(inv)}}>Pay</button>}
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>
-              </div>})}
-            <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
-              <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+        {/* ── BILLING (NSA spec — invoice history + balance panel) ── */}
+        {page==='billing'&&(()=>{
+          const allInv=[...openInvs,...paidInvs];
+          return<div>
+            <style>{`.nsa-bill{display:grid;grid-template-columns:1.5fr 1fr;gap:24px;align-items:start}@media(max-width:820px){.nsa-bill{grid-template-columns:1fr}}`}</style>
+            <div style={{marginBottom:24}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Invoices &amp; Payments</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Billing</h1>
+              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
             </div>
-          </div>
-          {!ccDisabled&&totalDue>0&&<div style={{marginBottom:14}}>
-            <button style={{width:'100%',padding:'14px 20px',background:payLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:payLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:payLoading?0.8:1,transition:'all 0.2s'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay('all')}}>
-              {payLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay Now — ${totalDue.toLocaleString()}</>}
-            </button>
-            <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
-              <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
-              <span style={{fontSize:10,color:'#94a3b8'}}> Apple Pay</span>
-              <span style={{fontSize:10,color:'#94a3b8'}}>🏦 ACH/Bank</span>
+            <div className="nsa-bill">
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+                <div className="nsa-disp" style={{padding:'14px 22px',background:'#F7F8FB',fontWeight:800,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',color:tPrimary}}>Invoice History</div>
+                {allInv.length===0?<div style={{padding:'28px 22px',color:'#5A6075',fontSize:13}}>No invoices yet.</div>:
+                 allInv.map(inv=>{const open=inv.status==='open'||inv.status==='partial';const bal=(inv.total||0)-(inv.paid||0);
+                  return<div key={inv.id} className="nsa-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'14px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
+                    <div style={{minWidth:0}}>
+                      <div className="nsa-disp" style={{fontWeight:700,fontSize:16,color:tPrimary}}>{inv.id}</div>
+                      <div style={{fontSize:13,color:'#5A6075',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{inv.date||''}{inv.memo?' · '+inv.memo:''}</div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
+                      <span className="nsa-disp" style={{fontWeight:700,fontSize:18,color:tPrimary}}>${(open?bal:(inv.total||0)).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                      <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:open?tAccentSoft:'#E8F5EC',color:open?tAccent:'#1F7A43',fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 11px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{open?'Open':'Paid'}</span></span>
+                    </div>
+                  </div>})}
+              </div>
+              <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:28,color:'#fff',background:`linear-gradient(135deg, ${tNavyDark}, ${tPrimary})`}}>
+                <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+                <div style={{position:'relative'}}>
+                  <div className="nsa-disp" style={{fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Total Balance Due</div>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:48,color:tAccentLight,lineHeight:1,marginTop:4}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:6}}>{totalDue>0?'Net 30 terms · pay by card or PO':"You're all paid up — thank you!"}</div>
+                  {!ccDisabled&&totalDue>0&&<button onClick={()=>{setPayLoading(true);setShowPay('all')}} disabled={payLoading} className="nsa-skew nsa-disp" style={{width:'100%',marginTop:18,background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:16,letterSpacing:'.5px',textTransform:'uppercase',padding:'14px',borderRadius:4,cursor:payLoading?'wait':'pointer'}}><span>{payLoading?'Opening checkout…':'Pay Balance'}</span></button>}
+                  <div style={{height:1,background:'rgba(255,255,255,.15)',margin:'18px 0 12px'}}/>
+                  <div style={{fontSize:12,color:'rgba(255,255,255,.6)'}}>💳 Credit card · Apple Pay · 🏦 ACH/Bank · or pay by PO</div>
+                </div>
+              </div>
             </div>
-          </div>}
-        </>}
+          </div>;
+        })()}
 
         {/* ── ORDERS (NSA spec table) ── */}
         {page==='orders'&&(()=>{
@@ -1808,8 +1816,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           </>})()}
 
-        {/* Paid invoices — historical reference */}
-        {page==='billing'&&paidInvs.length>0&&<>
+        {/* Paid invoices (legacy, retired — folded into the NSA Billing invoice history) */}
+        {false&&paidInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Paid Invoices</div>
             <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
               {paidInvs.slice(0,10).map((inv,i,arr)=>
