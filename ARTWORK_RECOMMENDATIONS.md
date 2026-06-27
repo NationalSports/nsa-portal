@@ -103,10 +103,10 @@ Garment-specific mockups remain available (a coach can still preview the logo on
 
 Ordered so safety and the foundation come first. Each leads with its persistence note.
 
-### REUSE-6 — Close the correctness gaps *(do first; pure safety)*
-- `applyPriorMock` and Skip-Artist must **clear `coach_rejected`** (and confirm if set, per `ART_APPROVAL_FLOW_AUDIT_2026-06-25.md`) on forward moves — today they don't, re-opening the SO-1199 stranded-state.
-- Skip-Artist must **refuse `art_complete` with zero mocks**.
-- Clone "+ Add" (`OrderEditor.js:4765`) must **review inherited production files** (they attach silently, possibly wrong deco type).
+### REUSE-6 — Close the correctness gaps *(do first; pure safety)* — all verified
+- **`applyPriorMock` strands `coach_rejected`** (`OrderEditor.js:272`): the "already approved" path moves the job forward with `{...jj, art_status}`, preserving a stale `coach_rejected:true`. It must **clear/confirm** it, per `ART_APPROVAL_FLOW_AUDIT_2026-06-25.md`. *(verified)*
+- **Skip-Artist can reach `art_complete` with zero mocks** (`:9111` sets `art_complete` unconditionally; `:9169-9178` only promotes a mock when the rep attached sample files). It must **refuse completion with no mock present**. *(verified — note: the release builds fresh job objects at `:9132`, so it does **not** strand `coach_rejected` the way `applyPriorMock` does.)*
+- **Clone "+ Add"** (`:4765`) must **review inherited production files** (they attach silently, possibly the wrong deco type).
 - All via the result-checked save (PG-1).
 *Risk:* low. *Clicks:* neutral. *Payoff:* stops active data-integrity bugs.
 

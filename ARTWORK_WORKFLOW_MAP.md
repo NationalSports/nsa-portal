@@ -151,7 +151,7 @@ The reuse path is the highest‑leverage place to improve the whole workflow (it
 
 **RC‑4 — No approval provenance.** When a coach approves a mock, nothing records *which design, which color‑way, which order* was approved. So same‑color‑way reuse can't auto‑confirm "already approved" (the rep re‑decides every time), cross‑color‑way reuse gives the coach no context, and re‑sending to the coach doesn't tag *which* mock version they're now looking at.
 
-**RC‑5 — Reuse bypasses the SO‑1199 guards.** The 2026‑06‑25 audit added guards so moving a job forward clears (or confirms) a stranded `coach_rejected`. But `applyPriorMock("already approved")` and the wizard's **Skip Artist** release jump straight to `approved`/`art_complete` **without** clearing `coach_rejected` or confirming a mock exists — re‑opening the exact stranded‑flag class of bug the audit closed elsewhere.
+**RC‑5 — Reuse bypasses the SO‑1199 guards.** The 2026‑06‑25 audit added guards so moving a job forward clears (or confirms) a stranded `coach_rejected`. But **`applyPriorMock("already approved")` preserves a stranded `coach_rejected`** (`OrderEditor.js:272`, `{...jj, art_status}`), and the wizard's **Skip Artist** release reaches `art_complete` **without confirming a mock exists** (`:9111`/`:9169`) — re‑opening parts of the exact bug class the audit closed elsewhere. *(Both verified; the Skip‑Artist release builds fresh job objects, so it does not itself strand the flag.)*
 
 ### Target design
 
