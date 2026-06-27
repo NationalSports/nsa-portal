@@ -1519,41 +1519,41 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </div>
         </div>}
-        {/* ── ART LOCKER (page: art) — gallery of every design the team has run ── */}
+        {/* ── ART LOCKER (NSA spec — navy proof tiles) ── */}
         {page==='art'&&(()=>{
           const decos=['all',...Array.from(new Set(artLibrary.map(a=>a.deco).filter(Boolean)))];
           const q=artQuery.trim().toLowerCase();
           const filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q)));
           return<div>
-            <style>{`.cp-artgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}.cp-artcard{display:flex;flex-direction:column;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;overflow:hidden;cursor:pointer;padding:0;transition:box-shadow .14s,transform .14s}.cp-artcard:hover{box-shadow:0 8px 22px rgba(0,0,0,.12);transform:translateY(-2px)}`}</style>
+            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:6px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}`}</style>
+            <div style={{marginBottom:24}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Proofs &amp; Approved Designs</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Art Locker</h1>
+              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+            </div>
             {artLibrary.length===0?
-              <div style={{color:'#94a3b8',fontSize:14,padding:'48px 16px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:14}}>
-                <div style={{fontSize:40,marginBottom:10}}>🎨</div>
-                <div style={{fontWeight:700,color:'#475569',marginBottom:4}}>Your art locker is empty — for now</div>
-                Every design we mock up for your team gets collected here, ready to view, download &amp; re-order.
-              </div>
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
             :<>
-              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:14}}>
-                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 200px',minWidth:160,padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:10,fontSize:13}}/>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
+                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:6,fontSize:14,fontFamily:'inherit'}}/>
+                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:4,padding:'9px 14px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
               </div>
-              {decos.length>2&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
-                {decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} style={{border:'1px solid '+(on?cpTheme.primary:'#e2e8f0'),background:on?cpTheme.primary:'#fff',color:on?'#fff':'#475569',borderRadius:999,padding:'5px 13px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'capitalize'}}>{d==='all'?'All designs':d}</button>})}
-              </div>}
-              {filtered.length===0?<div style={{color:'#94a3b8',fontSize:13,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
-              <div className="cp-artgrid">
+              {filtered.length===0?<div style={{color:'#5A6075',fontSize:14,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
+              <div className="nsa-artgrid">
                 {filtered.map(a=>{const u=a.urls[0];const isPdf=_isPdfUrl(u);const thumb=isPdf?_cloudinaryPdfThumb(u):u;
-                  return<div key={a.key} className="cp-artcard" onClick={()=>setArtView({art:a,idx:0})}>
-                    <div style={{position:'relative',aspectRatio:'1 / 1',background:'linear-gradient(135deg,#f8fafc,#eaeef4)',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #f1f5f9',padding:12}}>
-                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 4px 12px rgba(0,0,0,.14))'}}/>:<span style={{fontSize:34}}>🎨</span>}
-                      {a.deco&&<span style={{position:'absolute',top:7,left:7,fontSize:9,fontWeight:800,letterSpacing:'.03em',textTransform:'uppercase',background:'rgba(255,255,255,.92)',color:'#475569',borderRadius:999,padding:'2px 8px',boxShadow:'0 1px 3px rgba(0,0,0,.1)'}}>{a.deco}</span>}
-                      {a.urls.length>1&&<span style={{position:'absolute',bottom:7,right:7,fontSize:10,fontWeight:800,background:'rgba(15,23,42,.82)',color:'#fff',borderRadius:999,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
+                  return<div key={a.key} className="nsa-arttile" onClick={()=>setArtView({art:a,idx:0})}>
+                    <div style={{position:'relative',aspectRatio:'4 / 3.4',background:`linear-gradient(150deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',padding:14,overflow:'hidden'}}>
+                      <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{position:'relative',maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 6px 16px rgba(0,0,0,.35))'}}/>:<span className="nsa-disp" style={{position:'relative',color:'rgba(255,255,255,.9)',fontSize:48,fontWeight:800}}>{cpMonogram}</span>}
+                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:0,transform:'skewX(-12deg)',background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px 4px 14px'}}><span style={{display:'inline-block',transform:'skewX(12deg)'}}>{a.deco}</span></span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:4,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
                     </div>
-                    <div style={{padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
+                    <div style={{padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
                       <div style={{minWidth:0}}>
-                        <div style={{fontSize:13.5,fontWeight:800,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
-                        <div style={{fontSize:11,color:'#94a3b8',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.orders.length} order{a.orders.length!==1?'s':''}{isP&&a.teams.length?' · '+a.teams[0]+(a.teams.length>1?' +'+(a.teams.length-1):''):''}</div>
+                        <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+                        <div style={{fontSize:12,color:'#94A0B0',marginTop:1}}>{a.orders.length} order{a.orders.length!==1?'s':''}{isP&&a.teams.length?' · '+a.teams[0]:''}</div>
                       </div>
-                      <button onClick={e=>{e.stopPropagation();cpOrderWithArt(a,u);}} style={{border:'none',borderRadius:9,padding:'8px 10px',fontSize:12,fontWeight:800,cursor:'pointer',color:'#fff',background:cpTheme.primary,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>🛍️ Order with this</button>
+                      <span title="Approved" style={{width:9,height:9,borderRadius:'50%',background:'#1F7A43',flexShrink:0}}/>
                     </div>
                   </div>;
                 })}
