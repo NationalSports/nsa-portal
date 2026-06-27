@@ -18609,6 +18609,15 @@ export default function App(){
           onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
+        {!ssConnected&&<div style={{display:'flex',alignItems:'center',gap:8,marginLeft:'auto',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,padding:'4px 10px'}}>
+          <span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>⚠️ ShipStation Offline</span>
+          <button style={{fontSize:10,background:'#dc2626',color:'white',border:'none',borderRadius:4,padding:'3px 10px',fontWeight:700,cursor:'pointer'}}
+            onClick={async(e)=>{e.stopPropagation();const btn=e.currentTarget;btn.textContent='Checking…';btn.disabled=true;
+              const ok=await testShipStationConnection().catch(()=>false);
+              setSSConnected(ok);
+              if(ok){nf('ShipStation connected')}else{btn.textContent='Retry';btn.disabled=false;nf('Still offline — check SHIPSTATION_API_KEY and SHIPSTATION_API_SECRET in Netlify env vars','error')}
+            }}>Retry</button>
+        </div>}
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
