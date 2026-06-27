@@ -2135,6 +2135,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Underbase is a GARMENT-level option (white base under screen-print ink), not per-design — one
   // item-level toggle that cascades to every art deco on the item (mirrors setItemReversible).
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
+  // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
+  const setItemFulfillment=(ii,val)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,fulfillment:val||undefined}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?'🎨 Outside — produced by a decorator. Add a Deco PO to bundle & cost it.':'🏭 In-house')};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
@@ -2350,6 +2353,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       safeDecos(it).forEach((d,di)=>{
         if(frozenItemDecos.has(ii+'::'+di))return;
         if(d.kind==='art'){
+          if(d.fulfillment==='outside'||d.deco_po_id)return;// routed outside (soft flag / on a deco PO) — no in-house job
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const concreteDt=artF?.deco_type||d.deco_type||null;
           if(decoIsOutsourced(outTypes,concreteDt))return;// vendor produces this decoration — no in-house job
@@ -4076,10 +4080,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Art</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
-            {/* Routing (item-level — applies to ALL art on this item): SO-only — POs are never created on an estimate. */}
-            {isSO&&(()=>{const _dp=(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx));const _hasArt=safeDecos(item).some(d=>d.kind==='art');if(!_hasArt&&!_dp)return null;return _dp
-              ? <button className="btn btn-sm btn-secondary" onClick={()=>setShowPO('select')} title={'On '+(_dp.po_id||'a Deco PO')+' — produced by '+(_dp.vendor||'the decorator')+'. Click to view / edit the PO.'} style={{fontSize:11,fontWeight:700,background:'#ede9fe',borderColor:'#ddd6fe',color:'#6d28d9'}}>🎨 Outside · {_dp.vendor||'Decorator'}</button>
-              : <button className="btn btn-sm btn-secondary" onClick={()=>setShowPO('select')} title="All art on this item is produced in-house (default). Click to send it out to a decorator — opens the Deco PO module." style={{fontSize:11,fontWeight:700,background:'#eff6ff',borderColor:'#bfdbfe',color:'#1e40af'}}>🏭 In-house</button>})()}
+            {/* Routing (item-level, SO-only): In-house ⇄ Outside soft toggle; bundle into a Deco PO when ready. */}
+            {isSO&&(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx));if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
+              <span style={{display:'inline-flex',border:'1px solid #cbd5e1',borderRadius:6,overflow:'hidden'}}>
+                <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,null)} disabled={!!_dp} title={_dp?'On a Deco PO — remove it from the PO to set back in-house':'Produced in-house'} style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderRadius:0,cursor:_dp?'not-allowed':'pointer',background:!_outside?'#3b82f6':'#fff',color:!_outside?'#fff':'#64748b'}}>🏭 In-house</button>
+                <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,'outside')} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
+              </span>
+              {_outside&&(_dp
+                ? <span onClick={()=>setShowPO('select')} title="On a Deco PO — click to view / edit" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
+                : <span onClick={()=>setShowPO('select')} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
+            </>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
               if(activeSizes.length===0)return null;
               return<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:hasAny?'#fef3c7':'white',borderColor:hasAny?'#fbbf24':'#d1d5db',color:hasAny?'#92400e':'#64748b'}} onClick={()=>{if(!hasAny){uI(idx,'size_availability',{[activeSizes[0]]:''})}else{uI(idx,'_showAvail',!item._showAvail)}}}>⏳ Later{hasAny?' ✓':''}</button>})()}

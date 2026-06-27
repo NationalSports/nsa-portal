@@ -112,6 +112,15 @@ describe('isDecoOutsourced — unified job+cost gate (the branch lives on the de
   test('legacy kind:outside_deco is always outside', () => {
     expect(isDecoOutsourced({}, 0, { kind: 'outside_deco' })).toBe(true);
   });
+  test('a soft fulfillment:outside flag marks it outside (no PO needed yet)', () => {
+    expect(isDecoOutsourced({}, 0, { kind: 'art', art_file_id: 'a', fulfillment: 'outside' })).toBe(true);
+  });
+  test('an explicit deco_po_id marks it outside', () => {
+    expect(isDecoOutsourced({}, 0, { kind: 'art', art_file_id: 'a', deco_po_id: 'DPO 1' })).toBe(true);
+  });
+  test('no flag + no PO + no covering deco PO = in-house', () => {
+    expect(isDecoOutsourced({ items: [{}] }, 0, { kind: 'art', art_file_id: 'a' })).toBe(false);
+  });
   test('an art deco routed onto a SO-level deco PO of the SAME type is outside (no job, cost comes from the PO)', () => {
     const o = {
       deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }],

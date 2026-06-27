@@ -172,6 +172,9 @@ const decoConcreteType = (o, d) => {
 const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   if (!d) return false;
   if (d.kind === 'outside_deco') return true;
+  // Soft routing flag / explicit PO link (Slice 2): a decoration marked outside, or bundled onto a
+  // deco PO, is produced by the vendor — no in-house job, cost from the PO.
+  if (d.fulfillment === 'outside' || d.deco_po_id) return true;
   const map = outByItem || outsourcedDecoTypes(o);
   return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
 };
