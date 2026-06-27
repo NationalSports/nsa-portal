@@ -1355,62 +1355,63 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const href=base+sep+'art='+encodeURIComponent(url||a.urls[0]||'')+'&an='+encodeURIComponent(a.name||'Design')+(a.deco?'&ad='+encodeURIComponent(a.deco):'');
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
-  return<div className="cp-app" style={{minHeight:'100vh',background:'#eef2f7'}}>
-    {/* Mock NSA marketing header — preview only on the standalone deploy preview. The real site
-        supplies its own header when the portal is embedded (?embed=1), so it's hidden there. */}
-    {!CP_EMBEDDED&&<div>
-      <div style={{background:'#0b1f3a',color:'#fff',fontSize:12,fontWeight:700,letterSpacing:'.03em',padding:'7px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-        <span><span style={{color:'#C8102E'}}>★</span> CALIFORNIA'S LARGEST INDEPENDENT TEAM DEALER <span style={{color:'#C8102E'}}>★</span></span>
-        <span style={{display:'flex',gap:18,fontWeight:600,opacity:.92}}><span>hello@nationalsportsapparel.com</span><span>(714) 279-8777</span></span>
-      </div>
-      <div style={{background:'#fff',borderBottom:'3px solid #C8102E',padding:'10px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:16}}>
-        <div className="cp-mkt-links" style={{display:'flex',gap:26,alignItems:'center',flex:1}}>
-          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>SHOP BY SPORT</span>
-          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>TEAM STORES</span>
-        </div>
-        <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{height:46,objectFit:'contain',flexShrink:0}}/>
-        <div className="cp-mkt-links" style={{display:'flex',gap:22,alignItems:'center',flex:1,justifyContent:'flex-end'}}>
-          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>CHECKLISTS</span>
-          <span style={{fontSize:13,fontWeight:800,letterSpacing:'.05em',color:'#1e3a5f'}}>ABOUT</span>
-          <span style={{background:'#C8102E',color:'#fff',fontWeight:800,letterSpacing:'.04em',fontSize:13,padding:'10px 18px',borderRadius:3}}>GET A QUOTE</span>
-        </div>
-      </div>
-    </div>}
-    <style>{`@media(max-width:760px){.cp-mkt-links{display:none!important}}.cp-app *{box-sizing:border-box}.cp-topbar{display:none}@media(min-width:880px){.cp-topbar{display:flex;align-items:center;gap:14px;max-width:860px;margin:0 auto;padding:14px 20px 2px}}.cp-toplinks{display:flex;gap:5px;flex:1;flex-wrap:wrap;justify-content:flex-end}.cp-toplink{display:inline-flex;align-items:center;gap:7px;border:none;background:#fff;color:#64748b;border-radius:999px;padding:9px 14px;cursor:pointer;font-size:13.5px;font-weight:700;box-shadow:0 1px 2px rgba(15,23,42,.06);transition:color .12s,box-shadow .12s,transform .12s}.cp-toplink:hover{color:#1e293b;box-shadow:0 4px 10px rgba(15,23,42,.1);transform:translateY(-1px)}.cp-main{min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:10px 20px 34px}}.cp-page{max-width:820px;margin:0 auto;padding:14px 0 48px}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
-    {/* ── TOP BAR (desktop) — brand + section pills (replaces the left sidebar) ── */}
-    <div className="cp-topbar">
-      <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-        <div style={{width:38,height:38,borderRadius:11,overflow:'hidden',background:customer.logo_url?'#fff':`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:14,boxShadow:`0 3px 8px ${cpTheme.primary}33`}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:3}}/>:cpMonogram}</div>
-        <div style={{fontSize:13.5,fontWeight:800,color:'#0f172a',maxWidth:160,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
-      </div>
-      <div className="cp-toplinks">
-        {cpNav.map(it=>{const active=page===it.key;return(
-          <button key={it.key} className="cp-toplink" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:cpTheme.primary,color:'#fff',boxShadow:`0 4px 12px ${cpTheme.primary}44`}:undefined}>
-            <span style={{fontSize:15}}>{it.icon}</span>{it.label}
-            {it.badge>0?<span style={{fontSize:10.5,fontWeight:800,background:active?'rgba(255,255,255,.25)':cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 7px',minWidth:18,textAlign:'center'}}>{it.badge}</span>:null}
-          </button>
-        )})}
+  // ── NSA design tokens — portal themes off the school's colors, NSA navy/red fallback ──
+  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
+  const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
+  const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
+  const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
+  const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
+  const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:"'Source Sans 3',system-ui,sans-serif",color:'#2A2F3E'}}>
+    <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');
+      .nsa-disp{font-family:'Barlow Condensed','Source Sans 3',system-ui,sans-serif}
+      .nsa-tile{transition:transform .25s cubic-bezier(.4,0,.2,1),box-shadow .25s,border-color .25s}
+      .nsa-tile:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.12)!important}
+      .nsa-card{transition:background .2s}.nsa-card:hover{background:#F7F8FB}
+      .nsa-nav{position:relative;background:none;border:none;cursor:pointer;height:84px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;text-transform:uppercase;letter-spacing:.8px;font-size:16px;font-weight:700;transition:color .2s}
+      .nsa-skew{transform:skewX(-3deg);transition:transform .2s,background .2s,filter .2s}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}.nsa-skew:hover{transform:skewX(-3deg) translateY(-2px)}
+      .nsa-desknav{display:none}@media(min-width:881px){.nsa-desknav{display:flex}}
+      @media(max-width:880px){.nsa-mkt-util{font-size:11px}}
+      .cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;border-radius:14px;box-shadow:0 12px 30px rgba(15,23,42,.22);background:#fff;border:1px solid #EEF1F6}@media(min-width:881px){.cp-bottomnav{display:none}}
+      .cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}
+      .cp-grid{display:block}.cp-col{min-width:0}.cp-page{max-width:1240px;margin:0 auto}
+      .cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #EEF1F6;background:#fff;border-radius:6px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{box-shadow:0 2px 10px rgba(0,0,0,.08)}
+      .cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}
+    `}</style>
+    {/* ── Utility bar ── */}
+    <div className="nsa-mkt-util" style={{background:tNavyDark,color:'rgba(255,255,255,.85)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',padding:'8px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap',fontSize:13}}>
+        <span className="nsa-disp" style={{fontWeight:700,textTransform:'uppercase',letterSpacing:'1.5px'}}><span style={{color:tAccentLight}}>★</span> Team Portal — Powered by National Sports Apparel <span style={{color:tAccentLight}}>★</span></span>
+        <span style={{display:'flex',gap:16,alignItems:'center',fontWeight:600}}><span style={{opacity:.6}}>Need help?</span><a href="mailto:hello@nationalsportsapparel.com" style={{color:'#fff',textDecoration:'none'}}>hello@nationalsportsapparel.com</a><a href="tel:7142798777" style={{color:'#fff',textDecoration:'none'}}>(714) 279-8777</a></span>
       </div>
     </div>
-
-    {/* ── MAIN ── */}
-    <div className="cp-main">
-        {/* Friendly hero — light floating card, team-color monogram + accent rail, welcoming greeting */}
-        <div style={{position:'relative',overflow:'hidden',maxWidth:820,margin:'0 auto 18px',borderRadius:22,background:'#fff',padding:'20px 22px',boxShadow:'0 8px 26px rgba(15,23,42,.07)'}}>
-          <div style={{position:'absolute',left:0,top:0,bottom:0,width:6,background:cpTheme.accent}}/>
-          <div style={{position:'absolute',right:-8,top:-34,fontSize:150,fontWeight:900,color:cpTheme.primary,opacity:.06,lineHeight:1,letterSpacing:'-.05em',pointerEvents:'none',userSelect:'none'}}>{cpMonogram}</div>
-          <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-            <div style={{display:'flex',alignItems:'center',gap:14,minWidth:0}}>
-              <div style={{width:54,height:54,borderRadius:16,background:customer.logo_url?'#fff':`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:19,flexShrink:0,boxShadow:`0 6px 16px ${cpTheme.primary}40`,overflow:'hidden'}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:4}}/>:cpMonogram}</div>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:700,color:'#94a3b8'}}>Welcome back 👋</div>
-                <div style={{fontSize:23,fontWeight:900,lineHeight:1.1,color:'#0f172a',letterSpacing:'-.01em'}}>{customer.name}</div>
-                <div style={{fontSize:10.5,fontWeight:800,letterSpacing:'.12em',textTransform:'uppercase',color:cpTheme.accent,marginTop:2}}>{(cpNav.find(n=>n.key===page)||{}).label||'Home'}</div>
-              </div>
-            </div>
-            {totalDue>0&&<div style={{flexShrink:0,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:14,padding:'8px 14px',textAlign:'right'}}><div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.06em',color:'#b91c1c'}}>BALANCE DUE</div><div style={{fontSize:20,fontWeight:900,color:'#dc2626'}}>${totalDue.toLocaleString()}</div></div>}
-          </div>
+    {/* ── Sticky header ── */}
+    <div style={{background:'#fff',position:'sticky',top:0,zIndex:50,boxShadow:'0 4px 24px rgba(0,0,0,.08)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',display:'flex',alignItems:'center',gap:16,padding:'0 24px',height:84}}>
+        <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:50,cursor:'pointer',flexShrink:0}} onClick={()=>setPage('home')}/>
+        <div className="nsa-desknav" style={{flex:1,justifyContent:'center',alignItems:'center'}}>
+          {_nsaNav.map(([k,lbl])=>{const active=page===k;const badge=k==='orders'?activeSOs.length:k==='estimates'?openEstCount:0;return(
+            <button key={k} className="nsa-nav nsa-disp" onClick={()=>setPage(k)} style={{color:active?tAccent:tPrimary}}>
+              <span>{lbl}</span>
+              {badge>0?<span className="nsa-disp" style={{fontWeight:700,fontSize:11,background:k==='estimates'?tAccent:tPrimary,color:'#fff',borderRadius:999,padding:'2px 7px',lineHeight:1}}>{badge}</span>:null}
+              <span style={{position:'absolute',left:12,right:12,bottom:20,height:3,background:tAccent,transform:`skewX(-12deg) scaleX(${active?1:0})`,transformOrigin:'left',transition:'transform .25s ease'}}/>
+            </button>
+          )})}
         </div>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,border:'1px solid #EEF1F6',borderRadius:999,padding:'6px 6px 6px 14px',flexShrink:0}}>
+          <div style={{textAlign:'right',lineHeight:1.15}}>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary}}>{customer.name}</div>
+            <div style={{fontSize:11,color:'#5A6075'}}>{(customer.contacts||[])[0]?.name||'Coach'}</div>
+          </div>
+          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:customer.logo_url?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
+        </div>
+      </div>
+    </div>
+    {/* ── Striped rule ── */}
+    <div style={{height:5,background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
+    {/* ── MAIN ── */}
+    <div className="cp-main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
         <div className="cp-page">
         <div className="cp-grid">
 
@@ -1843,6 +1844,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>{/* /cp-grid */}
         </div>{/* /cp-page */}
       </div>{/* /cp-main */}
+
+    {/* ── Footer ── */}
+    <div style={{background:tNavyDark,color:'rgba(255,255,255,.6)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',padding:'28px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+        <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{height:34,filter:'brightness(0) invert(1)',opacity:.9}}/>
+        <span style={{fontSize:13}}>© 2026 National Sports Apparel · 2238 N Glassell St, Orange, CA · (714) 279-8777</span>
+      </div>
+    </div>
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
     <nav className="cp-bottomnav">
