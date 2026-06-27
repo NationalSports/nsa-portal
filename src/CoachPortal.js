@@ -1669,8 +1669,44 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
         </>}
 
-        {/* Active orders */}
-        {page==='orders'&&(activeSOs.length>0||recentEsts.length>0)&&<>
+        {/* ── ORDERS (NSA spec table) ── */}
+        {page==='orders'&&(()=>{
+          const statusMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging','#1A3A6B','#E6ECF5'],in_production:['In Production','#1A3A6B','#E6ECF5'],received:['Received','#1A3A6B','#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
+          const rows=[...activeSOs,...completedSOs];
+          return<div>
+            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}`}</style>
+            <div style={{marginBottom:24}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
+              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+            </div>
+            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div className="nsa-disp nsa-otab nsa-ohead" style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'14px 24px',background:'#F7F8FB',fontWeight:700,fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>
+                <span>Order</span><span>Status</span><span>Delivery</span><span style={{textAlign:'right'}}>Total</span>
+              </div>
+              {rows.map(so=>{
+                const st=calcSOStatus(so);const sm=statusMap[st]||['Ordered','#5A6075','#EEF1F6'];
+                let totalU=0,fulU=0;safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+                const pct=totalU>0?Math.round(fulU/totalU*100):0;
+                const team=(allCustomers||[]).find(c=>c.id===so.customer_id);const tn=isP&&team&&team.id!==customer.id?team.name:(so.memo||so.id);
+                const tot=calcOrderTotals(so).grand;
+                return<div key={so.id} className="nsa-card nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:17,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'Order'} · {totalU} pcs · {so.id}</div>
+                    <div style={{height:5,background:'#EEF1F6',borderRadius:999,marginTop:9,overflow:'hidden',maxWidth:220}}><div style={{height:'100%',width:pct+'%',background:tPrimary,borderRadius:999}}/></div>
+                  </div>
+                  <div><span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{sm[0]}</span></span></div>
+                  <div style={{fontSize:14,color:'#2A2F3E'}}>{so.expected_date?(st==='shipped'?'Arrives ':'ETA ')+so.expected_date:'—'}</div>
+                  <div className="nsa-disp" style={{textAlign:'right',fontWeight:700,fontSize:18,color:tPrimary}}>${tot.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                </div>;
+              })}
+            </div>}
+          </div>;
+        })()}
+        {/* Active orders (legacy, retired in favor of the NSA table above) */}
+        {false&&(activeSOs.length>0||recentEsts.length>0)&&<>
           <button onClick={()=>setOrdersOpen(o=>!o)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',background:'none',border:'none',padding:0,cursor:'pointer',marginBottom:10}}>
             <span style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>📦 Active Orders ({activeSOs.length}{recentEsts.length>0?' + '+recentEsts.length+' est':''})</span>
             <span style={{fontSize:11,fontWeight:700,color:'#64748b',display:'inline-flex',alignItems:'center',gap:6,textTransform:'uppercase',letterSpacing:'.04em'}}>{ordersOpen?'Hide':'Show'}<span style={{fontSize:12}}>{ordersOpen?'▾':'▸'}</span></span>
@@ -1771,8 +1807,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </>}
 
-        {/* Completed orders — below invoices for reference */}
-        {page==='orders'&&completedSOs.length>0&&<>
+        {/* Completed orders (legacy, retired — folded into the NSA Orders table) */}
+        {false&&completedSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
           {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
