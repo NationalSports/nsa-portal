@@ -1376,36 +1376,25 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>
       </div>
     </div>}
-    <style>{`@media(max-width:760px){.cp-mkt-links{display:none!important}}.cp-app *{box-sizing:border-box}.cp-shell{display:flex;min-height:100vh;max-width:1260px;margin:0 auto}.cp-side{display:none}@media(min-width:880px){.cp-side{display:flex;flex-direction:column;width:236px;flex-shrink:0;gap:4px;position:sticky;top:18px;align-self:flex-start;max-height:calc(100vh - 36px);overflow-y:auto;margin:18px 0 18px 18px;padding:16px 13px;background:#fff;border-radius:22px;box-shadow:0 10px 30px rgba(15,23,42,.08)}}.cp-main{flex:1;min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:18px 20px 28px}}.cp-page{max-width:820px;margin:0 auto;padding:16px 0 48px}.cp-navbtn{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:none;background:transparent;color:#64748b;border-radius:14px;padding:9px 11px;cursor:pointer;font-size:14px;font-weight:700;transition:background .12s,color .12s}.cp-navbtn:hover{background:#f1f5f9;color:#1e293b}.cp-navico{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:#f1f5f9}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
-    <div className="cp-shell">
-      {/* ── SIDEBAR (desktop) — wears the team's colors ── */}
-      <div className="cp-side">
-        <div style={{display:'flex',alignItems:'center',gap:11,padding:'2px 6px 14px'}}>
-          <div style={{width:44,height:44,borderRadius:14,background:`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:16,flexShrink:0,boxShadow:`0 5px 14px ${cpTheme.primary}33`}}>{cpMonogram}</div>
-          <div style={{minWidth:0}}>
-            <div style={{color:'#0f172a',fontSize:13.5,fontWeight:800,lineHeight:1.18,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
-            <div style={{color:'#94a3b8',fontSize:9.5,fontWeight:800,letterSpacing:'.13em',textTransform:'uppercase',marginTop:1}}>Team HQ</div>
-          </div>
-        </div>
-        <div style={{display:'flex',flexDirection:'column',gap:3,flex:1}}>
-          {cpNav.map(it=>{const active=page===it.key;return(
-            <button key={it.key} className="cp-navbtn" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:cpTint,color:cpTheme.primary}:undefined}>
-              <span className="cp-navico" style={active?{background:cpTheme.primary,color:'#fff'}:undefined}>{it.icon}</span>
-              <span style={{flex:1}}>{it.label}</span>
-              {it.badge>0?<span style={{fontSize:11,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'1px 8px',minWidth:20,textAlign:'center'}}>{it.badge}</span>:null}
-            </button>
-          )})}
-        </div>
-        <div style={{marginTop:12,padding:'12px 13px',background:'#f8fafc',borderRadius:14}}>
-          <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:15,opacity:.7,marginBottom:8}}/>
-          <div style={{fontSize:9.5,fontWeight:800,letterSpacing:'.1em',color:'#94a3b8',textTransform:'uppercase'}}>Your Rep</div>
-          <div style={{fontSize:13,fontWeight:700,color:'#1e293b',marginTop:2}}>{rep?.name||'NSA Team'}</div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>team@nsa-teamwear.com</div>
-        </div>
+    <style>{`@media(max-width:760px){.cp-mkt-links{display:none!important}}.cp-app *{box-sizing:border-box}.cp-topbar{display:none}@media(min-width:880px){.cp-topbar{display:flex;align-items:center;gap:14px;max-width:860px;margin:0 auto;padding:14px 20px 2px}}.cp-toplinks{display:flex;gap:5px;flex:1;flex-wrap:wrap;justify-content:flex-end}.cp-toplink{display:inline-flex;align-items:center;gap:7px;border:none;background:#fff;color:#64748b;border-radius:999px;padding:9px 14px;cursor:pointer;font-size:13.5px;font-weight:700;box-shadow:0 1px 2px rgba(15,23,42,.06);transition:color .12s,box-shadow .12s,transform .12s}.cp-toplink:hover{color:#1e293b;box-shadow:0 4px 10px rgba(15,23,42,.1);transform:translateY(-1px)}.cp-main{min-width:0;padding:14px 14px 104px}@media(min-width:880px){.cp-main{padding:10px 20px 34px}}.cp-page{max-width:820px;margin:0 auto;padding:14px 0 48px}.cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;background:rgba(255,255,255,.97);border-radius:22px;box-shadow:0 12px 30px rgba(15,23,42,.18)}@media(min-width:880px){.cp-bottomnav{display:none}}.cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}.cp-grid{display:block}.cp-col{min-width:0}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}.cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}`}</style>
+    {/* ── TOP BAR (desktop) — brand + section pills (replaces the left sidebar) ── */}
+    <div className="cp-topbar">
+      <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+        <div style={{width:38,height:38,borderRadius:11,overflow:'hidden',background:customer.logo_url?'#fff':`linear-gradient(135deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:14,boxShadow:`0 3px 8px ${cpTheme.primary}33`}}>{customer.logo_url?<img src={customer.logo_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',padding:3}}/>:cpMonogram}</div>
+        <div style={{fontSize:13.5,fontWeight:800,color:'#0f172a',maxWidth:160,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{customer.name}</div>
       </div>
+      <div className="cp-toplinks">
+        {cpNav.map(it=>{const active=page===it.key;return(
+          <button key={it.key} className="cp-toplink" onClick={it.onClick||(()=>setPage(it.key))} style={active?{background:cpTheme.primary,color:'#fff',boxShadow:`0 4px 12px ${cpTheme.primary}44`}:undefined}>
+            <span style={{fontSize:15}}>{it.icon}</span>{it.label}
+            {it.badge>0?<span style={{fontSize:10.5,fontWeight:800,background:active?'rgba(255,255,255,.25)':cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 7px',minWidth:18,textAlign:'center'}}>{it.badge}</span>:null}
+          </button>
+        )})}
+      </div>
+    </div>
 
-      {/* ── MAIN ── */}
-      <div className="cp-main">
+    {/* ── MAIN ── */}
+    <div className="cp-main">
         {/* Friendly hero — light floating card, team-color monogram + accent rail, welcoming greeting */}
         <div style={{position:'relative',overflow:'hidden',maxWidth:820,margin:'0 auto 18px',borderRadius:22,background:'#fff',padding:'20px 22px',boxShadow:'0 8px 26px rgba(15,23,42,.07)'}}>
           <div style={{position:'absolute',left:0,top:0,bottom:0,width:6,background:cpTheme.accent}}/>
@@ -1854,7 +1843,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>{/* /cp-grid */}
         </div>{/* /cp-page */}
       </div>{/* /cp-main */}
-    </div>{/* /cp-shell */}
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
     <nav className="cp-bottomnav">
