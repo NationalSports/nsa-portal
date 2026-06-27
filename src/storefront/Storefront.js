@@ -159,9 +159,12 @@ function useTheme(store) {
     const accent = store?.accent_color || '#B6985A';
     const ink = store?.ink_color || NEUTRAL.ink;
     const theme = store?.theme || 'classic';
-    // The redesign's "Bold" hero variant maps to the bold store theme; everything
-    // else uses the lighter "Open" treatment.
-    const look = theme === 'bold' ? 'bold' : 'open';
+    // Hero treatment. The flagship redesign is the lighter "Open" look (cream,
+    // two-column with a product collage), so that's the default for every store.
+    // "Bold" (full-bleed team gradient) is opt-in via an explicit hero_look flag —
+    // we intentionally do NOT key it off the legacy `theme` field, which used to
+    // mean corner-radius style and would mis-trigger Bold on many existing stores.
+    const look = store?.hero_look === 'bold' ? 'bold' : 'open';
     return {
       primary,
       primaryDark: darken(primary, 0.16),
@@ -511,7 +514,7 @@ function HeroBold({ store, theme, lead, goBundle, scrollGrid }) {
           <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Official Team Store</span>
         </span>
         <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(44px,6vw,84px)', lineHeight: 0.92, textTransform: 'uppercase', margin: '0 0 18px', maxWidth: 900 }}>
-          {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accent }}>{tail}</em></> : tail} Store
+          {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accent }}>{tail}</em></> : tail}
         </h1>
         <p style={{ margin: '0 0 28px', maxWidth: 520, fontSize: 17, lineHeight: 1.6, color: 'rgba(255,255,255,0.86)' }}>{lead}</p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
