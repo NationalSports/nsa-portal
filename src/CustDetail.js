@@ -11,7 +11,7 @@ import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -23,7 +23,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
   const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);
+  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -92,6 +92,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[initCust.id,sos]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
+  // show both store types in one place and jump into either.
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
@@ -201,7 +204,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -432,6 +435,45 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <ThreadAdder onAdd={(tc)=>saveThreads([...threads,tc])} existingNames={threads.map(t=>t.name)}/>
     </div></div>})()}
+  {/* STORES TAB — web stores + OMG ("Order My Gear") stores for this account, open & past,
+      with a one-click jump into either store. */}
+  {tab==='webstores'&&(()=>{
+    const money=n=>'$'+(Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    const dt=s=>s?String(s).slice(0,10):'—';
+    const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
+    const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
+    const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
+    const th={padding:'8px 12px',textAlign:'left',fontSize:10.5,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.3};
+    const td={padding:'8px 12px'};
+    if(!ws.length&&!omg.length)return<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet.</div></div>;
+    return <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      {ws.length>0&&<div className="card"><div className="card-header"><h2>Web Stores ({ws.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th>{isP&&<th style={th}>Director</th>}<th style={th}></th></tr></thead><tbody>
+          {ws.map(s=><tr key={s.id} style={{borderTop:'1px solid #f1f5f9'}}>
+            <td style={{...td,fontWeight:700,color:'#0369a1'}}>{s.name}</td>
+            <td style={td}>{chip(s.status)}</td>
+            <td style={{...td,color:'#64748b'}}>{dt(s.open_at)}</td>
+            <td style={{...td,color:'#64748b'}}>{dt(s.close_at)}</td>
+            {isP&&<td style={{...td,color:'#64748b'}}>{s.director_name||'—'}</td>}
+            <td style={{...td,textAlign:'right',whiteSpace:'nowrap'}}>{onOpenWebstore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenWebstore(s.id)}>Open store →</button>}</td>
+          </tr>)}
+        </tbody></table>
+      </div></div>}
+      {omg.length>0&&<div className="card"><div className="card-header"><h2>OMG Stores ({omg.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={th}>Orders</th><th style={th}>Sales</th><th style={th}></th></tr></thead><tbody>
+          {omg.map(s=><tr key={s.id} style={{borderTop:'1px solid #f1f5f9'}}>
+            <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+            <td style={td}>{chip(s.status)}</td>
+            <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
+            <td style={{...td,color:'#64748b'}}>{dt(s.close_date)}</td>
+            <td style={{...td,color:'#64748b'}}>{s.orders||0}</td>
+            <td style={{...td,fontWeight:700}}>{money(s.total_sales)}</td>
+            <td style={{...td,textAlign:'right',whiteSpace:'nowrap'}}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
+          </tr>)}
+        </tbody></table>
+      </div></div>}
+    </div>;
+  })()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
     // Promo $ is owned by the parent customer; subs inherit (data is loaded with parent's id at the App level).
