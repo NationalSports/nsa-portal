@@ -3655,6 +3655,20 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [name, setName] = useState(item.display_name || defaultName || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
+  // Decoration charge: a flat amount folded INTO retail_price to cover decorating an
+  // otherwise-cheap garment (e.g. shorts). `price` always holds the full price the
+  // shopper pays; `decoUp` is the slice of it that's the deco charge, persisted to
+  // webstore_products.deco_upcharge so the toggle survives a reopen (and so margin math
+  // and "price to margin" know it's already covered). Toggling adjusts price by ±amount,
+  // so the whole order / SO / reporting pipeline keeps using retail_price unchanged.
+  const [decoUp, setDecoUp] = useState(Number(item.deco_upcharge) || 0);
+  const decoChargeOn = decoUp > 0;
+  const setDecoCharge = (on, amount) => {
+    const amt = Math.max(0, Number(amount != null ? amount : (decoUp || 5)) || 0);
+    const base = (Number(price) || 0) - (Number(decoUp) || 0); // price with any current charge removed
+    if (on) { setDecoUp(amt); setPrice(Number((base + amt).toFixed(2))); }
+    else { setDecoUp(0); setPrice(Number(Math.max(0, base).toFixed(2))); }
+  };
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
   const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
@@ -3802,7 +3816,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -3849,6 +3863,23 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             {onUpdateCost && !isBundle && <Row label="Cost (NSA)"><input className="form-input" type="number" step="0.01" min={0} value={costInput} onChange={(e) => setCostInput(e.target.value)} onBlur={saveCost} placeholder="0.00" style={{ width: 110 }} title="Base item cost — drives margin; saving updates the catalog product" /></Row>}
             <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700, width: 110 }}>{money(total)}</div></Row>
           </div>
+          {!isBundle && (
+            <div style={{ marginTop: 10, padding: '9px 12px', borderRadius: 9, border: '1px solid ' + (decoChargeOn ? '#bfdbfe' : '#e5e8ec'), background: decoChargeOn ? '#eff6ff' : '#fafbfc', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13, color: '#191919' }}>
+                <input type="checkbox" checked={decoChargeOn} onChange={(e) => setDecoCharge(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#2563eb' }} />
+                Decoration charge
+              </label>
+              {decoChargeOn ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, color: '#334155' }}>
+                  + $<input className="form-input" type="number" step="0.01" min={0} value={decoUp} onChange={(e) => setDecoCharge(true, e.target.value)} style={{ width: 74 }} title="Amount added to the price to cover decorating this item" />
+                  <span style={{ color: '#64748b' }}>added to the price</span>
+                </span>
+              ) : (
+                <span style={{ fontSize: 12, color: '#64748b' }}>Add ~$5 to the price when this item is decorated (covers deco on low-cost items like shorts).</span>
+              )}
+              {!decoChargeOn && decoIncluded && <span style={{ fontSize: 11.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, padding: '2px 8px' }}>This item is decorated — add a charge?</span>}
+            </div>
+          )}
           {!isBundle && (effCost != null
             ? <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5, color: '#64748b' }}>
                 <span>Cost <b style={{ color: '#191919' }}>{money(trueCost)}</b>{decoIncluded ? <span style={{ color: '#94a3b8' }}> (incl. ~{money(decoCost)} deco)</span> : null}</span>
