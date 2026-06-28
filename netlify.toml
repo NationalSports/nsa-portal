@@ -80,6 +80,12 @@
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
 
+# Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
+# recap of the prior PT day's orders across their stores (+ any that closed).
+# Reps with no activity get nothing.
+[functions."rep-daily-digest"]
+  schedule = "11 9 * * *"
+
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
 # style from the S&S API into products + adidas_inventory for /adidas.
