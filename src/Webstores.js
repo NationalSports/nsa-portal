@@ -2927,13 +2927,13 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         );
       })()}
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
@@ -4100,103 +4100,81 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
   );
 }
 
-// After a product is picked, set its base price (X), fundraising add-on (Y), image, personalization + transfers.
-function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, library = [], storeFund = {}, onSaveLogo, onAdd, onCancel }) {
+// Color-selector modal — clicking a product card opens this over the picker so the rep can
+// see every colorway of the style and tick only the ones they want. Adds them at a shared
+// price (tweak fundraising / art per item after, in the catalog editor).
+function SinglePriceEditor({ product, storeFund = {}, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
-  const [fundraise, setFundraise] = useState(0);
-  const [image, setImage] = useState(null);
-  const [decorations, setDecorations] = useState([]);
-  const [takesNumber, setTakesNumber] = useState(false);
-  const [takesName, setTakesName] = useState(false);
-  const [nameUpcharge, setNameUpcharge] = useState(0);
-  const [transferCodes, setTransferCodes] = useState([]);
-  const [numTransferSets, setNumTransferSets] = useState([]);
-  // Other colorways of this style (same product name) — add several at once at
-  // one price. Grouping key is `name` (SKUs are unique per color in this catalog).
-  const [siblings, setSiblings] = useState([]);
-  const [extraColors, setExtraColors] = useState(() => new Set());
+  const [rows, setRows] = useState([]);       // one row per colorway (incl. base), with _stock
+  const [loading, setLoading] = useState(true);
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [sel, setSel] = useState(() => new Set([product.id])); // base preselected
   useEffect(() => {
-    if (!product?.name) { setSiblings([]); return; }
-    let cancelled = false;
+    let cancelled = false; setLoading(true);
     (async () => {
-      const { data } = await supabase.from('products')
-        .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
-        .eq('name', product.name).neq('id', product.id).order('color').limit(200);
-      if (!cancelled) setSiblings(data || []);
+      let sibs = [];
+      if (product?.name) {
+        const { data } = await supabase.from('products')
+          .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
+          .eq('name', product.name).order('color').limit(300);
+        sibs = data || [];
+      }
+      // One row per distinct color (incl. the base), preferring a row that has an image.
+      const map = new Map();
+      for (const s of [product, ...sibs]) {
+        const key = (s.color || '').trim().toLowerCase() || ('sku:' + (s.sku || '').toLowerCase());
+        const cur = map.get(key);
+        if (!cur || (!cur.image_front_url && s.image_front_url)) map.set(key, s);
+      }
+      const list = [...map.values()];
+      let stock = new Map();
+      try { stock = await fetchStockMap(list); } catch { /* show without stock */ }
+      for (const r of list) r._stock = stock.get(r.id) || { units: 0, sizes: [], incoming: false };
+      list.sort((a, b) => (a.id === product.id ? -1 : b.id === product.id ? 1 : String(a.color || '').localeCompare(String(b.color || ''))));
+      if (!cancelled) { setRows(list); setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [product.id, product.name]);
-  // Collapse to one swatch per distinct color, preferring a row that actually has
-  // an image (the catalog has several SKUs per color, many without art); drop the
-  // base item's own color so we don't offer to add it twice.
-  const colorOptions = useMemo(() => {
-    const base = (product.color || '').trim().toLowerCase();
-    const map = new Map();
-    for (const s of siblings) {
-      const key = (s.color || '').trim().toLowerCase();
-      if (!key || key === base) continue;
-      const cur = map.get(key);
-      if (!cur || (!cur.image_front_url && s.image_front_url)) map.set(key, s);
-    }
-    return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
-  }, [siblings, product.color]);
-  const toggleColor = (id) => setExtraColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selectedSiblings = colorOptions.filter((s) => extraColors.has(s.id));
-  const storeFundAmt = storeFundAmount(price, storeFund);
-  const total = (Number(price) || 0) + effectiveFundraise(price, fundraise, storeFund);
+  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const shown = inStockOnly ? rows.filter((r) => (r._stock?.units || 0) > 0) : rows;
+  const chosen = rows.filter((r) => sel.has(r.id));
+  const linkBtn = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: 0 };
+  const add = () => { if (!chosen.length) return; onAdd({ products: chosen, price: Number(price) || 0, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: [] }); };
   return (
-    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
-      <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
-      {colorOptions.length > 0 && (
-        <div style={{ margin: '0 0 12px', padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 7 }}>
-            Also add other colors of this style <span style={{ fontWeight: 400, color: '#94a3b8' }}>· same price &amp; options apply to all</span>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {colorOptions.map((s) => {
-              const on = extraColors.has(s.id);
-              return (
-                <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku}
-                  style={{ position: 'relative', width: 66, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 4, cursor: 'pointer' }}>
-                  <div style={{ width: '100%', height: 56, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {s.image_front_url ? <img src={s.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(s.color || s.sku || '').slice(0, 10)}</span>}
-                  </div>
-                  <div style={{ fontSize: 10, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.color || s.sku}</div>
-                  {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+    <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 720, margin: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,.3)', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div><div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', lineHeight: 1.1 }}>{product.name}</div><div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 2 }}>Pick the colors to add to this store{[product.brand, product.category].filter(Boolean).length ? ' · ' + [product.brand, product.category].filter(Boolean).join(' · ') : ''}</div></div>
+          <button onClick={onCancel} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 800, color: '#475569' }}>{chosen.length} selected</span>
+          <button type="button" style={linkBtn} onClick={() => setSel(new Set(shown.map((r) => r.id)))}>All</button>
+          <button type="button" style={linkBtn} onClick={() => setSel(new Set())}>None</button>
+          <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' }}><input type="checkbox" checked={inStockOnly} onChange={(e) => setInStockOnly(e.target.checked)} /> In stock only</label>
+        </div>
+        <div style={{ maxHeight: '52vh', overflowY: 'auto', padding: 14 }}>
+          {loading ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Loading colors…</div>
+            : shown.length === 0 ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>No colors{inStockOnly ? ' in stock' : ''} for this style.</div>
+            : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(132px,1fr))', gap: 10 }}>
+              {shown.map((r) => { const on = sel.has(r.id); const u = r._stock?.units || 0; const inc = r._stock?.incoming; return (
+                <button key={r.id} type="button" onClick={() => toggle(r.id)} style={{ position: 'relative', textAlign: 'left', border: '2px solid ' + (on ? '#2563eb' : '#e2e8f0'), background: on ? '#eff6ff' : '#fff', borderRadius: 10, padding: 8, cursor: 'pointer' }}>
+                  <div style={{ position: 'absolute', top: 6, right: 6, width: 20, height: 20, borderRadius: 6, background: on ? '#2563eb' : 'rgba(255,255,255,.92)', border: '1.5px solid ' + (on ? '#2563eb' : '#cbd5e1'), color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800 }}>{on ? '✓' : ''}</div>
+                  <div style={{ height: 92, borderRadius: 6, background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.image_front_url ? <img src={r.image_front_url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ width: 28, height: 28, borderRadius: '50%', background: colorNameToHex(r.color), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.2)' }} />}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.color || r.sku}{r.id === product.id ? ' · base' : ''}</div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, marginTop: 1, color: u > 0 ? '#166534' : inc ? '#92400e' : '#b91c1c' }}>{u > 0 ? `${u} in stock` : inc ? 'Incoming' : 'Out of stock'}</div>
                 </button>
-              );
-            })}
-          </div>
+              ); })}
+            </div>}
         </div>
-      )}
-      <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
-      <LogoPlacer imageUrl={image || product.image_front_url} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />
-      <div style={{ display: 'flex', gap: 12 }}>
-        <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-        <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? String(storeFundAmt) : '0'} /></Row>
-        <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
-      </div>
-      {storeFund?.enabled && (
-        <div style={{ fontSize: 11.5, color: storeFundAmt > 0 ? '#166534' : '#94a3b8', marginTop: 4 }}>
-          {Number(fundraise) > 0
-            ? `Overrides the store rule (store default would add ${money(storeFundAmt)}).`
-            : `Store fundraising adds ${Number(storeFund.flat) > 0 ? money(storeFund.flat) : (storeFund.pct || 0) + '%'}${storeFund.round ? ', rounded up' : ''} = ${money(storeFundAmt)} — included in “Shopper pays.”`}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', borderTop: '1px solid #eef0f3', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Price&nbsp;$<input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 92, display: 'inline-block', marginLeft: 6 }} /></label>
+          <span style={{ fontSize: 11.5, color: '#94a3b8' }}>Applied to each color — tweak fundraising / art per item after.</span>
+          <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={onCancel}>Cancel</button>
+          <button className="btn btn-primary" disabled={!chosen.length} style={{ opacity: chosen.length ? 1 : 0.5 }} onClick={add}>Add {chosen.length || ''} {chosen.length === 1 ? 'color' : 'colors'} →</button>
         </div>
-      )}
-      <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-        <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
-        <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
-        {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUpcharge} onChange={(e) => setNameUpcharge(e.target.value)} /></label>}
       </div>
-      {isTeam
-        ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Logo &amp; number transfers are a club-store option — team-store decoration is handled in production, so there’s nothing to stock here.</div>
-        : <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
-      <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ products: [product, ...selectedSiblings], price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: isTeam ? [] : transferCodes.filter(Boolean), num_transfer_sets: isTeam ? [] : numTransferSets.filter((s) => s && s !== '|'), decorations })}>{selectedSiblings.length > 0 ? `Add ${selectedSiblings.length + 1} items` : 'Add to store'}</button>
-        <button className="btn btn-secondary" onClick={onCancel}>Back</button>
-      </div>
-    </div></div>
+    </div>
   );
 }
 
@@ -5097,6 +5075,8 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
+  const [colorSel, setColorSel] = useState(() => new Set()); // color-family filter (e.g. {navy, red})
+  const toggleColorFam = (f) => setColorSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkDecos, setBulkDecos] = useState([]);
@@ -5207,10 +5187,15 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     return APPAREL.every((s) => inSt.has(s));
   };
   const isSearch = q.trim().length >= 2;
+  // Map a catalog color string to a color FAMILY (by its primary segment) for the color filter.
+  const famOf = (color) => { const primary = String(color || '').split(/[/,|]| - /)[0].toLowerCase(); for (const f of _COLOR_FAMILIES) { if (f.words.some((w) => primary.includes(w))) return f.fam; } return null; };
   const matched = results.filter((r) =>
     (isSearch || !colorOnly || productMatchesColors(r.color, colorWords)) &&
+    (!colorSel.size || colorSel.has(famOf(r.color))) &&
     // The catalog tags some jerseys as Tees — keep the Tees view to actual tees.
     !(catSel === 'Tees' && /jersey/i.test(r.name || '')));
+  // Color families present in the loaded results — drives the color filter pills.
+  const colorFams = [...new Set(results.map((r) => famOf(r.color)).filter(Boolean))].sort();
   // Collapse colorways → one card per STYLE (name), so the grid isn't the same short in six
   // colors. The rep prefers an image + in-stock; other colorways are added later from the
   // item editor's "Other colors of this garment".
@@ -5284,6 +5269,18 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
             {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
           </div>
         )}
+        {active && colorFams.length > 1 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.3, marginRight: 2 }}>Color</span>
+            {colorFams.map((f) => { const on = colorSel.has(f); return (
+              <button key={f} type="button" onClick={() => toggleColorFam(f)} aria-pressed={on} title={`Show ${f} items`}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 999, padding: '4px 11px 4px 7px', fontSize: 12, fontWeight: 700, textTransform: 'capitalize', border: '1px solid ' + (on ? '#2563eb' : '#d1d5db'), background: on ? '#eff6ff' : '#fff', color: on ? '#1d4ed8' : '#3A4150' }}>
+                <span style={{ width: 14, height: 14, borderRadius: '50%', background: colorNameToHex(f), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.18)' }} />{f}
+              </button>
+            ); })}
+            {colorSel.size > 0 && <button type="button" onClick={() => setColorSel(new Set())} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11.5, fontWeight: 700 }}>Clear</button>}
+          </div>
+        )}
 
         <div style={{ marginTop: 16 }}>
           {!active && (
@@ -5307,7 +5304,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onDetails={onPick ? (row) => onPick(row || p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -5414,8 +5411,8 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 }
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
-// "Details" opens the per-item editor for price/fundraising/personalization.
-function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onDetails }) {
+// Clicking the card (or "Colors →") opens the color-selector modal for the style.
+function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
   const [imgErr, setImgErr] = useState(false);
   const ways = colorways.length ? colorways : [p];
   // Which colorway the card is showing / will add. Defaults to the rep (ways[0] = the
@@ -5433,7 +5430,7 @@ function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = 
   const pickColor = (c) => { if (c.id === active.id) return; if (isSel) { onToggleId(active.id); onToggleId(c.id); } setActiveId(c.id); };
   const toggle = () => onToggleId(active.id);
   return (
-    <div className="ai-card" onClick={toggle} role="button" aria-pressed={isSel} style={{ position: 'relative', cursor: 'pointer', outline: isSel ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
+    <div className="ai-card" onClick={() => onColors && onColors(active)} role="button" title="See colors of this item" style={{ position: 'relative', cursor: 'pointer', outline: isSel ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
       <div onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (isSel ? '#2563eb' : '#cbd5e1'), background: isSel ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{isSel ? '✓' : ''}</div>
       {canFav && (
         <button type="button" onClick={(e) => { e.stopPropagation(); onToggleFav && onToggleFav(); }} title={fav ? (team ? 'Shared team favorite' : 'Your favorite') : (curate ? 'Add to the shared list' : 'Add to your favorites')}
@@ -5476,7 +5473,7 @@ function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = 
         )}
         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
           <button type="button" onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: isSel ? '#dbeafe' : '#191919', color: isSel ? '#1d4ed8' : '#fff' }}>{isSel ? '✓ Selected' : 'Select'}</button>
-          {onDetails && <button type="button" onClick={(e) => { e.stopPropagation(); onDetails(active); }} title="Set price, fundraising & options" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Details →</button>}
+          {onColors && <button type="button" onClick={(e) => { e.stopPropagation(); onColors(active); }} title="See & add other colors of this item" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Colors →</button>}
         </div>
       </div>
     </div>
