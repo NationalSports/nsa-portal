@@ -1651,7 +1651,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
@@ -2824,6 +2824,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   })();
   const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
+  const _webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
   const renderRep = ({ rep: p, rows: colorRows }) => {
     const stock = stockByWp[p.id];
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
@@ -2851,8 +2852,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
           {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
-          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color)).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
-            <img key={i} src={decoUrlForColor(d, stock?.color)} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
+          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+            <img key={i} src={decoUrlForColor(d, stock?.color, _webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
           ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -3262,6 +3263,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   const _prevRow = (colorRows || []).find((c) => c.id === previewColorId);
   const frontUrl = (previewColorId && previewColorId !== primaryColorId && _prevRow && _prevRow.frontUrl) ? _prevRow.frontUrl : imageUrl;
   const _prevColorName = _prevRow ? _prevRow.name : null;
+  const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
   const backUrl = backImageUrl || stockBackImg || '';
   const stageUrl = side === 'back' ? backUrl : frontUrl;
   // Show the front/back toggle when a back exists/can be added, or when the item is
@@ -3408,7 +3410,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, touchAction: 'none' }}>
               {isPerso(d)
                 ? <PersoArt kind={d.kind} />
-                : <img src={(side === 'front' && decoUrlForColor(d, _prevColorName)) || d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
+                : <img src={(side === 'front' && decoUrlForColor(d, _prevColorName, webLogosOf(d))) || d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
               {i === sel && <div onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setSel(i); drag.current = { i, mode: 'resize' }; }} title="Drag to resize" style={{ position: 'absolute', right: -8, bottom: -8, width: 16, height: 16, borderRadius: 4, background: '#2563eb', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />}
             </div>
           ) : null))}
@@ -3431,7 +3433,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             {colorRows.map((c) => { const on = c.id === previewColorId; return (
               <button key={c.id} type="button" onClick={() => setPreviewColorId(c.id)} title={c.name} style={{ flex: '0 0 auto', width: 76, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 9, padding: 3, background: '#fff', cursor: 'pointer' }}>
-                <GarmentLogoPreview imageUrl={c.frontUrl} decorations={decos} colorName={c.name} />
+                <GarmentLogoPreview imageUrl={c.frontUrl} decorations={decos} colorName={c.name} library={library} />
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: on ? '#191919' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 3 }}>{c.name}</div>
               </button>
             ); })}
@@ -3615,21 +3617,40 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
 // color name -> the web-logo URL to use for that color (e.g. a white logo on a black tee,
 // a dark logo on a white tee). Falls back to the deco's placed art_url when unset.
 const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
-const decoUrlForColor = (deco, colorName) => {
+// Pick the web-logo color way meant for a given garment color — e.g. a "Navy" colorway for
+// a Navy garment, a "Grey" colorway for "Heather Grey". Matches on a shared word token so
+// "Heather Grey" still finds the "Grey" colorway. Falls back to an "all garments"/blank
+// colorway, then null (caller uses the deco's placed art_url).
+const _normColorWords = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+const webLogoForGarmentColor = (webLogos, colorName) => {
+  const wls = (webLogos || []).filter((w) => w && w.url);
+  if (!wls.length) return null;
+  const g = _normColorWords(colorName);
+  if (g.length) {
+    const hit = wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); });
+    if (hit) return hit.url;
+  }
+  const generic = wls.find((w) => { const c = (w.color_way || '').trim(); return !c || /all/i.test(c); });
+  return generic ? generic.url : null;
+};
+const decoUrlForColor = (deco, colorName, webLogos) => {
   if (!deco) return '';
   const m = deco.cw_by_color; const k = colorKeyOf(colorName);
-  return (m && k && m[k]) || deco.art_url || '';
+  if (m && k && m[k]) return m[k];                       // explicit per-color override wins
+  const auto = webLogoForGarmentColor(webLogos, colorName); // else auto-match the garment color
+  return auto || deco.art_url || '';
 };
 // Read-only garment thumbnail with the placed FRONT logos composited at their saved
 // placement — previews each color of a multi-color card with its art (and per-color web
 // logo) applied. Mirrors the LogoPlacer hero-canvas math (x/y center %, w = width %).
-function GarmentLogoPreview({ imageUrl, decorations = [], colorName }) {
-  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName));
+function GarmentLogoPreview({ imageUrl, decorations = [], colorName, library = [] }) {
+  const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
+  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
       {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
       {front.map((d, i) => { const p = placementById(d.placement); const x = d.x != null ? d.x : p.x, y = d.y != null ? d.y : p.y, w = d.w != null ? d.w : p.w; return (
-        <img key={i} src={decoUrlForColor(d, colorName)} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+        <img key={i} src={decoUrlForColor(d, colorName, webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
       ); })}
     </div>
   );
@@ -3932,6 +3953,19 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
       // Drop a perso placement if its toggle was turned back off.
       fields.decorations = decorations.filter((d) => !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName));
+      // Bake the auto-matched web-logo color way into cw_by_color for every garment color in
+      // this card, so the storefront and SO handoff (which don't have the art library) show the
+      // right logo per color — a "Navy" colorway on Navy, a "Grey" one on Heather Grey, etc.
+      // Only fills colors without an explicit rep override.
+      const _cardColors = (groupColors || []).map((c) => (stockByWp[c.id]?.color) || c.sku).filter(Boolean);
+      if (_cardColors.length) fields.decorations = fields.decorations.map((d) => {
+        const art = (library || []).find((a) => a.id === d.art_id);
+        const wls = art && Array.isArray(art.web_logos) ? art.web_logos.filter((w) => w && w.url) : [];
+        if (wls.length < 2) return d;
+        const m = { ...(d.cw_by_color || {}) };
+        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const u = webLogoForGarmentColor(wls, cn); if (u) m[k] = u; } });
+        return Object.keys(m).length ? { ...d, cw_by_color: m } : d;
+      });
       // null = the product's full scale, unchanged (default). Persist an explicit list
       // whenever the rep narrowed it OR added/swapped sizes (3XL/4XL, footwear, etc.).
       const _off = sizeList.filter((s) => offeredSizes.includes(s));
