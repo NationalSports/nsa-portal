@@ -1500,6 +1500,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Item removed from package'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  const reorderBundleItems = useCallback(async (bundleId, orderedIds) => {
+    await Promise.all(orderedIds.map((id, i) => supabase.from('webstore_bundle_items').update({ sort_order: i }).eq('id', id)));
+    loadDetail(sel);
+  }, [sel, loadDetail]);
+
   // Gather this store's unbatched orders + their stock picture (shared by the
   // availability report and the batch flow's inventory check).
   const gatherBatch = useCallback(() => {
@@ -1842,7 +1847,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
+          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -2542,7 +2547,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -2685,7 +2690,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -2787,7 +2792,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -3122,7 +3127,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -3815,8 +3820,10 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
   );
 }
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onEditItem, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onEditItem, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
+  const [dragBundleId, setDragBundleId] = useState(null);
+  const [overBundleId, setOverBundleId] = useState(null);
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
   // Vendor (the PO recipient) + SKU live on the catalog product. Loaded here so the rep can
@@ -4240,30 +4247,60 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               {myItems.length === 0
                 ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '10px 12px', border: '1.5px dashed #d7dbe2', borderRadius: 8, marginBottom: 8 }}>No items yet — add from the store below.</div>
                 : <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                    {myItems.map((b) => {
-                      const c = (catalog || []).find((x) => x.id === b.webstore_product_id) || {};
-                      const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || b.sku || 'Item';
-                      const img = c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url);
-                      const archived = c.active === false;
-                      const canEdit = !!(c.id && onEditItem);
-                      return (
-                        <div key={b.id} style={{ width: 120, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', position: 'relative', background: '#fff' }}>
-                          {onRemoveBundleItem && <button type="button" title="Remove from package" onClick={() => {
-                            onRemoveBundleItem(b.id);
-                            const removed = Number((catalog || []).find((x) => x.id === b.webstore_product_id)?.retail_price) || 0;
-                            if (removed > 0 && onSave) { const np = Math.max(0, (Number(price) || 0) - removed); setPrice(np); onSave({ retail_price: np }); }
-                          }} style={{ position: 'absolute', top: 4, right: 4, width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 12, lineHeight: '16px', padding: 0, textAlign: 'center', zIndex: 1 }}>×</button>}
-                          {archived && <span style={{ position: 'absolute', top: 4, left: 4, fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 5px', zIndex: 1 }}>Archived</span>}
-                          <div onClick={canEdit ? () => onEditItem(c.id) : undefined} title={canEdit ? 'Edit this item' : undefined} style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
-                            {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
+                    {(() => {
+                      let displayed = [...myItems];
+                      if (dragBundleId && overBundleId && dragBundleId !== overBundleId) {
+                        const fi = displayed.findIndex((x) => x.id === dragBundleId);
+                        const ti = displayed.findIndex((x) => x.id === overBundleId);
+                        if (fi !== -1 && ti !== -1) { const [mv] = displayed.splice(fi, 1); displayed.splice(ti, 0, mv); }
+                      }
+                      return displayed.map((b) => {
+                        const c = (catalog || []).find((x) => x.id === b.webstore_product_id) || {};
+                        const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || b.sku || 'Item';
+                        const img = c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url);
+                        const archived = c.active === false;
+                        const canEdit = !!(c.id && onEditItem);
+                        const isDragging = dragBundleId === b.id;
+                        const isOver = overBundleId === b.id && dragBundleId !== b.id;
+                        return (
+                          <div key={b.id}
+                            draggable={!!onReorderBundleItems}
+                            onDragStart={() => setDragBundleId(b.id)}
+                            onDragOver={(e) => { e.preventDefault(); setOverBundleId(b.id); }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (dragBundleId && dragBundleId !== b.id && onReorderBundleItems) {
+                                const fi = myItems.findIndex((x) => x.id === dragBundleId);
+                                const ti = myItems.findIndex((x) => x.id === b.id);
+                                if (fi !== -1 && ti !== -1) {
+                                  const reord = [...myItems];
+                                  const [mv] = reord.splice(fi, 1);
+                                  reord.splice(ti, 0, mv);
+                                  onReorderBundleItems(item.id, reord.map((x) => x.id));
+                                }
+                              }
+                              setDragBundleId(null); setOverBundleId(null);
+                            }}
+                            onDragEnd={() => { setDragBundleId(null); setOverBundleId(null); }}
+                            style={{ width: 120, border: '1px solid ' + (isOver ? '#93c5fd' : '#e2e8f0'), borderRadius: 8, overflow: 'hidden', position: 'relative', background: '#fff', opacity: isDragging ? 0.45 : 1, boxShadow: isOver ? '0 0 0 2px #bfdbfe' : undefined }}>
+                            {onReorderBundleItems && <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 14, background: '#f8fafc', cursor: 'grab', borderBottom: '1px solid #f1f5f9' }} title="Drag to reorder"><span style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1, userSelect: 'none' }}>⠿</span></div>}
+                            {onRemoveBundleItem && <button type="button" title="Remove from package" onClick={() => {
+                              onRemoveBundleItem(b.id);
+                              const removed = Number((catalog || []).find((x) => x.id === b.webstore_product_id)?.retail_price) || 0;
+                              if (removed > 0 && onSave) { const np = Math.max(0, (Number(price) || 0) - removed); setPrice(np); onSave({ retail_price: np }); }
+                            }} style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, right: 4, width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 12, lineHeight: '16px', padding: 0, textAlign: 'center', zIndex: 1 }}>×</button>}
+                            {archived && <span style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, left: 4, fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 5px', zIndex: 1 }}>Archived</span>}
+                            <div onClick={canEdit ? () => onEditItem(c.id) : undefined} title={canEdit ? 'Edit this item' : undefined} style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
+                              {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
+                            </div>
+                            <div style={{ padding: '5px 8px 7px' }}>
+                              <div onClick={canEdit ? () => onEditItem(c.id) : undefined} style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: canEdit ? '#2563eb' : '#191919', cursor: canEdit ? 'pointer' : 'default' }} title={nm}>{nm}{canEdit ? ' · edit' : ''}</div>
+                              {Number(b.qty) > 1 && <div style={{ fontSize: 11, color: '#64748b' }}>Qty {b.qty}</div>}
+                            </div>
                           </div>
-                          <div style={{ padding: '5px 8px 7px' }}>
-                            <div onClick={canEdit ? () => onEditItem(c.id) : undefined} style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: canEdit ? '#2563eb' : '#191919', cursor: canEdit ? 'pointer' : 'default' }} title={nm}>{nm}{canEdit ? ' · edit' : ''}</div>
-                            {Number(b.qty) > 1 && <div style={{ fontSize: 11, color: '#64748b' }}>Qty {b.qty}</div>}
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
               }
               {addingToBundle
