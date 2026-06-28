@@ -766,7 +766,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   return (
     <div onClick={onClose} style={{position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
       <style>{'@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}'}</style>
-      <div onClick={e => e.stopPropagation()} style={{width: 1180, maxWidth: '100%', height: 792, maxHeight: '94vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
+      <div onClick={e => e.stopPropagation()} style={{width: 1040, maxWidth: '100%', height: 792, maxHeight: '94vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
 
         {/* ── Header ── */}
         <div style={{background: 'linear-gradient(120deg,' + NSA.navy + ',' + NSA.navyMid + ')', color: '#fff', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '4px solid ' + NSA.red, flex: 'none'}}>
@@ -845,7 +845,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                 </div>}
               </div>
             </div>
-            <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '6px 22px 16px', minHeight: 0}}>
+            <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '6px 12px 16px', minHeight: 0}}>
               <div
                 onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('canvas'); }}
                 onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'canvas' ? null : d); }}
