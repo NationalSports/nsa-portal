@@ -502,7 +502,10 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
               return (
                 <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                    {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {p ? <>
+                          <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                        </>
                        : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
                   </div>
                 </div>
@@ -516,12 +519,16 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
 }
 
 // Hero collage images: an admin-curated list of webstore_product_ids when set,
-// else the first 3 in-stock products. featured_product_ids semantics:
-//   null/undefined → auto (top 3) · [] → none (no collage) · [ids] → those (≤3).
+// else mandatory (package) items first, then any items, up to 3.
+//   null/undefined → auto (mandatory first, then top items) · [] → none · [ids] → those (≤3).
 function featuredHeroImgs(store, products) {
   const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
   const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
-  if (!featured) return pool.slice(0, 3);
+  if (!featured) {
+    const mandatory = pool.filter((p) => p.required);
+    const rest = pool.filter((p) => !p.required);
+    return [...mandatory, ...rest].slice(0, 3);
+  }
   return featured.map((id) => pool.find((p) => p.webstore_product_id === id)).filter(Boolean).slice(0, 3);
 }
 
