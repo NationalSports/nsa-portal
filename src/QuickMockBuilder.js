@@ -741,15 +741,27 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // Best thumbnail for a garment row: the rep's uploaded override, else the catalog front photo.
   const thumbFor = g => imgOverride[g.key] || g.frontUrl || '';
 
+  // Logo Library: open a file picker and upload/replace the art for one location, placing it.
+  const pickFileFor = idx => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) uploadLayerFile(idx, inp.files[0], {place: true}); }; inp.click(); };
+  // "+ Logo": add new art. Prefer filling an empty existing location (so the source attaches to a
+  // real art slot); otherwise spin up a new local logo layer for this garment and upload into it.
+  const addLogoFile = file => {
+    if (!file) return;
+    if (!isArtFile(file)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; }
+    const emptyIdx = layers.findIndex(l => layerForGarment(l) && !l.source && !l.hasExisting && !l.preview);
+    if (emptyIdx >= 0) { uploadLayerFile(emptyIdx, file, {place: true}); return; }
+    const newId = 'qm-logo-' + Date.now();
+    const baseName = file.name.split('.').slice(0, -1).join('.') || file.name;
+    const newIdx = layers.length;
+    setLayers(prev => [...prev, {artFileId: newId, name: baseName, position: '', existingFiles: [], files: [], fileIdx: 0, preview: null, source: null, hasExisting: false, garmentKeys: []}]);
+    uploadLayerFile(newIdx, file, {place: true});
+  };
+  const addLogo = () => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) addLogoFile(inp.files[0]); }; inp.click(); };
+  // Does a location have art to place (a preview, a freshly attached source, or art on file)?
+  const layerHasArt = l => !!(l.preview || l.source || l.hasExisting);
+
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
   const pct = garments.length ? Math.round(savedCount / garments.length * 100) : 0;
-
-  // Status line shown inside an artwork card (which file, or stand-in / none).
-  const layerStatus = l => l.source
-    ? <div style={{fontSize: 11, color: NSA.green, display: 'flex', alignItems: 'center', gap: 4, marginTop: 3}}><Icon name="check" size={12} /> {l.source.name}{!l.preview && <span style={{color: NSA.redBright}}> (stand-in)</span>}</div>
-    : l.hasExisting
-    ? <div style={{fontSize: 11, color: NSA.green, display: 'flex', alignItems: 'center', gap: 4, marginTop: 3}}><Icon name="check" size={12} /> Using art on file{(l.files && l.files[l.fileIdx || 0]) ? ': ' + l.files[l.fileIdx || 0].name : (l.existingFiles[0] ? ': ' + l.existingFiles[0].name : '')}{!l.preview && <span style={{color: NSA.redBright}}> (stand-in)</span>}</div>
-    : <div style={{fontSize: 11, color: NSA.textMuted, marginTop: 3}}>No file yet</div>;
 
   return (
     <div onClick={onClose} style={{position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
@@ -798,13 +810,13 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                       <span style={{position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 150, background: NSA.offWhite, borderRadius: 7, overflow: 'hidden'}}>
                         {tu ? <img src={tu} alt="" style={{maxWidth: '92%', maxHeight: '92%', objectFit: 'contain'}} /> : <TeeSvg fill={hexesForColor(g.color)[0]} style={{width: '82%', height: '82%'}} />}
                       </span>
-                      <span style={{display: 'block', textAlign: 'center', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 16, color: NSA.navy, marginTop: 9, lineHeight: 1.05}}>{g.color || g.name || 'Item'}</span>
+                      <span style={{display: 'block', textAlign: 'center', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 16, color: NSA.navy, marginTop: 9, lineHeight: 1.05}}>{g.name || g.sku || 'Item'}</span>
                       <span style={{display: 'block', textAlign: 'center', fontSize: 12, color: NSA.textMuted}}>{g.sku || ''}</span>
                     </span>}
                   </span>
                   <span style={{flex: 1, minWidth: 0}}>
-                    <span style={{display: 'block', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: .3, color: NSA.navy, lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.color || g.name || 'Item'}</span>
-                    <span style={{display: 'block', fontSize: 12, color: NSA.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.sku || g.name || ''}</span>
+                    <span style={{display: 'block', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: .3, color: NSA.navy, lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.name || g.sku || 'Item'}</span>
+                    <span style={{display: 'block', fontSize: 12, color: NSA.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.sku || ''}</span>
                   </span>
                   {done ? <span style={{flex: 'none', width: 20, height: 20, borderRadius: '50%', background: NSA.green, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontWeight: 800}}>✓</span>
                     : <span style={{flex: 'none', width: 18, height: 18, borderRadius: '50%', border: '2px dashed ' + NSA.mid}} />}
@@ -874,42 +886,44 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
           {/* Right rail — tools */}
           <div style={{width: 290, borderLeft: '1px solid ' + NSA.light, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', flex: 'none'}}>
 
-            {/* Artwork (locations / layers) */}
+            {/* Logo Library — tap a tile to place; drag & drop (or the corner button) to add/replace */}
             <div style={{padding: '16px 18px 4px'}}>
-              <div style={{...railLabel, marginBottom: 9}}>Artwork</div>
-              {layers.map((l, idx) => !layerForGarment(l) ? null : <div key={l.artFileId || idx}
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
-                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f); }}
-                style={{padding: 9, border: '1.5px solid ' + (dragOver === 'layer-' + idx ? NSA.red : NSA.light), borderRadius: 7, marginBottom: 8, background: dragOver === 'layer-' + idx ? '#FBE9EA' : NSA.offWhite, transition: 'background .12s, border-color .12s'}}>
-                <div style={{display: 'flex', gap: 9}}>
-                  <span style={{width: 46, height: 46, flex: 'none', borderRadius: 6, background: '#fff', border: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', color: NSA.mid}}>
-                    {l.preview && l.preview.url ? <img src={l.preview.url} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} /> : <Icon name="image" size={18} />}
-                  </span>
-                  <div style={{flex: 1, minWidth: 0}}>
-                    <div style={{fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, color: NSA.navy, textTransform: 'uppercase', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{l.name || 'Artwork'}</div>
-                    {l.position && <div style={{fontSize: 11, color: NSA.textMuted}}>{l.position}</div>}
-                    {layerStatus(l)}
+              <div style={{...railLabel, marginBottom: 2}}>Logo Library</div>
+              <div style={{fontSize: 11.5, color: NSA.textMuted, marginBottom: 9, lineHeight: 1.35}}>Tap to place · drag &amp; drop a PNG / SVG / AI to add</div>
+              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
+                {layers.map((l, idx) => !layerForGarment(l) ? null : (
+                  <div key={l.artFileId || idx}
+                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
+                    onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
+                    onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f, {place: true}); }}
+                    style={{position: 'relative', border: '2px solid ' + (dragOver === 'layer-' + idx ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', transition: 'border-color .12s'}}>
+                    <button onClick={() => layerHasArt(l) ? placeLayer(l) : pickFileFor(idx)} disabled={busy} title={layerHasArt(l) ? 'Tap to place ' + (l.name || 'logo') : 'Upload art for ' + (l.name || 'this location')}
+                      style={{display: 'block', width: '100%', border: 'none', background: 'transparent', cursor: busy ? 'default' : 'pointer', padding: 0}}>
+                      <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: 74, padding: 8}}>
+                        {l.preview && l.preview.url
+                          ? <img src={l.preview.url} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} />
+                          : layerHasArt(l)
+                          ? <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.textMuted}}><Icon name="file" size={20} /><span style={{fontSize: 9.5, fontWeight: 600}}>Attached</span></span>
+                          : <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.mid}}><Icon name="image" size={20} /><span style={{fontSize: 9.5, fontWeight: 600, color: NSA.textMuted}}>Upload</span></span>}
+                      </span>
+                      <span style={{display: 'block', background: NSA.navy, color: '#fff', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: .4, textTransform: 'uppercase', textAlign: 'center', padding: '4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{l.name || l.position || 'Logo'}</span>
+                    </button>
+                    {layerHasArt(l) && <button onClick={() => pickFileFor(idx)} disabled={busy} title="Replace this art" style={{position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 6, border: '1px solid ' + NSA.mid, background: 'rgba(255,255,255,.92)', color: NSA.textLight, cursor: busy ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0}}><Icon name="upload" size={12} /></button>}
+                    {!l.source && l.files && l.files.length > 1 && <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 10, color: NSA.textLight, padding: '3px 0', borderTop: '1px solid ' + NSA.light, background: NSA.offWhite}}>
+                      <button style={{border: 'none', background: 'transparent', cursor: 'pointer', color: NSA.textLight, padding: '0 4px', fontWeight: 700}} disabled={busy || (l.fileIdx || 0) <= 0} onClick={() => setLayerFile(idx, -1)}>◀</button>
+                      <span style={{fontWeight: 700}}>{(l.fileIdx || 0) + 1}/{l.files.length}</span>
+                      <button style={{border: 'none', background: 'transparent', cursor: 'pointer', color: NSA.textLight, padding: '0 4px', fontWeight: 700}} disabled={busy || (l.fileIdx || 0) >= l.files.length - 1} onClick={() => setLayerFile(idx, 1)}>▶</button>
+                    </div>}
                   </div>
-                </div>
-                {!l.source && l.files && l.files.length > 1 && <div style={{display: 'flex', alignItems: 'center', gap: 5, marginTop: 7, fontSize: 11, color: NSA.textLight}}>
-                  <span style={{fontWeight: 700}}>File</span>
-                  <button style={{...smallBtn, padding: '2px 7px'}} disabled={busy || (l.fileIdx || 0) <= 0} onClick={() => setLayerFile(idx, -1)}>◀</button>
-                  <span style={{minWidth: 24, textAlign: 'center', fontWeight: 700}}>{(l.fileIdx || 0) + 1}/{l.files.length}</span>
-                  <button style={{...smallBtn, padding: '2px 7px'}} disabled={busy || (l.fileIdx || 0) >= l.files.length - 1} onClick={() => setLayerFile(idx, 1)}>▶</button>
-                  <span style={{color: NSA.textMuted}}>try another</span>
-                </div>}
-                <div style={{display: 'flex', gap: 6, marginTop: 8}}>
-                  <button style={{...smallBtn, opacity: busy ? .6 : 1}} disabled={busy}
-                    onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) uploadLayerFile(idx, inp.files[0]); }; inp.click(); }}>
-                    <Icon name="upload" size={11} /> {(l.source || l.hasExisting) ? 'Replace' : 'Upload'}
-                  </button>
-                  <button style={{...smallBtn, background: NSA.navy, color: '#fff', border: '1px solid ' + NSA.navy, opacity: busy ? .6 : 1}} disabled={busy} onClick={() => placeLayer(l)}>
-                    <Icon name="plus" size={11} /> Place
-                  </button>
-                </div>
-              </div>)}
-              {!layers.some(layerForGarment) && <div style={{fontSize: 12, color: NSA.textMuted}}>No art locations for this garment.</div>}
+                ))}
+                <button onClick={addLogo} disabled={busy} title="Add a new logo (PNG / SVG / AI)"
+                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('add-logo'); }}
+                  onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'add-logo' ? null : d); }}
+                  onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (f) addLogoFile(f); }}
+                  style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 104, border: '2px dashed ' + (dragOver === 'add-logo' ? NSA.red : NSA.mid), borderRadius: 9, background: dragOver === 'add-logo' ? '#FBE9EA' : '#fff', color: NSA.textLight, cursor: busy ? 'default' : 'pointer', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .4, textTransform: 'uppercase'}}>
+                  <Icon name="plus" size={18} /> Logo
+                </button>
+              </div>
             </div>
 
             {/* Product image */}
