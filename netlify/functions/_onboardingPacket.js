@@ -25,7 +25,7 @@ function formatPayComponents(components) {
   }).filter(Boolean).join('  +  ');
 }
 
-async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) {
+async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT, settings = {}) {
   const data = (sub && sub.data) || {};
   const sig = (sub && sub.signatures) || {};
   const ack = (sub && sub.acknowledgments) || {};
@@ -42,9 +42,15 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
   try { routing = decryptField(sens.bank_routing); } catch {}
   try { ein = decryptField(sens.ein); } catch {}
 
-  const sigLine = (key, fallbackName) => {
+  // The hire's own entered legal name is the source of truth (overrides the
+  // staff-typed invite name). The e-sign date falls back to the submission
+  // timestamp for forms the hire didn't sign field-by-field (covered by the
+  // up-front electronic-records consent).
+  const legalName = (p.full_name && p.full_name.trim()) || invite.full_name;
+  const eSignDate = (sub && sub.submitted_at) || (sub && sub.updated_at) || null;
+  const sigLine = (key) => {
     const s = sig[key] || {};
-    return { type: 'sig', name: s.name || fallbackName || invite.full_name, date: fmtDate(s.signed_at) };
+    return { type: 'sig', name: s.name || legalName, date: fmtDate(s.signed_at || eSignDate) };
   };
 
   const docs = [];
@@ -66,12 +72,15 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
     }),
   });
 
-  // 00b — Wage Theft Prevention Notice (Labor Code 2810.5), filled
+  // 00b — Wage Theft Prevention Notice (Labor Code 2810.5), filled.
+  // Employer info comes from portal settings (Onboarding → Settings), falling
+  // back to env vars then defaults.
   const emp = {
-    name: process.env.EMPLOYER_LEGAL_NAME || 'National Sports Apparel, LLC',
-    address: process.env.EMPLOYER_ADDRESS || '',
-    phone: process.env.EMPLOYER_PHONE || '',
-    wc: process.env.WORKERS_COMP_CARRIER || '',
+    name: settings.employer_legal_name || process.env.EMPLOYER_LEGAL_NAME || 'National Sports Apparel, LLC',
+    address: settings.employer_address || process.env.EMPLOYER_ADDRESS || '',
+    phone: settings.employer_phone || process.env.EMPLOYER_PHONE || '',
+    wc: settings.workers_comp_carrier || process.env.WORKERS_COMP_CARRIER || '',
+    payday: settings.employer_payday || process.env.EMPLOYER_PAYDAY || 'As posted by the employer',
   };
   const payRows = (Array.isArray(invite.pay_components) && invite.pay_components.length)
     ? invite.pay_components.map((c, i) => ({ type: 'field', label: `Rate ${i + 1}`, value: formatPayComponents([c]) }))
@@ -88,7 +97,7 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
         { type: 'heading', text: 'Rate(s) of Pay' },
         ...payRows,
         { type: 'field', label: 'Overtime Rate (if non-exempt)', value: 'Per California law (1.5× / 2× regular rate as applicable)' },
-        { type: 'field', label: 'Regular Payday', value: process.env.EMPLOYER_PAYDAY || 'As posted by the employer' },
+        { type: 'field', label: 'Regular Payday', value: emp.payday },
         { type: 'field', label: 'Allowances claimed against minimum wage', value: 'None' },
         { type: 'heading', text: 'Employer' },
         { type: 'field', label: 'Legal Name', value: emp.name },
@@ -117,7 +126,7 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
         { type: 'field', label: 'Commission Eligible', value: yn(invite.commission_eligible) },
         { type: 'rule' },
         { type: 'heading', text: 'Employee Information' },
-        { type: 'field', label: 'Full Legal Name', value: p.full_name || invite.full_name },
+        { type: 'field', label: 'Full Legal Name', value: legalName },
         { type: 'field', label: 'Street Address', value: [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ') },
         { type: 'field', label: 'Date of Birth', value: fmtDate(p.dob) },
         { type: 'field', label: 'Gender', value: p.gender },
@@ -309,10 +318,16 @@ async function buildPacket(invite, sub, handbookCount = HANDBOOK_SECTION_COUNT) 
   return docs;
 }
 
+function hireLegalName(invite, sub) {
+  const n = sub && sub.data && sub.data.personal && sub.data.personal.full_name;
+  return (n && n.trim()) || invite.full_name;
+}
+
 async function buildAuditDoc(invite, sub, events) {
+  const name = hireLegalName(invite, sub);
   const blocks = [
-    { type: 'para', text: `This log records every documented interaction ${invite.full_name} had with the onboarding packet — section views, scroll-to-end completions, acknowledgments, signatures, saves, and the final submission — as captured by the portal.` },
-    { type: 'field', label: 'Hire', value: `${invite.full_name} <${invite.personal_email}>` },
+    { type: 'para', text: `This log records every documented interaction ${name} had with the onboarding packet — section views, scroll-to-end completions, acknowledgments, signatures, saves, and the final submission — as captured by the portal.` },
+    { type: 'field', label: 'Hire', value: `${name} <${invite.personal_email}>` },
     { type: 'field', label: 'Role', value: invite.role },
     { type: 'field', label: 'Invited', value: fmtDateTime(invite.invited_at) },
     { type: 'field', label: 'Completed', value: invite.completed_at ? fmtDateTime(invite.completed_at) : 'Not yet' },
@@ -326,8 +341,8 @@ async function buildAuditDoc(invite, sub, events) {
 }
 
 // Build every PDF as { name, bytes:Uint8Array }.
-async function buildPacketFiles(invite, sub, events) {
-  const docs = await buildPacket(invite, sub);
+async function buildPacketFiles(invite, sub, events, settings = {}) {
+  const docs = await buildPacket(invite, sub, HANDBOOK_SECTION_COUNT, settings);
   const audit = await buildAuditDoc(invite, sub, events || []);
   const files = [];
   for (const d of docs) files.push({ name: d.name, bytes: await d.pdf.save() });
@@ -344,4 +359,4 @@ async function zipFiles(files) {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
-module.exports = { buildPacket, buildAuditDoc, buildPacketFiles, zipFiles, safeName, formatPayComponents, HANDBOOK_SECTION_COUNT };
+module.exports = { buildPacket, buildAuditDoc, buildPacketFiles, zipFiles, safeName, formatPayComponents, hireLegalName, HANDBOOK_SECTION_COUNT };
