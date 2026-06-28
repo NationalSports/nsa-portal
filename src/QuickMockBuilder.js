@@ -162,6 +162,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   const [sizeVal, setSizeVal] = useState(1);
   // Colorway whose hover-zoom preview popup is showing in the left rail (null = none).
   const [hoverGi, setHoverGi] = useState(null);
+  // Layer ids (artFileId) whose art is currently placed on the canvas, so a Logo Library tile can
+  // show it's applied and offer a one-click remove. Kept in sync with canvas add/remove events.
+  const [placedIds, setPlacedIds] = useState([]);
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
@@ -189,8 +192,11 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     // dirty; placing/recoloring art marks it dirty in those handlers. Restoring a saved scene and
     // adding the garment backdrop must NOT mark dirty, so we only listen to modify/remove here.
     clearDirty();
+    setPlacedIds([]);
+    const refreshPlaced = () => setPlacedIds([...new Set(c.getObjects().filter(o => o._isArt).map(o => o._layerId).filter(Boolean))]);
+    c.on('object:added', refreshPlaced);
     c.on('object:modified', () => { markDirty(); });
-    c.on('object:removed', () => { if (c.getObjects().some(o => o._isArt)) markDirty(); });
+    c.on('object:removed', () => { if (c.getObjects().some(o => o._isArt)) markDirty(); refreshPlaced(); });
     const delHandler = e => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && e.target === document.body) {
         const sel = c.getActiveObject();
@@ -741,23 +747,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // Best thumbnail for a garment row: the rep's uploaded override, else the catalog front photo.
   const thumbFor = g => imgOverride[g.key] || g.frontUrl || '';
 
-  // Logo Library: open a file picker and upload/replace the art for one location, placing it.
-  const pickFileFor = idx => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) uploadLayerFile(idx, inp.files[0], {place: true}); }; inp.click(); };
-  // "+ Logo": add new art. Prefer filling an empty existing location (so the source attaches to a
-  // real art slot); otherwise spin up a new local logo layer for this garment and upload into it.
-  const addLogoFile = file => {
-    if (!file) return;
-    if (!isArtFile(file)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; }
-    const emptyIdx = layers.findIndex(l => layerForGarment(l) && !l.source && !l.hasExisting && !l.preview);
-    if (emptyIdx >= 0) { uploadLayerFile(emptyIdx, file, {place: true}); return; }
-    const newId = 'qm-logo-' + Date.now();
-    const baseName = file.name.split('.').slice(0, -1).join('.') || file.name;
-    const newIdx = layers.length;
-    setLayers(prev => [...prev, {artFileId: newId, name: baseName, position: '', existingFiles: [], files: [], fileIdx: 0, preview: null, source: null, hasExisting: false, garmentKeys: []}]);
-    uploadLayerFile(newIdx, file, {place: true});
-  };
-  const addLogo = () => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) addLogoFile(inp.files[0]); }; inp.click(); };
-  // Does a location have art to place (a preview, a freshly attached source, or art on file)?
+  // Does a location have art to place (a preview or art on file)? New art is added in the art
+  // folder on the prior page — the builder only places/positions/recolors existing art.
   const layerHasArt = l => !!(l.preview || l.source || l.hasExisting);
 
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
@@ -846,11 +837,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
               </div>
             </div>
             <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '6px 12px 16px', minHeight: 0}}>
-              <div
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('canvas'); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'canvas' ? null : d); }}
-                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (f) dropArtOnCanvas(f); }}
-                style={{position: 'relative', borderRadius: 12, padding: 4, outline: dragOver === 'canvas' ? '2px dashed ' + NSA.red : 'none', outlineOffset: 2, flex: 'none'}}>
+              <div style={{position: 'relative', flex: 'none'}}>
                 <div style={{position: 'relative', background: '#fff', border: '1px solid ' + NSA.light, borderRadius: 10, overflow: 'hidden', boxShadow: '0 10px 24px rgba(25,40,83,.08)'}}>
                   <div ref={wrapRef} />
                   {(imgLoading || (!garmentUrl && garment.pending)) && <div style={{position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(247,248,251,0.85)', pointerEvents: 'none'}}>
@@ -861,13 +848,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                     <Icon name="image" size={28} style={{color: NSA.mid}} />
                     <span style={{fontSize: 12, color: NSA.textMuted, fontWeight: 600}}>No product image — upload one</span>
                   </div>}
-                  {dragOver === 'canvas' && <div style={{position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'rgba(150,44,50,0.08)', pointerEvents: 'none'}}>
-                    <Icon name="upload" size={28} style={{color: NSA.red}} />
-                    <span style={{fontSize: 12, color: NSA.red, fontWeight: 700}}>Drop art to place it on the garment</span>
-                  </div>}
                 </div>
               </div>
-              <div style={{fontSize: 11.5, color: NSA.textMuted, textAlign: 'center'}}>Drag an art file onto the garment to place it. Click art to select; drag to move, corners to resize. Press Delete to remove.</div>
+              <div style={{fontSize: 11.5, color: NSA.textMuted, textAlign: 'center'}}>Tap a logo at right to place it. Click art to select; drag to move, corners to resize. Press Delete (or the ✕ on its tile) to remove.</div>
               {(mocks[garment.key] || []).length > 0 && <div style={{width: '100%', maxWidth: 480, paddingTop: 8, borderTop: '1px solid ' + NSA.light}}>
                 <div style={{fontSize: 11, fontWeight: 700, color: NSA.green, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}>
                   <Icon name="check" size={12} /> Saved mock{(mocks[garment.key].length > 1 ? 's' : '')} for {garment.color || garment.sku}
@@ -886,29 +869,27 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
           {/* Right rail — tools */}
           <div style={{width: 290, borderLeft: '1px solid ' + NSA.light, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', flex: 'none'}}>
 
-            {/* Logo Library — tap a tile to place; drag & drop (or the corner button) to add/replace */}
+            {/* Logo Library — pick a logo to place it; new art is managed in the art folder on the prior page */}
             <div style={{padding: '16px 18px 4px'}}>
               <div style={{...railLabel, marginBottom: 2}}>Logo Library</div>
-              <div style={{fontSize: 11.5, color: NSA.textMuted, marginBottom: 9, lineHeight: 1.35}}>Tap to place · drag &amp; drop a PNG / SVG / AI to add</div>
-              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
+              <div style={{fontSize: 11.5, color: NSA.textMuted, marginBottom: 9, lineHeight: 1.35}}>Tap a logo to place it on the garment</div>
+              {layers.some(layerForGarment) ? <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
                 {layers.map((l, idx) => !layerForGarment(l) ? null : (
                   <div key={l.artFileId || idx}
-                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
-                    onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
-                    onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f, {place: true}); }}
-                    style={{position: 'relative', border: '2px solid ' + (dragOver === 'layer-' + idx ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', transition: 'border-color .12s'}}>
-                    <button onClick={() => layerHasArt(l) ? placeLayer(l) : pickFileFor(idx)} disabled={busy} title={layerHasArt(l) ? 'Tap to place ' + (l.name || 'logo') : 'Upload art for ' + (l.name || 'this location')}
-                      style={{display: 'block', width: '100%', border: 'none', background: 'transparent', cursor: busy ? 'default' : 'pointer', padding: 0}}>
+                    style={{position: 'relative', border: '2px solid ' + (placedIds.includes(l.artFileId) ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', transition: 'border-color .12s'}}>
+                    <button onClick={() => layerHasArt(l) ? placeLayer(l) : (nf && nf('Add this logo in the art folder on the previous page first', 'info'))} disabled={busy || !layerHasArt(l)} title={layerHasArt(l) ? 'Tap to place ' + (l.name || 'logo') : 'No art yet — add it in the art folder'}
+                      style={{display: 'block', width: '100%', border: 'none', background: 'transparent', cursor: (busy || !layerHasArt(l)) ? 'default' : 'pointer', padding: 0, opacity: layerHasArt(l) ? 1 : .65}}>
                       <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: 74, padding: 8}}>
                         {l.preview && l.preview.url
                           ? <img src={l.preview.url} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} />
                           : layerHasArt(l)
                           ? <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.textMuted}}><Icon name="file" size={20} /><span style={{fontSize: 9.5, fontWeight: 600}}>Attached</span></span>
-                          : <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.mid}}><Icon name="image" size={20} /><span style={{fontSize: 9.5, fontWeight: 600, color: NSA.textMuted}}>Upload</span></span>}
+                          : <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.mid}}><Icon name="image" size={20} /><span style={{fontSize: 9.5, fontWeight: 600, color: NSA.textMuted}}>No art</span></span>}
                       </span>
-                      <span style={{display: 'block', background: NSA.navy, color: '#fff', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: .4, textTransform: 'uppercase', textAlign: 'center', padding: '4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{l.name || l.position || 'Logo'}</span>
+                      <span style={{display: 'block', background: placedIds.includes(l.artFileId) ? NSA.red : NSA.navy, color: '#fff', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: .4, textTransform: 'uppercase', textAlign: 'center', padding: '4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{l.name || l.position || 'Logo'}</span>
                     </button>
-                    {layerHasArt(l) && <button onClick={() => pickFileFor(idx)} disabled={busy} title="Replace this art" style={{position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 6, border: '1px solid ' + NSA.mid, background: 'rgba(255,255,255,.92)', color: NSA.textLight, cursor: busy ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0}}><Icon name="upload" size={12} /></button>}
+                    {placedIds.includes(l.artFileId) && <button onClick={() => clearLayer(l.artFileId)} disabled={busy} title="Remove this logo from the garment"
+                      style={{position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: '50%', border: 'none', background: NSA.red, color: '#fff', cursor: busy ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, lineHeight: 1, padding: 0, boxShadow: '0 1px 3px rgba(0,0,0,.25)'}}>×</button>}
                     {!l.source && l.files && l.files.length > 1 && <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 10, color: NSA.textLight, padding: '3px 0', borderTop: '1px solid ' + NSA.light, background: NSA.offWhite}}>
                       <button style={{border: 'none', background: 'transparent', cursor: 'pointer', color: NSA.textLight, padding: '0 4px', fontWeight: 700}} disabled={busy || (l.fileIdx || 0) <= 0} onClick={() => setLayerFile(idx, -1)}>◀</button>
                       <span style={{fontWeight: 700}}>{(l.fileIdx || 0) + 1}/{l.files.length}</span>
@@ -916,14 +897,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                     </div>}
                   </div>
                 ))}
-                <button onClick={addLogo} disabled={busy} title="Add a new logo (PNG / SVG / AI)"
-                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('add-logo'); }}
-                  onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'add-logo' ? null : d); }}
-                  onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (f) addLogoFile(f); }}
-                  style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 104, border: '2px dashed ' + (dragOver === 'add-logo' ? NSA.red : NSA.mid), borderRadius: 9, background: dragOver === 'add-logo' ? '#FBE9EA' : '#fff', color: NSA.textLight, cursor: busy ? 'default' : 'pointer', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .4, textTransform: 'uppercase'}}>
-                  <Icon name="plus" size={18} /> Logo
-                </button>
-              </div>
+              </div> : <div style={{fontSize: 12, color: NSA.textMuted, lineHeight: 1.5}}>No logos in the art folder for this garment yet — add art on the previous page.</div>}
             </div>
 
             {/* Product image */}
