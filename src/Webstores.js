@@ -3684,11 +3684,21 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _invSrc = invSrcByPid[item.product_id];
   const inventoryBacked = !isBundle && !!_invSrc && _invSrc !== 'manual';
   const [trackInv, setTrackInv] = useState(item.track_inventory !== false);
-  const setDecoCharge = (on, amount) => {
-    const amt = Math.max(0, Number(amount != null ? amount : (decoUp || 5)) || 0);
-    const base = (Number(price) || 0) - (Number(decoUp) || 0); // price with any current charge removed
-    if (on) { setDecoUp(amt); setPrice(Number((base + amt).toFixed(2))); }
-    else { setDecoUp(0); setPrice(Number(Math.max(0, base).toFixed(2))); }
+  // Estimated NSA decoration cost — drives margin math and the price adjustment when the
+  // toggle is on. Rep-editable; the resulting price delta is stored as deco_upcharge.
+  const [decoCostEst, setDecoCostEst] = useState(5);
+  const setDecoCharge = (on, newCostStr) => {
+    const newCost = Math.max(0, Number(newCostStr != null ? newCostStr : decoCostEst) || 0);
+    if (newCostStr != null) setDecoCostEst(newCost);
+    const base = (Number(price) || 0) - (Number(decoUp) || 0); // price without any deco delta
+    if (on) {
+      // Increase price enough to maintain the current base margin (fall back to 45% target)
+      const baseMarginFrac = effCost != null && base > 0 ? (base - effCost) / base : null;
+      const targetFrac = baseMarginFrac != null ? Math.max(0.01, baseMarginFrac) : 0.45;
+      const newPrice = effCost != null ? Math.ceil((effCost + newCost) / (1 - targetFrac)) : base + newCost;
+      const delta = Math.max(0, newPrice - base);
+      setDecoUp(delta); setPrice(newPrice);
+    } else { setDecoUp(0); setPrice(Math.max(0, base)); }
   };
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
@@ -3751,7 +3761,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const effCost = (_editedCost != null && Number.isFinite(_editedCost)) ? _editedCost : garmentCost;
   const costDirty = onUpdateCost && !isBundle && (costInput.trim() === '' ? garmentCost != null : !(garmentCost != null && Number(costInput) === garmentCost));
   const decoIncluded = !isBundle && (decorations.length > 0 || isTeam);
-  const decoCost = decoIncluded ? 5 : 0;
+  const decoCost = decoIncluded ? decoCostEst : 0;
   const trueCost = (effCost != null ? effCost : 0) + decoCost;
   const priceNum = Number(price) || 0;
   const marginPct = (effCost != null && priceNum > 0) ? Math.round((1 - trueCost / priceNum) * 100) : null;
@@ -3890,22 +3900,23 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <div style={{ marginTop: 10, padding: '9px 12px', borderRadius: 9, border: '1px solid ' + (decoChargeOn ? '#bfdbfe' : '#e5e8ec'), background: decoChargeOn ? '#eff6ff' : '#fafbfc', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13, color: '#191919' }}>
                 <input type="checkbox" checked={decoChargeOn} onChange={(e) => setDecoCharge(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#2563eb' }} />
-                Decoration charge
+                Decoration cost
               </label>
               {decoChargeOn ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, color: '#334155' }}>
-                  + $<input className="form-input" type="number" step="0.01" min={0} value={decoUp} onChange={(e) => setDecoCharge(true, e.target.value)} style={{ width: 74 }} title="Amount added to the price to cover decorating this item" />
-                  <span style={{ color: '#64748b' }}>added to the price</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#334155', flexWrap: 'wrap' }}>
+                  <span style={{ color: '#64748b' }}>Est. deco cost</span>
+                  $<input className="form-input" type="number" step="0.01" min={0} value={decoCostEst} onChange={(e) => setDecoCharge(true, e.target.value)} style={{ width: 70 }} title="Estimated NSA cost to decorate this item — price is adjusted up to maintain margin" />
+                  {decoUp > 0 && <span style={{ color: '#2563eb', fontWeight: 600 }}>→ price +{money(decoUp)} to maintain margin</span>}
                 </span>
               ) : (
-                <span style={{ fontSize: 12, color: '#64748b' }}>Add ~$5 to the price when this item is decorated (covers deco on low-cost items like shorts).</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>Set an estimated decoration cost — the sale price will increase to maintain your margin.</span>
               )}
-              {!decoChargeOn && decoIncluded && <span style={{ fontSize: 11.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, padding: '2px 8px' }}>This item is decorated — add a charge?</span>}
+              {!decoChargeOn && decoIncluded && <span style={{ fontSize: 11.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 7, padding: '2px 8px' }}>This item is decorated — add a deco cost?</span>}
             </div>
           )}
           {!isBundle && (effCost != null
             ? <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5, color: '#64748b' }}>
-                <span>Cost <b style={{ color: '#191919' }}>{money(trueCost)}</b>{decoIncluded ? <span style={{ color: '#94a3b8' }}> (incl. ~{money(decoCost)} deco)</span> : null}</span>
+                <span>Cost <b style={{ color: '#191919' }}>{money(trueCost)}</b>{decoIncluded ? <span style={{ color: '#94a3b8' }}> (incl. ~{money(decoCost)} deco cost)</span> : null}</span>
                 <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>{marginPct != null ? marginPct + '% margin' : '— margin'}</span>
                 {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Set {money(target45)} (45%)</button>}
               </div>
