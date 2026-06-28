@@ -465,7 +465,11 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
           ? <Splash>No gear matches that search.</Splash>
           : (() => {
               const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(232px,1fr))', gap: 20 };
-              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+              const cardOf = ({ rep, rows }) => {
+                if (rep.kind === 'bundle' && rep.card_style === 'banner') return <BannerCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+                if (rep.kind === 'bundle' && rep.card_style === 'showcase') return <ShowcaseCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+                return <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+              };
               // When filtered to one category (or searching), show a single grid; the
               // full "All Gear" view splits into the store's category sections.
               const byCat = new Map();
@@ -800,11 +804,11 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: theme.warm, overflow: 'hidden' }}>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: theme.warm, overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '88%', height: '88%', objectFit: 'contain', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Stock / package badge — skewed −6°, top-right */}
@@ -819,6 +823,78 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
           <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
           <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.accentDeep }}>View →</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Package card: Banner style ─────────────────────────────────────────────
+// Full-width dark banner; text + price left, 2×2 item collage right.
+function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById = null }) {
+  const comps = bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
+    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; });
+  const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
+  // Pad to 4 tiles by repeating so the 2×2 grid is always filled.
+  const tiles = imgs.length ? Array.from({ length: 4 }, (_, i) => imgs[i % imgs.length]) : [];
+  const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
+  return (
+    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', position: 'relative', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, display: 'flex', alignItems: 'stretch', minHeight: 190, boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
+      <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
+      <div style={{ flex: 1, padding: 'clamp(22px,3vw,32px) clamp(24px,3vw,38px)', display: 'flex', flexDirection: 'column', justifyContent: 'center', position: 'relative', zIndex: 1, minWidth: 0 }}>
+        <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accent, marginBottom: 8 }}>★ Required for every player</div>
+        <div style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 'clamp(22px,2.6vw,30px)', textTransform: 'uppercase', color: '#fff', lineHeight: 1.05, marginBottom: 6 }}>{p.name}{comps.length ? ` — ${comps.length} Pieces, One Checkout` : ''}</div>
+        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.72)' }}>Pick a size for each item — the whole kit checks out together.</div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '16px 22px 16px 0', gap: 16, position: 'relative', zIndex: 1, flexShrink: 0 }}>
+        {tiles.length > 0 && (
+          <div style={{ width: 130, height: 130, display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', gap: 3, borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
+            {tiles.map((src, i) => (
+              <div key={i} style={{ overflow: 'hidden', background: 'rgba(255,255,255,0.08)' }}>
+                <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', padding: 4 }} />
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10 }}>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 38, color: '#fff', lineHeight: 1 }}>{money(priceOf(p))}</span>
+          <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', padding: '9px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Package card: Showcase style ───────────────────────────────────────────
+// Full-width card: dark header (name + price + CTA) above a row showing each
+// component item with its image and name. Shoppers see exactly what's in the kit.
+function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById = null }) {
+  const comps = bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
+    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; });
+  const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
+  return (
+    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
+      {/* Dark header */}
+      <div style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: '18px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          <div style={{ fontFamily: DISPLAY, fontSize: 10, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accent, marginBottom: 4 }}>★ Required for every player{comps.length ? ` — ${comps.length}-Piece Kit` : ''}</div>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 'clamp(20px,2.4vw,26px)', textTransform: 'uppercase', color: '#fff' }}>{p.name}</div>
+        </div>
+        <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 32, color: '#fff' }}>{money(priceOf(p))}</span>
+          <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
+        </div>
+      </div>
+      {/* Item row */}
+      <div style={{ display: 'flex', overflowX: 'auto' }}>
+        {comps.map((c, i) => (
+          <div key={i} style={{ flex: '1 1 0', minWidth: 120, padding: '14px 12px 16px', borderRight: i < comps.length - 1 ? `1px solid ${theme.line}` : 'none', textAlign: 'center' }}>
+            <div style={{ width: '100%', aspectRatio: '1 / 1', background: theme.warm, borderRadius: 4, overflow: 'hidden', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {c.img ? <img src={c.img} alt="" style={{ width: '80%', height: '80%', objectFit: 'contain', display: 'block' }} /> : <GarmentTile theme={theme} store={store} kind="top" />}
+            </div>
+            <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, lineHeight: 1.2 }}>{c.name}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1089,27 +1165,25 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
 
       {/* Item grid */}
       {components.length === 0 ? <Splash>This pack has no items configured yet.</Splash> : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 20, margin: '24px 0 96px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 20, margin: '24px 0 96px' }}>
           {components.map((c, i) => {
             const sizes = compSizes(c);
             const complete = isComplete(c);
             return (
-              <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderTop: `4px solid ${complete ? theme.accent : theme.line}`, borderRadius: 6, padding: 18, transition: 'border-color .2s ease' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 14, background: complete ? theme.primary : theme.paper, color: complete ? '#fff' : theme.subText, border: complete ? 'none' : `2px solid ${theme.line}` }}>{complete ? '✓' : i + 1}</div>
-                    <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText }}>Step {i + 1}</span>
-                  </div>
-                  <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', background: theme.primary, color: '#fff', padding: '4px 10px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Required</span></span>
+              <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
+                {/* Full-width item image */}
+                <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
+                  {compImg(c) ? <img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {/* Step badge — top-left */}
+                  <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
+                  {/* Required badge — top-right */}
+                  {c.size_required && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontWeight: 700, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', background: theme.primary, color: '#fff', padding: '4px 9px', transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Required</span></span>}
+                  {/* Completion bar at bottom of image */}
+                  <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 4, background: complete ? theme.accent : 'transparent', transition: 'background .25s ease' }} />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-                  <div style={{ width: 56, height: 56, borderRadius: 6, background: theme.warm, overflow: 'hidden', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
-                    {compImg(c) ? <img src={compImg(c)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink, lineHeight: 1.1 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{compName(c)}</div>
-                  </div>
-                </div>
+                {/* Info + selectors */}
+                <div style={{ padding: '14px 16px 18px', flex: 1, display: 'flex', flexDirection: 'column', gap: 0 }}>
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink, lineHeight: 1.1, marginBottom: 12 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{compName(c)}</div>
                 {c.size_required && sizes.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>Size</div>
@@ -1130,8 +1204,9 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
                     </div>}
                   </div>
                 )}
-                <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: complete ? STOCK.in : theme.accentDeep }}>
-                  {complete ? `✓ Selected${picks[c.id] ? ` · ${picks[c.id]}` : ''}` : (c.size_required ? 'Choose a size' : 'Add your details')}
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: complete ? STOCK.in : theme.accentDeep, marginTop: 4 }}>
+                    {complete ? `✓ Selected${picks[c.id] ? ` · ${picks[c.id]}` : ''}` : (c.size_required ? 'Choose a size' : 'Add your details')}
+                  </div>
                 </div>
               </div>
             );
