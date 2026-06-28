@@ -3965,7 +3965,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         </div>
         <div>
         <ItemSection title="Store placement" hint="· section, kit & whether it’s required">
-          <div style={{ display: ‘flex’, gap: 18, flexWrap: ‘wrap’, alignItems: ‘flex-end’ }}>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
               <datalist id={catListId}>{categorySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
@@ -3974,43 +3974,43 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
-            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith(‘tmp’)) onSave({ required: val }); }} /></div>
+            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
-          <div style={{ fontSize: 11, color: ‘#94a3b8’, marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit’s items Mandatory to require them at checkout.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
         </ItemSection>
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
           <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 130 }} /></Row>
-          <div style={{ fontSize: 11, color: ‘#94a3b8’, marginTop: 6 }}>Blank = auto-estimate by item type (~{estOz} oz).</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Blank = auto-estimate by item type (~{estOz} oz).</div>
         </ItemSection>
         </div>
       </div>
 
-        {isBundle && <div style={{ fontSize: 12, color: ‘#94a3b8’ }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
+        {isBundle && <div style={{ fontSize: 12, color: '#94a3b8' }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
       </React.Fragment>}
 
-      {page === ‘sizes’ && !isBundle && <React.Fragment>
-      <div style={{ display: ‘grid’, gridTemplateColumns: ‘repeat(auto-fit, minmax(300px, 1fr))’, gap: 16, alignItems: ‘start’ }}>
+      {page === 'sizes' && !isBundle && <React.Fragment>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
         {allSizes.length > 0 && (
           <ItemSection title="Sizes offered" hint="· tap to toggle which sizes appear on the storefront">
-            <div style={{ display: ‘flex’, gap: 7, flexWrap: ‘wrap’ }}>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
               {allSizes.map((sz) => { const on = offeredSizes.includes(sz); return (
-                <button key={sz} type="button" onClick={() => toggleSize(sz)} style={{ border: ‘1px solid ‘ + (on ? ‘#191919’ : ‘#d1d5db’), background: on ? ‘#191919’ : ‘#fff’, color: on ? ‘#fff’ : ‘#3A4150’, borderRadius: 8, padding: ‘5px 12px’, fontSize: 13, fontWeight: 700, cursor: ‘pointer’, minWidth: 40 }}>{sz}</button>
+                <button key={sz} type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
               ); })}
             </div>
-            {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: ‘#94a3b8’, marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(‘, ‘)}</div>}
+            {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
           </ItemSection>
         )}
         {inventoryBacked && (
           <ItemSection title="Inventory tracking" hint="· stop selling a size when it runs out">
-            <label style={{ display: ‘flex’, alignItems: ‘flex-start’, gap: 10, cursor: ‘pointer’ }}>
-              <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: ‘pointer’, accentColor: ‘#2563eb’, flexShrink: 0 }} />
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
               <span>
-                <span style={{ fontWeight: 700, fontSize: 13, color: ‘#191919’ }}>Follow vendor &amp; in-house stock</span>
-                <div style={{ fontSize: 12, color: ‘#64748b’, marginTop: 2, lineHeight: 1.5 }}>{trackInv
-                  ? ‘On — a size stops selling when it runs out of stock (and shows as sold out).’
-                  : ‘Off — every offered size keeps selling regardless of stock (made-to-order).’}</div>
+                <span style={{ fontWeight: 700, fontSize: 13, color: '#191919' }}>Follow vendor &amp; in-house stock</span>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{trackInv
+                  ? 'On — a size stops selling when it runs out of stock (and shows as sold out).'
+                  : 'Off — every offered size keeps selling regardless of stock (made-to-order).'}</div>
               </span>
             </label>
           </ItemSection>
