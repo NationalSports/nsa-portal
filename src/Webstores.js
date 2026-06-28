@@ -3921,6 +3921,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
+  const [cardStyle, setCardStyle] = useState(item.card_style || '');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
@@ -4073,7 +4074,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -4199,6 +4200,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
         </ItemSection>
+
+        {isBundle && (
+          <ItemSection title="Card style" hint="· how this package appears in the store grid">
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {[['', 'Standard card'], ['banner', 'Banner + collage'], ['showcase', 'Showcase (each item)']].map(([val, lbl]) => (
+                <button key={val} type="button" onClick={() => setCardStyle(val)} style={{ padding: '7px 14px', borderRadius: 6, border: '2px solid ' + (cardStyle === val ? '#191919' : '#d1d5db'), background: cardStyle === val ? '#191919' : '#fff', color: cardStyle === val ? '#fff' : '#374151', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{lbl}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Banner and Showcase styles span the full width of the store grid.</div>
+          </ItemSection>
+        )}
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
           <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 130 }} /></Row>
