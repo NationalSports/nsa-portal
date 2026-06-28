@@ -2835,8 +2835,12 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           : mode === 'bundle' && p.kind !== 'bundle'
           ? <input type="checkbox" checked={pkgSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => togglePkg(p)} title="Add to the package" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#4f46e5' }} />
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
-        <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
+          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color)).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+            <img key={i} src={decoUrlForColor(d, stock?.color)} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
+          ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
