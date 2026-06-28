@@ -66,7 +66,6 @@ function StoreStyles() {
           .sf-hero-grid{grid-template-columns:1fr !important}
           .sf-hero-collage{display:none !important}
           .sf-2col{grid-template-columns:1fr !important}
-          .sf-pack-wide{grid-column:auto !important;grid-template-columns:1fr !important}
         }
       `}</style>
     </>
@@ -110,7 +109,10 @@ function groupProducts(list) {
     if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
     byKey.get(k).push(p);
   }
-  return order.map((k) => { const rows = byKey.get(k); const rep = rows.find((r) => r.webstore_product_id === k) || rows[0]; return { key: k, rep, rows }; });
+  // The first row (lowest sort_order — the list is ordered by sort_order) is the primary: it
+  // supplies the card image and the default-selected color. Reordering colors in the builder
+  // changes which color leads here.
+  return order.map((k) => { const rows = byKey.get(k); return { key: k, rep: rows[0], rows }; });
 }
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
@@ -127,6 +129,11 @@ const sizeSoon = (p, sz) => foldedSoon(sz, (s) => _rawSizeSoon(p, s));
 const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
+// An item is inventory-tracked (the stock guard applies) only when it's stock-backed AND
+// hasn't opted out. Custom / made-to-order products (no inventory_source, or 'manual') are
+// never tracked — every offered size stays sellable. track_inventory=false opts a tracked
+// item out, so it keeps selling all sizes regardless of stock.
+const isTracked = (p) => p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
 // Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
 // (common in the Adidas feed) and squeeze the leftover separators/whitespace.
 function cleanDesc(s) {
@@ -635,6 +642,7 @@ function GarmentTile({ theme, store, kind = 'top', badge, catLabel }) {
 function stockBadge(p, theme) {
   const ink = theme ? theme.ink : NEUTRAL.ink;
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: ink };
+  if (!isTracked(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked
   if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: STOCK.in };
   if (isIncoming(p)) { return { text: 'Low stock', color: '#fff', bg: STOCK.low }; }
   return { text: 'Sold out', color: '#fff', bg: theme ? theme.primary : '#8C1D40' };
@@ -754,37 +762,6 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
   const catLabel = (p.store_category || p.category || '').trim();
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
-  // A package is the marquee offer — render it double-wide (spans two grid columns)
-  // with a horizontal media + info layout so it reads as a featured bundle, not just
-  // another tile. Collapses back to a single column on narrow screens (.sf-pack-wide).
-  if (isBundle) {
-    const n = comps.length;
-    const pieceNames = comps.map((c) => c.name).filter(Boolean);
-    return (
-      <div className="sf-card sf-pack-wide" onClick={go} style={{ gridColumn: 'span 2', cursor: 'pointer', position: 'relative', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.05fr)', background: theme.paper, border: `1.5px solid ${theme.primary}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 6px 22px rgba(25,40,83,0.12)' }}>
-        <div className="sf-pack-media" style={{ position: 'relative', background: theme.warm, overflow: 'hidden', aspectRatio: '1 / 1' }}>
-          {hasCollage
-            ? <BundleCollage comps={comps} theme={theme} />
-            : p.image_front_url
-              ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
-          <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 'clamp(18px,2.4vw,30px)', borderLeft: `4px solid ${theme.accent}` }}>
-          <span style={{ alignSelf: 'flex-start', fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: '#fff', background: theme.primary, padding: '4px 11px', transform: 'skewX(-6deg)', borderRadius: 2, marginBottom: 12 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>★ The Package</span></span>
-          <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 800, fontSize: 'clamp(22px,2.6vw,30px)', letterSpacing: 0.3, lineHeight: 1.06, color: theme.ink }}>{p.name}</div>
-          {n > 0 && <div style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: theme.accentDeep, marginTop: 8 }}>{n} pieces · one price, one checkout</div>}
-          {pieceNames.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 14 }}>
-            {pieceNames.slice(0, 5).map((nm, i) => <span key={i} style={{ fontSize: 12, fontWeight: 600, color: theme.subText, background: theme.warm, border: `1px solid ${theme.line}`, borderRadius: 999, padding: '4px 11px' }}>{nm}</span>)}
-          </div>}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 'clamp(16px,2vw,22px)', flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: DISPLAY, fontSize: 30, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
-            <span className="sf-btn" style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: theme.accentDeep, padding: '11px 22px', borderRadius: 4, transform: 'skewX(-3deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Shop the Pack →</span></span>
-          </div>
-        </div>
-      </div>
-    );
-  }
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: theme.warm, overflow: 'hidden' }}>
@@ -853,6 +830,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
+    if (!isTracked(c)) {
+      // Sizes the rep explicitly offered that aren't part of the catalog product's own
+      // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
+      // made-to-order item these always sell — checkout's stock guard skips them too.
+      const prodScale = foldScale(c.available_sizes);
+      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.some((s) => String(s).toUpperCase() === String(regularSize(o)).toUpperCase()));
+      return [...scale, ...extras]; // not inventory-tracked → every offered size sells
+    }
     const avail = scale.filter((s) => sizeSellable(c, s));
     return avail.length ? avail : (isIncoming(c) ? scale : avail);
   };
@@ -860,7 +845,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
-    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = isTracked(c) ? (q <= 0 && !soon && !isIncoming(c)) : false; const up = sizeUp(c, sz);
     return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
       style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
   });
@@ -1124,10 +1109,10 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
           <div style={{ width: 170, maxWidth: '60vw', height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.18)', overflow: 'hidden', marginBottom: 8 }}>
             <div style={{ width: `${Math.round(pct * 100)}%`, height: '100%', background: theme.accent, borderRadius: 999, transition: 'width .3s ease' }} />
           </div>
-          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{!isOpen ? 'Store not open yet' : canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
         </div>
         <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ border: 'none', borderRadius: 4, padding: '15px 28px', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: 1.2, textTransform: 'uppercase', cursor: canAdd ? 'pointer' : 'not-allowed', background: canAdd ? theme.accent : 'rgba(255,255,255,0.16)', color: canAdd ? theme.ink : 'rgba(255,255,255,0.5)' }}>
-          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra)}`}</span>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra)}`}</span>
         </button>
       </div>
     </div>
@@ -1265,6 +1250,21 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
+  // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
+  // we can source tax (a complete ship address, or pickup which sources to NSA's location).
+  const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : 'pickup';
+  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty]));
+  useEffect(() => {
+    if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, couponCode: coupon ? coupon.code : null });
+      if (!cancelled && r && r.totals) setTaxInfo(r.totals);
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_shipKey, _cartKey, coupon && coupon.code, store.slug]);
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
@@ -1358,8 +1358,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
       {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>Shipping (flat)</span><span>{money(ship_)}</span></div>}
       {coupon && coupon.kind === 'free_shipping' && shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
-      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
-        <span>Total</span><span>{money(payable)}</span>
+      {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
+      {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
+      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0 || taxInfo) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+        <span>Total</span><span>{money(payable + (taxInfo ? Number(taxInfo.tax) || 0 : 0))}</span>
       </div>
 
       {comped ? (
