@@ -61,8 +61,9 @@ async function notifyStoreClosed(admin, store, opts = {}) {
     if (error) console.error('[webstore-close] todo insert failed:', error.message);
   }
 
-  // 2. Email the rep + assigned CSR.
-  const ids = [store.rep_id, store.csr_id].filter(Boolean);
+  // 2. Email the assigned CSR — they process the closed store. Fall back to the
+  //    rep only when no CSR is assigned (the rep otherwise gets the daily digest).
+  const ids = [store.csr_id || store.rep_id].filter(Boolean);
   let emailed = [];
   if (ids.length && brevoKey) {
     const { data: members } = await admin.from('team_members').select('id,name,email').in('id', ids);
