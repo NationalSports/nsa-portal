@@ -4274,6 +4274,15 @@ const productMatchesColors = (productColor, words) => {
   const primary = String(productColor || '').split(/[/,|]| - /)[0].toLowerCase();
   return words.some((w) => primary.includes(w));
 };
+// A small swatch hex for a catalog color name — match its primary segment to a color
+// family and use that family's representative rgb. Falls back to a neutral grey.
+const _rgbToHex = (rgb) => '#' + rgb.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('');
+const colorNameToHex = (name) => {
+  const primary = String(name || '').split(/[/,|]| - /)[0].trim().toLowerCase();
+  if (!primary) return '#cbd5e1';
+  for (const f of _COLOR_FAMILIES) { if (f.words.some((w) => primary.includes(w))) return _rgbToHex(f.rgb); }
+  return '#cbd5e1';
+};
 
 const TEMPLATE_SPORTS = ['Baseball', 'Softball', 'Football', 'Basketball', 'Volleyball', 'Soccer', 'Wrestling', 'Track & Field', 'Cross Country', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swim', 'Cheer', 'Band', 'General / Spirit'];
 
@@ -5206,12 +5215,13 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   // colors. The rep prefers an image + in-stock; other colorways are added later from the
   // item editor's "Other colors of this garment".
   const styleKey = (r) => (r.name || r.sku || r.id || '').trim().toLowerCase();
-  const colorCountByStyle = matched.reduce((m, r) => { const k = styleKey(r); m[k] = (m[k] || 0) + 1; return m; }, {});
+  // Pick the colorway that fronts a style's card: a favorited one first, then the
+  // school's own colors (so a navy school sees the navy hood, not the green one), then
+  // image, then stock. Shared by the rep dedupe and the on-card color swatches.
+  const repScore = (x) => (favUnion.has(favStyleKey(x)) ? 16 : 0) + (productMatchesColors(x.color, colorWords) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
   const dedupeByStyle = (rows) => {
     const map = new Map();
-    // A favorited colorway wins the card so the star shows on the rep; then image, then stock.
-    const score = (x) => (favUnion.has(favStyleKey(x)) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
-    for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || score(r) > score(cur)) map.set(k, r); }
+    for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || repScore(r) > repScore(cur)) map.set(k, r); }
     return [...map.values()];
   };
   let styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
@@ -5221,7 +5231,20 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const allStyleN = new Set(matched.map(styleKey)).size;
   const inStockStyleN = new Set(matched.filter(wellStocked).map(styleKey)).size;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selProducts = styles.filter((p) => selected.has(p.id));
+  // All sellable colorways per style (one entry per color, best image/stock kept), so a
+  // card can offer color swatches inline — the rep no longer has to "add later" to swap
+  // a green hood for the navy one. Sorted school-color-first to match the card's default.
+  const swatchPool = inStockOnly ? matched.filter(wellStocked) : matched;
+  const colorwaysByStyle = (() => {
+    const m = new Map();
+    for (const r of swatchPool) { const k = styleKey(r); if (!m.has(k)) m.set(k, new Map()); const byColor = m.get(k); const ck = (r.color || '').trim().toLowerCase() || ('sku:' + (r.sku || '').toLowerCase()); const cur = byColor.get(ck); if (!cur || repScore(r) > repScore(cur)) byColor.set(ck, r); }
+    const out = new Map();
+    for (const [k, byColor] of m) out.set(k, [...byColor.values()].sort((a, b) => repScore(b) - repScore(a) || String(a.color || '').localeCompare(String(b.color || ''))));
+    return out;
+  })();
+  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
+  const rowById = new Map(swatchPool.map((r) => [r.id, r]));
+  const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
 
   const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
     <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
@@ -5284,7 +5307,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onDetails={onPick ? (row) => onPick(row || p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -5392,37 +5415,56 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
 // "Details" opens the per-item editor for price/fundraising/personalization.
-function PickerCard({ p, selected, moreColors = 0, fav = false, team = false, canFav = false, curate = false, onToggleFav, onToggle, onDetails }) {
+function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onDetails }) {
   const [imgErr, setImgErr] = useState(false);
-  const st = p._stock || { units: 0, sizes: [], incoming: false };
+  const ways = colorways.length ? colorways : [p];
+  // Which colorway the card is showing / will add. Defaults to the rep (ways[0] = the
+  // school-color-preferred pick). Picking a swatch swaps the image, price, sizes & stock.
+  const [activeId, setActiveId] = useState(null);
+  const active = ways.find((c) => c.id === activeId) || p;
+  const isSel = !!selectedIds && selectedIds.has(active.id);
+  useEffect(() => { setImgErr(false); }, [active.id]);
+  const st = active._stock || { units: 0, sizes: [], incoming: false };
   const out = (st.units || 0) <= 0;
   // Prefer the live in-stock sizes; fall back to the catalog's listed sizes.
-  const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(p.available_sizes) ? p.available_sizes : []);
+  const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(active.available_sizes) ? active.available_sizes : []);
+  // Switch the shown color. If the old color was already selected, move the selection
+  // to the newly-picked one so the basket follows what the rep is looking at.
+  const pickColor = (c) => { if (c.id === active.id) return; if (isSel) { onToggleId(active.id); onToggleId(c.id); } setActiveId(c.id); };
+  const toggle = () => onToggleId(active.id);
   return (
-    <div className="ai-card" onClick={onToggle} role="button" aria-pressed={selected} style={{ position: 'relative', cursor: 'pointer', outline: selected ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
-      <div onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (selected ? '#2563eb' : '#cbd5e1'), background: selected ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{selected ? '✓' : ''}</div>
+    <div className="ai-card" onClick={toggle} role="button" aria-pressed={isSel} style={{ position: 'relative', cursor: 'pointer', outline: isSel ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
+      <div onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (isSel ? '#2563eb' : '#cbd5e1'), background: isSel ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{isSel ? '✓' : ''}</div>
       {canFav && (
         <button type="button" onClick={(e) => { e.stopPropagation(); onToggleFav && onToggleFav(); }} title={fav ? (team ? 'Shared team favorite' : 'Your favorite') : (curate ? 'Add to the shared list' : 'Add to your favorites')}
           style={{ position: 'absolute', top: 8, left: 40, zIndex: 2, width: 26, height: 26, borderRadius: 7, border: 'none', background: 'rgba(255,255,255,.92)', cursor: 'pointer', fontSize: 16, lineHeight: '26px', padding: 0, color: fav ? '#f59e0b' : '#b6bcc6', boxShadow: '0 1px 3px rgba(0,0,0,.12)' }}>{fav ? '★' : '☆'}</button>
       )}
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
-        {p.image_front_url && !imgErr
-          ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
+        {active.image_front_url && !imgErr
+          ? <img src={active.image_front_url} alt={active.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
-        {p.retail_price != null && (
-          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</span>
+        {active.retail_price != null && (
+          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(active.retail_price)}</span>
         )}
         {out && <span style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
-          {p.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
-          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
+          {active.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{active.brand}</div>}
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{active.name || active.sku}</div>
           {team && <span style={{ fontSize: 10, fontWeight: 800, color: '#7c3aed', background: '#ede9fe', borderRadius: 5, padding: '1px 6px', marginTop: 3, display: 'inline-block' }}>★ Team pick</span>}
-          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
-          {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
-          {moreColors > 0 && <div style={{ fontSize: 11, color: '#6A7180', marginTop: 3, fontWeight: 600 }}>+{moreColors} more color{moreColors === 1 ? '' : 's'} · add later</div>}
+          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[active.category, active.color].filter(Boolean).join(' · ') || ' '}</div>
+          {active.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{active.sku}</div>}
         </div>
+        {ways.length > 1 && (
+          <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }} title="Pick a color — this is the one added to the store">
+            {ways.slice(0, 12).map((c) => { const on = c.id === active.id; const isSchool = schoolWords.length > 0 && productMatchesColors(c.color, schoolWords); return (
+              <button key={c.id} type="button" title={(c.color || c.sku || '') + (isSchool ? ' (school color)' : '')} onClick={() => pickColor(c)}
+                style={{ width: 20, height: 20, borderRadius: '50%', padding: 0, cursor: 'pointer', background: colorNameToHex(c.color), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.18)', border: on ? '2px solid #2563eb' : (isSchool ? '2px solid #f59e0b' : '2px solid transparent') }} />
+            ); })}
+            {ways.length > 12 && <span style={{ fontSize: 11, color: '#9AA1AC', fontWeight: 700 }}>+{ways.length - 12}</span>}
+          </div>
+        )}
         <div style={{ fontSize: 11.5, fontWeight: 800, color: st.units > 0 ? '#166534' : st.incoming ? '#92400e' : '#b91c1c' }}>
           {st.units > 0 ? `${st.units} in stock` : st.incoming ? 'Incoming only' : 'Out of stock'}
         </div>
@@ -5433,8 +5475,8 @@ function PickerCard({ p, selected, moreColors = 0, fav = false, team = false, ca
           </div>
         )}
         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
-          <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: selected ? '#dbeafe' : '#191919', color: selected ? '#1d4ed8' : '#fff' }}>{selected ? '✓ Selected' : 'Select'}</button>
-          {onDetails && <button type="button" onClick={(e) => { e.stopPropagation(); onDetails(); }} title="Set price, fundraising & options" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Details →</button>}
+          <button type="button" onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: isSel ? '#dbeafe' : '#191919', color: isSel ? '#1d4ed8' : '#fff' }}>{isSel ? '✓ Selected' : 'Select'}</button>
+          {onDetails && <button type="button" onClick={(e) => { e.stopPropagation(); onDetails(active); }} title="Set price, fundraising & options" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Details →</button>}
         </div>
       </div>
     </div>
