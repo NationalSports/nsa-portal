@@ -66,6 +66,7 @@ function StoreStyles() {
           .sf-hero-grid{grid-template-columns:1fr !important}
           .sf-hero-collage{display:none !important}
           .sf-2col{grid-template-columns:1fr !important}
+          .sf-pack-wide{grid-column:auto !important;grid-template-columns:1fr !important}
         }
       `}</style>
     </>
@@ -753,6 +754,37 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
   const catLabel = (p.store_category || p.category || '').trim();
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
+  // A package is the marquee offer — render it double-wide (spans two grid columns)
+  // with a horizontal media + info layout so it reads as a featured bundle, not just
+  // another tile. Collapses back to a single column on narrow screens (.sf-pack-wide).
+  if (isBundle) {
+    const n = comps.length;
+    const pieceNames = comps.map((c) => c.name).filter(Boolean);
+    return (
+      <div className="sf-card sf-pack-wide" onClick={go} style={{ gridColumn: 'span 2', cursor: 'pointer', position: 'relative', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.05fr)', background: theme.paper, border: `1.5px solid ${theme.primary}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 6px 22px rgba(25,40,83,0.12)' }}>
+        <div className="sf-pack-media" style={{ position: 'relative', background: theme.warm, overflow: 'hidden', aspectRatio: '1 / 1' }}>
+          {hasCollage
+            ? <BundleCollage comps={comps} theme={theme} />
+            : p.image_front_url
+              ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
+          <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 'clamp(18px,2.4vw,30px)', borderLeft: `4px solid ${theme.accent}` }}>
+          <span style={{ alignSelf: 'flex-start', fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: '#fff', background: theme.primary, padding: '4px 11px', transform: 'skewX(-6deg)', borderRadius: 2, marginBottom: 12 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>★ The Package</span></span>
+          <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 800, fontSize: 'clamp(22px,2.6vw,30px)', letterSpacing: 0.3, lineHeight: 1.06, color: theme.ink }}>{p.name}</div>
+          {n > 0 && <div style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: theme.accentDeep, marginTop: 8 }}>{n} pieces · one price, one checkout</div>}
+          {pieceNames.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 14 }}>
+            {pieceNames.slice(0, 5).map((nm, i) => <span key={i} style={{ fontSize: 12, fontWeight: 600, color: theme.subText, background: theme.warm, border: `1px solid ${theme.line}`, borderRadius: 999, padding: '4px 11px' }}>{nm}</span>)}
+          </div>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 'clamp(16px,2vw,22px)', flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: DISPLAY, fontSize: 30, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
+            <span className="sf-btn" style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: '#fff', background: theme.accentDeep, padding: '11px 22px', borderRadius: 4, transform: 'skewX(-3deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Shop the Pack →</span></span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: theme.warm, overflow: 'hidden' }}>
