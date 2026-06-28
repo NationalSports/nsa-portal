@@ -1583,7 +1583,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
     const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, rec); };
+    // Garment mockups — attach each ordered product's store photo to the SO art,
+    // keyed by sku|color (mirrors the OMG store→SO `item_mockups` mapping in
+    // App.js), so the Art Dashboard / production sees the garment proof, not just
+    // the bare logo. The order line captured the storefront image at purchase;
+    // fall back to the catalog product photo.
+    const catImgByPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.image_url && !catImgByPid[c.product_id]) catImgByPid[c.product_id] = c.image_url; });
+    const itemMockups = {};
+    lines.forEach((i) => {
+      const sku = i.sku; if (!sku) return;
+      const img = i.image_url || catImgByPid[i.product_id] || '';
+      if (!img) return;
+      const key = sku + '|' + (i.color || '');
+      const bucket = (itemMockups[key] = itemMockups[key] || []);
+      if (!bucket.includes(img)) bucket.push(img);
+    });
+    // Every art file carries the per-garment mockups (production filters by the
+    // job's SKUs, same as OMG). Merge so library art keeps its own mockups too.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}), ...itemMockups } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
