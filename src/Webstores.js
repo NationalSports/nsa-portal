@@ -3101,7 +3101,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -3794,7 +3794,7 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
   );
 }
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onEditItem, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
@@ -4188,8 +4188,9 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         {isBundle && (() => {
           const myItems = (bundleItems || []).filter((b) => b.bundle_id === item.id);
-          const inBundle = new Set(myItems.map((b) => b.webstore_product_id).filter(Boolean));
-          const eligible = (catalog || []).filter((c) => c.kind === 'single' && !inBundle.has(c.id));
+          // Any single in the store can be added — including ones already in the package
+          // (a 2nd pair of shorts) and archived ones (kept alive only inside the package).
+          const eligible = (catalog || []).filter((c) => c.kind === 'single');
           const doAddItem = () => {
             if (!bundleAddSelId || !onAddBundleItem) return;
             const picked = (catalog || []).find((c) => c.id === bundleAddSelId);
@@ -4202,7 +4203,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             setAddingToBundle(false);
           };
           return (
-            <ItemSection title="Items in this package" hint="· add or remove items">
+            <ItemSection title="Items in this package" hint="· stays linked — edit an item and the package follows">
               {myItems.length === 0
                 ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '10px 12px', border: '1.5px dashed #d7dbe2', borderRadius: 8, marginBottom: 8 }}>No items yet — add from the store below.</div>
                 : <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -4210,6 +4211,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                       const c = (catalog || []).find((x) => x.id === b.webstore_product_id) || {};
                       const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || b.sku || 'Item';
                       const img = c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url);
+                      const archived = c.active === false;
+                      const canEdit = !!(c.id && onEditItem);
                       return (
                         <div key={b.id} style={{ width: 120, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', position: 'relative', background: '#fff' }}>
                           {onRemoveBundleItem && <button type="button" title="Remove from package" onClick={() => {
@@ -4217,11 +4220,12 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                             const removed = Number((catalog || []).find((x) => x.id === b.webstore_product_id)?.retail_price) || 0;
                             if (removed > 0 && onSave) { const np = Math.max(0, (Number(price) || 0) - removed); setPrice(np); onSave({ retail_price: np }); }
                           }} style={{ position: 'absolute', top: 4, right: 4, width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 12, lineHeight: '16px', padding: 0, textAlign: 'center', zIndex: 1 }}>×</button>}
-                          <div style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center' }}>
+                          {archived && <span style={{ position: 'absolute', top: 4, left: 4, fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 5px', zIndex: 1 }}>Archived</span>}
+                          <div onClick={canEdit ? () => onEditItem(c.id) : undefined} title={canEdit ? 'Edit this item' : undefined} style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
                             {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
                           </div>
                           <div style={{ padding: '5px 8px 7px' }}>
-                            <div style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={nm}>{nm}</div>
+                            <div onClick={canEdit ? () => onEditItem(c.id) : undefined} style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: canEdit ? '#2563eb' : '#191919', cursor: canEdit ? 'pointer' : 'default' }} title={nm}>{nm}{canEdit ? ' · edit' : ''}</div>
                             {Number(b.qty) > 1 && <div style={{ fontSize: 11, color: '#64748b' }}>Qty {b.qty}</div>}
                           </div>
                         </div>
@@ -4233,13 +4237,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 ? <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                     <select className="form-input" value={bundleAddSelId} onChange={(e) => setBundleAddSelId(e.target.value)} style={{ flex: '1 1 200px', fontSize: 13 }}>
                       <option value="">— pick an item —</option>
-                      {eligible.map((c) => { const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku; return <option key={c.id} value={c.id}>{nm}{c.retail_price ? ` · $${Number(c.retail_price).toFixed(2)}` : ''}</option>; })}
+                      {eligible.map((c) => { const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku; return <option key={c.id} value={c.id}>{nm}{c.active === false ? ' (archived)' : ''}{c.retail_price ? ` · $${Number(c.retail_price).toFixed(2)}` : ''}</option>; })}
                     </select>
                     <button className="btn btn-sm btn-primary" disabled={!bundleAddSelId} onClick={doAddItem}>Add</button>
                     <button className="btn btn-sm btn-secondary" onClick={() => { setAddingToBundle(false); setBundleAddSelId(''); }}>Cancel</button>
                   </div>
                 : eligible.length > 0 && <button className="btn btn-sm btn-secondary" style={{ marginTop: 4 }} onClick={() => setAddingToBundle(true)}>+ Add item from store</button>
               }
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Archive a standalone item to take it off the store grid while keeping it sellable inside this package. Editing the (archived) item still updates the package.</div>
             </ItemSection>
           );
         })()}
