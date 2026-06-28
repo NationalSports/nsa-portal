@@ -5897,7 +5897,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [addOpen, setAddOpen] = useState(false);
   const [pickOpen, setPickOpen] = useState(true); // collapse the logo-picker section
   const [upBusy, setUpBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
+  const emptyRef = useRef();
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -5961,10 +5963,25 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
     setApplying(false);
   };
 
-  if (!libraryArt.length) {
-    return <div className="card"><div style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-      No art in this team's library yet. Add artwork to the customer's art library (it's shared with order artwork), then it'll show here to apply to the store.
-    </div></div>;
+  if (!libraryArt.length && !(storeArt || []).length) {
+    return (
+      <div className="card">
+        <div
+          onClick={() => !upBusy && emptyRef.current && emptyRef.current.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadArt(f); }}
+          style={{ margin: 16, padding: '40px 24px', textAlign: 'center', border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), borderRadius: 14, background: dragOver ? '#eff6ff' : '#fafbfc', cursor: upBusy ? 'wait' : 'pointer' }}>
+          <input ref={emptyRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
+          <div style={{ fontSize: 34, marginBottom: 8 }}>🎨</div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: '#191919', marginBottom: 6 }}>Add artwork to this store</div>
+          <div style={{ fontSize: 13, color: '#64748b', maxWidth: 460, margin: '0 auto 16px', lineHeight: 1.55 }}>
+            Drag a logo here, or click to upload (PNG, SVG). It's saved to this team's art library <i>and</i> this store — then set it up right here: attach a web‑ready cutout, place it, recolor, and apply to your items. No need to leave this page.
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload artwork'}</button>
+        </div>
+      </div>
+    );
   }
 
   return (
