@@ -827,7 +827,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
-    if (!isTracked(c)) return scale; // not inventory-tracked → every offered size sells
+    if (!isTracked(c)) {
+      // Sizes the rep explicitly offered that aren't part of the catalog product's own
+      // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
+      // made-to-order item these always sell — checkout's stock guard skips them too.
+      const prodScale = foldScale(c.available_sizes);
+      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.some((s) => String(s).toUpperCase() === String(regularSize(o)).toUpperCase()));
+      return [...scale, ...extras]; // not inventory-tracked → every offered size sells
+    }
     const avail = scale.filter((s) => sizeSellable(c, s));
     return avail.length ? avail : (isIncoming(c) ? scale : avail);
   };

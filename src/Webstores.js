@@ -3776,7 +3776,23 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
   );
+  const sortSizes = (arr) => [...new Set(arr)].sort((a, b) => sizeRank(a) - sizeRank(b));
+  // The full set of chips shown on the Sizes tab: the product's scale plus any sizes the
+  // rep has added (e.g. 3XL/4XL, or a whole footwear scale). `offeredSizes` is which of
+  // these are toggled on (sold). Extras (not in the product scale) can be removed outright.
+  const [sizeList, setSizeList] = useState(() => sortSizes([...allSizes, ...(Array.isArray(item.sizes_offered) ? item.sizes_offered : [])]));
+  const [newSize, setNewSize] = useState('');
   const toggleSize = (sz) => setOfferedSizes((cur) => cur.includes(sz) ? cur.filter((s) => s !== sz) : [...cur, sz]);
+  const addSizeChip = () => {
+    const s = newSize.trim().toUpperCase();
+    setNewSize('');
+    if (!s || sizeList.includes(s)) return;
+    setSizeList((cur) => sortSizes([...cur, s]));
+    setOfferedSizes((cur) => cur.includes(s) ? cur : [...cur, s]);
+  };
+  const removeSizeChip = (sz) => { setSizeList((cur) => cur.filter((s) => s !== sz)); setOfferedSizes((cur) => cur.filter((s) => s !== sz)); };
+  const applySizePreset = (preset) => { const sz = sortSizes(preset.sizes); setSizeList(sz); setOfferedSizes(sz); };
+  const sizePresetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizeList.length && sortSizes(p.sizes).every((s, i) => s === sizeList[i]))?.label || 'Custom';
   // Singles fall back to the store-wide fundraising rule (10% + round-up etc.) when no
   // per-item amount is set, so "Shopper pays" matches what families are actually charged.
   const storeFundAmt = isBundle ? 0 : storeFundAmount(price, storeFund);
@@ -3886,9 +3902,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
       // Drop a perso placement if its toggle was turned back off.
       fields.decorations = decorations.filter((d) => !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName));
-      // null = every available size (default). Store a subset only when one is set.
-      const _allOn = allSizes.length === 0 || offeredSizes.length === 0 || offeredSizes.length >= allSizes.length;
-      fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));
+      // null = the product's full scale, unchanged (default). Persist an explicit list
+      // whenever the rep narrowed it OR added/swapped sizes (3XL/4XL, footwear, etc.).
+      const _off = sizeList.filter((s) => offeredSizes.includes(s));
+      const _sameAsScale = _off.length === allSizes.length && allSizes.every((s) => _off.includes(s));
+      fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
       // Inventory tracking only matters for stock-backed items; persist the choice there.
       if (inventoryBacked) fields.track_inventory = !!trackInv;
     }
@@ -3992,16 +4010,27 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'sizes' && !isBundle && <React.Fragment>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        {allSizes.length > 0 && (
-          <ItemSection title="Sizes offered" hint="· tap to toggle which sizes appear on the storefront">
-            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-              {allSizes.map((sz) => { const on = offeredSizes.includes(sz); return (
-                <button key={sz} type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
-              ); })}
-            </div>
-            {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
-          </ItemSection>
-        )}
+        <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Size style</span>
+            <select className="form-input" value={sizePresetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) applySizePreset(p); }} style={{ minWidth: 190, fontSize: 13 }}>
+              {sizePresetLabel === 'Custom' && <option value="Custom">Custom</option>}
+              {SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
+            </select>
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>Switching replaces the sizes below.</span>
+          </div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
+            {sizeList.map((sz) => { const on = offeredSizes.includes(sz); const extra = !allSizes.includes(sz); return (
+              <span key={sz} style={{ position: 'relative', display: 'inline-flex' }}>
+                <button type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
+                {extra && <button type="button" title="Remove this size" onClick={() => removeSizeChip(sz)} style={{ position: 'absolute', top: -7, right: -7, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 16, height: 16, fontSize: 11, lineHeight: '14px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
+              </span>
+            ); })}
+            <input className="form-input" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') { if (newSize.trim()) { e.preventDefault(); addSizeChip(); } } }} onBlur={addSizeChip} placeholder="+ size" style={{ width: 78, fontSize: 13 }} title="Type a size (e.g. 3XL) and press Enter or Tab" />
+          </div>
+          {offeredSizes.length > 0 && sizeList.some((s) => !offeredSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {sizeList.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
+          {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
+        </ItemSection>
         {inventoryBacked && (
           <ItemSection title="Inventory tracking" hint="· stop selling a size when it runs out">
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
