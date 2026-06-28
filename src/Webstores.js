@@ -1131,6 +1131,24 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Item updated'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Bulk-edit catalog items. Accepts rows of { id, fields }; identical patches are
+  // collapsed into one update so price/category/availability changes hit in a few
+  // queries, while a per-item patch (e.g. % fundraising) still works. One reload.
+  const bulkUpdateItems = useCallback(async (rows) => {
+    const list = (rows || []).filter((r) => r && r.id && r.fields);
+    if (!list.length) return 0;
+    const groups = new Map();
+    for (const r of list) { const k = JSON.stringify(r.fields); if (!groups.has(k)) groups.set(k, { fields: r.fields, ids: [] }); groups.get(k).ids.push(r.id); }
+    let n = 0;
+    for (const { fields, ids } of groups.values()) {
+      const { error } = await supabase.from('webstore_products').update(fields).in('id', ids);
+      if (error) { flash('Bulk update failed: ' + error.message); loadDetail(sel); return n; }
+      n += ids.length;
+    }
+    flash(`Updated ${n} item${n === 1 ? '' : 's'}`); loadDetail(sel);
+    return n;
+  }, [sel, flash, loadDetail]);
+
   // Reprice every single (with a known cost) to a target margin: price = trueCost / (1 - m),
   // where trueCost = garment cost + ~$5 decoration when the item is decorated. One reload.
   const priceAllToMargin = useCallback(async (pct) => {
@@ -1735,7 +1753,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
@@ -2435,7 +2453,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -2568,7 +2586,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -2670,9 +2688,16 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onReorder, onMove, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
+  const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
+  const selMode = mode === 'select';
+  const toggleBulk = (id) => setBulkSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [bulkPrice, setBulkPrice] = useState('');
+  const [bulkFund, setBulkFund] = useState('');
+  const [bulkFundMode, setBulkFundMode] = useState('$'); // '$' flat | '%' of price
+  const [bulkCat, setBulkCat] = useState('');
   const pkgSel = new Set(pkgItems.map((c) => c.webstore_product_id));
   const togglePkg = (p) => setPkgItems((cur) => {
     if (cur.some((c) => c.webstore_product_id === p.id)) return cur.filter((c) => c.webstore_product_id !== p.id);
@@ -2712,6 +2737,30 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
 
+  // ── Bulk edit (Select mode): tick items on the left, then act on them all at once.
+  // Price/fundraising apply to the card's priced (representative) row; category &
+  // availability apply to the whole color group so a hidden item hides every variant.
+  const allCats = [...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean)])].sort();
+  const groupRowIds = (repId) => (groups.find((g) => g.rep.id === repId)?.rows || []).map((r) => r.id);
+  const applyBulk = async (fields, expand) => {
+    const ids = [...bulkSel].filter((id) => repsList.some((r) => r.id === id));
+    if (!ids.length || !onBulkUpdate) return;
+    const rows = expand ? ids.flatMap((id) => groupRowIds(id).map((rid) => ({ id: rid, fields }))) : ids.map((id) => ({ id, fields }));
+    await onBulkUpdate(rows);
+  };
+  const applyBulkFund = async () => {
+    const v = Number(bulkFund);
+    if (!(v >= 0) || !onBulkUpdate) return;
+    const rows = [...bulkSel].map((id) => {
+      const rep = repsList.find((r) => r.id === id);
+      if (!rep) return null;
+      const amt = bulkFundMode === '%' ? Math.round((Number(rep.retail_price) || 0) * v) / 100 : v;
+      return { id, fields: { fundraise_amount: amt } };
+    }).filter(Boolean);
+    if (rows.length) await onBulkUpdate(rows);
+    setBulkFund('');
+  };
+
   // ── Category sections (side list): group cards by their category, with "+ Category"
   // adding a (possibly empty) section you drag cards into. Dropping a card on a section
   // header sets its category; a card with no category sits under "Uncategorized". ──
@@ -2735,23 +2784,27 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     const sel = editId === p.id;
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
+    const archived = p.active === false;
+    const bulkOn = selMode && bulkSel.has(p.id);
     return (
-      <div key={p.id} onClick={() => setEditId(p.id)}
+      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : setEditId(p.id))}
         onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
         style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
-          borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
-          background: sel ? '#f1f5f9' : '#fff',
+          borderLeft: bulkOn ? '3px solid #2563eb' : sel ? '3px solid #191919' : '3px solid transparent',
+          background: bulkOn ? '#eef2ff' : sel ? '#f1f5f9' : '#fff',
           borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f4f6f9',
           borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
-          opacity: dragId === p.id ? 0.4 : 1 }}>
-        {mode === 'bundle' && p.kind !== 'bundle'
+          opacity: dragId === p.id ? 0.4 : (archived && !bulkOn ? 0.5 : 1) }}>
+        {selMode
+          ? <input type="checkbox" checked={bulkSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleBulk(p.id)} title="Select for bulk edit" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#2563eb' }} />
+          : mode === 'bundle' && p.kind !== 'bundle'
           ? <input type="checkbox" checked={pkgSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => togglePkg(p)} title="Add to the package" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#4f46e5' }} />
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
         <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
           <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
@@ -2819,12 +2872,60 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           { label: 'Price to margin', icon: '💲', onClick: () => { setMode('margin'); setPending(null); } },
           (view === 'table') && { label: expandAll ? 'Collapse all sizes' : 'Expand all sizes', icon: '↕', onClick: () => { setExpandAll((v) => !v); setOpenRows(new Set()); } },
         ]} />
+        <button type="button" onClick={() => { setMode(selMode ? null : 'select'); setBulkSel(new Set()); setPending(null); }} title="Select multiple items to price, add fundraising, move category, or archive them at once"
+          style={{ border: '1px solid ' + (selMode ? '#2563eb' : '#d7dbe2'), cursor: 'pointer', borderRadius: 9, padding: '6px 12px', fontSize: 12.5, fontWeight: 800, background: selMode ? '#2563eb' : '#fff', color: selMode ? '#fff' : '#334155' }}>
+          {selMode ? '✓ Done' : '☑ Select'}
+        </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
           {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
             <button key={v} type="button" onClick={() => { if (v === 'table') setEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
           ))}
         </div>
       </div>
+
+      {selMode && (() => {
+        const n = bulkSel.size;
+        const gBtn = (bg) => ({ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 10px', fontSize: 12, fontWeight: 800, background: bg, color: '#fff' });
+        const inp = { width: 64, border: '1px solid #334155', background: '#1e293b', color: '#fff', borderRadius: 6, padding: '4px 7px', fontSize: 12.5, outline: 'none' };
+        const lbl = { fontSize: 10.5, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.4 };
+        const grp = { display: 'inline-flex', alignItems: 'center', gap: 5 };
+        const sep = { width: 1, height: 22, background: '#334155' };
+        const link = { background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: '2px 4px' };
+        return (
+          <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 1200, background: '#0f172a', color: '#fff', borderRadius: 14, boxShadow: '0 14px 44px rgba(0,0,0,.35)', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap', maxWidth: '95vw' }}>
+            <span style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap' }}>{n} selected</span>
+            <button style={link} onClick={() => setBulkSel(new Set(repsList.map((r) => r.id)))}>All</button>
+            <button style={link} onClick={() => setBulkSel(new Set())}>None</button>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Price $</span>
+              <input value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} placeholder="0.00" style={inp} />
+              <button style={{ ...gBtn('#2563eb'), opacity: !n || bulkPrice === '' ? 0.4 : 1 }} disabled={!n || bulkPrice === ''} onClick={async () => { const v = Number(bulkPrice); if (!(v >= 0)) return; await applyBulk({ retail_price: v }, false); setBulkPrice(''); }}>Set</button>
+            </div>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Fundraise</span>
+              <input value={bulkFund} onChange={(e) => setBulkFund(e.target.value)} placeholder="0" style={{ ...inp, width: 52 }} />
+              <div style={{ display: 'inline-flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #334155' }}>
+                {['$', '%'].map((m) => <button key={m} onClick={() => setBulkFundMode(m)} style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: 12, fontWeight: 800, background: bulkFundMode === m ? '#2563eb' : '#1e293b', color: '#fff' }}>{m}</button>)}
+              </div>
+              <button style={{ ...gBtn('#2563eb'), opacity: !n || bulkFund === '' ? 0.4 : 1 }} disabled={!n || bulkFund === ''} onClick={applyBulkFund}>Apply</button>
+            </div>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Category</span>
+              <input list="bulk-cat-list" value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} placeholder="move to…" style={{ ...inp, width: 104 }} />
+              <datalist id="bulk-cat-list">{allCats.map((c) => <option key={c} value={c} />)}</datalist>
+              <button style={{ ...gBtn('#2563eb'), opacity: !n ? 0.4 : 1 }} disabled={!n} onClick={async () => { await applyBulk({ category: (bulkCat || '').trim() || null }, true); setBulkCat(''); }}>Move</button>
+            </div>
+            <span style={sep} />
+            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
+            <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
+            <span style={sep} />
+            <button style={{ ...link, fontWeight: 800, color: '#fff' }} onClick={() => { setMode(null); setBulkSel(new Set()); }}>Done</button>
+          </div>
+        );
+      })()}
 
       {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
