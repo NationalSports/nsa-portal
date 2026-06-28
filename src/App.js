@@ -7271,7 +7271,20 @@ export default function App(){
 
   // ─── ShipStation Handlers ───
   React.useEffect(() => {
-    testShipStationConnection().then(setSSConnected).catch(() => setSSConnected(false));
+    let cancelled = false;
+    // The Supabase session is restored asynchronously on first load (see stale-session guard above).
+    // Without waiting, authFetch sends no Bearer token and verifyUser returns 401 → false "Offline".
+    (async () => {
+      if (supabase) {
+        for (let i = 0; i < 15 && !cancelled; i++) {
+          const { data } = await supabase.auth.getSession();
+          if (data?.session) break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      if (!cancelled) testShipStationConnection().then(v => { if (!cancelled) setSSConnected(v); }).catch(() => { if (!cancelled) setSSConnected(false); });
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleShipToShipStation = async (so) => {
