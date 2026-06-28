@@ -1629,8 +1629,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
     const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
-    const { error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]);
+    // Idempotent link: only claim orders still unbatched, so a concurrent batch
+    // (two staff at once) can't steal another SO's orders. Returns the rows we won.
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]).is('so_id', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
+    else if ((linked || []).length < openIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${openIds.size} (some were just batched elsewhere)`);
     else flash(`Created ${soId} · linked ${open.length} orders`);
     loadDetail(sel);
   }, [sel, detail, onCreateSO, flash, loadDetail]);
