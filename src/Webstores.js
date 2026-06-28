@@ -1414,8 +1414,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
-  const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
-    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
+  const createBundle = useCallback(async ({ name, price, fundraise, image_url, components, category }) => {
+    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, category: category || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
       const rows = components.map((c, i) => ({ bundle_id: bundle.id, webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
@@ -2678,7 +2678,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     if (cur.some((c) => c.webstore_product_id === p.id)) return cur.filter((c) => c.webstore_product_id !== p.id);
     const stock = stockByWp[p.id];
     // Inherit number/name/sizing from the item itself — it's configured there.
-    return [...cur, { webstore_product_id: p.id, product_id: p.product_id, sku: p.sku, name: p.display_name || stock?.name || p.sku, image: p.image_url || stock?.image_front_url || null, qty: 1, size_required: true, takes_number: !!p.takes_number, takes_name: !!p.takes_name, name_upcharge: Number(p.name_upcharge) || 0, transfer_code: null, num_transfer_size: null, num_transfer_color: null }];
+    return [...cur, { webstore_product_id: p.id, product_id: p.product_id, sku: p.sku, name: p.display_name || stock?.name || p.sku, image: p.image_url || stock?.image_front_url || null, retail_price: Number(p.retail_price) || 0, qty: 1, size_required: true, takes_number: !!p.takes_number, takes_name: !!p.takes_name, name_upcharge: Number(p.name_upcharge) || 0, transfer_code: null, num_transfer_size: null, num_transfer_color: null }];
   });
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
@@ -2833,7 +2833,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
+      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '34px 16px', border: '1.5px dashed #d7dbe2', borderRadius: 14, background: '#fafbfc' }}>
@@ -5926,16 +5926,23 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
 // Components are selected via the checkboxes on the catalog list (controlled by
 // the parent); this panel just names/prices the package and tunes per-item options.
-function BundleBuilder({ components = [], setComponents, designOptions = [], numberSets = [], onCreate, onClose }) {
+function BundleBuilder({ components = [], setComponents, designOptions = [], numberSets = [], categories = [], onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [fundraise, setFundraise] = useState('');
+  const [category, setCategory] = useState('');
   const [image, setImage] = useState(null);
   const [picking, setPicking] = useState(false);
+  const priceTouched = useRef(false);
+  const catListId = 'pkg-cat-suggest';
   // ProductSearch (non-store products) returns {id,sku,name}.
-  const addComp = (p) => { setComponents((c) => [...c, { webstore_product_id: p.webstore_product_id || null, product_id: p.product_id || p.id, sku: p.sku, name: p.name, image: p.image || null, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
+  const addComp = (p) => { setComponents((c) => [...c, { webstore_product_id: p.webstore_product_id || null, product_id: p.product_id || p.id, sku: p.sku, name: p.name, image: p.image || null, retail_price: Number(p.retail_price) || 0, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
+  // Sum the items' retail prices — default the package price to it (rep can then
+  // discount); stop auto-filling once the price is hand-edited.
+  const itemsTotal = components.reduce((a, c) => a + (Number(c.retail_price) || 0) * (Number(c.qty) || 1), 0);
+  useEffect(() => { if (!priceTouched.current && itemsTotal > 0) setPrice(itemsTotal.toFixed(2)); }, [itemsTotal]);
   const valid = name.trim() && Number(price) > 0 && components.length > 0;
   const reason = !components.length ? 'Check the items on the left to add them' : !name.trim() ? 'Enter a package name' : !(Number(price) > 0) ? 'Enter a package price' : '';
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
@@ -5944,33 +5951,38 @@ function BundleBuilder({ components = [], setComponents, designOptions = [], num
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><div style={{ fontWeight: 700 }}>Create a package <span style={{ fontWeight: 500, fontSize: 12, color: '#94a3b8' }}>· check items in the list to add them</span></div><button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18 }}>×</button></div>
       <div style={{ display: 'flex', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
         <Row label="Package name *"><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Player Kit" style={{ borderColor: !name.trim() ? '#fca5a5' : undefined }} /></Row>
-        <Row label="Package price *"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="120.00" style={{ borderColor: !(Number(price) > 0) ? '#fca5a5' : undefined }} /></Row>
+        <Row label="Category / section"><input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Player Kits" /><datalist id={catListId}>{categories.map((c) => <option key={c} value={c} />)}</datalist></Row>
+        <Row label="Package price *"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => { priceTouched.current = true; setPrice(e.target.value); }} placeholder="120.00" style={{ borderColor: !(Number(price) > 0) ? '#fca5a5' : undefined }} /></Row>
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder="0.00" /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
+      {itemsTotal > 0 && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>Items add up to <b>{money(itemsTotal)}</b>{Number(price) > 0 && Math.abs(Number(price) - itemsTotal) > 0.005 ? <> · package is {money(Number(price))} (<button type="button" onClick={() => { priceTouched.current = true; setPrice(itemsTotal.toFixed(2)); }} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontWeight: 700, fontSize: 12, padding: 0 }}>use sum</button>)</> : null}</div>}
       <ImageUpload value={image} onChange={setImage} label="Package image" />
       <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package <span style={{ fontWeight: 500, color: '#94a3b8' }}>({components.length})</span></div>
       {components.length === 0
         ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '10px 12px', border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>← Tick the checkbox next to each item in the list to add it to this package.</div>
-        : <div style={{ border: '1px solid #f1f5f9', borderRadius: 8 }}>{components.map((c, i) => {
+        : <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{components.map((c, i) => {
           const persoNote = [c.takes_number && 'number', c.takes_name && 'name'].filter(Boolean).join(' + ');
           return (
-          <div key={c.webstore_product_id || c.product_id || i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: i < components.length - 1 ? '1px solid #f4f6f9' : 'none', fontSize: 13 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 6, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
-              {c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1' }}>—</span>}
+          <div key={c.webstore_product_id || c.product_id || i} style={{ width: 152, border: '1px solid #e6e8ec', borderRadius: 10, overflow: 'hidden', background: '#fff', position: 'relative' }}>
+            <button onClick={() => rm(i)} title="Remove from package" style={{ position: 'absolute', top: 5, right: 5, width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,.95)', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 13, lineHeight: 1, display: 'grid', placeItems: 'center', zIndex: 1 }}>×</button>
+            <div style={{ width: '100%', height: 112, background: '#f4f6f9', display: 'grid', placeItems: 'center' }}>
+              {c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 6, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</div>
-              <div style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.sku}{persoNote ? ` · ${persoNote}` : ''}</div>
+            <div style={{ padding: '8px 10px' }}>
+              <div style={{ fontWeight: 700, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</div>
+              <div style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.retail_price > 0 ? money(c.retail_price) : c.sku}{persoNote ? ` · ${persoNote}` : ''}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7 }}>
+                <span style={{ fontSize: 11, color: '#64748b' }}>Qty</span>
+                <input type="number" min={1} value={c.qty} onChange={(e) => upd(i, 'qty', Number(e.target.value) || 1)} style={{ width: 50 }} />
+              </div>
             </div>
-            <label style={{ fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>Qty <input type="number" min={1} value={c.qty} onChange={(e) => upd(i, 'qty', Number(e.target.value) || 1)} style={{ width: 44, marginLeft: 2 }} /></label>
-            <button onClick={() => rm(i)} title="Remove from package" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
           </div>
         ); })}</div>}
       {picking ? <ProductSearch label="Add a product not in this store" onPick={addComp} onClose={() => setPicking(false)} /> :
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Add a product not in this store</button>}
       <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button>
+        <button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components, category: category.trim() || null })}>Create package</button>
         {!valid && <span style={{ fontSize: 12.5, color: '#b45309', fontWeight: 700 }}>{reason} (image optional)</span>}
       </div>
     </div></div>
