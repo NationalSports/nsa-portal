@@ -2946,7 +2946,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
+      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
@@ -4700,6 +4700,9 @@ const SIZE_PRESETS = [
   { label: 'Jersey (numeric)', sizes: ['36', '38', '40', '42', '44', '46', '48', '50', '52'] },
   { label: 'Combo S/M · L/XL', sizes: ['S/M', 'L/XL'] },
   { label: 'Combo XS/S–XL/2XL', sizes: ['XS/S', 'S/M', 'M/L', 'L/XL', 'XL/2XL'] },
+  { label: 'Shoe M 7–13', sizes: ['7', '7.5', '8', '8.5', '9', '9.5', '10', '10.5', '11', '11.5', '12', '13'] },
+  { label: 'Shoe W 5–11', sizes: ['5', '5.5', '6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10', '11'] },
+  { label: 'Shoe Youth 1Y–7Y', sizes: ['1Y', '2Y', '3Y', '4Y', '5Y', '6Y', '7Y'] },
   { label: 'Hat — fitted', sizes: ['6 3/4', '6 7/8', '7', '7 1/8', '7 1/4', '7 3/8', '7 1/2', '7 5/8', '7 3/4'] },
   { label: 'One size (OSFA)', sizes: ['OSFA'] },
 ];
@@ -4785,10 +4788,28 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 
   useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
 
-  const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
+  const [customPresets, setCustomPresets] = useState([]);
+  const [showNewPreset, setShowNewPreset] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [newPresetSizes, setNewPresetSizes] = useState('');
+  const allPresets = [...SIZE_PRESETS, ...customPresets];
+  const presetLabel = allPresets.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
   // Keep the size list ordered smallest → largest no matter what order they're typed in.
   const sortSizes = (arr) => [...arr].sort((a, b) => sizeRank(a) - sizeRank(b));
-  const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes(sortSizes([...sizes, s])); setNewSize(''); };
+  const addSize = () => {
+    const s = newSize.trim().toUpperCase();
+    if (s && !sizes.includes(s)) setSizes(sortSizes([...sizes, s]));
+    setNewSize('');
+  };
+  const saveCustomPreset = () => {
+    const label = newPresetName.trim();
+    const szArr = newPresetSizes.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    if (!label || !szArr.length) return;
+    const preset = { label, sizes: szArr };
+    setCustomPresets((prev) => [...prev.filter((p) => p.label !== label), preset]);
+    setSizes(szArr);
+    setNewPresetName(''); setNewPresetSizes(''); setShowNewPreset(false);
+  };
   const logoUrlOf = (it) => it && (webLogoDefault(it) || it.web_logo_url || it.preview_url || it.art_url);
   const storeLogos = (library || []).filter((it) => it && it.kind !== 'art' && logoUrlOf(it));
   const pickLogoFile = async (file) => {
@@ -4862,13 +4883,29 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <Row label="Sizing type"><select className="form-input" value={presetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) setSizes(p.sizes); }} style={{ width: 190 }}>{SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}{presetLabel === 'Custom' && <option value="Custom">Custom</option>}</select></Row>
+              <Row label="Sizing type">
+                <select className="form-input" value={presetLabel} onChange={(e) => { if (e.target.value === '__new__') { setShowNewPreset(true); return; } const p = allPresets.find((x) => x.label === e.target.value); if (p) setSizes(p.sizes); }} style={{ width: 210 }}>
+                  {SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
+                  {customPresets.map((p) => <option key={p.label} value={p.label}>{p.label} ★</option>)}
+                  {presetLabel === 'Custom' && <option value="Custom">Custom</option>}
+                  <option value="__new__">+ Define new sizing...</option>
+                </select>
+              </Row>
               <Row label="Cost (NSA)"><input className="form-input" type="number" step="0.01" min={0} value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
               <Row label="Retail price"><input className="form-input" type="number" step="0.01" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
             </div>
+            {showNewPreset && (
+              <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, background: '#f0f9ff', border: '1px solid #bae6fd', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#0369a1' }}>New preset</span>
+                <input className="form-input" placeholder="Name (e.g. Shoe W 6–10)" value={newPresetName} onChange={(e) => setNewPresetName(e.target.value)} style={{ width: 180 }} />
+                <input className="form-input" placeholder="Sizes, comma-separated" value={newPresetSizes} onChange={(e) => setNewPresetSizes(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveCustomPreset(); } }} style={{ width: 210 }} />
+                <button type="button" className="btn btn-sm btn-primary" onClick={saveCustomPreset}>Save</button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setShowNewPreset(false)}>Cancel</button>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
               {sizes.map((s) => <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', borderRadius: 7, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{s}<button type="button" onClick={() => setSizes(sizes.filter((x) => x !== s))} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button></span>)}
-              <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSize(); } }} />
+              <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); addSize(); } }} title="Type a size and press Tab or Enter to add it" />
             </div>
             {sizes.length > 0 && (
               <div style={{ marginTop: 8 }}>
