@@ -3204,7 +3204,7 @@ const vectorPreviewUrl = (url) => {
 };
 const _probeImg = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res(true); im.onerror = () => res(false); im.src = u; });
 
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false, colorRows = [], primaryColorId = null }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const backRef = useRef();
@@ -3239,7 +3239,13 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
       if (/^#[0-9a-f]{6}$/i.test(h) && !seen.has(h.toLowerCase())) { seen.add(h.toLowerCase()); palette.push({ label: (pc && (pc.name || pc.code)) || h, hex: h }); }
     });
   }
-  const frontUrl = imageUrl;
+  // Which garment color is previewed on the stage. Defaults to the primary item; clicking a
+  // color in the filmstrip below the canvas swaps the front image so reps can flip through
+  // colorways without leaving the page. The primary uses imageUrl (honors a custom override).
+  const [previewColorId, setPreviewColorId] = useState(primaryColorId);
+  const _prevRow = (colorRows || []).find((c) => c.id === previewColorId);
+  const frontUrl = (previewColorId && previewColorId !== primaryColorId && _prevRow && _prevRow.frontUrl) ? _prevRow.frontUrl : imageUrl;
+  const _prevColorName = _prevRow ? _prevRow.name : null;
   const backUrl = backImageUrl || stockBackImg || '';
   const stageUrl = side === 'back' ? backUrl : frontUrl;
   // Show the front/back toggle when a back exists/can be added, or when the item is
@@ -3386,7 +3392,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, touchAction: 'none' }}>
               {isPerso(d)
                 ? <PersoArt kind={d.kind} />
-                : <img src={d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
+                : <img src={(side === 'front' && decoUrlForColor(d, _prevColorName)) || d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
               {i === sel && <div onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setSel(i); drag.current = { i, mode: 'resize' }; }} title="Drag to resize" style={{ position: 'absolute', right: -8, bottom: -8, width: 16, height: 16, borderRadius: 4, background: '#2563eb', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />}
             </div>
           ) : null))}
@@ -3401,6 +3407,18 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
                 <span onClick={(e) => { e.stopPropagation(); remove(i); }} style={{ color: i === sel ? '#fca5a5' : '#b91c1c', fontWeight: 800 }}>×</span>
               </button>
             ))}
+          </div>
+        )}
+        {/* Garment-color filmstrip: each color previewed with the art, click to flip the
+            stage to that color so reps can step through colorways without scrolling. */}
+        {colorRows.length > 1 && side === 'front' && (
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginTop: 10, paddingBottom: 2 }}>
+            {colorRows.map((c) => { const on = c.id === previewColorId; return (
+              <button key={c.id} type="button" onClick={() => setPreviewColorId(c.id)} title={c.name} style={{ flex: '0 0 auto', width: 52, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 8, padding: 2, background: '#fff', cursor: 'pointer' }}>
+                <GarmentLogoPreview imageUrl={c.frontUrl} decorations={decos} colorName={c.name} />
+                <div style={{ fontSize: 9, fontWeight: 700, color: on ? '#191919' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{c.name}</div>
+              </button>
+            ); })}
           </div>
         )}
       </div>
@@ -4063,7 +4081,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       {page === 'art' && !isBundle && <React.Fragment>
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
-        <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName} />
+        <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
+          primaryColorId={item.id} colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '' }; })} />
       </ItemSection>
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
