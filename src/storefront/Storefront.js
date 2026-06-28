@@ -232,6 +232,7 @@ export default function Storefront() {
   const [products, setProducts] = useState([]);
   const [bundleItems, setBundleItems] = useState([]);
   const [compInfo, setCompInfo] = useState({}); // product_id -> {name,image_front_url,available_sizes}
+  const [compExtras, setCompExtras] = useState([]); // archived items kept alive only inside a package
   const [status, setStatus] = useState('loading');
   const [errMsg, setErrMsg] = useState('');
   // Browse filters driven by the persistent category sub-nav + search field.
@@ -258,10 +259,36 @@ export default function Storefront() {
     const compPids = [...new Set(bItems.map((b) => b.product_id).filter(Boolean))];
     const info = {};
     if (compPids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes').in('id', compPids);
+      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', compPids);
       (data || []).forEach((p) => { info[p.id] = p; });
     }
     setCompInfo(info);
+    // A package can reference an item the store owner archived (active=false) so it no
+    // longer shows as its own card but still lives inside the package. Those rows are
+    // filtered out of the storefront view, so fetch them straight from webstore_products
+    // and shape them like view rows — the package keeps its custom photo/name/logos, and
+    // editing the archived item still flows through here.
+    const activeWpIds = new Set(prods.map((p) => p.webstore_product_id));
+    const missingWpIds = [...new Set(bItems.map((b) => b.webstore_product_id).filter((id) => id && !activeWpIds.has(id)))];
+    if (missingWpIds.length) {
+      const { data: arch } = await supabase.from('webstore_products').select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount').in('id', missingWpIds);
+      const extras = (arch || []).map((wp) => {
+        const base = info[wp.product_id] || {};
+        return {
+          webstore_product_id: wp.id, product_id: wp.product_id, kind: 'single', sku: wp.sku,
+          name: wp.display_name || base.name || wp.sku,
+          image_front_url: wp.image_url || base.image_front_url || null,
+          image_back_url: wp.image_back_url || null,
+          available_sizes: base.available_sizes || null,
+          color: base.color || null,
+          decorations: wp.decorations || null,
+          retail_price: wp.retail_price, fundraise_amount: wp.fundraise_amount,
+        };
+      });
+      setCompExtras(extras);
+    } else {
+      setCompExtras([]);
+    }
     setStatus('ok');
   }, []);
 
@@ -296,13 +323,13 @@ export default function Storefront() {
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} cat={cat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={products} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
@@ -402,9 +429,11 @@ function splitHeadline(name) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = 'all', query = '' }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', query = '' }) {
   const grouped = groupProducts(products);
-  const wpById = buildWpById(products);
+  // wpById also resolves archived items kept alive only inside a package, so package
+  // previews keep their custom photo/name even though those items aren't in the grid.
+  const wpById = buildWpById([...products, ...compExtras]);
   const firstBundle = products.find((p) => p.kind === 'bundle');
   const goBundle = firstBundle ? () => navTo(`/shop/${store.slug}/b/${firstBundle.webstore_product_id}`) : null;
   const scrollGrid = () => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' });
@@ -502,7 +531,10 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
               return (
                 <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                    {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {p ? <>
+                          <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                        </>
                        : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
                   </div>
                 </div>
@@ -516,12 +548,16 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
 }
 
 // Hero collage images: an admin-curated list of webstore_product_ids when set,
-// else the first 3 in-stock products. featured_product_ids semantics:
-//   null/undefined → auto (top 3) · [] → none (no collage) · [ids] → those (≤3).
+// else mandatory (package) items first, then any items, up to 3.
+//   null/undefined → auto (mandatory first, then top items) · [] → none · [ids] → those (≤3).
 function featuredHeroImgs(store, products) {
   const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
   const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
-  if (!featured) return pool.slice(0, 3);
+  if (!featured) {
+    const mandatory = pool.filter((p) => p.required);
+    const rest = pool.filter((p) => !p.required);
+    return [...mandatory, ...rest].slice(0, 3);
+  }
   return featured.map((id) => pool.find((p) => p.webstore_product_id === id)).filter(Boolean).slice(0, 3);
 }
 
