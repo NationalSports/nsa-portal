@@ -3428,11 +3428,11 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
         {/* Garment-color filmstrip: each color previewed with the art, click to flip the
             stage to that color so reps can step through colorways without scrolling. */}
         {colorRows.length > 1 && side === 'front' && (
-          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginTop: 10, paddingBottom: 2 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             {colorRows.map((c) => { const on = c.id === previewColorId; return (
-              <button key={c.id} type="button" onClick={() => setPreviewColorId(c.id)} title={c.name} style={{ flex: '0 0 auto', width: 52, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 8, padding: 2, background: '#fff', cursor: 'pointer' }}>
+              <button key={c.id} type="button" onClick={() => setPreviewColorId(c.id)} title={c.name} style={{ flex: '0 0 auto', width: 76, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 9, padding: 3, background: '#fff', cursor: 'pointer' }}>
                 <GarmentLogoPreview imageUrl={c.frontUrl} decorations={decos} colorName={c.name} />
-                <div style={{ fontSize: 9, fontWeight: 700, color: on ? '#191919' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{c.name}</div>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: on ? '#191919' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 3 }}>{c.name}</div>
               </button>
             ); })}
           </div>
@@ -3715,31 +3715,13 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
   );
 }
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
-  // Per-color web-logo override: set/clear the web logo a given garment color uses for a
-  // placed deco (so a black tee can wear the white logo, a white tee the dark one). Empty
-  // url clears the override (falls back to the placed art).
-  const setColorCw = (colorName, decoIndex, url) => {
-    const k = colorKeyOf(colorName);
-    setDecorations((ds) => ds.map((d, i) => {
-      if (i !== decoIndex) return d;
-      const m = { ...(d.cw_by_color || {}) };
-      if (!url) delete m[k]; else m[k] = url;
-      return { ...d, cw_by_color: m };
-    }));
-  };
-  // Available web-logo color ways per placed deco (from the art library record), so each
-  // color can pick a different one. Only decos whose art has 2+ web logos offer a choice.
-  const decoCwChoices = decorations.map((d) => {
-    const art = (library || []).find((a) => a.id === d.art_id);
-    return (art && Array.isArray(art.web_logos)) ? art.web_logos.filter((w) => w && w.url) : [];
-  });
   const [name, setName] = useState(item.display_name || defaultName || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
@@ -4123,26 +4105,6 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        {groupColors && groupColors.length > 0 && (
-          <ItemSection title="Colors in this item" hint={`· each color previewed with the art — pick a web-logo color way per color`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {groupColors.map((c) => { const cs = stockByWp[c.id]; const cName = cs?.color || c.sku; const cImg = c.image_url || cs?.image_front_url; const isPrimary = c.id === item.id; const ck = colorKeyOf(cName); return (
-                <div key={c.id} style={{ position: 'relative', width: 116, border: '2px solid ' + (isPrimary ? '#191919' : '#e2e8f0'), borderRadius: 10, padding: 6, background: '#fff' }}>
-                  <GarmentLogoPreview imageUrl={cImg} decorations={decorations} colorName={cName} />
-                  <div style={{ fontSize: 10.5, color: '#191919', fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cName}{isPrimary ? ' (main)' : ''}</div>
-                  {decorations.map((d, di) => { const choices = decoCwChoices[di]; if ((d.side || 'front') === 'back' || !choices || choices.length < 2) return null; const cur = (d.cw_by_color && d.cw_by_color[ck]) || ''; return (
-                    <select key={di} value={cur} onChange={(e) => setColorCw(cName, di, e.target.value)} title="Which web-logo color way this garment color uses" style={{ width: '100%', marginTop: 4, fontSize: 10, border: '1px solid #e2e8f0', borderRadius: 6, padding: '2px 4px', background: '#fff', color: '#334155', cursor: 'pointer' }}>
-                      <option value="">Logo {di + 1}: auto</option>
-                      {choices.map((w, wi) => <option key={wi} value={w.url}>{w.color_way || 'All garments'}</option>)}
-                    </select>
-                  ); })}
-                  {onRemoveColor && groupColors.length > 1 && <button type="button" title="Remove this color" onClick={() => onRemoveColor(c.id, cName)} style={{ position: 'absolute', top: -8, right: -8, background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', borderRadius: '50%', width: 20, height: 20, fontSize: 12, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)' }}>×</button>}
-                </div>
-              ); })}
-            </div>
-          </ItemSection>
-        )}
-
         {onAddColors && colorOptions.length > 0 && (
           <ItemSection title="Add more colors" hint="· add other colors of this garment to this same card, at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
