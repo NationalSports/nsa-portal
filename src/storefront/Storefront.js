@@ -1250,6 +1250,21 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
+  // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
+  // we can source tax (a complete ship address, or pickup which sources to NSA's location).
+  const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : 'pickup';
+  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty]));
+  useEffect(() => {
+    if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, couponCode: coupon ? coupon.code : null });
+      if (!cancelled && r && r.totals) setTaxInfo(r.totals);
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_shipKey, _cartKey, coupon && coupon.code, store.slug]);
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
@@ -1343,8 +1358,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
       {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>Shipping (flat)</span><span>{money(ship_)}</span></div>}
       {coupon && coupon.kind === 'free_shipping' && shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
-      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
-        <span>Total</span><span>{money(payable)}</span>
+      {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
+      {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
+      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0 || taxInfo) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+        <span>Total</span><span>{money(payable + (taxInfo ? Number(taxInfo.tax) || 0 : 0))}</span>
       </div>
 
       {comped ? (
