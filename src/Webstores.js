@@ -181,7 +181,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
 
   const rows = Object.values(itemAgg);
   const shortRows = rows.filter((r) => r.filled < r.needed).sort((a, b) => (b.needed - b.filled) - (a.needed - a.filled));
-  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const shortOrders = Object.values(orderShort).sort((a, b) => (a.order.created_at || '') < (b.order.created_at || '') ? -1 : 1);
   const ordersTotal = Object.keys(orderById).length;
   const availUnits = totalUnits - shortUnits;
@@ -333,7 +333,7 @@ function buildStockReport(store, label, lines, stockByPid) {
   const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
   const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
     .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
-  const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const untracked = rows.filter((r) => !r.tracked);
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendor}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
