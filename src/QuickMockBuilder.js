@@ -165,6 +165,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // Layer ids (artFileId) whose art is currently placed on the canvas, so a Logo Library tile can
   // show it's applied and offer a one-click remove. Kept in sync with canvas add/remove events.
   const [placedIds, setPlacedIds] = useState([]);
+  // "Apply art to items" grid: open flag + the set of garment keys currently checked.
+  const [applyGrid, setApplyGrid] = useState(false);
+  const [applySel, setApplySel] = useState(() => new Set());
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
@@ -768,6 +771,37 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // Best thumbnail for a garment row: the rep's uploaded override, else the catalog front photo.
   const thumbFor = g => imgOverride[g.key] || g.frontUrl || '';
 
+  // "Apply art to items" grid — open with every item checked by default.
+  const openApplyGrid = () => {
+    if (!canvas || !canvas.getObjects().some(o => o._isArt)) { nf && nf('Place the logo first, then choose which items get it', 'error'); return; }
+    setApplySel(new Set(garments.map(g => g.key)));
+    setApplyGrid(true);
+  };
+  const toggleApply = key => setApplySel(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  // Apply the logo currently on the canvas (same placement/size) to each checked item: render its
+  // mock and seed its scene so it stays individually editable — select any item afterward to
+  // drag/resize the art if it didn't land right on that garment.
+  const applyToSelected = async () => {
+    if (!canvas) return;
+    const artObjs = canvas.getObjects().filter(o => o._isArt);
+    if (!artObjs.length) { nf && nf('Place the logo first', 'error'); return; }
+    const chosen = garments.map((g, i) => ({g, i})).filter(({g}) => applySel.has(g.key));
+    if (!chosen.length) { nf && nf('Pick at least one item', 'error'); return; }
+    const sceneObjs = artObjs.map(o => { const j = o.toObject(['_isArt', '_layerId']); if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous'; return j; });
+    setBusy(true);
+    try {
+      let next = {...mocks}; let n = 0;
+      for (const {g, i} of chosen) {
+        sceneRef.current[i + '|' + side] = sceneObjs; // keep each item independently editable
+        const res = await _renderSceneMock(g, side, sceneObjs, garmentIsDark(g.color));
+        if (res) { next = {...next, [res.key]: [...(next[res.key] || []).filter(m => m.name !== res.entry.name), res.entry]}; n++; }
+      }
+      setMocks(next); clearDirty();
+      nf && nf('Logo applied to ' + n + ' item' + (n === 1 ? '' : 's') + ' — select any item to fine-tune its size/position');
+    } catch (e) { nf && nf('Could not apply to items: ' + (e.message || e), 'error'); }
+    finally { setBusy(false); setApplyGrid(false); }
+  };
+
   // Does a location have art to place (a preview or art on file)? New art is added in the art
   // folder on the prior page — the builder only places/positions/recolors existing art.
   const layerHasArt = l => !!(l.preview || l.source || l.hasExisting);
@@ -776,6 +810,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   const pct = garments.length ? Math.round(savedCount / garments.length * 100) : 0;
 
   return (
+    <>
     <div onClick={onClose} style={{position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
       <style>{'@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}'}</style>
       <div onClick={e => e.stopPropagation()} style={{width: 1040, maxWidth: '100%', height: 792, maxHeight: '94vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
@@ -836,8 +871,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
               ); })}
             </div>
             <div style={{padding: '11px 14px', borderTop: '1px solid ' + NSA.light, flex: 'none'}}>
-              <button onClick={applyToAllColors} disabled={busy} title="Place this logo on every garment color at once (auto-white on dark garments)"
-                style={{width: '100%', border: '1.5px solid ' + NSA.navy, background: '#fff', color: NSA.navy, cursor: busy ? 'default' : 'pointer', padding: 9, borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: .8, textTransform: 'uppercase', opacity: busy ? .6 : 1, ...SKEW}}><span style={UNSKEW}>⚡ Apply art to all {garments.length}</span></button>
+              <button onClick={openApplyGrid} disabled={busy} title="Choose which items get the logo you've placed (auto-white on dark garments)"
+                style={{width: '100%', border: '1.5px solid ' + NSA.navy, background: '#fff', color: NSA.navy, cursor: busy ? 'default' : 'pointer', padding: 9, borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: .8, textTransform: 'uppercase', opacity: busy ? .6 : 1, ...SKEW}}><span style={UNSKEW}>⚡ Apply art to items…</span></button>
             </div>
           </div>
 
@@ -1002,5 +1037,45 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         </div>
       </div>
     </div>
+
+    {/* "Apply art to items" — pick which items get the logo currently on the canvas */}
+    {applyGrid && <div onClick={() => setApplyGrid(false)} style={{position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
+      <div onClick={e => e.stopPropagation()} style={{width: 760, maxWidth: '100%', maxHeight: '88vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
+        <div style={{background: 'linear-gradient(120deg,' + NSA.navy + ',' + NSA.navyMid + ')', color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '4px solid ' + NSA.red, flex: 'none'}}>
+          <div>
+            <div style={{fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 19, letterSpacing: .5, textTransform: 'uppercase', lineHeight: 1}}>Apply Art to Items</div>
+            <div style={{fontSize: 12.5, color: 'rgba(255,255,255,.72)', marginTop: 2}}>The logo you placed goes onto each checked item, at the same spot</div>
+          </div>
+          <button onClick={() => setApplyGrid(false)} style={{width: 28, height: 28, borderRadius: 6, background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 17, lineHeight: 1}}>×</button>
+        </div>
+        <div style={{padding: '10px 18px', borderBottom: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', gap: 12, flex: 'none'}}>
+          <span style={{...railLabel, fontSize: 12}}>{applySel.size} of {garments.length} selected</span>
+          <button onClick={() => setApplySel(new Set(garments.map(g => g.key)))} style={{...smallBtn, marginLeft: 'auto'}}>Select all</button>
+          <button onClick={() => setApplySel(new Set())} style={smallBtn}>Clear</button>
+        </div>
+        <div style={{flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, minHeight: 0}}>
+          {garments.map((g) => { const on = applySel.has(g.key); const tu = thumbFor(g); return (
+            <button key={g.key} onClick={() => toggleApply(g.key)} title={[g.name, g.color].filter(Boolean).join(' — ')}
+              style={{position: 'relative', textAlign: 'left', border: '2px solid ' + (on ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', cursor: 'pointer', padding: 0}}>
+              <span style={{position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 5, border: '2px solid ' + (on ? NSA.red : NSA.mid), background: on ? NSA.red : 'rgba(255,255,255,.9)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, zIndex: 1}}>{on ? '✓' : ''}</span>
+              <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: 116, background: NSA.offWhite, padding: 8}}>
+                {tu ? <img src={tu} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} /> : <TeeSvg fill={hexesForColor(g.color)[0]} style={{width: '70%', height: '70%'}} />}
+              </span>
+              <span style={{display: 'block', padding: '6px 8px', borderTop: '1px solid ' + NSA.light}}>
+                <span style={{display: 'block', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 12.5, color: NSA.navy, textTransform: 'uppercase', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.name || g.sku}</span>
+                <span style={{display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: NSA.textMuted}}>{g.color && <ColorSwatch name={g.color} size={10} />}{g.color || g.sku}</span>
+              </span>
+            </button>
+          ); })}
+        </div>
+        <div style={{padding: '12px 18px', borderTop: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', gap: 10, flex: 'none'}}>
+          <span style={{fontSize: 12, color: NSA.textMuted}}>You can fine-tune each item afterward — select it in the list and drag/resize the art.</span>
+          <button onClick={() => setApplyGrid(false)} style={{marginLeft: 'auto', border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, cursor: 'pointer', padding: '9px 18px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .6, textTransform: 'uppercase'}}>Cancel</button>
+          <button onClick={applyToSelected} disabled={busy || applySel.size === 0}
+            style={{border: 'none', background: NSA.red, color: '#fff', cursor: (busy || applySel.size === 0) ? 'default' : 'pointer', padding: '9px 22px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: .6, textTransform: 'uppercase', opacity: (busy || applySel.size === 0) ? .5 : 1, boxShadow: '0 6px 18px rgba(150,44,50,.32)', ...SKEW}}><span style={UNSKEW}>{busy ? 'Applying…' : 'Apply to ' + applySel.size + ' item' + (applySel.size === 1 ? '' : 's')}</span></button>
+        </div>
+      </div>
+    </div>}
+    </>
   );
 }
