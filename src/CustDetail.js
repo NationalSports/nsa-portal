@@ -11,7 +11,7 @@ import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -23,7 +23,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
   const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);
+  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -92,6 +92,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[initCust.id,sos]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
+  // show both store types in one place and jump into either.
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // Live order totals per web store (orders, gross, fundraising, units) so the Stores tab
+  // can show sales/order numbers inline and in the expandable reporting row — same "real
+  // demand only" filter the close-sweep uses (drop cancelled / never-paid carts).
+  useEffect(()=>{if(!supabase||!custWebstores.length)return;const ids=custWebstores.map(s=>s.id);let cancelled=false;(async()=>{
+    const{data:orders}=await supabase.from('webstore_orders').select('id,store_id,status,total,fundraise_amt').in('store_id',ids);
+    const live=(orders||[]).filter(o=>o.status!=='cancelled'&&o.status!=='pending'&&o.status!=='pending_payment');
+    const agg={};const orderStore={};
+    for(const o of live){orderStore[o.id]=o.store_id;const a=agg[o.store_id]||(agg[o.store_id]={orders:0,gross:0,fundraise:0,units:0});a.orders++;a.gross+=Number(o.total)||0;a.fundraise+=Number(o.fundraise_amt)||0;}
+    const liveIds=live.map(o=>o.id);
+    for(let i=0;i<liveIds.length;i+=200){const chunk=liveIds.slice(i,i+200);const{data:items}=await supabase.from('webstore_order_items').select('order_id,qty,is_bundle_parent').in('order_id',chunk);(items||[]).forEach(it=>{if(it.is_bundle_parent)return;const sid=orderStore[it.order_id];if(sid&&agg[sid])agg[sid].units+=Number(it.qty)||0});}
+    if(!cancelled)setWsAgg(agg);
+  })();return()=>{cancelled=true}},[custWebstores]);
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
@@ -201,7 +216,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -432,6 +447,63 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <ThreadAdder onAdd={(tc)=>saveThreads([...threads,tc])} existingNames={threads.map(t=>t.name)}/>
     </div></div>})()}
+  {/* STORES TAB — web stores + OMG ("Order My Gear") stores for this account, open & past,
+      with a one-click jump into either store. */}
+  {tab==='webstores'&&(()=>{
+    const money=n=>'$'+(Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    const dt=s=>s?String(s).slice(0,10):'—';
+    const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
+    const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
+    const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
+    const th={padding:'8px 12px',textAlign:'left',fontSize:10.5,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.3};
+    const thR={...th,textAlign:'right'};
+    const td={padding:'8px 12px'};
+    const tdR={...td,textAlign:'right'};
+    const toggle=id=>setStExpanded(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+    const caret=ex=><span style={{display:'inline-block',width:12,color:'#94a3b8',fontSize:9,transform:ex?'rotate(90deg)':'none',transition:'transform .15s'}}>▶</span>;
+    const metric=(label,val)=><div key={label} style={{minWidth:84}}><div style={{fontSize:9.5,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{label}</div><div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginTop:1}}>{val}</div></div>;
+    const detailRow=(cols,metrics)=><tr><td colSpan={cols} style={{padding:0,background:'#f8fafc',borderTop:'1px solid #eef2f7'}}><div style={{display:'flex',flexWrap:'wrap',gap:22,padding:'12px 34px'}}>{metrics.filter(Boolean)}</div></td></tr>;
+    if(!ws.length&&!omg.length)return<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet.</div></div>;
+    const wsCols=8+(isP?1:0);
+    return <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      {ws.length>0&&<div className="card"><div className="card-header"><h2>Web Stores ({ws.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th>{isP&&<th style={th}>Director</th>}<th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
+          {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
+            <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
+              <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
+              <td style={{...td,fontWeight:700,color:'#0369a1'}}>{s.name}</td>
+              <td style={td}>{chip(s.status)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.open_at)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.close_at)}</td>
+              {isP&&<td style={{...td,color:'#64748b'}}>{s.director_name||'—'}</td>}
+              <td style={{...tdR,color:'#64748b'}}>{a.orders||0}</td>
+              <td style={{...tdR,fontWeight:700}}>{money(a.gross)}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenWebstore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenWebstore(s.id)}>Open store →</button>}</td>
+            </tr>
+            {ex&&detailRow(wsCols,[metric('Orders',a.orders||0),metric('Units',a.units||0),metric('Gross',money(a.gross)),metric('Fundraising',money(a.fundraise)),metric('Avg / order',money((a.orders?a.gross/a.orders:0))),s.director_name?metric('Director',s.director_name):null])}
+          </React.Fragment>;})}
+        </tbody></table>
+        <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Sales are live order totals (excludes cancelled / unpaid carts). Open a store for full reporting.</div>
+      </div></div>}
+      {omg.length>0&&<div className="card"><div className="card-header"><h2>OMG Stores ({omg.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
+          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');return <React.Fragment key={s.id}>
+            <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
+              <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
+              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+              <td style={td}>{chip(s.status)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.close_date)}</td>
+              <td style={{...tdR,color:'#64748b'}}>{s.orders||0}</td>
+              <td style={{...tdR,fontWeight:700}}>{money(s.total_sales)}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
+            </tr>
+            {ex&&detailRow(8,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv)])}
+          </React.Fragment>;})}
+        </tbody></table>
+      </div></div>}
+    </div>;
+  })()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
     // Promo $ is owned by the parent customer; subs inherit (data is loaded with parent's id at the App level).
