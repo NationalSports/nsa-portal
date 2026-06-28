@@ -2518,6 +2518,32 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     urls.forEach((u) => { if (!u || seen.has(u) || !_qmIsImg(u)) return; seen.add(u); files.push({ name: (u.split('/').pop() || 'art').split('?')[0], url: u, preview: { url: u } }); });
     return { artFileId: a.id, name: a.name || 'Logo', position: '', existingFiles: (a.files || []), files, preview: files[0] ? files[0].preview : null, garmentKeys: [] };
   });
+  // Art already APPLIED to items (set on the item detail, or pushed by an artist) lives on each
+  // catalog item's `decorations`. Surface it in the builder: pre-place it on that garment color at
+  // its saved placement, and make sure the logo appears in the Logo Library with a real preview —
+  // even when the deduped library entry had none (the "No art" case).
+  const qmAppliedByGarment = {};
+  const _qmLocById = new Map(qmLocations.map((l) => [l.artFileId, l]));
+  catalog.filter((c) => c.kind === 'single').forEach((c) => {
+    const st = stockByWp[c.id] || {};
+    const color = st.color || '';
+    const key = (c.sku || '') + '|' + color;
+    (Array.isArray(c.decorations) ? c.decorations : []).forEach((d) => {
+      if (!d || d.kind !== 'art') return;
+      const url = decoUrlForColor(d, color) || d.art_url || d.web_url || '';
+      if (!url || !_qmIsImg(url)) return;
+      const artId = d.art_file_id || d.art_id || ('deco-' + url);
+      const lib = _qmArt.find((a) => a.id === artId);
+      const name = (lib && lib.name) || d.color_label || 'Logo';
+      const p = placementById(d.placement);
+      const xPct = d.x != null ? d.x : p.x, yPct = d.y != null ? d.y : p.y, wPct = d.w != null ? d.w : p.w;
+      const side = (d.side || 'front') === 'back' ? 'back' : 'front';
+      (qmAppliedByGarment[key] = qmAppliedByGarment[key] || []).push({ artFileId: artId, name, url, side, xPct, yPct, wPct });
+      const ex = _qmLocById.get(artId);
+      if (ex) { if (!ex.preview) { ex.preview = { url }; if (!ex.files || !ex.files.length) ex.files = [{ name, url, preview: { url } }]; } }
+      else { const loc = { artFileId: artId, name, position: '', existingFiles: [], files: [{ name, url, preview: { url } }], preview: { url }, garmentKeys: [] }; qmLocations.push(loc); _qmLocById.set(artId, loc); }
+    });
+  });
   const qmInitialMocks = {}; const qmInitialScene = {};
   _qmArt.forEach((a) => { Object.entries(a.item_mockups || {}).forEach(([k, arr]) => { if (arr && arr.length) qmInitialMocks[k] = [...(qmInitialMocks[k] || []), ...arr]; }); Object.entries(a.qm_scenes || {}).forEach(([k, objs]) => { if (objs && objs.length && !qmInitialScene[k]) qmInitialScene[k] = objs; }); });
 
@@ -2587,7 +2613,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -2597,7 +2623,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
-      {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} nf={(m) => onFlash && onFlash(m)}
+      {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} appliedByGarment={qmAppliedByGarment} nf={(m) => onFlash && onFlash(m)}
         onClose={() => setShowMock(false)}
         onSave={async (payload) => { if (onSaveMocks) await onSaveMocks(payload, _qmArt); setShowMock(false); }} />}
     </>

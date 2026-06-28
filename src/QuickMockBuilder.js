@@ -108,7 +108,7 @@ const locChip = {cursor: 'pointer', border: '1.5px solid ' + NSA.mid, background
 const TEE_PATH = "M150 28 C140 28 131 31 124 36 L78 64 C73 67 71 73 73 78 L92 120 C94 125 100 127 105 124 L120 116 L120 304 C120 309 124 313 129 313 L171 313 C176 313 180 309 180 304 L180 116 L195 124 C200 127 206 125 208 120 L227 78 C229 73 227 67 222 64 L176 36 C169 31 160 28 150 28 Z";
 const TeeSvg = ({fill, style}) => <svg viewBox="0 0 300 340" style={style}><path d={TEE_PATH} fill={fill} stroke="rgba(0,0,0,.18)" strokeWidth="4" /></svg>;
 
-export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage, appliedByGarment}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
@@ -215,6 +215,27 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         objs.forEach(o => { styleArt(o); c.add(o); });
         c.renderAll();
       }).catch(() => {});
+    } else {
+      // No scene yet for this color/side — auto-place any art already APPLIED to this garment
+      // (from the item detail / artist) at its saved placement, so it shows up pre-placed and
+      // editable. Percent coords mirror the storefront/item-detail preview. Not marked dirty:
+      // it's shown for review, not auto-saved, until the rep edits or hits Save.
+      const applied = ((appliedByGarment || {})[garment.key] || []).filter(a => (a.side || 'front') === side);
+      applied.forEach(a => {
+        const addAt = imgEl => {
+          if (disposed) return;
+          const w = imgEl.naturalWidth || imgEl.width; if (!w) return;
+          const img = new fabric.FabricImage(imgEl);
+          img.set({left: (a.xPct / 100) * 460, top: (a.yPct / 100) * 560});
+          styleArt(img); img._layerId = a.artFileId;
+          if (typeof img.scaleToWidth === 'function') img.scaleToWidth((a.wPct / 100) * 460);
+          img.setCoords(); c.add(img); c.renderAll();
+        };
+        const el = new Image(); el.crossOrigin = 'anonymous';
+        el.onload = () => addAt(el);
+        el.onerror = () => { const dir = new Image(); dir.crossOrigin = 'anonymous'; dir.onload = () => addAt(dir); dir.onerror = () => {}; dir.src = a.url; };
+        el.src = /^data:/.test(a.url) ? a.url : ('/.netlify/functions/image-proxy?url=' + encodeURIComponent(a.url));
+      });
     }
 
     if (!garmentUrl) {
