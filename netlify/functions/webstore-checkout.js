@@ -143,7 +143,7 @@ async function checkStock(sb, store, lines) {
   if (!singles.length) return null;
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta')
+    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return null; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
@@ -151,6 +151,9 @@ async function checkStock(sb, store, lines) {
   const short = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+    // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
+    const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+    if (!tracked) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
@@ -195,6 +198,70 @@ function couponDiscount(coupon, cartTotal, shipping) {
   return r2(base * (Number(coupon.value) || 0) / 100);
 }
 
+// ── Sales tax ────────────────────────────────────────────────────────
+// CA orders use the free CDTFA address rate service; out-of-state orders use the
+// (metered) TaxCloud edge function, which applies the apparel TIC + each state's
+// exemptions. We only collect where NSA is registered — TAX_COLLECT_STATES (default
+// "CA"); a destination state not on that list is taxed at $0 (we can't remit it).
+// Pickup / team-delivery orders source to NSA's origin (possession happens there).
+const taxCollectStates = () => (process.env.TAX_COLLECT_STATES || 'CA').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+const TAX_ORIGIN = {
+  street1: process.env.NSA_ORIGIN_ADDRESS || '',
+  city: process.env.NSA_ORIGIN_CITY || '',
+  state: (process.env.NSA_ORIGIN_STATE || 'CA').toUpperCase(),
+  zip: (process.env.NSA_ORIGIN_ZIP || '').slice(0, 5),
+};
+
+// CDTFA free rate-by-address lookup (California only). Returns a decimal rate or null.
+async function cdtfaRate({ street1, city, zip }) {
+  try {
+    const qs = new URLSearchParams({ address: street1 || '', city: city || '', zip: (zip || '').slice(0, 5) });
+    const res = await fetch('https://services.maps.cdtfa.ca.gov/api/taxrate/GetRateByAddress?' + qs.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const info = data && Array.isArray(data.taxRateInfo) ? data.taxRateInfo[0] : null;
+    const rate = info && Number(info.rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch (e) { console.warn('[webstore-checkout] CDTFA lookup failed:', e.message); return null; }
+}
+
+// TaxCloud rate via the deployed edge function (respects its monthly cap + apparel TIC).
+async function taxcloudRate({ street1, city, state, zip }) {
+  const url = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  try {
+    const res = await fetch(url + '/functions/v1/taxcloud-lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key, apikey: key },
+      body: JSON.stringify({ address1: street1 || '', city, state, zip5: (zip || '').slice(0, 5) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    const rate = data && data.ok ? Number(data.tax_rate) : NaN;
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch (e) { console.warn('[webstore-checkout] TaxCloud lookup failed:', e.message); return null; }
+}
+
+// Returns { tax, rate, state, source } for a taxable base (product subtotal).
+async function calcTax(store, ship, taxableBase) {
+  const base = Math.max(0, Number(taxableBase) || 0);
+  if (base <= 0) return { tax: 0, rate: 0, state: '', source: 'zero_base' };
+  const isPickup = store.delivery_mode !== 'ship_home';
+  const dest = isPickup
+    ? { ...TAX_ORIGIN }
+    : { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
+  if (!dest.state || !taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
+  if (dest.state === 'CA') {
+    let rate = await cdtfaRate(dest);
+    let source = 'cdtfa';
+    if (rate == null) { rate = Number(process.env.CA_DEFAULT_TAX_RATE) || 0.0775; source = 'cdtfa_fallback'; }
+    return { tax: r2(base * rate), rate, state: 'CA', source };
+  }
+  const rate = await taxcloudRate(dest);
+  if (rate == null) return { tax: 0, rate: 0, state: dest.state, source: 'taxcloud_unavailable' };
+  return { tax: r2(base * rate), rate, state: dest.state, source: 'taxcloud' };
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return bad(405, 'POST only');
   const sb = getSb();
@@ -205,6 +272,7 @@ exports.handler = async (event) => {
 
   try {
     if (body.action === 'place_order') return await placeOrder(sb, body);
+    if (body.action === 'quote') return await quoteTotals(sb, body);
     if (body.action === 'finalize') return await finalize(sb, body);
     if (body.action === 'check_coupon') return await checkCoupon(sb, body);
     if (body.action === 'get_order') return await getOrder(sb, body);
@@ -247,15 +315,20 @@ async function placeOrder(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const total = Math.max(0, r2(cartTotal + shipping - discount));
-  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, total };
+  const preTax = Math.max(0, r2(cartTotal + shipping - discount));
 
-  // If the client's displayed total drifted from the server's (stale price,
-  // tampered cart), bounce with the real numbers instead of silently charging
-  // a different amount than the shopper saw.
-  if (expectedTotalCents != null && Math.abs(Math.round(total * 100) - Math.round(Number(expectedTotalCents))) > 1) {
-    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals });
+  // The drift guard validates the PRE-TAX total — the number the shopper saw and
+  // approved. Tax is computed server-side and added on top, so a stale price still
+  // bounces but the (always server-authoritative) tax never trips this check.
+  if (expectedTotalCents != null && Math.abs(Math.round(preTax * 100) - Math.round(Number(expectedTotalCents))) > 1) {
+    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, total: preTax } });
   }
+
+  // Sales tax on the product subtotal (CA via CDTFA, registered out-of-state via TaxCloud).
+  const taxRes = await calcTax(store, ship || {}, priced.subtotal);
+  const tax = taxRes.tax;
+  const total = r2(preTax + tax);
+  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax, total };
 
   let mode = payMode === 'paid' ? 'paid' : 'unpaid';
   if (total <= 0) mode = 'unpaid'; // fully covered by a code → no card
@@ -271,7 +344,7 @@ async function placeOrder(sb, body) {
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
-    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, total,
+    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   }).select().single();
   if (ordErr) return bad(502, 'Could not create the order: ' + ordErr.message);
@@ -354,6 +427,26 @@ async function placeOrder(sb, body) {
     if (won && won.length) { try { await sendOrderConfirmation(sb, order); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals }) };
+}
+
+// Price + tax preview (no order written) so the storefront can show the tax line
+// once it knows the ship-to address, before the shopper commits to paying.
+async function quoteTotals(sb, body) {
+  const { storeSlug, cart, ship, couponCode } = body;
+  const { data: stores } = await sb.from('webstores').select('*').eq('slug', String(storeSlug || '')).limit(1);
+  const store = stores && stores[0];
+  if (!store) return bad(404, 'Store not found');
+  const priced = await priceCart(sb, store, cart);
+  if (priced.error) return bad(409, priced.error);
+  const coup = await loadCoupon(sb, store, couponCode);
+  const coupon = coup.coupon;
+  const cartTotal = r2(priced.subtotal + priced.fundraise);
+  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const discount = couponDiscount(coupon, cartTotal, shipping);
+  const preTax = Math.max(0, r2(cartTotal + shipping - discount));
+  const taxRes = await calcTax(store, ship || {}, priced.subtotal);
+  const total = r2(preTax + taxRes.tax);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }
 
 async function finalize(sb, body) {

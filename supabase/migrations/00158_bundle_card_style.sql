@@ -1,26 +1,7 @@
--- ════════════════════════════════════════════════════════════════════════
--- CANONICAL definition of the webstore_storefront_products view.
---
--- This file is the SINGLE SOURCE OF TRUTH for the view. The public storefront
--- (src/storefront/Storefront.js) and the server checkout's stock guard
--- (netlify/functions/webstore-checkout.js → checkStock) both read it.
---
--- HOW TO CHANGE IT (read before editing — the view is easy to break):
---   1. Edit the SELECT below. It is CREATE OR REPLACE, so you may only APPEND
---      new columns (Postgres forbids reordering/removing/retyping columns of an
---      existing view). Add new output columns at the END of the select list.
---   2. Copy the full statement into a new numbered migration
---      (supabase_migration_0NN_*.sql) AND apply it to the project.
---   3. Keep this file and that migration identical. This file always reflects
---      the latest applied definition, so the next editor copies from HERE
---      instead of re-deriving it with pg_get_viewdef (which is how columns get
---      dropped by accident).
---
--- History of the columns/joins, newest last:
---   047  fundraise amount/display price        052  variant_group_id (color grouping)
---   053  store_category   054  vendor_size_eta  055/056  description (+ ai)
---   062  variant_label    064  vendor stock from inventory_unified (all vendors)
--- ════════════════════════════════════════════════════════════════════════
+-- Add card_style to webstore_products so package cards can render as
+-- 'banner' (full-width dark banner + collage) or 'showcase' (full-width
+-- with each item shown individually). NULL / 'card' = default square card.
+ALTER TABLE webstore_products ADD COLUMN IF NOT EXISTS card_style text;
 
 CREATE OR REPLACE VIEW webstore_storefront_products AS
  SELECT wp.id AS webstore_product_id,
@@ -61,14 +42,10 @@ CREATE OR REPLACE VIEW webstore_storefront_products AS
     av.vendor_size_eta,
     COALESCE(NULLIF(btrim(p.description_ai), ''::text), p.description) AS description,
     wp.variant_label,
-    -- 068  per-item inventory tracking toggle (+ inventory_source so the storefront can
-    -- tell a stock-backed item from a custom / made-to-order one).
     COALESCE(wp.track_inventory, true) AS track_inventory,
     p.inventory_source,
-    -- 069  mandatory flag + kit grouping — hero auto-picks mandatory items first.
     COALESCE(wp.required, false) AS required,
     wp.kit_name,
-    -- 070  card display style for bundle packages (null=card, 'banner', 'showcase').
     wp.card_style
    FROM webstore_products wp
      LEFT JOIN products p ON p.id = wp.product_id
@@ -79,9 +56,6 @@ CREATE OR REPLACE VIEW webstore_storefront_products AS
           GROUP BY product_inventory.product_id) inv ON inv.product_id = wp.product_id
      LEFT JOIN webstore_product_eta eta_pid ON eta_pid.product_id = wp.product_id
      LEFT JOIN webstore_product_eta eta_sku ON eta_sku.product_id IS NULL AND eta_sku.sku = wp.sku
-     -- Live vendor (drop-ship) stock + ETA for EVERY synced vendor. Matched on
-     -- sku AND source (= products.inventory_source) so a SKU that collides across
-     -- brands can't pull the wrong vendor's stock, and so each (sku,size) is unique.
      LEFT JOIN LATERAL ( SELECT jsonb_object_agg(ai.size, ai.stock_qty) AS vendor_size_stock,
             COALESCE(sum(GREATEST(ai.stock_qty, 0)), 0::bigint) AS vendor_on_hand,
             min(NULLIF(ai.future_delivery_date, ''::text)) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0) AS vendor_eta,

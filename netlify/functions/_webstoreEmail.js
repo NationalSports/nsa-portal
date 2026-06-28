@@ -33,6 +33,7 @@ async function sendOrderConfirmation(sb, order) {
   const accent = store.accent_color || '#e11d2a';
   const shipping = Number(order.shipping_fee) || 0;
   const discount = Number(order.discount_amt) || 0;
+  const tax = Number(order.tax) || 0;
   const a = order.ship_address || null;
   const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div></div>` : '';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
@@ -52,6 +53,7 @@ async function sendOrderConfirmation(sb, order) {
       <table style="width:100%;border-collapse:collapse;font-size:14px">${lines}
         ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
         ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
+        ${tax > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Sales tax</td><td style="padding:8px 0;text-align:right">${money(tax)}</td></tr>` : ''}
         <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>
       </table>
       ${addrBlock}
