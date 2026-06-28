@@ -1736,6 +1736,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [detail, sel, loadDetail]);
 
+  // Move an entire category section before another category section.
+  const moveCatSection = useCallback(async (fromCat, toCat) => {
+    if (fromCat === toCat) return;
+    const list = [...(detail?.catalog || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const fromItems = list.filter((x) => (x.category || '') === fromCat);
+    const rest = list.filter((x) => (x.category || '') !== fromCat);
+    const insertBefore = rest.findIndex((x) => (x.category || '') === toCat);
+    const insertIdx = insertBefore < 0 ? rest.length : insertBefore;
+    const reordered = [...rest.slice(0, insertIdx), ...fromItems, ...rest.slice(insertIdx)];
+    for (let i = 0; i < reordered.length; i++) {
+      if ((reordered[i].sort_order || 0) !== i) {
+        await supabase.from('webstore_products').update({ sort_order: i }).eq('id', reordered[i].id);
+      }
+    }
+    loadDetail(sel);
+  }, [detail, sel, loadDetail]);
+
   // ── render gates ─────────────────────────────────────────────────────
   if (needsMigration) return <MigrationNotice onRetry={loadStores} />;
   if (loading) return <div style={{ padding: 40, color: '#64748b', fontSize: 14 }}>Loading webstores…</div>;
@@ -2725,6 +2742,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [pendingOpenPid, setPendingOpenPid] = useState(null); // product just created — open its card once it lands
   const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
   const [overCat, setOverCat] = useState(null); // category section being dragged over
+  const [dragCat, setDragCat] = useState(null); // category section being dragged
+  const [overDragCat, setOverDragCat] = useState(null); // category drop target during cat-drag
   const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
   useEffect(() => { setPaneTab('details'); }, [editId]);
   // Side-by-side layout: a persistent item list on the left, the item editor in a
@@ -2974,9 +2993,20 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
             </div>
             {useCats
               ? catSections.map((sec) => (
-                <div key={sec.cat || '__unc'} onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverCat(sec.cat); } }} onDrop={(e) => { e.preventDefault(); dropToCat(sec.cat); }}
-                  style={{ boxShadow: overCat === sec.cat && dragId ? 'inset 0 0 0 2px #93c5fd' : undefined }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: overCat === sec.cat && dragId ? '#dbeafe' : '#f8fafc', borderBottom: '1px solid #eef0f3', borderTop: '1px solid #eef0f3', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: sec.cat ? '#334155' : '#94a3b8' }}>
+                <div key={sec.cat || '__unc'}
+                  onDragOver={(e) => {
+                    if (dragCat && dragCat !== sec.cat) { e.preventDefault(); setOverDragCat(sec.cat); }
+                    else if (dragId) { e.preventDefault(); setOverCat(sec.cat); }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragCat && dragCat !== sec.cat) { moveCatSection(dragCat, sec.cat); setDragCat(null); setOverDragCat(null); }
+                    else { dropToCat(sec.cat); }
+                  }}
+                  style={{ boxShadow: overCat === sec.cat && dragId ? 'inset 0 0 0 2px #93c5fd' : overDragCat === sec.cat && dragCat ? 'inset 0 0 0 2px #a78bfa' : undefined }}>
+                  <div draggable={!!sec.cat} onDragStart={(e) => { e.stopPropagation(); setDragCat(sec.cat); }} onDragEnd={() => { setDragCat(null); setOverDragCat(null); }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: overDragCat === sec.cat && dragCat ? '#ede9fe' : overCat === sec.cat && dragId ? '#dbeafe' : '#f8fafc', borderBottom: '1px solid #eef0f3', borderTop: '1px solid #eef0f3', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: sec.cat ? '#334155' : '#94a3b8', cursor: sec.cat ? 'grab' : 'default' }}>
+                    {sec.cat && <span style={{ color: '#cbd5e1', fontSize: 10, marginRight: 2, cursor: 'grab' }}>⠿</span>}
                     <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sec.cat || 'Uncategorized'}</span><span style={{ color: '#cbd5e1', fontWeight: 700 }}>· {sec.groups.length}</span>
                     {sec.groups.length === 0 && <button type="button" onClick={() => setNewCats((p) => p.filter((x) => x !== sec.cat))} title="Remove this empty section" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
                   </div>
