@@ -109,7 +109,10 @@ function groupProducts(list) {
     if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
     byKey.get(k).push(p);
   }
-  return order.map((k) => { const rows = byKey.get(k); const rep = rows.find((r) => r.webstore_product_id === k) || rows[0]; return { key: k, rep, rows }; });
+  // The first row (lowest sort_order — the list is ordered by sort_order) is the primary: it
+  // supplies the card image and the default-selected color. Reordering colors in the builder
+  // changes which color leads here.
+  return order.map((k) => { const rows = byKey.get(k); return { key: k, rep: rows[0], rows }; });
 }
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
