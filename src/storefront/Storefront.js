@@ -127,6 +127,11 @@ const sizeSoon = (p, sz) => foldedSoon(sz, (s) => _rawSizeSoon(p, s));
 const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
+// An item is inventory-tracked (the stock guard applies) only when it's stock-backed AND
+// hasn't opted out. Custom / made-to-order products (no inventory_source, or 'manual') are
+// never tracked — every offered size stays sellable. track_inventory=false opts a tracked
+// item out, so it keeps selling all sizes regardless of stock.
+const isTracked = (p) => p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
 // Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
 // (common in the Adidas feed) and squeeze the leftover separators/whitespace.
 function cleanDesc(s) {
@@ -635,6 +640,7 @@ function GarmentTile({ theme, store, kind = 'top', badge, catLabel }) {
 function stockBadge(p, theme) {
   const ink = theme ? theme.ink : NEUTRAL.ink;
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: ink };
+  if (!isTracked(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked
   if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: STOCK.in };
   if (isIncoming(p)) { return { text: 'Low stock', color: '#fff', bg: STOCK.low }; }
   return { text: 'Sold out', color: '#fff', bg: theme ? theme.primary : '#8C1D40' };
@@ -853,6 +859,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
+    if (!isTracked(c)) return scale; // not inventory-tracked → every offered size sells
     const avail = scale.filter((s) => sizeSellable(c, s));
     return avail.length ? avail : (isIncoming(c) ? scale : avail);
   };
@@ -860,7 +867,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
-    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = isTracked(c) ? (q <= 0 && !soon && !isIncoming(c)) : false; const up = sizeUp(c, sz);
     return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
       style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
   });

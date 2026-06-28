@@ -143,7 +143,7 @@ async function checkStock(sb, store, lines) {
   if (!singles.length) return null;
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta')
+    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return null; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
@@ -151,6 +151,9 @@ async function checkStock(sb, store, lines) {
   const short = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+    // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
+    const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+    if (!tracked) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
