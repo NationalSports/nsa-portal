@@ -2748,6 +2748,16 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [dragCat, setDragCat] = useState(null); // category section being dragged
   const [overDragCat, setOverDragCat] = useState(null); // category drop target during cat-drag
   const paneEditorSaveRef = useRef(null); // bound to CatalogItemEditor's save() in split view
+  const paneEditorDirtyRef = useRef(false); // true when the open editor has unsaved edits
+  // Switch which item is being edited, but offer to save first if the current one is dirty —
+  // so a rep never loses edits by clicking the next item before hitting Save.
+  const switchEditId = (id) => {
+    if (id !== editId && paneEditorDirtyRef.current && paneEditorSaveRef.current) {
+      if (window.confirm('You have unsaved changes on this item. Save them before switching?')) paneEditorSaveRef.current();
+    }
+    paneEditorDirtyRef.current = false;
+    setEditId(id);
+  };
   const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
   useEffect(() => { setPaneTab('details'); }, [editId]);
   // Side-by-side layout: a persistent item list on the left, the item editor in a
@@ -2825,7 +2835,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     const archived = p.active === false;
     const bulkOn = selMode && bulkSel.has(p.id);
     return (
-      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : setEditId(p.id))}
+      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : switchEditId(p.id))}
         onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
         style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
           borderLeft: bulkOn ? '3px solid #2563eb' : sel ? '3px solid #191919' : '3px solid transparent',
@@ -2920,7 +2930,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
           {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
-            <button key={v} type="button" onClick={() => { if (v === 'table') setEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+            <button key={v} type="button" onClick={() => { if (v === 'table') switchEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
           ))}
         </div>
       </div>
@@ -3045,7 +3055,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -3165,7 +3175,13 @@ function ApplyToOthers({ deco, siblings, onApply }) {
   const apply = async () => {
     if (!picked.size) return;
     setBusy(true);
-    try { await onApply([...picked], { ...deco }); setPicked(new Set()); setOpen(false); }
+    // Carry the EXACT position & size the rep set: resolve x/y/w to concrete numbers
+    // (a freshly-placed logo may still be reading them from the placement default), so
+    // every target garment gets the logo at the same spot and scale. The deco's
+    // cw_by_color map rides along too, so each garment color resolves its own colorway.
+    const p = placementById(deco.placement);
+    const full = { ...deco, x: deco.x != null ? deco.x : p.x, y: deco.y != null ? deco.y : p.y, w: deco.w != null ? deco.w : p.w };
+    try { await onApply([...picked], full); setPicked(new Set()); setOpen(false); }
     finally { setBusy(false); }
   };
   return (
@@ -3699,7 +3715,7 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
   );
 }
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onCancel, onSave }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
@@ -3918,6 +3934,13 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setImgBusy(false);
   };
 
+  // Dirty tracking: a signature of every editable field. Compared to the baseline (the
+  // values as last loaded / saved) so the parent can prompt a save before the rep switches
+  // to another item. Reset to the current signature whenever we persist.
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv]);
+  const _baselineSig = useRef(_dirtySig);
+  if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
+
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
@@ -3936,6 +3959,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       if (inventoryBacked) fields.track_inventory = !!trackInv;
     }
     onSave(fields);
+    _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
+    if (dirtyRef) dirtyRef.current = false;
     // Stay on the item after saving — just confirm briefly on the button.
     setJustSaved(true); setTimeout(() => setJustSaved(false), 1800);
   };
