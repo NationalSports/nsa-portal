@@ -294,7 +294,7 @@ export default function Storefront() {
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={products} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
@@ -396,6 +396,7 @@ function splitHeadline(name) {
 // ── Home: hero + grid ────────────────────────────────────────────────
 function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = 'all', query = '' }) {
   const grouped = groupProducts(products);
+  const wpById = buildWpById(products);
   const firstBundle = products.find((p) => p.kind === 'bundle');
   const goBundle = firstBundle ? () => navTo(`/shop/${store.slug}/b/${firstBundle.webstore_product_id}`) : null;
   const scrollGrid = () => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' });
@@ -427,7 +428,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = '
           ? <Splash>No gear matches that search.</Splash>
           : (() => {
               const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(232px,1fr))', gap: 20 };
-              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} />;
+              const cardOf = ({ rep, rows }) => <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
               // When filtered to one category (or searching), show a single grid; the
               // full "All Gear" view splits into the store's category sections.
               const byCat = new Map();
@@ -454,52 +455,66 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, cat = '
   );
 }
 
-// Open hero — cream, two-column, product collage on the right.
+// Open hero — team-color gradient, two-column, curated product collage on the right.
 function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
-  const imgs = products.filter((p) => p.kind !== 'bundle' && p.image_front_url).slice(0, 3);
+  const imgs = featuredHeroImgs(store, products);
+  const showCollage = imgs.length > 0;
   return (
-    <section style={{ background: theme.cream }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(28px,4vw,52px) 24px', display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }} className="sf-hero-grid">
+    <section style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(135deg, ${theme.primary}, ${theme.deep})`, color: '#fff' }}>
+      <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
+      <div style={{ position: 'relative', zIndex: 1, maxWidth: 1240, margin: '0 auto', padding: 'clamp(32px,4vw,56px) 24px', display: 'grid', gridTemplateColumns: showCollage ? 'minmax(0,1.05fr) minmax(0,0.95fr)' : '1fr', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }} className="sf-hero-grid">
         <div>
-          <span style={{ display: 'inline-block', background: theme.primary, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-block', background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{closes && closes.urgent ? closes.text : 'Spirit Pack · Now Open'}</span>
           </span>
-          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(40px,5.2vw,72px)', lineHeight: 0.95, textTransform: 'uppercase', margin: '0 0 18px', color: theme.primary }}>
-            {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accentDeep }}>{tail}</em></> : tail}
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(40px,5.2vw,72px)', lineHeight: 0.95, textTransform: 'uppercase', margin: '0 0 18px', color: '#fff' }}>
+            {head ? <>{head} <em style={{ fontStyle: 'italic', color: theme.accent }}>{tail}</em></> : tail}
           </h1>
-          <p style={{ margin: '0 0 26px', maxWidth: 480, fontSize: 17, lineHeight: 1.6, color: theme.subText }}>{lead}</p>
+          <p style={{ margin: '0 0 26px', maxWidth: 480, fontSize: 17, lineHeight: 1.6, color: 'rgba(255,255,255,0.86)' }}>{lead}</p>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            {goBundle && <SkewBtn theme={theme} variant="primary" onClick={goBundle}>Build the Player Pack →</SkewBtn>}
-            <SkewBtn theme={theme} variant="outline" onClick={scrollGrid}>Shop the Collection</SkewBtn>
+            {goBundle && <SkewBtn theme={theme} variant="accent" onClick={goBundle}>Build the Player Pack →</SkewBtn>}
+            <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
             {[['No', 'Minimums'], ['Top', 'Brands'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
               <div key={l}>
-                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: theme.primary, lineHeight: 1 }}>{n}</div>
-                <div style={{ fontSize: 12.5, color: theme.subText, fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
+                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
+                <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
               </div>
             ))}
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }} className="sf-hero-collage">
-          {[0, 1, 2].map((i) => {
-            const p = imgs[i];
-            const tall = i === 0;
-            return (
-              <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: theme.warm, borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.12)', border: `1px solid ${theme.line}` }}>
-                <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                  {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                     : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
+        {showCollage && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }} className="sf-hero-collage">
+            {[0, 1, 2].map((i) => {
+              const p = imgs[i];
+              const tall = i === 0;
+              return (
+                <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
+                  <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
+                    {p ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                       : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </section>
   );
+}
+
+// Hero collage images: an admin-curated list of webstore_product_ids when set,
+// else the first 3 in-stock products. featured_product_ids semantics:
+//   null/undefined → auto (top 3) · [] → none (no collage) · [ids] → those (≤3).
+function featuredHeroImgs(store, products) {
+  const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
+  const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
+  if (!featured) return pool.slice(0, 3);
+  return featured.map((id) => pool.find((p) => p.webstore_product_id === id)).filter(Boolean).slice(0, 3);
 }
 
 // Bold hero — full-bleed team gradient, hash + diagonal wedge.
@@ -655,8 +670,10 @@ function DecoOverlay({ decorations, side = 'front', colorName }) {
 // Sample number/name on the garment mockup so shoppers see an item is personalized.
 // Default back placement; the real value is entered at checkout. Mirrors the builder.
 const PERSO_DEFAULTS = { name: { x: 50, y: 22, w: 64 }, number: { x: 50, y: 51, w: 34 } };
-function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber = '00' }) {
+function PersoMock({ takesNumber, takesName, decorations = [], sampleName = 'PLAYER', sampleNumber = '00' }) {
   if (!takesNumber && !takesName) return null;
+  // Honor the rep's placed/resized perso token when present; else the default.
+  const place = (kind, def) => { const d = (decorations || []).find((x) => x && x.kind === kind); return d ? { x: d.x != null ? d.x : def.x, y: d.y != null ? d.y : def.y, w: d.w != null ? d.w : def.w } : def; };
   const tok = (p, vb, ty, fs, body) => (
     <div style={{ position: 'absolute', left: p.x + '%', top: p.y + '%', width: p.w + '%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 1 }}>
       <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible' }}>
@@ -665,8 +682,8 @@ function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber
     </div>
   );
   return <>
-    {takesName && tok(PERSO_DEFAULTS.name, 26, 20, 20, String(sampleName).toUpperCase())}
-    {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
+    {takesName && tok(place('perso_name', PERSO_DEFAULTS.name), 26, 20, 20, String(sampleName).toUpperCase())}
+    {takesNumber && tok(place('perso_number', PERSO_DEFAULTS.number), 64, 52, 58, sampleNumber)}
   </>;
 }
 
@@ -714,12 +731,23 @@ function ColorDots({ rows, theme, max = 4 }) {
   );
 }
 
-function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {} }) {
+// Resolve a package component's display meta. When the component is linked to a
+// specific in-store item (webstore_product_id), use that item's custom photo,
+// name, color and sizes; otherwise fall back to the base catalog product.
+function compMeta(c, wpById, compInfo) {
+  const wp = c && c.webstore_product_id && wpById ? wpById[c.webstore_product_id] : null;
+  if (wp) return { name: wp.name, image: wp.image_front_url, sizes: wp.available_sizes, color: wp.color, decorations: wp.decorations };
+  const base = (compInfo || {})[c.product_id] || {};
+  return { name: base.name || c.sku, image: base.image_front_url, sizes: base.available_sizes, color: null, decorations: null };
+}
+const buildWpById = (products) => { const m = {}; (products || []).forEach((p) => { m[p.webstore_product_id] = p; }); return m; };
+
+function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
   const isBundle = p.kind === 'bundle';
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
     ? bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-        .map((c) => ({ img: compInfo[c.product_id]?.image_front_url, name: compInfo[c.product_id]?.name || c.sku }))
+        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; })
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
@@ -849,7 +877,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
-            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} />}
+            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} decorations={p.decorations} />}
           </div>
           {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
@@ -934,13 +962,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen, onAdd }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
   const [added, setAdded] = useState(false);
+  const wpById = buildWpById(products);
+  const meta = (c) => compMeta(c, wpById, compInfo);
   if (!p) return <Splash>Package not found.</Splash>;
-  const compSizesArr = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
+  const compSizesArr = (c) => foldScale(meta(c).sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
   const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
@@ -948,22 +978,22 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
   const addToCart = () => {
     onAdd({
       kind: 'bundle', webstore_product_id: p.webstore_product_id, product_id: null, sku: null,
-      name: p.name, image: p.image_front_url || (components.map((c) => compInfo[c.product_id]?.image_front_url).find(Boolean)) || null,
+      name: p.name, image: p.image_front_url || (components.map((c) => meta(c).image).find(Boolean)) || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra,
-      components: components.map((c) => ({
-        bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: compInfo[c.product_id]?.name || c.sku,
+      components: components.map((c) => { const m = meta(c); return {
+        bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: m.name, image: m.image || null,
         size: picks[c.id] || null,
         player_number: c.takes_number ? (nums[c.id] || '').trim() : null,
         player_name: c.takes_name ? (names[c.id] || '').trim() : null,
-      })),
+      }; }),
       qty: 1,
     });
     setAdded(true); setTimeout(() => setAdded(false), 1500);
   };
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
-  const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
-  const compImg = (c) => compInfo[c.product_id]?.image_front_url;
-  const compSizes = (c) => foldScale(compInfo[c.product_id]?.available_sizes);
+  const compName = (c) => meta(c).name || c.sku || 'Item';
+  const compImg = (c) => meta(c).image;
+  const compSizes = (c) => foldScale(meta(c).sizes);
   // A step is complete when every required input on it is satisfied.
   const isComplete = (c) => (!(c.size_required && compSizes(c).length > 0) || !!picks[c.id]) && (!c.takes_number || (nums[c.id] || '').trim());
   const total = components.length;
