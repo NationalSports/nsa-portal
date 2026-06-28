@@ -2539,7 +2539,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const _qmIsVec = (u) => /\.(ai|eps|pdf)(\?|$)/i.test(u || '');
   const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
   const qmLocations = _qmArt.map((a) => {
-    const urls = [a.preview_url, ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
+    // Web logos (color-way default + legacy web_logo_url) are clean transparent cutouts —
+    // include them so art that only has a stored web logo (no preview/mockup/source file
+    // yet) still shows up as a placeable layer instead of "No file yet".
+    const urls = [webLogoDefault(a), a.web_logo_url, a.preview_url, ...((a.web_logos || []).map(_qmU)), ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
     const files = []; const seen = new Set();
     urls.forEach((u) => {
       if (!u || seen.has(u)) return;
