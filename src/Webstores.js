@@ -4098,14 +4098,18 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         <ItemSection title="Basics" hint="· name shown in the catalog">
           <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
           {!isBundle && item.product_id && onUpdateProductMeta && (
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
-              <Row label="Vendor (PO goes to)">
-                <input className="form-input" list={'vendor-suggest-' + item.id} value={vendorText} placeholder="Search vendors…" style={{ width: 190 }}
-                  onChange={(e) => { setVendorText(e.target.value); const v = vendorList.find((x) => x.name.toLowerCase() === e.target.value.trim().toLowerCase()); if (v) saveVendor(v.id); else if (e.target.value.trim() === '') saveVendor(''); }}
-                  onBlur={() => { const v = vendorList.find((x) => x.name.toLowerCase() === vendorText.trim().toLowerCase()); setVendorText(v ? v.name : (vendorList.find((x) => x.id === vendorId)?.name || '')); }} />
-                <datalist id={'vendor-suggest-' + item.id}>{vendorList.map((v) => <option key={v.id} value={v.name} />)}</datalist>
-              </Row>
-              <Row label="SKU"><input className="form-input" value={skuEdit} onChange={(e) => setSkuEdit(e.target.value)} onBlur={saveSku} placeholder="SKU" style={{ width: 150 }} title="Catalog SKU — used to match vendor stock; saving updates the product" /></Row>
+            <div style={{ display: 'flex', gap: 12, marginTop: 2 }}>
+              <div style={{ flex: 2, minWidth: 0 }}>
+                <Row label="Vendor (PO goes to)">
+                  <input className="form-input" list={'vendor-suggest-' + item.id} value={vendorText} placeholder="Search vendors…" style={{ width: '100%' }}
+                    onChange={(e) => { setVendorText(e.target.value); const v = vendorList.find((x) => x.name.toLowerCase() === e.target.value.trim().toLowerCase()); if (v) saveVendor(v.id); else if (e.target.value.trim() === '') saveVendor(''); }}
+                    onBlur={() => { const v = vendorList.find((x) => x.name.toLowerCase() === vendorText.trim().toLowerCase()); setVendorText(v ? v.name : (vendorList.find((x) => x.id === vendorId)?.name || '')); }} />
+                  <datalist id={'vendor-suggest-' + item.id}>{vendorList.map((v) => <option key={v.id} value={v.name} />)}</datalist>
+                </Row>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Row label="SKU"><input className="form-input" value={skuEdit} onChange={(e) => setSkuEdit(e.target.value)} onBlur={saveSku} placeholder="SKU" style={{ width: '100%' }} title="Catalog SKU — used to match vendor stock; saving updates the product" /></Row>
+              </div>
             </div>
           )}
         </ItemSection>
