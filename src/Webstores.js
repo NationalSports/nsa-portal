@@ -4191,6 +4191,55 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             : storeFundAmt > 0 ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Includes {money(storeFundAmt)} store fundraising — enter to override.</div> : null)}
         </ItemSection>
 
+        {isBundle && (
+          <ItemSection title="Card style" hint="· how this package appears in the store grid">
+            <div style={{ display: ‘flex’, gap: 10, flexWrap: ‘wrap’ }}>
+              <button type="button" onClick={() => setCardStyle(‘’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
+                <svg viewBox="0 0 88 100" style={{ display: ‘block’, width: 88, height: 100 }}>
+                  <rect width="88" height="100" fill="#f8fafc" />
+                  <rect x="0" y="0" width="88" height="66" fill="#e2e8f0" />
+                  <rect x="14" y="74" width="44" height="6" rx="3" fill="#cbd5e1" />
+                  <rect x="14" y="84" width="30" height="5" rx="2" fill="#e2e8f0" />
+                </svg>
+                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Standard card</div>
+              </button>
+              <button type="button" onClick={() => setCardStyle(‘banner’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘banner’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
+                <svg viewBox="0 0 176 76" style={{ display: ‘block’, width: 176, height: 76 }}>
+                  <rect width="176" height="76" fill="#1e293b" />
+                  <rect x="10" y="16" width="8" height="8" rx="2" fill="#ef4444" />
+                  <rect x="21" y="17" width="32" height="5" rx="2" fill="rgba(239,68,68,0.7)" />
+                  <rect x="10" y="28" width="70" height="7" rx="2" fill="rgba(255,255,255,0.9)" />
+                  <rect x="10" y="39" width="55" height="5" rx="2" fill="rgba(255,255,255,0.5)" />
+                  <rect x="10" y="54" width="32" height="14" rx="4" fill="#ef4444" />
+                  <rect x="100" y="5" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="138" y="5" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="100" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="138" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
+                </svg>
+                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘banner’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘banner’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘banner’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Banner + collage</div>
+              </button>
+              <button type="button" onClick={() => setCardStyle(‘showcase’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘showcase’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
+                <svg viewBox="0 0 176 90" style={{ display: ‘block’, width: 176, height: 90 }}>
+                  <rect width="176" height="90" fill="#f8fafc" />
+                  <rect width="176" height="26" fill="#1e293b" />
+                  <rect x="10" y="9" width="72" height="8" rx="3" fill="rgba(255,255,255,0.85)" />
+                  <rect x="136" y="8" width="30" height="10" rx="3" fill="#ef4444" />
+                  <rect x="6" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="48" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="90" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="132" y="31" width="38" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="8" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="50" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="92" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="134" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                </svg>
+                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘showcase’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘showcase’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘showcase’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Showcase (each item)</div>
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: ‘#94a3b8’, marginTop: 8 }}>Banner and Showcase span the full store grid width.</div>
+          </ItemSection>
+        )}
+
         </div>
         <div>
         <ItemSection title="Store placement" hint="· section, kit & whether it’s required">
@@ -4207,17 +4256,6 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
         </ItemSection>
-
-        {isBundle && (
-          <ItemSection title="Card style" hint="· how this package appears in the store grid">
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {[['', 'Standard card'], ['banner', 'Banner + collage'], ['showcase', 'Showcase (each item)']].map(([val, lbl]) => (
-                <button key={val} type="button" onClick={() => setCardStyle(val)} style={{ padding: '7px 14px', borderRadius: 6, border: '2px solid ' + (cardStyle === val ? '#191919' : '#d1d5db'), background: cardStyle === val ? '#191919' : '#fff', color: cardStyle === val ? '#fff' : '#374151', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{lbl}</button>
-              ))}
-            </div>
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Banner and Showcase styles span the full width of the store grid.</div>
-          </ItemSection>
-        )}
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
           <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 130 }} /></Row>
