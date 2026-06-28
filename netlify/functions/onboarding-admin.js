@@ -10,7 +10,7 @@
 //   generate_zip  → decrypt + render the packet PDFs, return a base64 ZIP
 const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
-const { buildPacketFiles, zipFiles, safeName, formatPayComponents } = require('./_onboardingPacket');
+const { buildPacketFiles, zipFiles, safeName, formatPayComponents, hireLegalName } = require('./_onboardingPacket');
 const { decryptField } = require('./_onboardingCrypto');
 const { brandedEmail } = require('./_onboardingEmail');
 
@@ -102,14 +102,14 @@ exports.handler = async (event) => {
       const ids = (invites || []).map((i) => i.id);
       let subs = [];
       if (ids.length) {
-        const { data } = await admin.from('onboarding_submissions').select('invite_id, completed_steps, submitted, submitted_at, updated_at, acknowledgments').in('invite_id', ids);
+        const { data } = await admin.from('onboarding_submissions').select('invite_id, completed_steps, submitted, submitted_at, updated_at, acknowledgments, data').in('invite_id', ids);
         subs = data || [];
       }
       const subByInvite = Object.fromEntries(subs.map((s) => [s.invite_id, s]));
       const out = (invites || []).map((i) => {
         const s = subByInvite[i.id];
         return {
-          id: i.id, full_name: i.full_name, personal_email: i.personal_email, nsa_email: i.nsa_email,
+          id: i.id, full_name: (s && s.data && s.data.personal && s.data.personal.full_name) || i.full_name, personal_email: i.personal_email, nsa_email: i.nsa_email,
           role: i.role, position_title: i.position_title, status: i.status,
           invited_at: i.invited_at, completed_at: i.completed_at, expires_at: i.expires_at,
           i9_status: i.i9_status || 'pending',
@@ -172,7 +172,8 @@ exports.handler = async (event) => {
       const { data: sub } = await admin.from('onboarding_submissions').select('*').eq('invite_id', id).maybeSingle();
       const { data: events } = await admin.from('onboarding_events').select('kind, ref, meta, created_at').eq('invite_id', id).order('created_at', { ascending: true }).limit(5000);
 
-      const files = await buildPacketFiles(inv, sub, events || []);
+      const { data: settings } = await admin.from('onboarding_settings').select('*').eq('id', 'default').maybeSingle();
+      const files = await buildPacketFiles(inv, sub, events || [], settings || {});
       // Append the hire's uploaded documents under an Uploads/ folder.
       const { data: docs } = await admin.from('onboarding_documents').select('kind, filename, storage_path').eq('invite_id', id);
       for (const d of (docs || [])) {
@@ -189,7 +190,7 @@ exports.handler = async (event) => {
       await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'download', ref: 'packet_zip', meta: { by: auth.teamMemberId } }]);
       return {
         statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, filename: `${safeName(inv.full_name)}_NSA_New_Hire_Packet.zip`, zip_base64: buf.toString('base64') }),
+        body: JSON.stringify({ ok: true, filename: `${safeName(hireLegalName(inv, sub))}_NSA_New_Hire_Packet.zip`, zip_base64: buf.toString('base64') }),
       };
     }
 
@@ -208,6 +209,26 @@ exports.handler = async (event) => {
       try { ein = decryptField(s.ein); } catch {}
       await admin.from('onboarding_events').insert([{ invite_id: id, kind: 'sensitive_revealed', ref: String(body.reason || 'payroll'), meta: { by: auth.teamMemberId } }]);
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ssn, bank_account: acct, bank_routing: routing, ein }) };
+    }
+
+    if (action === 'get_settings') {
+      const { data: s } = await admin.from('onboarding_settings').select('*').eq('id', 'default').maybeSingle();
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, settings: s || {} }) };
+    }
+
+    if (action === 'save_settings') {
+      const patch = {
+        id: 'default',
+        employer_legal_name: body.employer_legal_name || null,
+        employer_address: body.employer_address || null,
+        employer_phone: body.employer_phone || null,
+        employer_payday: body.employer_payday || null,
+        workers_comp_carrier: body.workers_comp_carrier || null,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await admin.from('onboarding_settings').upsert(patch, { onConflict: 'id' });
+      if (error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: error.message }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
     }
 
     return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Unknown action' }) };

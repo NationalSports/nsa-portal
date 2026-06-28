@@ -12,13 +12,14 @@
 //      BREVO_API_KEY, plus the GOOGLE_SA_* / EMPLOYEE_FORMS_FOLDER_ID set used
 //      by _googleDrive.js (Drive copy is skipped if those are absent).
 const { getSupabaseAdmin } = require('./_shared');
-const { buildPacketFiles, zipFiles, safeName } = require('./_onboardingPacket');
+const { buildPacketFiles, zipFiles, safeName, hireLegalName } = require('./_onboardingPacket');
 const { brandedEmail } = require('./_onboardingEmail');
 const drive = require('./_googleDrive');
 
 const HR_EMAIL = () => process.env.ONBOARDING_HR_EMAIL || 'steve@nationalsportsapparel.com';
 
-async function emailPacketToHr(invite, zipBuffer, filename, driveUrl) {
+async function emailPacketToHr(invite, zipBuffer, filename, driveUrl, displayName) {
+  const name = displayName || invite.full_name;
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
   if (!brevoKey) return { ok: false, error: 'BREVO_API_KEY not set' };
   const driveLine = driveUrl
@@ -30,12 +31,12 @@ async function emailPacketToHr(invite, zipBuffer, filename, driveUrl) {
     body: JSON.stringify({
       sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: HR_EMAIL() }],
-      subject: `New-hire packet complete — ${invite.full_name}`,
+      subject: `New-hire packet complete — ${name}`,
       htmlContent: brandedEmail({
-        preheader: `${invite.full_name} finished onboarding — packet attached.`,
+        preheader: `${name} finished onboarding — packet attached.`,
         heading: 'New-Hire Packet Complete',
         bodyHtml:
-          `<p style="margin:0 0 12px;"><strong>${invite.full_name}</strong>${invite.position_title ? ` (${invite.position_title})` : ''} completed their new-hire paperwork.</p>` +
+          `<p style="margin:0 0 12px;"><strong>${name}</strong>${invite.position_title ? ` (${invite.position_title})` : ''} completed their new-hire paperwork.</p>` +
           `<p style="margin:0;">The full packet — forms, tax elections, handbook acknowledgment, California notices, and the review audit log — is attached as a ZIP.</p>` +
           driveLine,
         note: 'Sensitive fields (SSN, bank) are included in the packet for payroll and should be handled accordingly.',
@@ -74,9 +75,11 @@ exports.handler = async (event) => {
       return { statusCode: 200, body: 'Already finalized' };
     }
 
-    const files = await buildPacketFiles(invite, sub, events || []);
+    const { data: settings } = await admin.from('onboarding_settings').select('*').eq('id', 'default').maybeSingle();
+    const legalName = hireLegalName(invite, sub);
+    const files = await buildPacketFiles(invite, sub, events || [], settings || {});
     const zipBuffer = await zipFiles(files); // emailed packet = generated PDFs only (keeps attachment small)
-    const filename = `${safeName(invite.full_name)}_NSA_New_Hire_Packet.zip`;
+    const filename = `${safeName(legalName)}_NSA_New_Hire_Packet.zip`;
 
     // The hire's uploaded documents (voided check, photo ID, …) — added to the
     // Drive copy so the Employee Forms folder is complete.
@@ -93,7 +96,7 @@ exports.handler = async (event) => {
     let driveUrl = null;
     if (drive.isConfigured()) {
       try {
-        const r = await drive.uploadPacketToDrive(invite.full_name, driveFiles);
+        const r = await drive.uploadPacketToDrive(legalName, driveFiles);
         driveUrl = r.folderUrl;
         await admin.from('onboarding_events').insert([{ invite_id: invite.id, kind: 'drive_uploaded', ref: r.folderId, meta: { uploaded: r.uploaded, url: r.folderUrl } }]);
       } catch (e) {
@@ -103,7 +106,7 @@ exports.handler = async (event) => {
 
     // 2) Email the packet to HR (best-effort).
     try {
-      const mail = await emailPacketToHr(invite, zipBuffer, filename, driveUrl);
+      const mail = await emailPacketToHr(invite, zipBuffer, filename, driveUrl, legalName);
       await admin.from('onboarding_events').insert([{ invite_id: invite.id, kind: mail.ok ? 'email_sent' : 'email_error', ref: HR_EMAIL(), meta: mail.ok ? {} : { error: mail.error } }]);
     } catch (e) {
       await admin.from('onboarding_events').insert([{ invite_id: invite.id, kind: 'email_error', meta: { error: String(e.message || e) } }]);

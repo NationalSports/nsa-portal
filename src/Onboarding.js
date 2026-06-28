@@ -32,6 +32,7 @@ const inp = { width: '100%', padding: '9px 11px', border: '1px solid #cbd5e1', b
 export default function OnboardingAdmin({ cu }) {
   const [invites, setInvites] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [detail, setDetail] = useState(null);
   const [toast, setToast] = useState(null);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(null), 3500); };
@@ -58,6 +59,7 @@ export default function OnboardingAdmin({ cu }) {
           <div style={{ display: 'flex', gap: 18, alignItems: 'center' }}>
             <Stat n={pending} label="In progress" />
             <Stat n={completed} label="Completed" />
+            <button className="btn btn-light" onClick={() => setShowSettings(true)} title="Employer info for the Wage Theft notice">⚙ Settings</button>
             <button className="btn btn-primary" onClick={() => setShowNew(true)}>+ Invite a hire</button>
           </div>
         </div>
@@ -100,6 +102,7 @@ export default function OnboardingAdmin({ cu }) {
         )}
 
       {showNew && <NewInvite cu={cu} onClose={() => setShowNew(false)} onCreated={(msg) => { setShowNew(false); flash(msg); load(); }} />}
+      {showSettings && <EmployerSettings onClose={() => setShowSettings(false)} flash={flash} />}
       {detail && <DetailModal id={detail} onClose={() => setDetail(null)} flash={flash} onChanged={load} />}
     </div>
   );
@@ -182,6 +185,34 @@ function PayComponentsEditor({ value, onChange }) {
   );
 }
 
+function EmployerSettings({ onClose, flash }) {
+  const [f, setF] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { (async () => { const j = await call('get_settings'); setF(j.ok ? (j.settings || {}) : {}); })(); }, []);
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const save = async () => { setBusy(true); const j = await call('save_settings', f); setBusy(false); if (j.ok) { flash('Employer info saved'); onClose(); } else flash(j.error || 'Save failed'); };
+  return (
+    <Modal title="Employer info" onClose={onClose}>
+      {!f ? <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>Loading…</div> : (
+        <>
+          <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>Used to complete the California Wage Theft Prevention notice (Labor Code 2810.5) on every employee packet. Set it once.</div>
+          <div><label style={lbl}>Employer legal name</label><input style={inp} value={f.employer_legal_name || ''} onChange={(e) => set('employer_legal_name', e.target.value)} placeholder="National Sports Apparel, LLC" /></div>
+          <div style={{ marginTop: 10 }}><label style={lbl}>Business address</label><input style={inp} value={f.employer_address || ''} onChange={(e) => set('employer_address', e.target.value)} placeholder="Street, City, CA ZIP" /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+            <div><label style={lbl}>Phone</label><input style={inp} value={f.employer_phone || ''} onChange={(e) => set('employer_phone', e.target.value)} placeholder="(714) 279-8777" /></div>
+            <div><label style={lbl}>Regular payday</label><input style={inp} value={f.employer_payday || ''} onChange={(e) => set('employer_payday', e.target.value)} placeholder="e.g. Every other Friday" /></div>
+          </div>
+          <div style={{ marginTop: 10 }}><label style={lbl}>Workers' comp insurance carrier</label><input style={inp} value={f.workers_comp_carrier || ''} onChange={(e) => set('workers_comp_carrier', e.target.value)} placeholder="Carrier name" /></div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+            <button className="btn btn-light" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function NewInvite({ cu, onClose, onCreated }) {
   const [f, setF] = useState({ full_name: '', personal_email: '', nsa_email: '', role: '', position_title: '', supervisor: cu?.name || '', hire_date: '', employment_type: 'w2_employee', pay_components: [], work_state: 'CA' });
   const [busy, setBusy] = useState(false);
@@ -250,7 +281,7 @@ function DetailModal({ id, onClose, flash, onChanged }) {
   const evLabel = { start: 'Opened the packet', step_view: 'Viewed step', section_view: 'Opened section', scroll_complete: 'Read to end', acknowledge: 'Acknowledged', sign: 'Signed', save: 'Saved progress', submit: 'Submitted packet', download: 'Packet downloaded', email_sent: '✉ Packet emailed to HR', email_error: '⚠ HR email failed', drive_uploaded: '📁 Filed to Google Drive', drive_error: '⚠ Drive upload failed', finalized: 'Finalized', sensitive_revealed: '🔓 SSN/bank revealed (payroll)', doc_upload: '📎 Uploaded a document', i9_status: '🪪 I-9 status updated', reminder_sent: '🔔 Reminder sent' };
 
   return (
-    <Modal title={inv.full_name} onClose={onClose} wide>
+    <Modal title={(sub && sub.data && sub.data.personal && sub.data.personal.full_name) || inv.full_name} onClose={onClose} wide>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
         <Chip s={inv.status} />
         <button className="btn btn-light" onClick={copyLink}>🔗 Copy link</button>
