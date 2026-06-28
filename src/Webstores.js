@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
@@ -2519,11 +2519,18 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const _qmArt = (detail?.libraryArt || []);
   const _qmU = (f) => typeof f === 'string' ? f : (f && f.url) || '';
   const _qmIsImg = (u) => /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u || '');
+  const _qmIsVec = (u) => /\.(ai|eps|pdf)(\?|$)/i.test(u || '');
   const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
   const qmLocations = _qmArt.map((a) => {
     const urls = [a.preview_url, ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
     const files = []; const seen = new Set();
-    urls.forEach((u) => { if (!u || seen.has(u) || !_qmIsImg(u)) return; seen.add(u); files.push({ name: (u.split('/').pop() || 'art').split('?')[0], url: u, preview: { url: u } }); });
+    urls.forEach((u) => {
+      if (!u || seen.has(u)) return;
+      seen.add(u);
+      const nm = (u.split('/').pop() || 'art').split('?')[0];
+      if (_qmIsImg(u)) { files.push({ name: nm, url: u, preview: { url: u } }); }
+      else if (_qmIsVec(u)) { const png = _cloudinaryPdfThumb(u); if (png) files.push({ name: nm, url: png, preview: { url: png, vectorSrc: u } }); }
+    });
     return { artFileId: a.id, name: a.name || 'Logo', position: '', existingFiles: (a.files || []), files, preview: files[0] ? files[0].preview : null, garmentKeys: [] };
   });
   const qmInitialMocks = {}; const qmInitialScene = {};
