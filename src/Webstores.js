@@ -1150,6 +1150,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const groupIds = groupKey ? cat.filter((c) => (c.variant_group_id || c.id) === groupKey && c.id !== id).map((c) => c.id) : [];
       if (groupIds.length) await supabase.from('webstore_products').update(groupFields).in('id', groupIds);
     }
+    // When retail_price changes, recalculate the price of any bundles that contain this item.
+    if (Object.prototype.hasOwnProperty.call(fields, 'retail_price')) {
+      const allBundleItems = detail?.bundleItems || [];
+      const cat = detail?.catalog || [];
+      const affectedBundleIds = [...new Set(
+        allBundleItems.filter((bi) => bi.webstore_product_id === id).map((bi) => bi.bundle_id)
+      )];
+      for (const bundleId of affectedBundleIds) {
+        const comps = allBundleItems.filter((bi) => bi.bundle_id === bundleId);
+        let total = 0;
+        for (const comp of comps) {
+          if (comp.webstore_product_id === id) {
+            total += Number(fields.retail_price) || 0;
+          } else {
+            const compItem = cat.find((c) => c.id === comp.webstore_product_id);
+            total += compItem ? (Number(compItem.retail_price) || 0) : 0;
+          }
+        }
+        await supabase.from('webstore_products').update({ retail_price: total }).eq('id', bundleId);
+      }
+    }
     flash('Item updated'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 

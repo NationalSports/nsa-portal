@@ -1089,27 +1089,25 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
 
       {/* Item grid */}
       {components.length === 0 ? <Splash>This pack has no items configured yet.</Splash> : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 20, margin: '24px 0 96px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 20, margin: '24px 0 96px' }}>
           {components.map((c, i) => {
             const sizes = compSizes(c);
             const complete = isComplete(c);
             return (
-              <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderTop: `4px solid ${complete ? theme.accent : theme.line}`, borderRadius: 6, padding: 18, transition: 'border-color .2s ease' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 14, background: complete ? theme.primary : theme.paper, color: complete ? '#fff' : theme.subText, border: complete ? 'none' : `2px solid ${theme.line}` }}>{complete ? '✓' : i + 1}</div>
-                    <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText }}>Step {i + 1}</span>
-                  </div>
-                  <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', background: theme.primary, color: '#fff', padding: '4px 10px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Required</span></span>
+              <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
+                {/* Full-width item image */}
+                <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
+                  {compImg(c) ? <img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {/* Step badge — top-left */}
+                  <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
+                  {/* Required badge — top-right */}
+                  {c.size_required && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontWeight: 700, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', background: theme.primary, color: '#fff', padding: '4px 9px', transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Required</span></span>}
+                  {/* Completion bar at bottom of image */}
+                  <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 4, background: complete ? theme.accent : 'transparent', transition: 'background .25s ease' }} />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-                  <div style={{ width: 56, height: 56, borderRadius: 6, background: theme.warm, overflow: 'hidden', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
-                    {compImg(c) ? <img src={compImg(c)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink, lineHeight: 1.1 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{compName(c)}</div>
-                  </div>
-                </div>
+                {/* Info + selectors */}
+                <div style={{ padding: '14px 16px 18px', flex: 1, display: 'flex', flexDirection: 'column', gap: 0 }}>
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink, lineHeight: 1.1, marginBottom: 12 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{compName(c)}</div>
                 {c.size_required && sizes.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>Size</div>
@@ -1130,8 +1128,9 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
                     </div>}
                   </div>
                 )}
-                <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: complete ? STOCK.in : theme.accentDeep }}>
-                  {complete ? `✓ Selected${picks[c.id] ? ` · ${picks[c.id]}` : ''}` : (c.size_required ? 'Choose a size' : 'Add your details')}
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: complete ? STOCK.in : theme.accentDeep, marginTop: 4 }}>
+                    {complete ? `✓ Selected${picks[c.id] ? ` · ${picks[c.id]}` : ''}` : (c.size_required ? 'Choose a size' : 'Add your details')}
+                  </div>
                 </div>
               </div>
             );
