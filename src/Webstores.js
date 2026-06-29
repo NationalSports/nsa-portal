@@ -2218,9 +2218,10 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
                           </a>
                         </td>
-                        <td style={{ ...TD, padding: '13px 8px' }} onClick={(e) => e.stopPropagation()}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
                             {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onOpen(s); }} style={{ whiteSpace: 'nowrap' }}>Open →</button>
                           </div>
                         </td>
                       </tr>
