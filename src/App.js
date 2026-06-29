@@ -3328,7 +3328,16 @@ const parseNetSuitePdfMulti=(pages,docType,products)=>{
     return parseNetSuitePdf(text,docType,products);
   });
 };
-const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
+// Gender/audience qualifiers OMG (and some vendors) prepend to a size label —
+// e.g. "Mens S", "Women's Large", "Youth M". The size itself is the same, so we
+// strip the qualifier and normalize the bare size. Adult/unisex collapse to the
+// plain size (S/M/L…); youth-class map to the Y-prefixed size (S→YS, M→YM…).
+// Without this, an OMG-ordered "Mens L" never matched a vendor's "L", so
+// genuinely in-stock items read as out. Mirrors normSzName in pricing.js.
+const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
+const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
+const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
