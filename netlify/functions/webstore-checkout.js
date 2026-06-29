@@ -191,6 +191,9 @@ async function loadCoupon(sb, store, code) {
 }
 
 const shipFee = (store) => store.delivery_mode === 'ship_home' ? r2(store.flat_shipping) : 0;
+// Store processing fee: a flat percent of the item subtotal only (not shipping,
+// tax, or fundraising). Standard 5%, configurable per store; 0 turns it off.
+const procFee = (store, subtotal) => r2((Number(store.processing_pct) || 0) / 100 * (Number(subtotal) || 0));
 
 function couponDiscount(coupon, cartTotal, shipping) {
   if (!coupon || coupon.kind !== 'percent') return 0;
@@ -325,13 +328,14 @@ async function placeOrder(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const preTax = Math.max(0, r2(cartTotal + shipping - discount));
+  const processing = procFee(store, priced.subtotal);
+  const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
 
   // The drift guard validates the PRE-TAX total — the number the shopper saw and
   // approved. Tax is computed server-side and added on top, so a stale price still
   // bounces but the (always server-authoritative) tax never trips this check.
   if (expectedTotalCents != null && Math.abs(Math.round(preTax * 100) - Math.round(Number(expectedTotalCents))) > 1) {
-    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, total: preTax } });
+    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, total: preTax } });
   }
 
   // Sales tax on the product subtotal (CA via CDTFA, registered out-of-state via TaxCloud).
@@ -341,7 +345,7 @@ async function placeOrder(sb, body) {
   const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal, { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
-  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax, total };
+  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
 
   let mode = payMode === 'paid' ? 'paid' : 'unpaid';
   if (total <= 0) mode = 'unpaid'; // fully covered by a code → no card
@@ -357,7 +361,7 @@ async function placeOrder(sb, body) {
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
-    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, tax, total,
+    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   }).select().single();
   if (ordErr) return bad(502, 'Could not create the order: ' + ordErr.message);
@@ -456,10 +460,11 @@ async function quoteTotals(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const preTax = Math.max(0, r2(cartTotal + shipping - discount));
+  const processing = procFee(store, priced.subtotal);
+  const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
   const taxRes = await calcTax(store, ship || {}, priced.subtotal, billing);
   const total = r2(preTax + taxRes.tax);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }
 
 async function finalize(sb, body) {
