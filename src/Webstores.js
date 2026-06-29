@@ -843,12 +843,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       setStores([]);
     } else {
       setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
-      // Fetch per-store aggregate stats
-      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total');
+      // Fetch per-store aggregate stats. Exclude abandoned card carts
+      // (pending_payment — created before Stripe confirms) and cancelled orders,
+      // which would otherwise inflate every store's Gross Sales and order count.
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt');
       const stats = {};
-      (aggOrders || []).forEach((o) => {
+      (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
         if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0 };
-        stats[o.store_id].revenue += Number(o.total) || 0;
+        stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
         stats[o.store_id].orders += 1;
       });
       setStoreStats(stats);
@@ -7520,12 +7522,15 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
   const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const fundPending = fundraise - fundPaid;
   const paid = orders.filter((o) => o.payment_mode === 'paid');
-  const lines = orderItems.filter((i) => !i.is_bundle_parent);
+  // Scope line items to LIVE orders only — orderItems carries items for every order
+  // in the store (incl. abandoned pre-payment carts and cancellations), which would
+  // otherwise inflate Units, Top sellers, and the Size breakdown.
+  const liveIds = new Set(orders.map((o) => o.id));
+  const lines = orderItems.filter((i) => !i.is_bundle_parent && liveIds.has(i.order_id));
   const units = lines.reduce((a, i) => a + (i.qty || 1), 0);
   // Packages: each purchased package is one bundle-parent line. Reported for
   // reference + club fundraising (we sometimes pay the club per package). The
   // components still ship/report as individual items via the non-parent lines.
-  const liveIds = new Set(orders.map((o) => o.id));
   const pkgLines = orderItems.filter((i) => i.is_bundle_parent && liveIds.has(i.order_id));
   const packagesSold = pkgLines.reduce((a, i) => a + (i.qty || 1), 0);
   const pkgFund = pkgLines.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (i.qty || 1), 0);
@@ -8143,9 +8148,15 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
   };
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  // Order's overall status = the least-advanced REAL line. Bundle parents have no SKU
+  // to receive against so they sit at 'pending' forever; keying the badge off items[0]
+  // (the parent, inserted first) showed shipped package orders as 'pending'.
+  const SRANK = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 5 };
   const enrich = (o) => {
     const items = itemsByOrder[o.id] || [];
-    return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus: items[0]?.line_status || 'pending' };
+    const real = items.filter((i) => !i.is_bundle_parent);
+    const lineStatus = (real.length ? real : items).reduce((acc, i) => ((SRANK[i.line_status] ?? 0) < (SRANK[acc] ?? 0) ? i.line_status : acc), (real[0] || items[0] || {}).line_status || 'pending');
+    return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
   const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
 

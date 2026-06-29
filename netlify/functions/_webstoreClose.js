@@ -12,8 +12,8 @@ const money = (n) => '$' + (Number(n) || 0).toFixed(2);
 async function buildBreakdown(admin, store) {
   const { data: orders } = await admin.from('webstore_orders')
     .select('id,status,subtotal,fundraise_amt,total').eq('store_id', store.id);
-  // Real demand only — drop cancelled / never-paid carts.
-  const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'pending' && o.status !== 'pending_payment');
+  // Real demand only — drop cancelled / refunded / never-paid carts.
+  const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending' && o.status !== 'pending_payment');
   const orderIds = live.map((o) => o.id);
   let units = 0;
   for (let i = 0; i < orderIds.length; i += 200) {

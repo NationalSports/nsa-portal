@@ -1572,7 +1572,13 @@ function OrderStatusPage({ store, theme, orderId }) {
     "Your team's order has shipped to the school. Your coach will hand out gear when it arrives.",
   ];
 
-  const curIdx = Math.max(0, ...items.filter((i) => !i.is_bundle_parent).map((i) => STAGE_IDX[i.line_status] ?? 0));
+  // Overall stage = the LEAST-advanced real line (bundle parents don't advance), so we
+  // never tell a buyer "Shipped" while items are still in production. partiallyShipped
+  // flags the mixed state where some lines have moved ahead of the rest.
+  const lineIdxs = items.filter((i) => !i.is_bundle_parent).map((i) => STAGE_IDX[i.line_status] ?? 0);
+  const curIdx = lineIdxs.length ? Math.min(...lineIdxs) : 0;
+  const maxIdx = lineIdxs.length ? Math.max(...lineIdxs) : 0;
+  const partiallyShipped = maxIdx >= 4 && maxIdx > curIdx;
   const curStageLabel = STAGES[curIdx]?.label || 'Ordered';
   const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
   const bundleParents = displayItems.filter((i) => i.is_bundle_parent);
@@ -1591,7 +1597,10 @@ function OrderStatusPage({ store, theme, orderId }) {
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
   const tax = Number(order.tax) || 0;
-  const subtotal = Number(order.total) - shipping - tax + discount;
+  // Use the stored subtotal so it ties to the sum of the item rows above (each row
+  // shows unit_price); fundraising/name add-ons are surfaced as their own line.
+  const subtotal = order.subtotal != null ? Number(order.subtotal) : Number(order.total) - shipping - tax + discount;
+  const fundraise = Number(order.fundraise_amt) || 0;
   const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
 
   // Labels
@@ -1611,6 +1620,12 @@ function OrderStatusPage({ store, theme, orderId }) {
   const itemChip = (lineStatus) => {
     const idx = STAGE_IDX[lineStatus] ?? 0;
     return chip(STAGES[idx]?.label || 'Ordered');
+  };
+  // A bundle's own parent row never advances (it has no SKU to receive against), so a
+  // package's status reflects the least-advanced component it actually contains.
+  const chipForLines = (lines) => {
+    const idxs = lines.map((i) => STAGE_IDX[i.line_status] ?? 0);
+    return chip(STAGES[idxs.length ? Math.min(...idxs) : 0]?.label || 'Ordered');
   };
   const sizeTag = (label) => (
     <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase', color: P, border: `1px solid ${LINE}`, background: '#fff', padding: '4px 9px', borderRadius: 3, whiteSpace: 'nowrap' }}>{label}</span>
@@ -1687,7 +1702,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         {/* Stage message */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 11, marginTop: 24, paddingTop: 18, borderTop: `1px solid ${LINE}` }}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={A} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-          <p style={{ fontSize: 14.5, lineHeight: 1.55, color: SUB, margin: 0 }}>{STAGE_MSGS[curIdx]}</p>
+          <p style={{ fontSize: 14.5, lineHeight: 1.55, color: SUB, margin: 0 }}>{STAGE_MSGS[curIdx]}{partiallyShipped ? ' Some of your items have already shipped ahead of the rest — the stage above tracks the items still in progress.' : ''}</p>
         </div>
       </div>
 
@@ -1699,7 +1714,10 @@ function OrderStatusPage({ store, theme, orderId }) {
 
       {/* Bundle cards */}
       {bundleParents.map((item) => {
-        const bundleChildren = items.filter((i) => i.bundle_product_id === item.bundle_product_id && !i.is_bundle_parent);
+        // Match by bundle_ref (the per-line UUID) so ordering the same package twice
+        // doesn't cross-list both packs' components under each card; fall back to the
+        // product id for any legacy rows saved before bundle_ref existed.
+        const bundleChildren = items.filter((i) => !i.is_bundle_parent && (item.bundle_ref ? i.bundle_ref === item.bundle_ref : i.bundle_product_id === item.bundle_product_id));
         const label = item.name || 'Player Pack';
         return (
           <div key={item.id} style={{ background: '#fff', border: `1px solid ${LINE}`, borderTop: `4px solid ${A}`, borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
@@ -1712,7 +1730,7 @@ function OrderStatusPage({ store, theme, orderId }) {
                     <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Bundle · {bundleChildren.length} items</span>
                   </span>
                 </div>
-                <div style={{ marginTop: 5 }}>{itemChip(item.line_status)}</div>
+                <div style={{ marginTop: 5 }}>{chipForLines(bundleChildren)}</div>
               </div>
               <div style={{ flexShrink: 0, fontFamily: DISPLAY, fontWeight: 800, fontSize: 21, color: P }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>
             </div>
@@ -1760,6 +1778,7 @@ function OrderStatusPage({ store, theme, orderId }) {
       <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '22px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 11, fontSize: 15, color: SUB }}>
           {subtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span style={{ color: INK, fontWeight: 600 }}>{money(subtotal)}</span></div>}
+          {fundraise > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Team fundraiser</span><span style={{ color: INK, fontWeight: 600 }}>{money(fundraise)}</span></div>}
           {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#1E6B3A' }}>Discount{order.coupon_code ? ` (${order.coupon_code})` : ''}</span><span style={{ color: '#1E6B3A', fontWeight: 600 }}>−{money(discount)}</span></div>}
           {shipping > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Shipping</span><span style={{ color: INK, fontWeight: 600 }}>{money(shipping)}</span></div>}
           {tax > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sales tax</span><span style={{ color: INK, fontWeight: 600 }}>{money(tax)}</span></div>}
