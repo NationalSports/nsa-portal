@@ -7463,7 +7463,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
               <React.Fragment key={o.id}>
-              <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+              <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
@@ -7476,13 +7476,13 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
               {isOpen && (
-                <tr style={{ background: '#f8fafc' }}>
+                <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                       <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
                         {lineItems.map((i) => (
-                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                          <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
                             <td style={td}>{i.sku || i.name || '—'}</td>
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
