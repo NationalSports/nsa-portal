@@ -523,79 +523,262 @@ const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
 const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
 
-// Polished launch email: shop link + scannable QR + key info + the coach's portal.
+// Launch email written for families (coach receives + forwards). Branded with team colors.
 function launchEmailHtml(store, portalUrl) {
   const url = _storefrontUrl(store);
   const primary = _hex(store.primary_color, '#0b1f3a');
   const accent = _hex(store.accent_color, '#e11d2a');
   const lead = store.org_type === 'club' ? 'Director' : 'Coach';
-  const rows = [];
-  if (_fmtDate(store.close_at)) rows.push(['Order by', _fmtDate(store.close_at)]); else rows.push(['Ordering', 'Open now']);
-  if (_fmtDate(store.open_at)) rows.push(['Opened', _fmtDate(store.open_at)]);
-  rows.push(['Delivery', _deliveryLabel(store)]);
-  rows.push(['Production', 'About 4–5 weeks after the store closes']);
-  const infoRows = rows.map(([k, v]) => `<tr><td style="padding:6px 0;color:#64748b;font-size:13px;width:120px">${_esc(k)}</td><td style="padding:6px 0;color:#0f172a;font-size:13px;font-weight:600">${_esc(v)}</td></tr>`).join('');
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const dk = (hex, a) => { try { const n = parseInt(hex.slice(1), 16); return '#' + [(n>>16)&255,(n>>8)&255,n&255].map((c)=>Math.round(c*(1-a)).toString(16).padStart(2,'0')).join(''); } catch(e){return hex;} };
+  const primaryDark = dk(primary, 0.34);
+  const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256';
+  const steps = [
+    { n:1, title:'Visit the store', body:'Tap the button above or scan the QR code to open your team\'s store.' },
+    { n:2, title:'Pick sizes & gear', body:'Browse all items, choose sizes for your player, and add to your cart.' },
+    { n:3, title:'Check out', body:`Place your order${closeDate ? ' before ' + closeDate : ''}. Everything is delivered together to the team.` },
+  ];
   return `
-  <div style="max-width:600px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;color:#0f172a;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden">
-    <div style="background:${primary};padding:26px 24px;color:#fff">
-      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:44px;margin-bottom:10px;border-radius:8px;background:#fff;padding:4px"/><br/>` : ''}
-      <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;opacity:.85;font-weight:700">Official Team Store</div>
-      <div style="font-size:24px;font-weight:800;margin-top:4px">${_esc(store.name)}</div>
+  <div style="font-family:Arial,Helvetica,sans-serif;background:#f0f0f0;padding:0">
+  <div style="max-width:600px;margin:0 auto;background:#fff;overflow:hidden;border-radius:6px;box-shadow:0 4px 24px rgba(0,0,0,.12)">
+    <div style="background:${ink};padding:11px 24px;text-align:center;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.8);font-weight:700">
+      <span style="color:${accent}">&#9733;</span> Official Team Store &middot; Powered by National Sports Apparel
     </div>
-    <div style="padding:24px">
-      <p style="font-size:15px;line-height:1.6;margin:0 0 14px">Hi ${_esc(store.director_name || lead)},</p>
-      <p style="font-size:15px;line-height:1.6;margin:0 0 18px">Your team store is <b>live</b>. Everything in it is pre-approved, so families can order with confidence — just share the link or the code below.</p>
-      <div style="text-align:center;margin:8px 0 18px"><a href="${url}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:13px 30px;border-radius:10px;font-weight:800;font-size:15px">Shop the store →</a></div>
-      <div style="text-align:center;margin:0 0 18px">
-        <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="180" height="180" style="border:1px solid #e2e8f0;border-radius:12px"/>
-        <div style="font-size:12px;color:#64748b;margin-top:6px">Scan to shop — or share this image with your families.</div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:4px">${_esc(url)}</div>
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});padding:34px 24px 28px;text-align:center">
+      ${store.logo_url ? `<div style="margin-bottom:14px"><img src="${_esc(store.logo_url)}" alt="" style="height:56px;border-radius:10px;background:#fff;padding:6px"/></div>` : ''}
+      <div style="font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent};font-weight:700">${_esc(store.name)}</div>
+      <h1 style="font-size:40px;font-weight:900;line-height:1;text-transform:uppercase;color:#fff;margin:12px 0 0">The Team Store Is <span style="color:${accent}">Now Open</span></h1>
+      <p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.88);margin:18px auto 0;max-width:420px">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; just place your order before the store closes.</p>
+      <a href="${url}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${ink};border-collapse:collapse">
+      <tr>
+        <td style="padding:14px 12px;text-align:center;border-right:1px solid rgba(255,255,255,.12)">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Order By</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">${closeDate || 'Open Now'}</div>
+        </td>
+        <td style="padding:14px 12px;text-align:center;border-right:1px solid rgba(255,255,255,.12)">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Delivery</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">${_esc(delivLabel)}</div>
+        </td>
+        <td style="padding:14px 12px;text-align:center">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Minimums</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">None</div>
+        </td>
+      </tr>
+    </table>
+    <div style="padding:26px 24px 8px;text-align:center">
+      <div style="font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${ink};margin-bottom:12px">Scan to shop</div>
+      <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
+      <div style="font-size:11px;color:${sub};margin-top:8px">${_esc(url)}</div>
+    </div>
+    <div style="padding:14px 24px 18px">
+      <div style="background:${cream};border:1px solid #E7DFD0;border-radius:6px;padding:18px 20px">
+        <h3 style="font-size:14px;font-weight:800;text-transform:uppercase;margin:0 0 14px;color:${ink};text-align:center;letter-spacing:.5px">How To Order</h3>
+        ${steps.map((st)=>`<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:11px"><div style="flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:24px;font-weight:800;font-size:12px">${st.n}</div><div><div style="font-size:13px;font-weight:700;text-transform:uppercase;color:${ink};letter-spacing:.3px">${st.title}</div><div style="font-size:12.5px;line-height:1.5;color:${sub};margin-top:1px">${st.body}</div></div></div>`).join('')}
       </div>
-      <table style="width:100%;border-collapse:collapse;border-top:1px solid #eef2f7;border-bottom:1px solid #eef2f7;margin:6px 0 16px">${infoRows}</table>
-      ${portalUrl ? `<p style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 6px">Want to follow orders as they come in? Here's your private tracking portal:</p><p style="margin:0 0 16px"><a href="${_esc(portalUrl)}" style="color:#2563eb;font-size:13px">Open your ${_esc(lead.toLowerCase())} portal →</a></p>` : ''}
-      <p style="font-size:13px;color:#94a3b8;line-height:1.6;margin:14px 0 0">Thanks for building with National Sports Apparel.</p>
     </div>
+    <div style="padding:4px 24px 20px;text-align:center">
+      <p style="font-size:13px;line-height:1.6;color:${sub};margin:0">Questions about sizing or your order? Your NSA team rep is here to help &mdash;<br/><a href="mailto:hello@nationalsportsapparel.com" style="color:${primary};font-weight:600;text-decoration:none">hello@nationalsportsapparel.com</a></p>
+    </div>
+    ${portalUrl ? `<div style="padding:0 24px 14px;text-align:center"><p style="font-size:11px;color:#94a3b8;margin:0">${lead}: <a href="${_esc(portalUrl)}" style="color:#2563eb;font-size:11px">Track orders in your ${lead.toLowerCase()} portal &rarr;</a></p></div>` : ''}
+    <div style="background:${ink};padding:20px 24px;text-align:center">
+      <div style="font-size:15px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#fff">National Sports Apparel</div>
+      <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:rgba(255,255,255,.5);margin-top:4px">California&rsquo;s Largest Independent Team Dealer &middot; Since 2009</div>
+      <div style="font-size:10px;color:rgba(255,255,255,.35);margin-top:12px">2238 N Glassell St Ste E, Orange, CA 92865</div>
+    </div>
+  </div>
   </div>`;
 }
 
-// A print-ready flyer (own window) with a big QR and team colors.
-function flyerHtml(store) {
+// 2-page print-ready flyer with team colors, items, QR, and key dates.
+function flyerHtml(store, items = []) {
   const url = _storefrontUrl(store);
   const primary = _hex(store.primary_color, '#0b1f3a');
   const accent = _hex(store.accent_color, '#e11d2a');
-  const close = _fmtDate(store.close_at);
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(store.name)} — Flyer</title>
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const dk = (hex, a) => { try { const n = parseInt(hex.slice(1), 16); return '#' + [(n>>16)&255,(n>>8)&255,n&255].map((c)=>Math.round(c*(1-a)).toString(16).padStart(2,'0')).join(''); } catch(e){return hex;} };
+  const primaryDark = dk(primary, 0.34);
+  const accentDeep = dk(accent, 0.24);
+  const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
+  const visItems = (items || []).filter((i) => !i.is_bundle_parent && !i.archived && i.kind !== 'bundle');
+  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;overflow:hidden"><img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:cover"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name)}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
+  const p1Items = visItems.slice(0, 8);
+  const p2Items = visItems.slice(8);
+  return `<!doctype html><html><head>
+  <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&display=swap" rel="stylesheet">
+  <title>${_esc(store.name)} — Team Store Flyer</title>
   <style>
-    *{box-sizing:border-box} html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
-    .page{width:8.5in;min-height:11in;margin:0 auto;display:flex;flex-direction:column}
-    .hero{background:${primary};color:#fff;padding:64px 56px 48px;text-align:center}
-    .eyebrow{font-size:16px;letter-spacing:5px;text-transform:uppercase;font-weight:800;opacity:.85}
-    .title{font-size:52px;font-weight:900;line-height:1.05;margin:14px 0 0;text-transform:uppercase}
-    .body{flex:1;padding:48px 56px;text-align:center;color:#0f172a}
-    .scan{font-size:30px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:${accent}}
-    .qr{margin:22px auto;border:6px solid ${primary};border-radius:18px;display:inline-block;line-height:0}
-    .url{font-size:20px;font-weight:700;margin-top:10px;word-break:break-all}
-    .meta{font-size:18px;color:#475569;margin-top:24px;line-height:1.6}
-    .foot{background:${accent};color:#fff;text-align:center;padding:18px;font-weight:800;letter-spacing:1px;text-transform:uppercase}
-    .btn{margin:18px;text-align:center} @media print{.btn{display:none}}
-    @page{size:letter;margin:0}
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;font-family:'Barlow Condensed',Arial,sans-serif;background:#5b5b5b}
+    .no-print{text-align:center;padding:12px;background:#444}
+    .page{width:816px;min-height:1056px;margin:0 auto 28px;background:#fff;position:relative;overflow:hidden;box-shadow:0 12px 50px rgba(0,0,0,.35)}
+    @media print{html,body{background:#fff}.no-print{display:none!important}.page{box-shadow:none;margin:0;page-break-after:always;width:100%}}
+    @page{size:letter portrait;margin:0}
   </style></head><body>
-  <div class="btn"><button onclick="window.print()" style="padding:10px 22px;font-size:15px;font-weight:800;border:none;border-radius:8px;background:${primary};color:#fff;cursor:pointer">Print flyer</button></div>
-  <div class="page">
-    <div class="hero">
-      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:96px;margin-bottom:18px;background:#fff;border-radius:14px;padding:8px"/><br/>` : ''}
-      <div class="eyebrow">Official Team Store</div>
-      <div class="title">${_esc(store.name)}</div>
-    </div>
-    <div class="body">
-      <div class="scan">Scan to shop</div>
-      <div class="qr"><img src="${_qrImg(url, 520)}" alt="QR code" width="320" height="320"/></div>
-      <div class="url">${_esc(url)}</div>
-      <div class="meta">All gear is coach-approved.${close ? `<br/><b>Order by ${_esc(close)}.</b>` : ''}<br/>${_deliveryLabel(store)} about 4–5 weeks after the store closes.</div>
-    </div>
-    <div class="foot">National Sports Apparel</div>
+  <div class="no-print">
+    <button onclick="window.print()" style="padding:9px 20px;font-size:13.5px;font-weight:800;border:none;border-radius:7px;background:${primary};color:#fff;cursor:pointer;margin-right:8px">Print / Save as PDF</button>
+    <span style="color:#aaa;font-size:12px">Browser Print → Save as PDF</span>
   </div>
+  <!-- PAGE 1 -->
+  <div class="page">
+    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
+      <span><span style="color:${accent}">&#9733;</span> Official Team Store</span>
+      <span style="color:rgba(255,255,255,.62)">Powered by National Sports Apparel</span>
+    </div>
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:22px 40px 20px;position:relative">
+      <div style="position:absolute;inset:0;background:repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.045) 26px,rgba(255,255,255,.045) 52px)"></div>
+      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:14px">
+        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:48px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
+        <div>
+          <div style="font-weight:700;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent}">${_esc(store.name)}</div>
+          ${closeDate ? `<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.6)">Order by ${_esc(closeDate)}</div>` : ''}
+        </div>
+      </div>
+      <h1 style="position:relative;font-weight:800;font-size:52px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
+      <p style="position:relative;font-size:14px;line-height:1.5;color:rgba(255,255,255,.85);max-width:560px;margin:10px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);background:${ink}">
+      <div style="padding:12px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
+      <div style="padding:12px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
+      <div style="padding:12px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
+    </div>
+    ${p1Items.length > 0 ? `
+    <div style="padding:22px 40px 120px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
+        <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">${p1Items.slice(0,4).map((it)=>itemCard(it,100)).join('')}</div>
+      ${p1Items.length>4?`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:12px">${p1Items.slice(4,8).map((it)=>itemCard(it,100)).join('')}</div>`:''}
+    </div>` : `
+    <div style="padding:22px 40px 120px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
+      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team ~4–5 weeks after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
+    </div>`}
+    <div style="position:absolute;bottom:0;left:0;right:0">
+      <div style="background:${cream};border-top:1px solid ${line};padding:14px 40px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700;font-size:10.5px;letter-spacing:1.8px;text-transform:uppercase;color:${accentDeep}">Shop The Store</div>
+          <div style="font-weight:800;font-size:17px;text-transform:uppercase;color:${ink}">${_esc(url)}</div>
+          <div style="font-size:12px;color:${sub};margin-top:2px">Questions? hello@nationalsportsapparel.com</div>
+        </div>
+        <div style="text-align:center;flex-shrink:0">
+          <img src="${_qrImg(url, 160)}" alt="QR" width="90" height="90" style="border:2px solid ${ink};border-radius:6px;display:block"/>
+          <div style="font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:4px">Scan To Shop</div>
+        </div>
+      </div>
+      <div style="background:${ink};padding:7px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
+        <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
+        <span>Authorized Dealer &middot; Adidas &middot; Under Armour &middot; Rawlings</span>
+      </div>
+    </div>
+  </div>
+  ${p2Items.length > 0 ? `<!-- PAGE 2 -->
+  <div class="page">
+    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
+      <span><span style="color:${accent}">&#9733;</span> ${_esc(store.name)}</span>
+      <span style="color:rgba(255,255,255,.62)">Page 2 &middot; More Gear</span>
+    </div>
+    <div style="padding:22px 40px 80px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">Also Available</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">${p2Items.slice(0,8).map((it)=>itemCard(it,110)).join('')}</div>
+    </div>
+    <div style="position:absolute;bottom:0;left:0;right:0;background:${ink};padding:9px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
+      <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
+      <span>${_esc(url)}</span>
+    </div>
+  </div>` : ''}
   </body></html>`;
+}
+
+// Generate a branded PDF flyer (jsPDF, client-side) for email attachment or download.
+async function generateFlyerPdfBase64(store, items = []) {
+  const { jsPDF } = await import('jspdf');
+  const url = _storefrontUrl(store);
+  const primary = _hex(store.primary_color, '#0b1f3a');
+  const accent = _hex(store.accent_color, '#e11d2a');
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const hexRgb = (hex) => { const h = (_hex(hex,'#000000')).replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; };
+  const [pr,pg,pb] = hexRgb(primary);
+  const [ar,ag,ab] = hexRgb(accent);
+  const INK = [22,34,63];
+  const doc = new jsPDF({ unit:'pt', format:'letter', orientation:'portrait' });
+  const W = 612, H = 792;
+  let y = 0;
+  // Top strip
+  doc.setFillColor(...INK); doc.rect(0,0,W,24,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab);
+  doc.text('★ OFFICIAL TEAM STORE', 20, 16);
+  doc.setFont('helvetica','normal'); doc.setTextColor(190,190,190);
+  doc.text('POWERED BY NATIONAL SPORTS APPAREL', W-20, 16, {align:'right'});
+  y = 24;
+  // Hero band
+  doc.setFillColor(pr,pg,pb); doc.rect(0,y,W,148,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(ar,ag,ab);
+  doc.text(store.name.toUpperCase(), W/2, y+22, {align:'center'});
+  doc.setFontSize(30); doc.setTextColor(255,255,255);
+  doc.text('THE TEAM STORE IS', W/2, y+60, {align:'center'});
+  doc.setFontSize(42); doc.setTextColor(ar,ag,ab);
+  doc.text('NOW OPEN', W/2, y+104, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(230,230,230);
+  doc.text("Order your player's official, custom-decorated gear. Ships to the team.", W/2, y+128, {align:'center'});
+  y += 148;
+  // Stats strip
+  doc.setFillColor(...INK); doc.rect(0,y,W,44,'F');
+  [['ORDER BY',closeDate||'Open Now'],['DELIVERY',delivLabel],['MINIMUMS','None']].forEach(([lbl,val],i)=>{
+    const cx = W/6 + (W/3)*i;
+    doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(ar,ag,ab); doc.text(lbl,cx,y+14,{align:'center'});
+    doc.setFontSize(13); doc.setTextColor(255,255,255); doc.text(val.toUpperCase(),cx,y+31,{align:'center'});
+  });
+  doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
+  doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
+  y += 44;
+  // Items
+  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent&&!i.archived&&i.kind!=='bundle').slice(0,8);
+  if (visItems.length > 0) {
+    y += 16;
+    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(...INK);
+    doc.text("WHAT'S IN THE STORE", 40, y);
+    doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
+    y += 12;
+    const GAP=8, colW=(W-80-GAP*3)/4;
+    visItems.slice(0,8).forEach((item,idx)=>{
+      const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(74+GAP);
+      doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,74,'FD');
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(...INK);
+      const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-10);
+      doc.text(nl[0],x+colW/2,iy+20,{align:'center'});
+      if(nl[1]) doc.text(nl[1],x+colW/2,iy+31,{align:'center'});
+      if(item.retail_price){doc.setFontSize(13);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+57,{align:'center'});}
+    });
+    y += Math.ceil(Math.min(visItems.length,8)/4)*(74+GAP)+14;
+  }
+  // QR
+  y = Math.max(y, H-250);
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...INK);
+  doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
+  y += 10;
+  try {
+    const qrResp = await fetch(_qrImg(url, 200));
+    const qrBlob = await qrResp.blob();
+    const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
+    doc.addImage(qrB64,'PNG',W/2-70,y,140,140);
+  } catch(_){ /* skip if network fails */ }
+  y += 150;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
+  doc.text(url, W/2, y, {align:'center'});
+  // Footer
+  doc.setFillColor(...INK); doc.rect(0,H-50,W,50,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(255,255,255);
+  doc.text('NATIONAL SPORTS APPAREL', W/2, H-29, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,160,160);
+  doc.text("California's Largest Independent Team Dealer  ·  Since 2009", W/2, H-13, {align:'center'});
+  return doc.output('datauristring').split(',')[1];
 }
 
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
@@ -631,20 +814,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return tag ? `${PUBLIC_SITE}/coach?portal=${encodeURIComponent(tag)}` : '';
   }, [cust]);
 
-  // Send the polished launch email (shop link + QR + key info + tracking portal).
+  // Send the family-facing launch email with PDF flyer attached.
   const emailDirector = useCallback(async (store) => {
     const to = (store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
-    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
+    flash('Generating flyer PDF…');
+    const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+    const items = (catalog || []).filter((i) => !i.is_bundle_parent && i.kind !== 'bundle' && !i.archived);
+    let attachment;
+    try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
+    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
     if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Launch email sent to ' + to);
+    else flash('Family email sent to ' + to + (attachment ? ' with PDF flyer' : ''));
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
-  const openFlyer = useCallback((store) => {
+  const openFlyer = useCallback((store, items = []) => {
     const w = window.open('', '_blank');
     if (!w) { flash('Allow pop-ups to open the flyer.'); return; }
-    w.document.write(flyerHtml(store)); w.document.close();
+    w.document.write(flyerHtml(store, items)); w.document.close();
   }, [flash]);
 
   const loadStores = useCallback(async () => {
@@ -806,8 +994,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
-      flash('Launched — coach emailed the store link + QR.');
+      const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+      const items = (catalog || []).filter((i) => !i.is_bundle_parent && i.kind !== 'bundle' && !i.archived);
+      let attachment;
+      try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
+      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
+      flash('Launched — family flyer emailed' + (attachment ? ' with PDF attachment' : '') + '.');
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
@@ -1859,7 +2051,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel, detail?.catalog || [])} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
@@ -2880,6 +3072,35 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
             </div>
           );
         })()}
+        {store?.id && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f3f4f7' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180', marginBottom: 8 }}>Flyer &amp; Sharing</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={async () => {
+                try {
+                  setBusy(true);
+                  const items = featProducts.map((p) => ({ name: p.name, image_front_url: p.image_front_url, kind: p.kind, is_bundle_parent: false, archived: false }));
+                  const b64 = await generateFlyerPdfBase64(store, items);
+                  const a = document.createElement('a');
+                  a.href = 'data:application/pdf;base64,' + b64;
+                  a.download = `${store.slug || 'team-store'}-flyer.pdf`;
+                  a.click();
+                } catch (e) { alert('PDF generation failed: ' + (e.message || e)); }
+                finally { setBusy(false); }
+              }} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                ↓ Download Flyer PDF
+              </button>
+              <button type="button" onClick={() => {
+                const items = featProducts.map((p) => ({ name: p.name, image_front_url: p.image_front_url, kind: p.kind, is_bundle_parent: false, archived: false }));
+                const w = window.open('', '_blank');
+                if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
+                w.document.write(flyerHtml(store, items)); w.document.close();
+              }} style={{ background: '#fff', color: '#191919', border: '1px solid #e2e6ec', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                Print Flyer
+              </button>
+            </div>
+          </div>
+        )}
       </Section>
 
       </div>
@@ -7155,23 +7376,31 @@ function BundleBuilder({ components = [], setComponents, designOptions = [], num
 // or free-shipping promos. Redemption count is tracked per code.
 function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRemove }) {
   const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState('single'); // 'single' | 'bulk'
+  const [customCode, setCustomCode] = useState('');
   const [kind, setKind] = useState('percent');
-  const [value, setValue] = useState(100);
+  const [value, setValue] = useState(10);
   const [count, setCount] = useState(10);
-  const [single, setSingle] = useState(true);
+  const [single, setSingle] = useState(false);
   const [coverShip, setCoverShip] = useState(true);
   const [prefix, setPrefix] = useState('');
   const [label, setLabel] = useState('');
   const [expires, setExpires] = useState('');
-  const [generated, setGenerated] = useState(null); // codes from the last batch
+  const [generated, setGenerated] = useState(null);
 
-  // Live redemption count = orders that used the code (more reliable than a counter).
   const usedByCode = {};
   orders.forEach((o) => { if (o.coupon_code && o.status !== 'cancelled' && o.status !== 'pending_payment') { const k = o.coupon_code.toUpperCase(); usedByCode[k] = (usedByCode[k] || 0) + 1; } });
 
   const submit = async () => {
-    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
-    if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    if (mode === 'single') {
+      const code = customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!code) return;
+      const r = await onCreate({ kind, value, count: 1, single, prefix: '', batch_label: label, expires_at: expires || null, cover_shipping: coverShip, code });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); setCustomCode(''); }
+    } else {
+      const r = await onCreate({ kind, value, count, single: true, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    }
   };
   const copyAll = () => { if (generated) navigator.clipboard?.writeText(generated.join('\n')); };
 
@@ -7179,21 +7408,33 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>Codes apply a discount at checkout. Single-use codes (one order each) are ideal for comping a player — the discounted order still gets batched and invoiced to the program.</div>
-        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Create codes</button>
+        <div style={{ fontSize: 13, color: '#64748b' }}>Discount codes families enter at checkout. Use named codes (e.g. TEAM10) for store-wide promos, or bulk-generate single-use codes for comping individual players.</div>
+        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Add code</button>
       </div>
 
-      {adding && <div className="card"><div style={{ padding: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
-        {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
-        <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
-        <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
-        <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="2026 scholarships" /></Row>
-        <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
-        <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use (one order per code)</label>
-        {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
-        <button className="btn btn-primary" onClick={submit}>Generate</button>
-        <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+      {adding && <div className="card"><div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <button onClick={() => setMode('single')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'single' ? '#0b1f3a' : '#e2e8f0', background: mode === 'single' ? '#0b1f3a' : '#fff', color: mode === 'single' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Named code</button>
+          <button onClick={() => setMode('bulk')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'bulk' ? '#0b1f3a' : '#e2e8f0', background: mode === 'bulk' ? '#0b1f3a' : '#fff', color: mode === 'bulk' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Bulk single-use</button>
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {mode === 'single' ? (
+            <Row label="Code (letters & numbers)"><input className="form-input" value={customCode} onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} placeholder="e.g. TEAM10" style={{ width: 160, fontFamily: 'monospace', fontWeight: 700 }} /></Row>
+          ) : (
+            <>
+              <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
+              <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
+            </>
+          )}
+          <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
+          {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
+          <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Spring promo" /></Row>
+          <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
+          {mode === 'single' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use</label>}
+          {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
+          <button className="btn btn-primary" onClick={submit}>{mode === 'bulk' ? 'Generate' : 'Create'}</button>
+          <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+        </div>
       </div></div>}
 
       {generated && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16 }}>
@@ -7958,7 +8199,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                       <tbody>
                         {lineItems.map((i) => (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}>{i.sku || i.name || '—'}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
@@ -8011,11 +8252,17 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
 // Edit an order's line items (size/qty/remove) and issue refunds.
 function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
-  const [rows, setRows] = useState(() => editable.map((i) => ({ id: i.id, sku: i.sku, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false })));
+  const initRows = editable.map((i) => ({ id: i.id, sku: i.sku, name: i.name, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false }));
+  const [rows, setRows] = useState(initRows);
   const [refundAmt, setRefundAmt] = useState('');
   const [busy, setBusy] = useState(false);
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
+
+  // Only recompute total when the user has actually made a change — bundle
+  // components have unit_price:0 (price lives on the parent row which is
+  // excluded), so computing from scratch gives a wrong $0 on load.
+  const hasChanges = rows.some((r, i) => r._removed || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
   const newSubtotal = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
   const newFund = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
   const newTotal = Math.max(0, newSubtotal + newFund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
@@ -8023,46 +8270,74 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
   const refund = async () => { setBusy(true); const r = await onRefund(order, Number(refundAmt)); setBusy(false); if (r && r.ok) { setRefundAmt(''); onClose(); } };
 
+  const sectionLabel = { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 10 };
+
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflow: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 620, width: '100%', marginTop: 24 }}>
-        <div style={{ padding: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
-            <h3 style={{ margin: 0, fontSize: 18 }}>Manage order — {order.buyer_name || order.buyer_email}</h3>
-            <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
-          </div>
-          {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, margin: '8px 0 14px' }}>⚠️ This order is already batched into Sales Order <b>{order.so_id}</b>. Edits here won't automatically update that production order — adjust the SO too if needed.</div>}
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflow: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 580, width: '100%', marginTop: 24, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.25)' }}>
 
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '10px 0 6px' }}>Items</div>
-          {rows.map((r) => {
-            const sizes = availSizes[r.product_id] || [];
-            return (
-              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', opacity: r._removed ? 0.4 : 1 }}>
-                <div style={{ flex: 1, fontSize: 13 }}><div style={{ fontWeight: 600 }}>{r.sku || 'Item'}</div>{(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}</div>
-                {sizes.length > 0
-                  ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-                  : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 56, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />
-                <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12 }}>{r._removed ? 'undo' : 'remove'}</button>
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
+              {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
+              {Number(order.refunded_amt) > 0 && <span style={{ color: '#b45309' }}> · {money(order.refunded_amt)} refunded</span>}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'grid', placeItems: 'center', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: '18px 20px' }}>
+          {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>⚠️ Batched into SO <b>{order.so_id}</b> — adjust that SO too if needed.</div>}
+
+          {/* Items */}
+          <div style={sectionLabel}>Items</div>
+          <div style={{ background: '#f8fafc', borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
+            {rows.map((r, idx) => {
+              const sizes = availSizes[r.product_id] || [];
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0b1220' }}>{r.sku || r.name || 'Item'}</div>
+                    {r.name && r.name !== r.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{r.name}</div>}
+                    {(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}
+                  </div>
+                  {sizes.length > 0
+                    ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                    : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
+                  <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
+                </div>
+              );
+            })}
+          </div>
+
+          {hasChanges && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 14 }}>
+              <span style={{ color: '#1e40af' }}>New total{Number(order.discount_amt) > 0 ? ` (after ${money(order.discount_amt)} discount)` : ''}</span>
+              <span style={{ fontWeight: 800, color: '#1e40af' }}>{money(newTotal)} <span style={{ fontWeight: 400, color: '#94a3b8', textDecoration: 'line-through' }}>{money(order.total)}</span></span>
+            </div>
+          )}
+
+          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : 'Save item changes'}</button>
+
+          {/* Refund */}
+          <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
+            <div style={sectionLabel}>Refund</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+              {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
+              {Number(order.refunded_amt) > 0 && <> Already refunded <b>{money(order.refunded_amt)}</b>; <b>{money(remaining)}</b> remaining.</>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                <span style={{ padding: '0 10px', color: '#94a3b8', fontSize: 15, borderRight: '1px solid #e2e8f0', height: '100%', display: 'grid', placeItems: 'center' }}>$</span>
+                <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 110, padding: '9px 10px', border: 'none', fontSize: 14, outline: 'none' }} />
               </div>
-            );
-          })}
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 14 }}>
-            <span style={{ color: '#64748b' }}>New total {Number(order.discount_amt) > 0 ? `(after ${money(order.discount_amt)} discount)` : ''}</span>
-            <span style={{ fontWeight: 800 }}>{money(newTotal)} {newTotal !== (Number(order.total) || 0) && <span style={{ color: '#94a3b8', fontWeight: 400, textDecoration: 'line-through' }}>{money(order.total)}</span>}</span>
-          </div>
-          <button className="btn btn-primary" disabled={busy} onClick={save} style={{ marginTop: 12 }}>Save item changes</button>
-
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '22px 0 6px', borderTop: '1px solid #eef1f5', paddingTop: 16 }}>Refund</div>
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
-            {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
-            {Number(order.refunded_amt) > 0 && <> Already refunded {money(order.refunded_amt)}; up to <b>{money(remaining)}</b> remaining.</>}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ color: '#64748b' }}>$</span>
-            <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 120, padding: '8px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 14 }} />
-            <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
-            <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+              <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
+              <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{busy ? 'Processing…' : order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+            </div>
           </div>
         </div>
       </div>
