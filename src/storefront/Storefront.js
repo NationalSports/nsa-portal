@@ -1572,7 +1572,7 @@ function OrderStatusPage({ store, theme, orderId }) {
   const subtotal = Number(order.total) - shipping - tax + discount;
 
   return (
-    <div style={{ paddingTop: 22, maxWidth: 660 }}>
+    <div style={{ paddingTop: 22, maxWidth: 660, margin: '0 auto' }}>
       <BackLink store={store} theme={theme} />
 
       {/* Hero confirmation card */}
