@@ -14378,7 +14378,7 @@ export default function App(){
   const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true,newVsReturning:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -14398,6 +14398,7 @@ export default function App(){
   const[ssDir,setSsDir]=useState('desc');
   const[ssSearch,setSsSearch]=useState('');
   const[ssFilter,setSsFilter]=useState('all');// all | reordered | pending
+  const[newCustPeriod,setNewCustPeriod]=useState('ytd');
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -14981,6 +14982,92 @@ export default function App(){
 
       {/* CUSTOMER HEALTH */}
       {/* SAME-SEASON CUSTOMER RETENTION — who we sold to in this 3-month window last year, and whether they've reordered yet */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="newVsReturning" title="New vs Returning Customers" icon="🆕"/>
+        {rptWidgets.newVsReturning&&(()=>{
+          const now=new Date();const curY=now.getFullYear();const curM=now.getMonth();
+          const perMap={ytd:[new Date(curY,0,1),new Date(curY,curM+1,1)],last_12:[new Date(curY-1,curM+1,1),new Date(curY,curM+1,1)],this_month:[new Date(curY,curM,1),new Date(curY,curM+1,1)],last_month:[new Date(curY,curM-1,1),new Date(curY,curM,1)]};
+          const[pStart,pEnd]=perMap[newCustPeriod]||perMap.ytd;
+          const soDate=(so)=>{const dt=_parseDtLB(so.created_at);return dt?new Date(dt.y,dt.m,dt.d):null};
+          const activeSOs=filtSOs.filter(so=>so.status!=='cancelled'&&so.status!=='deleted'&&!so.deleted_at);
+          const custOrders=new Map();
+          activeSOs.forEach(so=>{if(!so.customer_id)return;const dt=soDate(so);if(!dt)return;if(!custOrders.has(so.customer_id))custOrders.set(so.customer_id,[]);custOrders.get(so.customer_id).push({date:dt,so})});
+          const newCusts=[],retCusts=[];
+          custOrders.forEach((orders,custId)=>{
+            const inPer=orders.filter(o=>o.date>=pStart&&o.date<pEnd);if(!inPer.length)return;
+            const before=orders.filter(o=>o.date<pStart);
+            const c=cust.find(x=>x.id===custId);
+            const rev=inPer.reduce((a,o)=>a+soCalc(o.so).rev,0);
+            const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+            const firstSO=[...inPer].sort((a,b)=>a.date-b.date)[0];
+            const obj={custId,name:c?.name||'Unknown',rep:rep?.name?.split(' ')[0]||'—',rev,orders:inPer.length,firstDate:firstSO.date};
+            if(before.length===0)newCusts.push(obj);else retCusts.push(obj);
+          });
+          newCusts.sort((a,b)=>b.rev-a.rev);retCusts.sort((a,b)=>b.rev-a.rev);
+          const tNewRev=newCusts.reduce((a,c)=>a+c.rev,0),tRetRev=retCusts.reduce((a,c)=>a+c.rev,0);
+          const total=newCusts.length+retCusts.length,totalRev2=tNewRev+tRetRev;
+          const fmtK=(n)=>n>=1000?'$'+(n/1000).toFixed(1)+'k':'$'+Math.round(n);
+          const fmtD=(d)=>d?(d.getMonth()+1)+'/'+(d.getDate())+'/'+String(d.getFullYear()).slice(2):'—';
+          return<div className="card-body">
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+              {[['ytd','YTD'],['last_12','Last 12 Mo'],['this_month','This Month'],['last_month','Last Month']].map(([v,l])=>
+                <button key={v} onClick={()=>setNewCustPeriod(v)} style={{fontSize:11,padding:'3px 10px',borderRadius:6,border:'1px solid '+(newCustPeriod===v?'#1e3a8a':'#e2e8f0'),background:newCustPeriod===v?'#1e3a8a':'white',color:newCustPeriod===v?'white':'#475569',fontWeight:700,cursor:'pointer'}}>{l}</button>)}
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:14}}>
+              <div style={{flex:1,padding:10,background:'#dbeafe',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{newCusts.length}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>NEW CUSTOMERS</div>
+                <div style={{fontSize:12,color:'#1e40af',marginTop:2}}>{fmtK(tNewRev)}</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#dcfce7',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{retCusts.length}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#166534'}}>RETURNING</div>
+                <div style={{fontSize:12,color:'#166534',marginTop:2}}>{fmtK(tRetRev)}</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#f8fafc',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{total>0?Math.round(newCusts.length/total*100):0}%</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>% NEW</div>
+                <div style={{fontSize:12,color:'#64748b',marginTop:2}}>of customers</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#f8fafc',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#475569'}}>{totalRev2>0?Math.round(tNewRev/totalRev2*100):0}%</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>NEW REV</div>
+                <div style={{fontSize:12,color:'#64748b',marginTop:2}}>of total sold</div>
+              </div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:6,textTransform:'uppercase',letterSpacing:0.4}}>New Customers — {newCusts.length}</div>
+                {newCusts.length===0?<div style={{color:'#94a3b8',fontSize:12,padding:8}}>None in this period</div>:
+                <div style={{maxHeight:220,overflow:'auto'}}>
+                  <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>Rep</th><th style={{textAlign:'right'}}>1st SO</th><th style={{textAlign:'right'}}>Rev</th><th style={{textAlign:'right'}}>#</th></tr></thead>
+                  <tbody>{newCusts.map(c=><tr key={c.custId} style={{cursor:'pointer'}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.custId));setPg('customers')}}>
+                    <td style={{fontWeight:600,maxWidth:100,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={c.name}>{c.name}</td>
+                    <td style={{color:'#64748b'}}>{c.rep}</td>
+                    <td style={{textAlign:'right',color:'#64748b'}}>{fmtD(c.firstDate)}</td>
+                    <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmtK(c.rev)}</td>
+                    <td style={{textAlign:'right',color:'#94a3b8'}}>{c.orders}</td>
+                  </tr>)}</tbody></table>
+                </div>}
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6,textTransform:'uppercase',letterSpacing:0.4}}>Returning Customers — {retCusts.length}</div>
+                {retCusts.length===0?<div style={{color:'#94a3b8',fontSize:12,padding:8}}>None in this period</div>:
+                <div style={{maxHeight:220,overflow:'auto'}}>
+                  <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>Rep</th><th style={{textAlign:'right'}}>Rev</th><th style={{textAlign:'right'}}>#</th></tr></thead>
+                  <tbody>{retCusts.map(c=><tr key={c.custId} style={{cursor:'pointer'}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.custId));setPg('customers')}}>
+                    <td style={{fontWeight:600,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={c.name}>{c.name}</td>
+                    <td style={{color:'#64748b'}}>{c.rep}</td>
+                    <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>{fmtK(c.rev)}</td>
+                    <td style={{textAlign:'right',color:'#94a3b8'}}>{c.orders}</td>
+                  </tr>)}</tbody></table>
+                </div>}
+              </div>
+            </div>
+          </div>;
+        })()}
+      </div>}
+
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="sameSeason" title="Same-Season Customers — Retention Tracker" icon="🎯"/>
         {rptWidgets.sameSeason&&(()=>{
