@@ -8682,6 +8682,18 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
 
+  // Auto-suggest refund = value of removed items when user clicks "remove"
+  useEffect(() => {
+    if (!rows.some((r) => r._removed)) { setRefundAmt(''); return; }
+    const bSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+    const bFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+    const sub = bSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+    const fund = bFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+    const nt = Math.max(0, sub + fund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    const delta = Math.max(0, (Number(order.total) || 0) - (Number(order.tax) || 0) - nt);
+    setRefundAmt(delta > 0.005 ? delta.toFixed(2) : '');
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Only recompute total when the user has actually made a change — bundle
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
