@@ -452,7 +452,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
     <>
       {theme.look === 'bold'
         ? <HeroBold store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} />
-        : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} />}
+        : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} compExtras={compExtras} />}
 
       <ValueStrip store={store} theme={theme} />
 
@@ -497,10 +497,10 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 }
 
 // Open hero — team-color gradient, two-column, curated product collage on the right.
-function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
+function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], compExtras = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
-  const imgs = featuredHeroImgs(store, products);
+  const imgs = featuredHeroImgs(store, products, compExtras);
   const showCollage = imgs.length > 0;
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(135deg, ${theme.primary}, ${theme.deep})`, color: '#fff' }}>
@@ -554,8 +554,8 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
 // Hero collage images: an admin-curated list of webstore_product_ids when set,
 // else mandatory (package) items first, then any items, up to 3.
 //   null/undefined → auto (mandatory first, then top items) · [] → none · [ids] → those (≤3).
-function featuredHeroImgs(store, products) {
-  const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
+function featuredHeroImgs(store, products, compExtras = []) {
+  const pool = [...(products || []), ...(compExtras || [])].filter((p) => p.kind !== 'bundle' && p.image_front_url);
   const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
   if (!featured) {
     const mandatory = pool.filter((p) => p.required);
@@ -804,13 +804,15 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: theme.warm, overflow: 'hidden' }}>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '88%', height: '88%', objectFit: 'contain', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
+            ? <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '95%', height: '95%' }}>
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+                {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
+              </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
-        {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Stock / package badge — skewed −6°, top-right */}
         <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
         {/* Category label — bottom-right */}
