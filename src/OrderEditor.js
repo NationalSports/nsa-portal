@@ -7299,12 +7299,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             })}
           </div>
           <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}. The Order button below submits every queued PO listed above — same as the button on the Batch POs page. To edit sizes or remove a line first, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
+            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}.{batchReadyPopup.vendorKey==='momentec'?' "Order via API" submits directly to Momentec. "Mark Ordered Manually" just records the batch as placed in NSA — you still need to place the order on Momentec\'s website yourself.':' The Order button below records all queued POs as placed in NSA — it does not submit to the vendor directly. Same as the button on the Batch POs page.'} To edit sizes or remove a line first, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
           </p>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
+          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
             const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});
@@ -7316,7 +7316,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setBatchReadyPopup(null);
           }}>🚀 Submit SanMar Order (API)</button>}
           {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
-          {onOrderBatch&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={()=>{
+            if(!window.confirm('Mark '+(batchPONum||'this batch')+' as manually ordered for '+batchReadyPopup.vendorName+'? This records all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') as placed in NSA and clears the queue — you still need to place the order on Momentec\'s website.'))return;
+            const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
+            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
+            // Promote this SO's own queued lines through the editor copy — App skipped them
+            // (skipSoId), so a later save from the editor can't revert the promotion.
+            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
+            if(myBatchIds.size>0){
+              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
+              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+            }
+            setBatchReadyPopup(null);
+            nf('✓ '+orderedNum+' recorded as ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+') — place the order on Momentec\'s website');
+          }}>✓ Mark Ordered Manually</button>}
+          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+            setApiOrder({vendorKey:'momentec',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id});
+            setBatchReadyPopup(null);
+          }}>🚀 Order {batchPONum||'NSA####'} via API (${liveTotal.toFixed(2)})</button>}
+          {onOrderBatch&&batchReadyPopup.vendorKey!=='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
             if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
             const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
             if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
@@ -7338,7 +7357,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
       {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
       {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>{
+        if(apiOrder.isBatch){
+          const orderedNum=onOrderBatch&&onOrderBatch({vendorKey:'momentec',skipSoId:apiOrder.skipSoId,apiResult:r});
+          if(orderedNum){
+            // Promote this SO's own queued lines through the editor copy — App skipped them.
+            const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
+            if(myBatchIds.size>0){
+              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||'Momentec')}:pl)}));
+              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+            }
+          }
+        } else {
+          _recordApiOrder(apiOrder,r);
+        }
+      }}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>
