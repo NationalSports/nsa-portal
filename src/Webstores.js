@@ -1868,6 +1868,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
+    // Coupon discounts are order-level; the SO bills garments only (shipping/tax stay
+    // at the webstore level). Scale every line's sell by the batch's net/gross ratio so
+    // the SO total reconciles to what was actually collected after discounts. The
+    // garment share of each order's discount is capped at its garment subtotal (the rest
+    // came off shipping). With no coupons in the batch the ratio is 1 — no change.
+    const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
+    const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
+    const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
     // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
@@ -1954,16 +1962,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
-      // so unit_sell × qty reconciles to what buyers paid. Deco sells are suppressed above.
+      // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
+      // collected. Deco sells are suppressed above so the garment line carries it all.
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
-      const unitSell = r2((g.collected || 0) / qtyTot);
+      const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
         product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.`;
+    const discNote = totalDiscount > 0 ? `\nCoupon discounts applied: −$${totalDiscount.toFixed(2)} (spread across line prices).` : '';
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
