@@ -1283,88 +1283,101 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
   // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
   if(spendView&&adData){
-    const cpTheme=cpTeamTheme(customer);
-    const{period,teams,totalSpend,adidasTotal,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
+    const{period,teams,totalSpend,adidasTotal,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
     const teamsActive=teams.filter(t=>t.orders>0);
     const teamsZero=teams.filter(t=>t.orders===0);
     const adiAvail=adidasTotal>0;const isAdi=adiAvail&&spendMode==='adidas';const metric=isAdi?'adidas':'spend';
     const modeMax=Math.max(1,...teamsActive.map(t=>t[metric]||0));const modeTotal=isAdi?adidasTotal:totalSpend;
-    const kpis=[{label:isAdi?'Adidas Item Spend':'Department Spend',value:money(isAdi?adidasTotal:totalSpend),color:cpTheme.primary,sub:(isAdi?'Adidas items · no deco':(adRange==='all'?'All time':period.label))+' · '+teamsActive.length+' active'}];
-    if(adiAvail&&!isAdi)kpis.push({label:'Adidas Items',value:money(adidasTotal),color:'#0f172a',sub:'Items only · no deco'});
-    if(hasPromo){
-      kpis.push({label:'Promo Remaining',value:money2(remainingDisplay),color:remainingDisplay>0?'#15803d':'#64748b',sub:overspent?('Over by '+money2(-remaining)):'Available to use'});
-      kpis.push({label:'Promo Used',value:money2(used),color:'#b45309',sub:'Applied to orders'});
-      kpis.push({label:'Promo Allocated',value:money2(allocated),color:'#1e293b',sub:adRange==='all'?'All periods':period.label});
-    }
     return<div style={{minHeight:'100vh',background:'#f1f5f9',padding:'32px 16px'}}>
-      <style>{`.ad-teams{display:grid;grid-template-columns:1fr;column-gap:30px}@media(min-width:680px){.ad-teams{grid-template-columns:1fr 1fr}}`}</style>
-      <div style={{maxWidth:960,margin:'0 auto'}}>
-        <button onClick={()=>setSpendView(false)} style={{border:'none',background:'none',color:'#475569',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:14,display:'inline-flex',alignItems:'center',gap:6,padding:0}}>‹ Back to portal</button>
-        <div style={{background:'white',borderRadius:16,overflow:'hidden',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}}>
-          <div style={{background:`linear-gradient(120deg, ${cpTheme.primary}, ${cpShade(cpTheme.primary,-16)})`,color:'#fff',padding:'22px 26px',borderBottom:`4px solid ${cpTheme.accent}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:14,flexWrap:'wrap'}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:11,fontWeight:800,letterSpacing:'.14em',textTransform:'uppercase',color:cpTheme.accent}}>Athletic Department</div>
-                <div style={{fontSize:21,fontWeight:800,marginTop:3}}>📊 Spend &amp; Promo</div>
-                <div style={{fontSize:12.5,opacity:.85,marginTop:2}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
+      <style>{`.ad-teams{display:grid;grid-template-columns:1fr 1fr;gap:0 48px}@media(max-width:680px){.ad-teams{grid-template-columns:1fr}}.ad-top{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:stretch}@media(max-width:800px){.ad-top{grid-template-columns:1fr}}`}</style>
+      <div style={{maxWidth:1000,margin:'0 auto'}}>
+        <button onClick={()=>setSpendView(false)} style={{display:'inline-flex',alignItems:'center',gap:6,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:.5,color:'#64748b',background:'none',border:'none',cursor:'pointer',padding:0,marginBottom:14}}>‹ Back to Dashboard</button>
+        <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,marginBottom:26,flexWrap:'wrap'}}>
+          <div>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:2,textTransform:'uppercase',color:tAccent,marginBottom:8}}>Athletic Department</div>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>Spend &amp; Promo</h1>
+            <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',margin:'12px 0 10px'}}/>
+            <div style={{fontSize:15,color:'#64748b'}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
+          </div>
+          <div style={{display:'flex',background:'#fff',border:'1px solid #e2e8f0',borderRadius:6,padding:4,boxShadow:'0 1px 3px rgba(0,0,0,.08)'}}>
+            {[['period',period.label],['all','All time']].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setAdRange(k)} className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:.5,textTransform:'uppercase',padding:'9px 18px',border:'none',borderRadius:4,cursor:'pointer',background:adRange===k?tPrimary:'transparent',color:adRange===k?'#fff':'#64748b',transition:'all .15s'}}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+        <div className="ad-top" style={{marginBottom:34}}>
+          {hasPromo&&<div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 8px 32px rgba(0,0,0,.18)',background:`linear-gradient(125deg,${tNavyDark} 0%,${tPrimary} 60%,${tNavyMid} 100%)`,padding:'28px 30px',color:'#fff'}}>
+            <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.02) 26px,rgba(255,255,255,.02) 52px)'}}/>
+            <div style={{position:'relative'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:18}}>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.62)'}}>Promo Budget · {adRange==='all'?'All time':period.label}</div>
+                {overspent&&<span className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',background:tAccent,color:'#fff',padding:'4px 11px',borderRadius:999,whiteSpace:'nowrap'}}>Over by {money2(-remaining)}</span>}
               </div>
-              <div style={{display:'inline-flex',background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.25)',borderRadius:999,padding:3,gap:2}}>
-                {[['period',period.label],['all','All time']].map(([k,lbl])=>(
-                  <button key={k} onClick={()=>setAdRange(k)} style={{border:'none',cursor:'pointer',borderRadius:999,padding:'6px 14px',fontSize:12,fontWeight:700,background:adRange===k?'#fff':'transparent',color:adRange===k?cpTheme.primary:'rgba(255,255,255,.92)'}}>{lbl}</button>
+              <div style={{display:'flex',alignItems:'baseline',gap:12}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:52,lineHeight:1,color:'#fff'}}>{money2(used)}</div>
+                <div style={{fontSize:15,color:'rgba(255,255,255,.7)'}}>used of {money2(allocated)}</div>
+              </div>
+              <div style={{height:10,background:'rgba(255,255,255,.14)',borderRadius:999,overflow:'hidden',margin:'20px 0 8px'}}>
+                <div style={{height:'100%',width:Math.min(usedPct,100)+'%',background:overspent?'linear-gradient(90deg,#f59e0b,#b45309)':'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999}}/>
+              </div>
+              <div style={{fontSize:13,color:'rgba(255,255,255,.6)'}}>{usedPct}% used{overspent?' · over budget':remainingDisplay>0?' · '+money2(remainingDisplay)+' remaining':''}</div>
+              <div style={{display:'flex',gap:26,marginTop:22,paddingTop:20,borderTop:'1px solid rgba(255,255,255,.14)'}}>
+                {[['Allocated',money2(allocated)],['Applied to Orders',money2(used)],['Remaining',money2(remainingDisplay)]].map(([lbl,val])=>(
+                  <div key={lbl}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:11,letterSpacing:1,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>{lbl}</div>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:22,color:lbl==='Remaining'?tAccentLight:'#fff',marginTop:2}}>{val}</div>
+                  </div>
                 ))}
               </div>
             </div>
-          </div>
-          <div style={{padding:'22px 26px'}}>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12}}>
-              {kpis.map((k,i)=>(
-                <div key={i} style={{background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:12,padding:'14px 16px'}}>
-                  <div style={{fontSize:10.5,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>{k.label}</div>
-                  <div style={{fontSize:24,fontWeight:900,color:k.color,marginTop:4,lineHeight:1.05}}>{k.value}</div>
-                  <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>{k.sub}</div>
-                </div>
-              ))}
+          </div>}
+          <div style={{display:'flex',flexDirection:'column',gap:22,...(!hasPromo?{gridColumn:'1/-1'}:{})}}>
+            <div style={{flex:1,background:'#fff',border:'1px solid #e2e8f0',borderTop:`3px solid ${tPrimary}`,borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'24px 26px',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:'uppercase',color:'#94a3b8'}}>Department Spend</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:40,color:tPrimary,lineHeight:1.05,margin:'5px 0 3px'}}>{money(totalSpend)}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{adRange==='all'?'All time':period.label} · {teamsActive.length} active</div>
             </div>
-            {hasPromo&&allocated>0&&<div style={{marginTop:16}}>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,fontWeight:700,color:'#64748b',marginBottom:5}}>
-                <span>Promo balance — {adRange==='all'?'all periods':period.label}</span>
-                <span style={{color:overspent?'#b45309':'#64748b'}}>{money2(used)} of {money2(allocated)}{overspent?' · over budget':''}</span>
-              </div>
-              <div style={{height:10,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}>
-                <div style={{height:'100%',width:usedPct+'%',background:overspent?'linear-gradient(90deg,#f59e0b,#b45309)':'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999}}/>
-              </div>
+            {adiAvail&&<div style={{flex:1,background:'#fff',border:'1px solid #e2e8f0',borderTop:`3px solid ${tAccent}`,borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'24px 26px',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:'uppercase',color:'#94a3b8'}}>Adidas Items</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:40,color:tPrimary,lineHeight:1.05,margin:'5px 0 3px'}}>{money(adidasTotal)}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>Items only · no deco</div>
             </div>}
-            <div style={{marginTop:22,marginBottom:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
-              <div style={{fontSize:12,fontWeight:800,letterSpacing:'.06em',textTransform:'uppercase',color:'#94a3b8'}}>{isAdi?'Adidas spend by team':'Spend by team'}</div>
-              {adiAvail&&<div style={{display:'inline-flex',background:'#f1f5f9',borderRadius:999,padding:3,gap:2}}>
-                {[['all','All spend'],['adidas','Adidas only']].map(([k,lbl])=>(
-                  <button key={k} onClick={()=>setSpendMode(k)} style={{border:'none',cursor:'pointer',borderRadius:999,padding:'5px 12px',fontSize:11.5,fontWeight:700,background:spendMode===k?'#fff':'transparent',color:spendMode===k?cpTheme.primary:'#64748b',boxShadow:spendMode===k?'0 1px 3px rgba(0,0,0,.12)':'none'}}>{lbl}</button>
-                ))}
-              </div>}
-            </div>
-            {teamsActive.length===0?
-              <div style={{color:'#94a3b8',fontSize:13,padding:'20px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend {adRange==='all'?'on record yet':'in '+period.label}.{adRange!=='all'?<> Try <button onClick={()=>setAdRange('all')} style={{border:'none',background:'none',color:cpTheme.primary,fontWeight:700,cursor:'pointer',textDecoration:'underline',padding:0,font:'inherit'}}>All time</button>.</>:null}</div>:
-              <div className="ad-teams">
-                {teamsActive.map(t=>{const val=t[metric]||0;const w=Math.round(val/modeMax*100);const share=modeTotal>0?Math.round(val/modeTotal*100):0;
-                  return<div key={t.id} style={{padding:'11px 0',borderTop:'1px solid #f1f5f9'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:6}}>
-                      <span style={{fontWeight:700,fontSize:13.5,color:'#1e293b',minWidth:0,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}</span>
-                      <span style={{textAlign:'right',flexShrink:0,whiteSpace:'nowrap'}}><span style={{fontWeight:800,fontSize:13.5,color:cpTheme.primary}}>{money2(val)}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:6}}>{t.orders} · {share}%</span></span>
-                    </div>
-                    <div style={{height:7,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:w+'%',background:cpTheme.accent,borderRadius:999}}/></div>
-                  </div>;
-                })}
-              </div>}
-            {teamsZero.length>0&&<details style={{marginTop:16}}>
-              <summary style={{cursor:'pointer',fontSize:12.5,fontWeight:700,color:'#64748b'}}>{teamsZero.length} team{teamsZero.length!==1?'s':''} with no orders {adRange==='all'?'on record':'in '+period.label}</summary>
-              <div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:6}}>
-                {teamsZero.map(t=><span key={t.id} style={{fontSize:12,color:'#64748b',background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:999,padding:'4px 11px'}}>{t.name}</span>)}
-              </div>
-            </details>}
-            <div style={{fontSize:11,color:'#94a3b8',marginTop:20,lineHeight:1.5,borderTop:'1px solid #f1f5f9',paddingTop:14}}>
-              {isAdi?'Adidas items only — decoration, shipping & tax are excluded.':'Spend reflects products & decoration only — shipping and tax are excluded.'}{hasPromo?' Promo dollars are shared across the whole department.':''}
-            </div>
           </div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,marginBottom:18,flexWrap:'wrap'}}>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',color:tPrimary}}>{isAdi?'Adidas Spend by Team':'Spend by Team'}</div>
+          {adiAvail&&<div style={{display:'flex',background:'#fff',border:'1px solid #e2e8f0',borderRadius:6,padding:4,boxShadow:'0 1px 3px rgba(0,0,0,.08)'}}>
+            {[['all','All Spend'],['adidas','Adidas Only']].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setSpendMode(k)} className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:.5,textTransform:'uppercase',padding:'8px 16px',border:'none',borderRadius:4,cursor:'pointer',background:spendMode===k?tPrimary:'transparent',color:spendMode===k?'#fff':'#64748b',transition:'all .15s'}}>{lbl}</button>
+            ))}
+          </div>}
+        </div>
+        {teamsActive.length===0?
+          <div style={{color:'#94a3b8',fontSize:13,padding:'20px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend {adRange==='all'?'on record yet':'in '+period.label}.{adRange!=='all'?<> Try <button onClick={()=>setAdRange('all')} style={{border:'none',background:'none',color:tPrimary,fontWeight:700,cursor:'pointer',textDecoration:'underline',padding:0,font:'inherit'}}>All time</button>.</>:null}</div>:
+          <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'10px 28px'}}>
+            <div className="ad-teams">
+              {teamsActive.map(t=>{const val=t[metric]||0;const w=Math.round(val/modeMax*100);const share=modeTotal>0?Math.round(val/modeTotal*100):0;
+                return<div key={t.id} style={{padding:'16px 0',borderBottom:'1px solid #f1f5f9'}}>
+                  <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:14,marginBottom:9}}>
+                    <div className="nsa-disp" style={{flex:1,minWidth:0,fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}</div>
+                    <div style={{display:'flex',alignItems:'baseline',gap:9,flexShrink:0}}>
+                      <span className="nsa-disp" style={{fontWeight:800,fontSize:16,color:tPrimary}}>{money2(val)}</span>
+                      <span style={{fontSize:12,color:'#94a3b8',width:30,textAlign:'right'}}>{share}%</span>
+                    </div>
+                  </div>
+                  <div style={{height:6,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:w+'%',background:tAccent,borderRadius:999}}/></div>
+                </div>;
+              })}
+            </div>
+          </div>}
+        {teamsZero.length>0&&<details style={{marginTop:16}}>
+          <summary style={{cursor:'pointer',fontSize:12.5,fontWeight:700,color:'#64748b'}}>{teamsZero.length} team{teamsZero.length!==1?'s':''} with no orders {adRange==='all'?'on record':'in '+period.label}</summary>
+          <div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:6}}>
+            {teamsZero.map(t=><span key={t.id} style={{fontSize:12,color:'#64748b',background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:999,padding:'4px 11px'}}>{t.name}</span>)}
+          </div>
+        </details>}
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:20,lineHeight:1.5,borderTop:'1px solid #f1f5f9',paddingTop:14}}>
+          {isAdi?'Adidas items only — decoration, shipping & tax are excluded.':'Spend reflects products & decoration only — shipping and tax are excluded.'}{hasPromo?' Promo dollars are shared across the whole department.':''}
         </div>
       </div>
     </div>;
@@ -1735,9 +1748,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>;
         })()}
 
-        {/* ── ORDERS (NSA spec table) ── */}
+        {/* ── ORDERS (NSA spec — embedded estimates panel + order history table) ── */}
         {page==='orders'&&(()=>{
           const statusMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging','#1A3A6B','#E6ECF5'],in_production:['In Production','#1A3A6B','#E6ECF5'],received:['Received','#1A3A6B','#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
+          // Estimates to approve — embedded at top of orders page per new design
+          const _tfEst=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
+          const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tfEst(e));
+          if(isP)openEsts.sort(_teamSort);
           let rows=[...activeSOs,...completedSOs];
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
@@ -1751,6 +1768,30 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
               {isP&&_teamSelect}
             </div>
+            {/* ── Estimates to Approve — inline panel (new design) ── */}
+            {openEsts.length>0&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:'1px solid #EEF1F6',background:'#FAFBFC'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13}}>{openEsts.length}</span>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
+                  <span style={{fontSize:13,color:'#5A6075'}}>— approve to start production</span>
+                </div>
+                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>View all →</button>
+              </div>
+              {openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''} · {est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                  </div>
+                </div>})}
+            </div>}
+            {/* ── Order History table ── */}
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
             {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div className="nsa-disp nsa-otab nsa-ohead" style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'14px 24px',background:'#F7F8FB',fontWeight:700,fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>
@@ -1912,91 +1953,86 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* ── Team store, shop & home tools ── */}
         <div className="cp-col">
 
-        {/* ── SHOP (NSA spec — team-store hero) ── */}
-        {page==='shop'&&<div style={{marginBottom:24}}>
-          <div style={{marginBottom:22}}>
-            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>{customer.name} Team Store</div>
-            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Catalogs</h1>
-            <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
-          </div>
-          <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',minHeight:260,display:'flex',flexDirection:'column',justifyContent:'center'}}>
+        {/* ── SHOP / CATALOGS (NSA redesign — hero + Shop & Order tiles + Catalogs & Stores) ── */}
+        {page==='shop'&&<div>
+          {/* Hero */}
+          <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
             <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
-            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'40%',background:tAccent,opacity:.12,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'40%',background:tAccent,opacity:.14,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
             <div style={{position:'relative',maxWidth:560}}>
-              <h2 className="nsa-disp" style={{fontWeight:800,fontSize:44,lineHeight:.98,textTransform:'uppercase',margin:0}}>Outfit Your Team <em style={{fontStyle:'italic',color:tAccentLight}}>The Right Way</em></h2>
-              <div style={{fontSize:16,color:'rgba(255,255,255,.8)',marginTop:14,maxWidth:480}}>Browse live inventory at your team pricing and colors, build an order, or open a spirit-pack store — all in your team's gear.</div>
-              <div style={{display:'flex',gap:12,marginTop:24,flexWrap:'wrap'}}>
-                <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-skew nsa-disp" style={{background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'14px 26px',borderRadius:4}}><span>Browse Gear</span></a>
-                <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-disp" style={{background:'transparent',color:'#fff',border:'2px solid rgba(255,255,255,.6)',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 24px',borderRadius:4}}>Custom Quote</a>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:48,lineHeight:.98,textTransform:'uppercase',margin:'0 0 14px'}}>Outfit Your Team <em style={{fontStyle:'italic',color:tAccentLight}}>The Right Way</em></h1>
+              <p style={{fontSize:16,lineHeight:1.6,color:'rgba(255,255,255,.82)',margin:'0 0 24px'}}>Browse live inventory at your team pricing and colors, build an order, or open a spirit-pack store — all in your team's gear.</p>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-skew nsa-disp" style={{background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 28px',borderRadius:4}}><span>Browse Gear</span></a>
+                <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-disp" style={{background:'transparent',color:'#fff',border:'2px solid rgba(255,255,255,.6)',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 26px',borderRadius:4}}>Custom Quote</a>
               </div>
             </div>
           </div>
-        </div>}
-        {/* Build a team store — coach self-serve entry (invite-only) */}
-        {page==='shop'&&coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
-          <div>
-            <div style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.8}}>New</div>
-            <div style={{fontSize:18,fontWeight:800,marginTop:2}}>✨ Build your team store</div>
-            <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
-          </div>
-          <div style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'10px 16px',whiteSpace:'nowrap'}}>Start →</div>
-        </button>}
 
-        {/* Team store — read-only order tracking for the coach */}
-        {page==='shop'&&<CoachStore customer={customer} />}
+          {/* Build a team store — invite-only self-serve */}
+          {coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:`linear-gradient(135deg,${tNavyDark},${tPrimary})`,color:'#fff',borderRadius:8,padding:'18px 24px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
+            <div>
+              <div className="nsa-disp" style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.7}}>New</div>
+              <div className="nsa-disp" style={{fontSize:20,fontWeight:800,marginTop:2,textTransform:'uppercase'}}>Build Your Team Store</div>
+              <div style={{fontSize:13,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
+            </div>
+            <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
+          </button>}
 
-        {/* Shop & order — invite-gated live-look + order building */}
-        {page==='shop'&&(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>🛍️ Shop &amp; Order</div>
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {coachLivelook&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🏷️</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Live Look — Shop Live Inventory</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse in-stock gear at your team pricing &amp; colors.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>}
-            {coachBuildOrders&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🧾</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Build &amp; Submit an Order</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Put an order together and send it to {rep?.name||'your rep'} for a quote.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>}
-          </div>
-        </div>}
+          {/* Shop & Order section */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
 
-        {/* Catalogs */}
-        {page==='shop'&&<div style={{marginTop:16}}>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📚 Catalogs</div>
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            <a className="cp-tool" href={CP_MARKETING+'/team-stores'} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>👕</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Team Stores</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Find an open store or see how they work.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>
-            <a className="cp-tool" href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🎨</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Custom &amp; Catalog Gear</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse our catalogs or request a custom quote.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>
-            {/* adidas team catalog — branded banner linking out to the live adidas dealer site.
-                Background photo lives at public/adidas-team-catalog.webp (1200px, ~33KB; the dark
-                gradient hides any WebP compression); falls back to a black adidas banner. */}
-            <a className="cp-adidas" href="https://www.adidas-team.com/usa/us-team/" target={CP_LINK_TARGET} rel="noopener noreferrer"
-              style={{position:'relative',display:'flex',alignItems:'center',gap:12,minHeight:104,borderRadius:12,overflow:'hidden',textDecoration:'none',color:'#fff',border:'1px solid #e2e8f0',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(90deg, rgba(8,8,8,.82) 0%, rgba(8,8,8,.45) 52%, rgba(8,8,8,.18) 100%), url('/adidas-team-catalog.webp')`,backgroundSize:'cover',backgroundPosition:'center 28%'}}>
-              <span style={{flex:1,minWidth:0,padding:'14px 16px'}}>
-                <span style={{display:'block',fontSize:11,fontWeight:800,letterSpacing:'.16em',opacity:.85}}>adidas</span>
-                <span style={{display:'block',fontWeight:800,fontSize:16,lineHeight:1.15,marginTop:3}}>Shop the adidas Catalog</span>
-                <span style={{display:'block',fontSize:12,opacity:.92,marginTop:3}}>Browse the full adidas team collection.</span>
-              </span>
-              <span style={{fontSize:22,opacity:.85,paddingRight:14}}>›</span>
-            </a>
-          </div>
-        </div>}
+          {/* Live Look tile — the highlight */}
+          <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',width:58,height:58,flexShrink:0,borderRadius:8,background:tAccent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>👁️</div>
+            <div style={{position:'relative',flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:24,textTransform:'uppercase',color:'#fff',lineHeight:1}}>Live Look — Shop Live Inventory</div>
+                <span style={{display:'inline-flex',alignItems:'center',gap:5,background:'rgba(31,122,67,.22)',border:'1px solid #2EC971',color:'#8FF0B5',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:11,letterSpacing:'1px',textTransform:'uppercase',padding:'3px 9px',borderRadius:999}}><span style={{width:7,height:7,borderRadius:999,background:'#2EC971',display:'inline-block'}}/> Live</span>
+              </div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:5}}>Browse in-stock gear at your team pricing &amp; colors — real-time inventory.</div>
+            </div>
+            <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
+          </a>
 
-        {/* Your rep — also pinned in the sidebar & home hero; shown on Shop for quick contact */}
-        {page==='shop'&&<div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
-          <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
-          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
+          {/* Build & Submit an Order tile */}
+          {coachBuildOrders&&<a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:32}}>
+            <div style={{width:54,height:54,flexShrink:0,borderRadius:8,background:'#F7F8FB',color:tPrimary,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>🧾</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:21,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>Build &amp; Submit an Order</div>
+              <div style={{fontSize:14,color:'#5A6075',marginTop:5}}>Put an order together and send it to {rep?.name||'your rep'} for a quote.</div>
+            </div>
+            <div style={{flexShrink:0,color:'#94A0B0',fontSize:24}}>›</div>
+          </a>}
+          {!coachBuildOrders&&<div style={{marginBottom:32}}/>}
+
+          {/* Catalogs & Stores section */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
+
+          {/* Team Stores — inline (CoachStore renders existing stores) */}
+          <CoachStore customer={customer} />
+
+          {/* Custom & Catalog Gear tile */}
+          <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>
+            <div style={{width:54,height:54,flexShrink:0,borderRadius:8,background:'#F7F8FB',color:tPrimary,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>🎨</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:21,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>Custom &amp; Catalog Gear</div>
+              <div style={{fontSize:14,color:'#5A6075',marginTop:5}}>Browse our brand catalogs or request a custom quote.</div>
+            </div>
+            <div style={{flexShrink:0,color:'#94A0B0',fontSize:24}}>›</div>
+          </a>
+
+          {/* adidas catalog banner */}
+          <a className="cp-adidas" href="https://www.adidas-team.com/usa/us-team/" target={CP_LINK_TARGET} rel="noopener noreferrer"
+            style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:20,minHeight:100,borderRadius:8,overflow:'hidden',textDecoration:'none',color:'#fff',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(110deg,rgba(8,8,8,.92) 0%,rgba(8,8,8,.58) 58%,rgba(8,8,8,.26) 100%),url('/adidas-team-catalog.webp')`,backgroundSize:'cover',backgroundPosition:'center 28%',padding:'28px 32px'}}>
+            <div>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'2px',textTransform:'lowercase',color:'rgba(255,255,255,.75)',marginBottom:4}}>adidas</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:28,textTransform:'uppercase',lineHeight:1}}>Shop the adidas Catalog</div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:6}}>Browse the full adidas team collection at your pricing.</div>
+            </div>
+            <div className="nsa-skew nsa-disp" style={{flexShrink:0,background:'#fff',color:tPrimary,fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 24px',borderRadius:4}}><span>View Catalog</span></div>
+          </a>
         </div>}
 
         {/* Contact update — summary lives in the Dashboard; this is the edit form when active */}
