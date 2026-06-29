@@ -2505,12 +2505,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
       let id=existing?.id;
       if(!id||_usedIds.has(id))id=_nextJobId();else _usedIds.add(id);
+      // Reused/pre-approved art must be CONFIRMED by the rep for THIS order before it reads as
+      // approved. A brand-new job whose art is already approved (status carried in from another
+      // order) lands at 'waiting_approval' — not yet sent to coach — so the rep gets a one-click
+      // Approve / Send to Coach / send-back-to-artist choice instead of it silently going to
+      // "Art Approved". Existing jobs keep their human-advanced status via the merge below.
+      const _newArtSt=(!existing&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         // Preserve human-advanced states; 'needs_art' is the auto-computed default and
         // must be re-derived so a fixed art file immediately unlocks to art_complete.
-        art_status:(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
+        art_status:(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
@@ -8281,6 +8287,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
               </div>
+              {!_stca&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
               {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
                 {j.coach_email_opened_at?<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af'}}>Viewed {new Date(j.coach_email_opened_at).toLocaleDateString()} @ {new Date(j.coach_email_opened_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
