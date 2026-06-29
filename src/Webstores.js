@@ -1958,7 +1958,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        // Pin the screen-print colorway whose garment_color matches this line's garment,
+        // so production gets the right inks instead of an unset CW. Each art color_way
+        // carries a garment_color (e.g. "Navy"); match it to the SO line's color, with a
+        // contains-fallback, and use the only colorway when there's just one.
+        let cwId = null;
+        if (lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
+          const gc = colorKeyOf(info.color);
+          const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
+          const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
+          cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
+        }
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
