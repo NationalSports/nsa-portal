@@ -1389,6 +1389,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const groupFields = {};
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
+    if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
     if (Object.keys(groupFields).length) {
       const cat = detail?.catalog || [];
       const me = cat.find((c) => c.id === id);
@@ -1907,11 +1908,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // Aggregate by product + size; build parallel number/name rosters per size
     // (one entry per garment unit) so they attach as real deco lines.
+    // size_skus overrides: if a size maps to a different vendor SKU, it becomes its
+    // own SO line (same art/deco, same price, but a different item number to source).
+    const sizeSkusByCatPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
     const byProduct = {};
     lines.forEach((i) => {
-      const pid = i.product_id || i.sku || 'unknown';
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[pid]; const sz = i.size || 'OS'; const q = i.qty || 1;
+      const basePid = i.product_id || i.sku || 'unknown';
+      const sz = i.size || 'OS';
+      const effectiveSku = (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
+      const pid = basePid + '§' + effectiveSku;
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[pid]; const q = i.qty || 1;
       const pdef = personalize[i.product_id] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
       g.collected = r2(g.collected + collectedForLine(i));
@@ -4788,6 +4796,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _invSrc = invSrcByPid[item.product_id];
   const inventoryBacked = !isBundle && !!_invSrc && _invSrc !== 'manual';
   const [trackInv, setTrackInv] = useState(item.track_inventory !== false);
+  const [sizeSkus, setSizeSkus] = useState(item.size_skus || {});
   // Estimated NSA decoration cost — NSA's cost to decorate this item, which raises the sale
   // price to keep the margin (the delta is stored as deco_upcharge). Defaults to $5 when the
   // item has artwork, $0 when it doesn't. Rep-editable.
@@ -4988,7 +4997,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
@@ -5021,6 +5030,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
       // Inventory tracking only matters for stock-backed items; persist the choice there.
       if (inventoryBacked) fields.track_inventory = !!trackInv;
+      // Size-level SKU overrides: only persist when there's something set.
+      fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
     }
     onSave(fields);
     _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
@@ -5306,6 +5317,28 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                   : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
               </span>
             </label>
+          </ItemSection>
+        )}
+        {!isBundle && item.product_id && sizeList.length > 0 && (
+          <ItemSection title="SKU overrides by size" hint="· substitute a different item number for specific sizes — same decoration, same price">
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Leave blank to use the default SKU{item.sku ? ` (${item.sku})` : ''}. Sizes with an override become a separate line on the Sales Order.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'center' }}>
+              {sizeList.map((sz) => (
+                <React.Fragment key={sz}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{sz}</span>
+                  <input
+                    className="form-input"
+                    value={sizeSkus[sz] || ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim().toUpperCase();
+                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = v; else delete n[sz]; return n; });
+                    }}
+                    placeholder={item.sku || 'e.g. JL5412XL'}
+                    style={{ fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
           </ItemSection>
         )}
         </div>
