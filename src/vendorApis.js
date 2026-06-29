@@ -7,6 +7,7 @@ import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
+import { normSzName } from './pricing';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -879,6 +880,11 @@ const sanmarSubmitPO = async (payload, env = 'test') => {
 // line's — we never guess, so an unmatched line stays blocked (caller falls back to
 // manual ordering) rather than risk shipping the wrong item.
 const _smNorm = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Size match key. Run the size through normSzName first so an order's gendered
+// label ("Mens S", "Women's L", "Youth M") collapses to the bare size SanMar
+// returns ("S"/"L"/"M") before stripping punctuation — otherwise "MENSS" never
+// equals "S" and every gendered line is left without a partId (blocked PO).
+const _smSizeNorm = (s) => _smNorm(normSzName(s));
 const _smColor = (bi) => bi.catalogColor || bi.color || bi.colorName || bi.millColor || bi.colorCode || '';
 const _smSize = (bi) => bi.size || bi.sizeName || bi.apparelSize || bi.sizeCode || '';
 const _smKey = (r, bi) => String(bi.uniqueKey || bi.Unique_Key || bi.UniqueKey || r.uniqueKey || r.Unique_Key || '');
@@ -901,7 +907,7 @@ const sanmarResolvePartIds = async (descriptors) => {
         const uk = _smKey(r, bi); if (!uk) continue;
         const color = _smColor(bi), size = _smSize(bi);
         cand.push({ color, size, uniqueKey: uk });
-        const mk = _smNorm(color) + '|' + _smNorm(size);
+        const mk = _smNorm(color) + '|' + _smSizeNorm(size);
         if (color && size && !(mk in map)) map[mk] = uk;
       }
     };
@@ -910,7 +916,7 @@ const sanmarResolvePartIds = async (descriptors) => {
     catch (e) { console.warn('[SanMar] partId lookup failed for', style, e.message); }
     const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
     for (const d of mine) {
-      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
       if (map[mk]) resolved[d.key] = map[mk];
     }
     // Fallback: size-specific query for any line the bulk lookup didn't resolve
@@ -923,7 +929,7 @@ const sanmarResolvePartIds = async (descriptors) => {
         addItems(items);
         for (const r of items) {
           const bi = r.productBasicInfo || r;
-          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smNorm(_smSize(bi)) === _smNorm(d.size)) {
+          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smSizeNorm(_smSize(bi)) === _smSizeNorm(d.size)) {
             const uk = _smKey(r, bi); if (uk) { resolved[d.key] = uk; break; }
           }
         }
@@ -1003,13 +1009,13 @@ const ssResolveSkus = async (descriptors) => {
       const color = r.colorName || r.color || '';
       const size = r.sizeName || r.size || '';
       cand.push({ color, size, sku });
-      const mk = _smNorm(color) + '|' + _smNorm(size);
+      const mk = _smNorm(color) + '|' + _smSizeNorm(size);
       if (color && size && !(mk in map)) map[mk] = sku;
     }
     candidates[style] = cand;
     for (const d of descriptors) {
       if (String(d.style || '').toUpperCase().trim() !== style) continue;
-      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
       if (map[mk]) resolved[d.key] = map[mk];
     }
     // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
@@ -1029,10 +1035,10 @@ const ssResolveSkus = async (descriptors) => {
         const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
         const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
         candidates[style].push({ color, size, sku });
-        const mk2 = _smNorm(color) + '|' + _smNorm(size);
+        const mk2 = _smNorm(color) + '|' + _smSizeNorm(size);
         for (const d of descriptors) {
           if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
-          if (_smNorm(d.color) + '|' + _smNorm(d.size) === mk2) resolved[d.key] = sku;
+          if (_smNorm(d.color) + '|' + _smSizeNorm(d.size) === mk2) resolved[d.key] = sku;
         }
       }
     }
