@@ -1861,10 +1861,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const wh = Number((st.size_stock || {})[size]) || 0;
       const ven = Number((st.vendor_size_stock || {})[size]) || 0;
       const avail = wh + ven;
-      if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
+      if (q > avail) shortages.push({ pid, size, sku: st.sku || '', label: `${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}` });
     });
     // Everything from here on runs once the user confirms in the modal below.
-    const proceed = async () => {
+    // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
+    const proceed = async (inlineOverrides = {}) => {
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
@@ -1916,7 +1917,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     lines.forEach((i) => {
       const basePid = i.product_id || i.sku || 'unknown';
       const sz = i.size || 'OS';
-      const effectiveSku = (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
+      const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
       const pid = basePid + '§' + effectiveSku;
       if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[pid]; const q = i.qty || 1;
@@ -2212,17 +2213,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
 // Styled confirm for "Create Sales Order" — replaces the native window.confirm,
 // shows the order count and any inventory shortfalls before the batch runs.
+// Shortfall rows let the rep enter a substitute SKU right here so it lands on
+// the SO without going back to the item editor.
 function SoConfirmModal({ count, shortages = [], onCancel, onConfirm }) {
   const [busy, setBusy] = useState(false);
-  const go = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  // keyed by "pid|size" → altSku string
+  const [overrideSkus, setOverrideSkus] = useState({});
+  const setOverride = (pid, size, val) => setOverrideSkus((prev) => {
+    const k = pid + '|' + size; const n = { ...prev };
+    if (val.trim()) n[k] = val.trim().toUpperCase(); else delete n[k]; return n;
+  });
+  const go = async () => { setBusy(true); try { await onConfirm(overrideSkus); } finally { setBusy(false); } };
   return (
     <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 540, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
         <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
           <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
           <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
         </div>
-        <div style={{ padding: '20px 22px', maxHeight: '52vh', overflowY: 'auto' }}>
+        <div style={{ padding: '20px 22px', maxHeight: '60vh', overflowY: 'auto' }}>
           {shortages.length ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
@@ -2230,10 +2239,23 @@ function SoConfirmModal({ count, shortages = [], onCancel, onConfirm }) {
               </div>
               <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, overflow: 'hidden' }}>
                 {shortages.map((s, i) => (
-                  <div key={i} style={{ fontSize: 13, color: '#7c2d12', padding: '8px 12px', borderTop: i ? '1px solid #fde68a' : 'none', lineHeight: 1.4 }}>{s.replace(/^•\s*/, '')}</div>
+                  <div key={i} style={{ borderTop: i ? '1px solid #fde68a' : 'none', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.4 }}>{s.label}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                      <span style={{ fontSize: 11, color: '#92400e', whiteSpace: 'nowrap' }}>Sub SKU for {s.size}:</span>
+                      <input
+                        className="form-input"
+                        value={overrideSkus[s.pid + '|' + s.size] || ''}
+                        onChange={(e) => setOverride(s.pid, s.size, e.target.value)}
+                        placeholder={s.sku || 'e.g. JL5412XL'}
+                        style={{ fontSize: 12, padding: '3px 8px', fontFamily: 'monospace', maxWidth: 160 }}
+                      />
+                      <span style={{ fontSize: 11, color: '#92400e' }}>— same deco, different item #</span>
+                    </div>
+                  </div>
                 ))}
               </div>
-              <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>These may need a PO or backorder. Run the <b>Stock report</b> to see exactly who's affected. You can still create the Sales Order — shortfalls flow through as items to source.</div>
+              <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>Substitute SKUs create a separate SO line for those sizes. Leave blank to keep the original SKU and source manually.</div>
             </>
           ) : (
             <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
