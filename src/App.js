@@ -5855,6 +5855,8 @@ export default function App(){
   React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
+  // Share-for-rebuild modal: generates a link + packing list from a previous OMG store.
+  const[omgShareOpen,setOmgShareOpen]=useState(false);const[omgShareCopied,setOmgShareCopied]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -17285,6 +17287,7 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
                 <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
+                {(s.products||[]).length>0&&<button onClick={()=>{setOmgShareOpen(true);setOmgShareCopied(false)}} title="Copy a rebuild link and print a packing list — share with a coach to kick off a new webstore with the same items pre-selected" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
               </div>
             </div>
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
@@ -17800,6 +17803,76 @@ export default function App(){
             </div>
           </div>
         </div>
+
+        {/* Share-for-Rebuild modal — rebuild link + printable packing list */}
+        {omgShareOpen&&(()=>{
+          const prods=s.products||[];
+          const skuStr=prods.map(p=>p.sku).filter(Boolean).join(',');
+          const rebuildUrl='https://nationalsportsapparel.com/team-stores?skus='+encodeURIComponent(skuStr);
+          const SZ_ORD=['4XS','3XS','2XS','XS/S','XS','S/M','YXS','YS','S','YM','M/L','M','YL','L/XL','L','YXL','XL/XXL','XL','2XL','3XL','4XL','5XL','OS'];
+          const allSizes=[...new Set(prods.flatMap(p=>Object.keys(p.sizes||{})))].sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)});
+          const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
+          const copyLink=()=>{
+            navigator.clipboard.writeText(rebuildUrl).then(()=>{setOmgShareCopied(true);setTimeout(()=>setOmgShareCopied(false),2500)}).catch(()=>prompt('Copy this link:',rebuildUrl));
+          };
+          const printPackingList=()=>{
+            const szHead=allSizes.map(sz=>`<th style="text-align:center;padding:6px 5px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">${sz}</th>`).join('');
+            const rows=prods.map(p=>{
+              const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);
+              const szCells=allSizes.map(sz=>`<td style="text-align:center;padding:5px 4px;border-bottom:1px solid #eef1f5;font-size:11px">${(p.sizes||{})[sz]||''}</td>`).join('');
+              return`<tr><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:600;font-size:11px">${p.name||p.sku}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-family:monospace;font-size:10px;color:#1e40af">${p.sku||''}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;color:#64748b;font-size:11px">${p.color||''}</td>${szCells}<td style="text-align:center;padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:700;font-size:11px">${tot}</td></tr>`;
+            }).join('');
+            const w=window.open('','_blank');
+            w.document.write(`<!doctype html><html><head><title>Packing List — ${s.store_name}</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#0f172a;max-width:960px;margin:28px auto;padding:0 20px}h1{font-size:17px;margin:0 0 2px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;font-weight:700}@media print{body{margin:0}}</style></head><body><h1>Packing List — ${s.store_name}</h1><div style="color:#64748b;font-size:11px;margin-bottom:12px">${s._omg_sale_code?'Sale code: '+s._omg_sale_code+' · ':''} ${prods.length} items · ${totalUnits} units</div><table><thead><tr><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Product</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">SKU</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Color</th>${szHead}<th style="text-align:center;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Total</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="${3+allSizes.length}" style="text-align:right;padding:9px 8px;font-weight:800;border-top:2px solid #0f172a;font-size:12px">Grand Total</td><td style="text-align:center;padding:9px 8px;font-weight:900;border-top:2px solid #0f172a;font-size:13px">${totalUnits}</td></tr></tfoot></table></body></html>`);
+            w.document.close();w.focus();setTimeout(()=>w.print(),350);
+          };
+          return<div className="modal-overlay" onClick={()=>setOmgShareOpen(false)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+              <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h2 style={{margin:0}}>📤 Share for Rebuild</h2>
+                <button onClick={()=>setOmgShareOpen(false)} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+              </div>
+              <div className="modal-body" style={{overflowY:'auto',padding:'16px 20px 20px'}}>
+                <div style={{marginBottom:18}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:5}}>Rebuild link</div>
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Send this to a coach or rep. Opening it in the new webstore builder pre-selects all <b>{prods.length} items</b> from this store. They can adjust, add branding, and submit a new store request.</div>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <input readOnly value={rebuildUrl} onClick={e=>e.target.select()} style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,background:'#f8fafc',color:'#0f172a',cursor:'text'}}/>
+                    <button onClick={copyLink} style={{fontSize:12,fontWeight:700,padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',background:omgShareCopied?'#166534':'',color:omgShareCopied?'#fff':'#2563eb',cursor:'pointer',whiteSpace:'nowrap',transition:'all 0.2s',minWidth:90}}>{omgShareCopied?'✓ Copied!':'Copy link'}</button>
+                  </div>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Packing list · {prods.length} items · {totalUnits} units</div>
+                  <button onClick={printPackingList} style={{fontSize:11,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#374151',cursor:'pointer'}}>🖨 Print</button>
+                </div>
+                <div style={{overflowX:'auto',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                    <thead><tr style={{background:'#f8fafc'}}>
+                      <th style={{textAlign:'left',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700,whiteSpace:'nowrap'}}>Product</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>SKU</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Color</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'7px 5px',borderBottom:'2px solid #e2e8f0',fontWeight:700,fontSize:11}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {prods.map((p,i)=>{const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);return<tr key={i} style={{background:i%2?'#fafbfc':'#fff'}}>
+                        <td style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={p.name||p.sku}>{p.name||p.sku}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontFamily:'monospace',fontSize:11,color:'#1e40af'}}>{p.sku||'—'}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:'#64748b',whiteSpace:'nowrap'}}>{p.color||'—'}</td>
+                        {allSizes.map(sz=><td key={sz} style={{textAlign:'center',padding:'6px 5px',borderBottom:'1px solid #f1f5f9',color:(p.sizes||{})[sz]?'#0f172a':'#e2e8f0'}}>{(p.sizes||{})[sz]||''}</td>)}
+                        <td style={{textAlign:'center',padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{tot}</td>
+                      </tr>})}
+                    </tbody>
+                    <tfoot><tr style={{background:'#f8fafc'}}>
+                      <td colSpan={3+allSizes.length} style={{textAlign:'right',padding:'8px 10px',fontWeight:800,borderTop:'2px solid #0f172a'}}>Grand Total</td>
+                      <td style={{textAlign:'center',padding:'8px 10px',fontWeight:900,borderTop:'2px solid #0f172a'}}>{totalUnits}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
 
         {/* Step-by-step help modal */}
         {omgGuideOpen&&<div className="modal-overlay" onClick={()=>setOmgGuideOpen(false)}>

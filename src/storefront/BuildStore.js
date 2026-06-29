@@ -262,6 +262,14 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
   const [result, setResult] = useState(null);
   const [submitErr, setSubmitErr] = useState('');
 
+  // Rebuild from a ?skus= share link — auto-select matching catalog items.
+  const [rebuildSkus] = useState(() => {
+    try { return new Set((new URLSearchParams(window.location.search).get('skus') || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)); } catch { return new Set(); }
+  });
+  const [rebuildBanner, setRebuildBanner] = useState(() => {
+    try { return !!(new URLSearchParams(window.location.search).get('skus')); } catch { return false; }
+  });
+
   // Coach: load staff templates + fundraise cap, and jump straight to the
   // catalog when there are none. Public: just set the tab title (the allow-list
   // pool loads when they finish the contact step).
@@ -330,6 +338,10 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
         .filter((i) => (i._stock.units || 0) > 0 && (tid || i.image_url));
       setPool(inStock);
       if (isCoach && tid) setSel(new Set(inStock.map((i) => i.product_id))); // template → all pre-selected
+      else if (rebuildSkus.size > 0) {
+        const matched = inStock.filter((i) => rebuildSkus.has((i.sku || '').toUpperCase()));
+        if (matched.length) setSel(new Set(matched.map((i) => i.product_id)));
+      }
     } catch (e) { setPoolErr(e.message || String(e)); }
     setLoading(false);
   };
@@ -493,6 +505,12 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
               {isCoach && templateId ? 'Your template items are pre-selected — tap to add or remove. ' : 'Tap a photo to add it to your store. '}
               Use the filters to narrow by type and color — only in-stock items are shown, and prices are set for you.
             </div>
+            {rebuildBanner && rebuildSkus.size > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 14px', background: '#ecfeff', border: '1px solid #a5f3fc', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                <div><b style={{ color: '#0e7490' }}>📤 Pre-loaded from a previous store</b> — {sel.size} of {rebuildSkus.size} item{rebuildSkus.size === 1 ? '' : 's'} matched and pre-selected. Adjust below, then continue.</div>
+                <button type="button" onClick={() => setRebuildBanner(false)} style={{ background: 'none', border: 'none', fontSize: 18, lineHeight: 1, cursor: 'pointer', color: '#94a3b8', flexShrink: 0 }}>×</button>
+              </div>
+            )}
             {/* Selector chips — built from what's actually in the catalog, so every option returns items */}
             <FacetBar facets={facets} cats={cats} colors={colors} brands={brands}
               onToggleCat={toggleIn(setCats)} onToggleColor={toggleIn(setColors)} onToggleBrand={toggleIn(setBrands)} onClear={clearFilters} />
