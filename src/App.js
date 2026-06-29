@@ -24576,7 +24576,11 @@ export default function App(){
         // leave it for the manual PDF parse instead of cluttering review with an empty bill.
         if(!parsed.has_usable_lines){scanned++;return}
         const dn=(parsed.doc_number||'').trim().toLowerCase();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);return}
+        // Dedup on BOTH the supplier invoice # and the SI doc #: bills applied before the
+        // supplierDocNumber cutover recorded their siDocNumber on the PO line, so checking only
+        // doc_number would re-add — and let staff re-push — an already-billed invoice (double-bill).
+        const sdn=String(parsed.si_doc_number||'').trim();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
         const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});

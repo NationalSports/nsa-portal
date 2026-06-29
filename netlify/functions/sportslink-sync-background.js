@@ -39,12 +39,13 @@ exports.handler = async () => {
   if (!sbUrl || !sbKey) return { statusCode: 500, body: 'Supabase not configured' };
   const base = (process.env.SPORTSLINK_API_BASE_URL || 'https://api.sportsinc.com/').replace(/\/+$/, '') + '/';
 
-  // 1) Pull all active documents since the cutover (paged; API caps at 1000/call).
+  // 1) Pull all active documents since the cutover (paged in 500s; the API rejects
+  //    pageSize >= 1000 — "Page Size must be less than 1000").
   let page = 1, docs = [], guard = 0;
   while (guard++ < 60) {
     const qs = new URLSearchParams({
       active: 'true', lines: 'true', siDocStartDate: since,
-      page: String(page), pageSize: '1000', orderBy: 'SIDocDate', orderByDescending: 'true',
+      page: String(page), pageSize: '500', orderBy: 'SIDocDate', orderByDescending: 'true',
     });
     const r = await fetch(base + 'dealers/documents/?' + qs.toString(), {
       headers: { 'X-API-KEY': apiKey, Accept: 'application/json', 'User-Agent': 'NSA-Portal/1.0' },
