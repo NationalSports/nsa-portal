@@ -6,9 +6,18 @@ import { supabase } from '../lib/supabase';
 import { placementById } from '../lib/artPlacements';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
 
-const STRIPE_PK = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
-let _stripePromise = null;
-try { if (STRIPE_PK) _stripePromise = loadStripe(STRIPE_PK); } catch { _stripePromise = null; }
+// Stripe publishable key is fetched at runtime from the server so changing
+// it in Netlify env vars takes effect without a rebuild.
+let stripePromiseCache = null;
+async function _getStripePromise() {
+  if (stripePromiseCache) return stripePromiseCache;
+  try {
+    const r = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'config' }) });
+    const d = await r.json().catch(() => ({}));
+    if (d.publishableKey) stripePromiseCache = loadStripe(d.publishableKey);
+  } catch {}
+  return stripePromiseCache;
+}
 
 // ── Cart (localStorage, per store slug) ──────────────────────────────
 const cartKey = (slug) => 'nsa_cart_' + slug;
@@ -1350,6 +1359,8 @@ function couponDiscount(coupon, cart, shipping = 0) {
 function CheckoutPage({ store, theme, cart, onClear }) {
   const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
+  const [stripePromise, setStripePromise] = useState(null);
+  useEffect(() => { if (allowPaid) _getStripePromise().then((p) => setStripePromise(p || null)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [buyer, setBuyer] = useState({ name: '', email: '', phone: '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
@@ -1482,15 +1493,15 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       ) : (<>
       {store.payment_mode === 'either' && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, marginTop: 14 }}>
-          {allowPaid && _stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
+          {allowPaid && stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
           {allowUnpaid && <button onClick={() => { setMethod('unpaid'); setClientSecret(null); }} style={methodBtn(theme, method === 'unpaid')}>Put on team tab</button>}
         </div>
       )}
 
       {method === 'paid' && allowPaid ? (
-        _stripePromise ? (
+        stripePromise ? (
           clientSecret ? (
-            <Elements stripe={_stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
+            <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
               <CardForm theme={theme} onPaid={confirmPaid} />
             </Elements>
           ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
