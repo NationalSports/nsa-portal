@@ -1833,14 +1833,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const retailByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
     const allItems = (detail.orderItems || []).filter((i) => openIds.has(i.order_id));
+    // Group each order's bundle parent(s) + components by order_id + bundle_product_id.
+    // NOTE: older orders' PARENT rows have bundle_ref = null (it was added later), so we
+    // cannot match parent→component by bundle_ref — doing so dropped the entire package
+    // value for those orders. bundle_product_id is always present on both, so group on
+    // that; summing parent values per group also handles the same bundle ordered twice.
     const allocById = {}; // component order_item id -> allocated package $
-    allItems.filter((p) => p.is_bundle_parent).forEach((p) => {
-      const kids = allItems.filter((c) => !c.is_bundle_parent && c.order_id === p.order_id && c.bundle_ref && c.bundle_ref === p.bundle_ref);
-      if (!kids.length) return;
-      const parentValue = (Number(p.unit_price) || 0) + (Number(p.unit_fundraise) || 0);
-      const weights = kids.map((c) => retailByPid[c.product_id] || 0);
+    const bundleGroups = {};
+    allItems.forEach((i) => {
+      if (!i.bundle_product_id) return;
+      const k = i.order_id + '|' + i.bundle_product_id;
+      if (!bundleGroups[k]) bundleGroups[k] = { parentVal: 0, kids: [] };
+      if (i.is_bundle_parent) bundleGroups[k].parentVal += (Number(i.unit_price) || 0) + (Number(i.unit_fundraise) || 0);
+      else bundleGroups[k].kids.push(i);
+    });
+    Object.values(bundleGroups).forEach((g) => {
+      if (!g.kids.length || g.parentVal <= 0) return;
+      const weights = g.kids.map((c) => retailByPid[c.product_id] || 0);
       const wsum = weights.reduce((a, b) => a + b, 0);
-      kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(parentValue * weights[idx] / wsum) : r2(parentValue / kids.length); });
+      g.kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(g.parentVal * weights[idx] / wsum) : r2(g.parentVal / g.kids.length); });
     });
     const collectedForLine = (i) => allocById[i.id] != null
       ? allocById[i.id]
