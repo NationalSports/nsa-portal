@@ -730,92 +730,106 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const soShipments=so._shipments||[];
     const soLegacy=so._tracking_number&&!soShipments.find(s=>s.tracking_number===so._tracking_number);
     const soAllShipments=soLegacy?[{tracking_number:so._tracking_number,carrier:so._carrier||'',ship_date:so._ship_date||'',tracking_url:so._tracking_url||''},...soShipments]:soShipments;
-    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+    const _soSt=calcSOStatus(so);const _soStMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging',tPrimary,'#E6ECF5'],in_production:['In Production',tPrimary,'#E6ECF5'],received:['Received',tPrimary,'#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
+    const _soSm=_soStMap[_soSt]||['Ordered','#5A6075','#EEF1F6'];
+    return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:_nsaFont,color:'#2A2F3E',display:'flex',justifyContent:'center',padding:'32px 16px'}}>
+      <style>{_nsaImport+`.nsa-disp{font-family:'Barlow Condensed',sans-serif}.nsa-skew{transform:skewX(-3deg)}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}`}</style>
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
         <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
         {_isImgUrl(lightbox)?<img src={lightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
         :_isPdfUrl(lightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
         :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
       </div>}
-      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setSoView(null)}>← Back</button>
-          <div style={{textAlign:'center',paddingTop:16}}>
-            <div style={{fontSize:10,opacity:0.6}}>ORDER</div>
-            <div style={{fontSize:20,fontWeight:800}}>{so.memo||so.id}</div>
-            <div style={{fontSize:12,opacity:0.8}}>{so.id} · {so.created_at?.split(' ')[0]}{so.expected_date?(' · Expected '+so.expected_date):''}</div>
+      <div style={{width:'100%',maxWidth:660}}>
+        <button className="nsa-disp" onClick={()=>setSoView(null)} style={{display:'inline-flex',alignItems:'center',gap:8,background:'#fff',border:'1px solid #EEF1F6',color:tPrimary,fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 16px',borderRadius:4,cursor:'pointer',marginBottom:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>← Back to Orders</button>
+        <div style={{background:'#fff',borderRadius:8,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        {/* NSA hero */}
+        <div style={{position:'relative',overflow:'hidden',padding:'28px 28px 24px',color:'#fff',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`}}>
+          <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+          <div style={{position:'absolute',top:0,right:0,width:120,height:'100%',background:tAccent,opacity:.9,clipPath:'polygon(38% 0, 100% 0, 100% 100%, 0 100%)'}}/>
+          <div style={{position:'relative'}}>
+            <div className="nsa-disp" style={{fontSize:12,letterSpacing:'2px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Order</div>
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:34,textTransform:'uppercase',lineHeight:1.02,marginTop:2}}>{so.memo||so.id}</div>
+            <div style={{width:60,height:4,background:tAccentLight,transform:'skewX(-12deg)',margin:'10px 0 8px'}}/>
+            <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <div style={{fontSize:13,color:'rgba(255,255,255,.8)'}}>{so.id}{so.created_at?' · '+so.created_at.split(' ')[0]:''}{so.expected_date?' · ETA '+so.expected_date:''}</div>
+              <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:'rgba(0,0,0,.25)',color:'#fff',fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'3px 10px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{_soSm[0]}</span></span>
+            </div>
           </div>
         </div>
-        <div style={{padding:'20px 24px'}}>
+        <div style={{padding:'22px 28px'}}>
           {/* Progress bar */}
-          <div style={{marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
-              <span style={{fontSize:11,fontWeight:700,color:soPct>=100?'#166534':'#1e3a5f'}}>{soPct}%</span>
+          <div style={{marginBottom:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+              <span className="nsa-disp" style={{fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',color:'#5A6075'}}>Order Progress</span>
+              <span className="nsa-disp" style={{fontSize:14,fontWeight:800,color:soPct>=100?'#1F7A43':tPrimary}}>{soPct}%</span>
             </div>
-            <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
-              <div style={{height:8,borderRadius:6,background:soPct>=100?'#22c55e':soPct>50?'#3b82f6':'#f59e0b',width:soPct+'%',transition:'width 0.3s'}}/></div>
-            {soDaysOut!=null&&<div style={{fontSize:11,color:soDaysOut<=7?'#dc2626':'#64748b',marginTop:4,textAlign:'right'}}>{soDaysOut>0?soDaysOut+' day'+(soDaysOut!==1?'s':'')+' out':soDaysOut===0?'Due today':'Overdue'}</div>}
+            <div style={{background:'#EEF1F6',borderRadius:999,height:7,overflow:'hidden'}}>
+              <div style={{height:7,borderRadius:999,background:soPct>=100?'#1F7A43':tPrimary,width:soPct+'%',transition:'width 0.4s'}}/>
+            </div>
+            {soDaysOut!=null&&<div style={{fontSize:12,color:soDaysOut<=7?tAccent:'#94A0B0',marginTop:5,textAlign:'right',fontWeight:600}}>{soDaysOut>0?soDaysOut+' day'+(soDaysOut!==1?'s':'')+' out':soDaysOut===0?'Due today':'Overdue'}</div>}
           </div>
-          {/* Line items */}
-          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
+          {/* Section label */}
+          <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Items</div>
           {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
             let recvQ=0;Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);recvQ+=Math.min(v,pQ+rQ)});
             let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);decoTotal+=eq2*dp2.sell});
             const lineTotal=qty*safeNum(it.unit_sell)+decoTotal;
             const _prd=(prod||[]).find(pp=>pp.id===it.product_id||pp.sku===it.sku);
             const itImg=_prd?.image_url||(_prd?.images&&_prd.images[0])||it._colorImage||'';
-            return<div key={ii} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
-                <div style={{flex:1,display:'flex',gap:10,alignItems:'center'}}>
-                  {itImg&&isUrl(itImg)?<img src={itImg} alt={safeStr(it.name)||'Item'} title="Click to enlarge" onClick={()=>setLightbox(itImg)} style={{width:48,height:48,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0,cursor:'zoom-in'}}/>
-                  :<div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:20}}>👕</div></div>}
+            const recvPct=qty>0?Math.round(recvQ/qty*100):0;
+            return<div key={ii} style={{border:'1px solid #EEF1F6',borderLeft:`4px solid ${tPrimary}`,borderRadius:6,padding:'14px 16px',marginBottom:10,background:'#fff'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div style={{flex:1,display:'flex',gap:12,alignItems:'center'}}>
+                  {itImg&&isUrl(itImg)?<img src={itImg} alt={safeStr(it.name)||'Item'} title="Click to enlarge" onClick={()=>setLightbox(itImg)} style={{width:52,height:52,objectFit:'cover',borderRadius:6,border:'1px solid #EEF1F6',flexShrink:0,cursor:'zoom-in'}}/>
+                  :<div style={{width:52,height:52,background:'#F7F8FB',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:'1px solid #EEF1F6'}}><div style={{fontSize:22}}>👕</div></div>}
                   <div style={{minWidth:0}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.05}}>{safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{it.sku} · {safeStr(it.color)||'—'}{it.brand?' · '+it.brand:''}</div>
                   </div>
                 </div>
-                <div style={{textAlign:'right'}}>
-                  <div style={{fontWeight:800,fontSize:14,color:'#1e3a5f'}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-                  <div style={{fontSize:10,color:'#64748b'}}>{qty} units</div>
+                <div style={{textAlign:'right',flexShrink:0}}>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:12,color:'#94A0B0'}}>{qty} units</div>
                 </div>
               </div>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div style={{flex:1,background:'#f1f5f9',borderRadius:6,height:4,marginRight:10}}>
-                  <div style={{height:4,borderRadius:6,background:recvQ>=qty?'#22c55e':recvQ>0?'#3b82f6':'#e2e8f0',width:(qty>0?Math.round(recvQ/qty*100):0)+'%'}}/></div>
-                <span style={{fontSize:11,fontWeight:600,color:recvQ>=qty?'#166534':'#64748b',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <div style={{flex:1,background:'#EEF1F6',borderRadius:999,height:5,overflow:'hidden'}}>
+                  <div style={{height:5,borderRadius:999,background:recvQ>=qty?'#1F7A43':tPrimary,width:recvPct+'%',transition:'width .4s'}}/>
+                </div>
+                <span style={{fontSize:12,fontWeight:600,color:recvQ>=qty?'#1F7A43':'#94A0B0',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
               </div>
               {(()=>{const _szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
                 if(_szList.length===0)return null;
-                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8}}>
-                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'3px 8px',background:'#f8fafc',borderRadius:6,minWidth:34}}>
-                    <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
-                    <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{sq}</div>
+                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:10}}>
+                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'4px 10px',background:'#F7F8FB',borderRadius:4,minWidth:36,border:'1px solid #EEF1F6'}}>
+                    <div className="nsa-disp" style={{fontSize:9,fontWeight:700,color:'#94A0B0',letterSpacing:'.5px'}}>{sz}</div>
+                    <div className="nsa-disp" style={{fontSize:14,fontWeight:800,color:tPrimary}}>{sq}</div>
                   </div>)}
                 </div>})()}
             </div>})}
           {/* Order totals */}
-          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
-            {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
-            {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
-              <span style={{fontWeight:800,fontSize:16}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#1e3a5f'}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <div style={{borderTop:'1px solid #EEF1F6',paddingTop:14,marginBottom:18,marginTop:6}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Subtotal</span><span style={{fontWeight:700,color:'#2A2F3E'}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
+            {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'12px 0 4px',borderTop:`2px solid ${tPrimary}`,marginTop:8}}>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Total</span>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
           {/* Artwork & Decoration jobs */}
           {soJobsList.length>0&&<>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Artwork &amp; Decoration</div>
             {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
-              // Scope mockups to SKUs that belong to THIS job — prevents leakage from sibling jobs that share an art file.
               const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
               const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
               const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
               const _jSeen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
               const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
-              return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:10,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
-                {/* Mockup thumbnails — show all images in a grid */}
-                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+              const _jWait=j.art_status==='waiting_approval';
+              return<div key={j.id} style={{border:`1px solid ${_jWait?tAccent:'#EEF1F6'}`,background:_jWait?tAccentSoft:'#F7F8FB',borderRadius:6,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
+                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#EEF1F6'}}>
                   {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);const isPdf=_isPdfUrl(url,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(url):null;
                     return<div key={fi} style={{background:'white'}}>
                       {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}}/>
@@ -823,35 +837,32 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                       :<div style={{height:mockups.length>1?140:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
                     </div>})}
                 </div>}
-                {/* Job info bar */}
-                <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px'}}>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>{j.art_name}</div>
+                    <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                   </div>
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                  <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#E8F5EC':_jWait?tAccentSoft:'#EEF1F6',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#1F7A43':_jWait?tAccent:'#5A6075',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 10px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{artLabelsP[j.art_status]}</span></span>
+                  <span style={{color:'#94A0B0',fontSize:16}}>›</span>
                 </div>
               </div>})}
           </>}
           {/* Shipping / Tracking */}
-          {soAllShipments.length>0&&<div style={{marginTop:12}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Shipping & Tracking</div>
-            {soAllShipments.map((shp,si)=><div key={si} style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginBottom:6}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div>
-                  <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>📦 {shp.carrier||'Package'} {soAllShipments.length>1?'#'+(si+1):''}</div>
-                  {shp.ship_date&&<div style={{fontSize:10,color:'#64748b'}}>Shipped {shp.ship_date}</div>}
-                </div>
-                {shp.tracking_number&&<a href={shp.tracking_url||((/^1Z/i.test(shp.tracking_number))?'https://www.ups.com/track?tracknum='+shp.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+shp.tracking_number)} target="_blank" rel="noreferrer" style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'none'}}>Track →</a>}
+          {soAllShipments.length>0&&<div style={{marginTop:14}}>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Shipping &amp; Tracking</div>
+            {soAllShipments.map((shp,si)=><div key={si} style={{padding:'12px 16px',background:'#E8F5EC',border:'1px solid #A7D9B5',borderRadius:6,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+              <div>
+                <div className="nsa-disp" style={{fontSize:14,fontWeight:700,color:'#1F7A43',textTransform:'uppercase'}}>📦 {shp.carrier||'Package'}{soAllShipments.length>1?' #'+(si+1):''}</div>
+                {shp.ship_date&&<div style={{fontSize:12,color:'#5A6075',marginTop:2}}>Shipped {shp.ship_date}</div>}
+                {shp.tracking_number&&<div style={{fontSize:11,fontFamily:'monospace',color:'#5A6075',marginTop:3}}>{shp.tracking_number}</div>}
               </div>
-              {shp.tracking_number&&<div style={{fontSize:11,fontFamily:'monospace',color:'#64748b',marginTop:4}}>{shp.tracking_number}</div>}
+              {shp.tracking_number&&<a href={shp.tracking_url||((/^1Z/i.test(shp.tracking_number))?'https://www.ups.com/track?tracknum='+shp.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+shp.tracking_number)} target="_blank" rel="noreferrer" className="nsa-disp" style={{fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',color:'#1F7A43',textDecoration:'none',border:'2px solid #1F7A43',borderRadius:4,padding:'7px 14px',flexShrink:0}}>Track →</a>}
             </div>)}
           </div>}
-          {/* Firm dates */}
-          {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:8,fontSize:12,color:'#166534'}}>
-            📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
+          {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'10px 14px',background:'#E8F5EC',border:'1px solid #A7D9B5',borderRadius:6,fontSize:13,color:'#1F7A43',fontWeight:600}}>
+            📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||'TBD'}</div>}
         </div>
+      </div>
       </div>
     </div>
   }
