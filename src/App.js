@@ -6749,7 +6749,7 @@ export default function App(){
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
-      ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
+      ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
