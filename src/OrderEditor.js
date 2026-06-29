@@ -18,7 +18,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced } from './businessLogic';
-import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
+import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -5052,6 +5052,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:13}}>{done?'✅':'⬜'}</span>
                   <span style={{fontWeight:700,color:'#312e81',fontSize:13}}>{t.title||'(untitled task)'}</span>
                   <span className={`badge ${done?'badge-green':'badge-blue'}`} style={{fontSize:10}}>{done?'Completed':'Open'}</span>
+                  {t.bot_status&&botRowUI(t.bot_status)&&(()=>{const b=botRowUI(t.bot_status);return<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,background:b.pillBg,color:b.pillFg}}>{b.label}</span>})()}
                   {!done&&<span style={{fontSize:10,fontWeight:700,color:pri.c}}>{pri.t}</span>}
                 </div>
                 {t.description&&<div style={{fontSize:11,color:'#64748b',marginTop:2,marginLeft:21}}>{t.description}</div>}
@@ -5061,7 +5062,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {t.due_date&&<span>📅 Due {_d(t.due_date)}</span>}
                 </div>
                 {done&&<div style={{fontSize:11,color:'#166534',marginTop:2,marginLeft:21}}>✔ Completed {_dt(t.completed_at)}{t.completed_by?' by '+_name(t.completed_by):''}{t.completion_note?' — "'+t.completion_note+'"':''}</div>}
-                {!done&&onCompleteTodo&&<div style={{marginLeft:21,marginTop:4}}><button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'2px 10px',fontWeight:700}} onClick={()=>onCompleteTodo(t.id)}>Mark Done</button></div>}
+                {!done&&onCompleteTodo&&(()=>{const _botWarn=!!botCompleteNeedsConfirm(t);return<div style={{marginLeft:21,marginTop:4}}><button className="btn btn-sm" title={_botWarn?'The bot has not finished this task — completing it will not place the order':''} style={{fontSize:10,background:_botWarn?'#ef4444':'#22c55e',color:'white',border:'none',padding:'2px 10px',fontWeight:700}} onClick={()=>onCompleteTodo(t.id)}>{_botWarn?'Mark Done Anyway':'Mark Done'}</button></div>})()}
               </div>})}</>;
           })()}</div>
       </div></div></div>})()}

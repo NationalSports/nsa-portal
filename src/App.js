@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
-import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -7887,9 +7887,19 @@ export default function App(){
     </div>
   </div>;
 
+  // Stop a Claude bot task from being silently checked off before the bot actually
+  // placed the order. Returns false (abort) if the user declines the warning. Used
+  // by every completion entry point so the guard can't be bypassed by surface.
+  const _confirmTodoComplete=(id)=>{
+    const t=(assignedTodos||[]).find(x=>x.id===id);
+    const warn=botCompleteNeedsConfirm(t);
+    if(!warn)return true;
+    return window.confirm('⚠️ This is a Claude bot task and the bot has NOT finished it (status: '+warn+').\n\nMarking it complete only checks the task off — it does NOT place the order, and the PO will look ordered when it isn\'t.\n\nComplete it anyway?');
+  };
   // Mark an assigned TODO complete from anywhere (e.g. the open-tasks banner on a sales order).
   // Mirrors the dashboard's _todoComplete: optimistic local update + snapshot sync + DB write.
   const completeTodo = (id) => {
+    if(!_confirmTodoComplete(id))return;
     const ts=new Date().toISOString();
     const upd={status:'completed',completed_at:ts,completed_by:cu?.id,updated_at:ts};
     setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
@@ -8404,6 +8414,7 @@ export default function App(){
     const _fmtDueDate=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
     const _todoDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#2563eb'};
     const _todoComplete=(id,note)=>{
+      if(!_confirmTodoComplete(id))return;
       const ts=new Date().toISOString();
       const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
       if(note)upd.completion_note=note;
@@ -18130,7 +18141,7 @@ export default function App(){
     const _whDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_whTodayStr)return'#dc2626';if(ds===_whTodayStr)return'#d97706';return'#2563eb'};
     const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
     const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
-    const _whTodoComplete=(id)=>{const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
+    const _whTodoComplete=(id)=>{if(!_confirmTodoComplete(id))return;const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
     // Open the Assign-Task modal pre-tied to a warehouse document (SO / IF / job), warehouse-only assignees.
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
