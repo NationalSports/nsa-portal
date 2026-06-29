@@ -718,7 +718,7 @@ function flyerHtml(store, items = []) {
     </div>
     ${pkgBand}
     ${p1Items.length > 0 ? `
-    <div style="padding:18px 40px 120px">
+    <div style="padding:18px 40px 104px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
         <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
         <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
@@ -730,18 +730,18 @@ function flyerHtml(store, items = []) {
       <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team ~4–5 weeks after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
     </div>`)}
     <div style="position:absolute;bottom:0;left:0;right:0">
-      <div style="background:${cream};border-top:1px solid ${line};padding:14px 40px;display:flex;justify-content:space-between;align-items:center">
+      <div style="background:${cream};border-top:1px solid ${line};padding:9px 40px;display:flex;justify-content:space-between;align-items:center">
         <div>
-          <div style="font-weight:700;font-size:10.5px;letter-spacing:1.8px;text-transform:uppercase;color:${accentDeep}">Shop The Store</div>
-          <div style="font-weight:800;font-size:17px;text-transform:uppercase;color:${ink}">${_esc(url)}</div>
-          <div style="font-size:12px;color:${sub};margin-top:2px">Questions? hello@nationalsportsapparel.com</div>
+          <div style="font-weight:700;font-size:9.5px;letter-spacing:1.8px;text-transform:uppercase;color:${accentDeep}">Shop The Store</div>
+          <div style="font-weight:800;font-size:15px;text-transform:uppercase;color:${ink}">${_esc(url)}</div>
+          <div style="font-size:11px;color:${sub};margin-top:1px">Questions? hello@nationalsportsapparel.com</div>
         </div>
         <div style="text-align:center;flex-shrink:0">
-          <img src="${_qrImg(url, 160)}" alt="QR" width="90" height="90" style="border:2px solid ${ink};border-radius:6px;display:block"/>
-          <div style="font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:4px">Scan To Shop</div>
+          <img src="${_qrImg(url, 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
+          <div style="font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:3px">Scan To Shop</div>
         </div>
       </div>
-      <div style="background:${ink};padding:7px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
+      <div style="background:${ink};padding:6px 40px;display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
         <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
         <span>Authorized Dealer &middot; Adidas &middot; Under Armour &middot; Rawlings</span>
       </div>
