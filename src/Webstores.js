@@ -648,21 +648,24 @@ function flyerHtml(store, items = []) {
   const accentDeep = dk(accent, 0.24);
   const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
   // The Player Pack (bundle) gets a highlighted feature band at the top; everything
-  // else flows into the product grid below.
-  const pkg = (items || []).find((i) => !i.archived && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
-  const visItems = (items || []).filter((i) => !i.is_bundle_parent && !i.archived && i.kind !== 'bundle');
-  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;background:#fff;display:flex;align-items:center;justify-content:center;padding:4px"><img src="${_esc(it.image_front_url)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name)}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
+  // else flows into the product grid below. Inactive items (active===false) are bundle
+  // components — they're represented by the package band, so keep them out of the grid.
+  const pkg = (items || []).find((i) => i.active !== false && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
+  // Bundle parents rarely carry their own photo — borrow the first component image.
+  const pkgImg = (pkg && pkg.image_front_url) || ((items || []).find((i) => i.active === false && i.image_front_url) || {}).image_front_url || '';
+  const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
+  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;background:#fff;display:flex;align-items:center;justify-content:center;padding:4px"><img src="${_esc(it.image_front_url)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name || it.display_name || '')}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
   const pkgBand = pkg ? `
     <div style="margin:16px 40px 0">
       <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
-        ${pkg.image_front_url ? `<div style="flex:0 0 130px;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px"><img src="${_esc(pkg.image_front_url)}" alt="" style="max-width:100%;max-height:120px;object-fit:contain"/></div>` : ''}
+        ${pkgImg ? `<div style="flex:0 0 130px;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px"><img src="${_esc(pkgImg)}" alt="" style="max-width:100%;max-height:120px;object-fit:contain"/></div>` : ''}
         <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
           <div>
             <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
-            <div style="font-weight:800;font-size:30px;text-transform:uppercase;line-height:1.02;margin-top:3px">${_esc(pkg.name)}</div>
+            <div style="font-weight:800;font-size:30px;text-transform:uppercase;line-height:1.02;margin-top:3px">${_esc(pkg.name || pkg.display_name || 'Player Pack')}</div>
             <div style="font-size:13px;color:rgba(255,255,255,.82);margin-top:6px;font-family:Arial,sans-serif">Everything your player needs in one bundle &mdash; add it to the cart in one click.</div>
           </div>
           <div style="text-align:center;flex-shrink:0">
@@ -720,7 +723,7 @@ function flyerHtml(store, items = []) {
         <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
         <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
       </div>
-      ${grid(p1Items, pkg ? 86 : 100)}
+      ${grid(p1Items, pkg ? 106 : 116)}
     </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
@@ -805,12 +808,14 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
   doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
   y += 44;
-  // Items — the Player Pack (bundle) gets a highlighted band; the rest fill a 3-row grid.
-  const pkg = (items||[]).find((i)=>!i.archived && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
-  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && !i.archived && i.kind!=='bundle').slice(0,12);
+  // Items — the Player Pack (bundle) gets a highlighted band; the rest fill the grid.
+  // Inactive items (active===false) are bundle components, surfaced via the band only.
+  const pkg = (items||[]).find((i)=>i.active!==false && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
+  const pkgImg = (pkg && pkg.image_front_url) || ((items||[]).find((i)=>i.active===false && i.image_front_url) || {}).image_front_url || '';
+  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle').slice(0,8);
   // Pre-load product images (best-effort, CORS permitting), including the package image.
   const imgCache = {};
-  await Promise.all([...visItems, ...(pkg ? [pkg] : [])].map(async (item) => {
+  await Promise.all([...visItems, ...(pkgImg ? [{image_front_url: pkgImg}] : [])].map(async (item) => {
     if (!item.image_front_url) return;
     try {
       const resp = await fetch(item.image_front_url);
@@ -824,12 +829,12 @@ async function generateFlyerPdfBase64(store, items = []) {
     y += 14;
     const bh = 88;
     doc.setFillColor(pr,pg,pb); doc.setDrawColor(ar,ag,ab); doc.setLineWidth(1.5); doc.roundedRect(40,y,W-80,bh,6,6,'FD');
-    const pb64 = imgCache[pkg.image_front_url];
+    const pb64 = imgCache[pkgImg];
     let tx = 54;
     if (pb64) { doc.setFillColor(255,255,255); doc.roundedRect(48,y+8,72,bh-16,4,4,'F'); if (addImg(pb64,52,y+12,64,bh-24)) tx = 132; }
     doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(ar,ag,ab); doc.text('REQUIRED FOR EVERY PLAYER', tx, y+20);
     doc.setFontSize(20); doc.setTextColor(255,255,255);
-    const pn=doc.splitTextToSize(pkg.name.toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
+    const pn=doc.splitTextToSize((pkg.name || pkg.display_name || 'Player Pack').toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
     if (pn[1]) { doc.setFontSize(14); doc.text(pn[1], tx, y+58); }
     doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(225,228,235); doc.text('Everything your player needs in one bundle.', tx, y+72);
     doc.setFont('helvetica','bold'); doc.setFontSize(30); doc.setTextColor(255,255,255); doc.text('$'+Math.round(Number(pkg.retail_price)), W-52, y+44, {align:'right'});
@@ -849,7 +854,7 @@ async function generateFlyerPdfBase64(store, items = []) {
       const b64=imgCache[item.image_front_url];
       if(!(b64 && addImg(b64,x+2,iy+2,colW-4,imgH-4))){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
       doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...INK);
-      const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-8);
+      const nl=doc.splitTextToSize((item.name || item.display_name || '').toUpperCase(),colW-8);
       doc.text(nl[0],x+colW/2,iy+imgH+11,{align:'center'});
       if(nl[1]) doc.text(nl[1],x+colW/2,iy+imgH+20,{align:'center'});
       if(item.retail_price){doc.setFontSize(12);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+imgH+31,{align:'center'});}
@@ -896,6 +901,28 @@ async function generateFlyerPdfBase64(store, items = []) {
   return doc.output('datauristring').split(',')[1];
 }
 
+// Load a store's catalog shaped for the flyer/PDF: resolves each item's display
+// name and front image (store mockup → master product photo), and KEEPS inactive
+// items (bundle components) so the flyer can surface the package's hero image.
+// webstore_products has no image_front_url column — it's image_url here.
+async function loadFlyerItems(store) {
+  const { data: cat } = await supabase.from('webstore_products')
+    .select('id,display_name,retail_price,image_url,product_id,kind,is_bundle_parent,active')
+    .eq('store_id', store.id).order('sort_order');
+  const rows = cat || [];
+  const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+  const meta = {};
+  if (pids.length) {
+    const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
+    (pr || []).forEach((p) => { meta[p.id] = p; });
+  }
+  return rows.map((r) => ({
+    ...r,
+    name: r.display_name || (r.product_id && meta[r.product_id]?.name) || 'Item',
+    image_front_url: r.image_url || (r.product_id && meta[r.product_id]?.image_front_url) || null,
+  }));
+}
+
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   // Live snapshot of in-memory orders/estimates so the detail loader can aggregate the
@@ -936,15 +963,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
-    const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-    const items = (catalog || []).filter((i) => !i.archived);
-    // Fall back to master product image when the store item has no custom mockup.
-    const missingImgPids = [...new Set(items.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
-    if (missingImgPids.length) {
-      const { data: pRows } = await supabase.from('products').select('id,image_front_url').in('id', missingImgPids);
-      const frontByPid = {}; (pRows || []).forEach((p) => { if (p.image_front_url) frontByPid[p.id] = p.image_front_url; });
-      items.forEach((i) => { if (!i.image_front_url && frontByPid[i.product_id]) i.image_front_url = frontByPid[i.product_id]; });
-    }
+    const items = await loadFlyerItems(store);
     let attachment;
     try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
     const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
@@ -1124,10 +1143,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-      const items = (catalog || []).filter((i) => !i.archived);
-      const _mpids = [...new Set(items.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
-      if (_mpids.length) { const { data: _pr } = await supabase.from('products').select('id,image_front_url').in('id', _mpids); const _fp = {}; (_pr||[]).forEach((p) => { if (p.image_front_url) _fp[p.id] = p.image_front_url; }); items.forEach((i) => { if (!i.image_front_url && _fp[i.product_id]) i.image_front_url = _fp[i.product_id]; }); }
+      const items = await loadFlyerItems(store);
       let attachment;
       try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
       await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
@@ -3468,10 +3484,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
               <button type="button" onClick={async () => {
                 try {
                   setBusy(true);
-                  const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-                  const pdfItems = (cat || []).filter((i) => !i.archived);
-                  const missingPids = [...new Set(pdfItems.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
-                  if (missingPids.length) { const { data: pr } = await supabase.from('products').select('id,image_front_url').in('id', missingPids); const fp = {}; (pr||[]).forEach((p) => { if (p.image_front_url) fp[p.id] = p.image_front_url; }); pdfItems.forEach((i) => { if (!i.image_front_url && fp[i.product_id]) i.image_front_url = fp[i.product_id]; }); }
+                  const pdfItems = await loadFlyerItems(store);
                   const b64 = await generateFlyerPdfBase64(store, pdfItems);
                   const a = document.createElement('a');
                   a.href = 'data:application/pdf;base64,' + b64;
@@ -3483,10 +3496,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
                 ↓ Download Flyer PDF
               </button>
               <button type="button" onClick={async () => {
-                const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-                const printItems = (cat || []).filter((i) => !i.archived);
-                const missingPids = [...new Set(printItems.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
-                if (missingPids.length) { const { data: pr } = await supabase.from('products').select('id,image_front_url').in('id', missingPids); const fp = {}; (pr||[]).forEach((p) => { if (p.image_front_url) fp[p.id] = p.image_front_url; }); printItems.forEach((i) => { if (!i.image_front_url && fp[i.product_id]) i.image_front_url = fp[i.product_id]; }); }
+                const printItems = await loadFlyerItems(store);
                 const w = window.open('', '_blank');
                 if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
                 w.document.write(flyerHtml(store, printItems)); w.document.close();
