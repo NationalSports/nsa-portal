@@ -4137,7 +4137,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <button className="btn btn-sm" onClick={()=>{const exV=_orderOutsideVendor();if(exV)setItemFulfillment(idx,'outside',exV);else setPickDecoFor(idx)}} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
               </span>
               {_outside&&(_dp
-                ? <span onClick={()=>setShowPO('select')} title="On a Deco PO — click to view / edit" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
+                ? <span onClick={()=>setPoFullPage({decoPo:_dp,soId:o.id,soItems:safeItems(o)})} title="On a Deco PO — click to open it (edit items / per-item costing)" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
                 : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
             </>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
@@ -6766,13 +6766,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration PO</div>
-            {(()=>{const dq=decoSearch.trim().toLowerCase();const decoOpts=DECO_VENDORS.filter(dv=>dv!=='Other');const decoMatches=dq?decoOpts.filter(dv=>dv.toLowerCase().includes(dq)):decoOpts;return<>
+            {(()=>{const dq=decoSearch.trim().toLowerCase();const decoOpts=DECO_VENDORS.filter(dv=>dv!=='Other');const decoMatches=dq?decoOpts.filter(dv=>dv.toLowerCase().includes(dq)):decoOpts;
+              // Pre-select the decorator already chosen for this order (an item flagged outside, or an
+              // existing deco PO) so it's highlighted and the Create button is armed without a click.
+              const _pre=decoSel||(!dq?_orderOutsideVendor():'');return<>
               <input className="form-input" style={{width:'100%',fontSize:13,padding:'4px 8px',boxSizing:'border-box'}} placeholder="Search decorator..." value={decoSearch} onChange={e=>{setDecoSearch(e.target.value);setDecoSel('')}}/>
+              {_pre&&!decoSel&&<div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>Pre-selected from this order — <b>{_pre}</b></div>}
               <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>
                 {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
-                  <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:decoSel===dv?'#7c3aed':'#fff',color:decoSel===dv?'#fff':'#334155',border:'1px solid '+(decoSel===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer'}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
+                  <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:_pre===dv?'#7c3aed':'#fff',color:_pre===dv?'#fff':'#334155',border:'1px solid '+(_pre===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer',fontWeight:_pre===dv?700:400}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
               </div>
-              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel){setDpoDropShip(true);setShowPO('deco:'+decoSel)}}}>Create Deco PO</button>
+              <button className="btn btn-sm" disabled={!_pre} style={{background:_pre?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:_pre?'pointer':'not-allowed'}} onClick={()=>{if(_pre){setDpoDropShip(true);setShowPO('deco:'+_pre)}}}>{_pre?'Create Deco PO for '+_pre:'Create Deco PO'}</button>
             </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
