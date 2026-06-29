@@ -51,6 +51,43 @@ function printPayout(store, t) {
   </body></html>`);
 }
 
+// Printable accounting statement — the full money flow for a store: what was
+// collected (sales, discounts, fundraising, shipping, tax), how it was paid
+// (card vs team tab), and the costs booked against it (processing, postage).
+function printAccounting(store, a, m) {
+  const date = new Date().toLocaleDateString();
+  const row = (label, amt, sign, cls) => `<tr class="${cls || ''}"><td>${label}</td><td class="r">${sign === '−' ? '−' : ''}${money(Math.abs(amt))}</td></tr>`;
+  printHtml(`<!doctype html><html><head><title>Accounting — ${store ? store.name : 'Webstore'}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1e293b;max-width:640px;margin:40px auto;padding:0 24px}
+    h1{font-size:20px;margin:0 0 4px}.sub{color:#64748b;font-size:13px;margin-bottom:24px}
+    table{width:100%;border-collapse:collapse}td{padding:9px 0;border-bottom:1px solid #eef1f5;font-size:14px}
+    td.r{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+    tr.memo td{color:#94a3b8;font-weight:400;border-bottom:none;padding:3px 0 3px 18px;font-size:13px}
+    tr.sub-tot td{border-top:2px solid #1e293b;font-weight:900;font-size:16px;padding-top:12px}
+    tr.net td{border-top:2px solid #166534;color:#166534;font-weight:900;font-size:18px;padding-top:14px}
+    .foot{color:#94a3b8;font-size:11px;margin-top:18px;line-height:1.5}
+  </style></head><body>
+    <h1>${NSA.name} — Webstore Accounting</h1>
+    <div class="sub">${store ? store.name : ''} · ${m.orders} live orders · ${date}</div>
+    <table>
+      ${row('Product sales (retail before discounts)', a.grossSales, '+')}
+      ${row('Coupon discounts', a.discounts, '−')}
+      ${a.fundraiseAll > 0.005 ? row('Club fundraising', a.fundraiseAll, '+') : ''}
+      ${row('Shipping charged', a.shipCharged, '+')}
+      ${a.processing > 0.005 ? row('Processing fees', a.processing, '+') : ''}
+      ${row('Sales tax collected', a.taxColl, '+')}
+      ${row('Gross collected', a.grossColl, '', 'sub-tot')}
+      <tr class="memo"><td>card payments</td><td class="r">${money(m.cardColl)}</td></tr>
+      <tr class="memo"><td>team tab (billed on club invoice)</td><td class="r">${money(m.tabColl)}</td></tr>
+      ${a.refunds > 0.005 ? row('Refunds issued', a.refunds, '−') + row('Net collected', a.netColl, '', 'sub-tot') : ''}
+      ${row('Card processing fees', a.ccFees, '−')}
+      ${row('Shipping label cost', a.labelCost, '−')}
+      ${row('Net after fees', a.netAfterFees, '', 'net')}
+    </table>
+    <div class="foot">Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
+  </body></html>`);
+}
+
 // Printable warehouse pull sheet: exact design transfers + numbers (grouped by
 // size/color) with a count and a check box for each line.
 function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
@@ -141,7 +178,7 @@ function buildPackingLists(store, label, groups) {
 // lands on the latest orders — the fair, defensible call when we can't cover
 // everyone. Products with no stock record are made-to-order (decorated/custom)
 // and treated as available, matching the batch flow's own inventory check.
-function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set()) {
   const keyOf = (pid, size) => pid + '|' + (size || 'OS');
   // Earliest orders claim stock first.
   const sorted = [...lines].sort((a, b) => {
@@ -161,7 +198,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
     const st = stockByPid[pid];
     const wh = Number((st?.size_stock || {})[size]) || 0;
     const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
-    const tracked = !!st;
+    const tracked = !!st && !madeToOrder.has(pid);
     if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
     if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
     const row = itemAgg[k];
@@ -303,7 +340,14 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
 // Aggregate store demand vs stock per product+size, split into what we can fill
 // from our own shelves, what we'd buy from the vendor (Adidas), and what nobody
 // has (true backorder). The basis for the stock report + its CSV.
-function aggStock(lines, stockByPid) {
+// Product ids the rep marked made-to-order (Inventory tracking → off). Treated
+// exactly like products with no stock record: never stock-checked, so they don't
+// show as shortfalls in the batch SO modal or the stock / availability reports.
+function madeToOrderPids(catalog) {
+  return new Set((catalog || []).filter((c) => c.product_id && c.track_inventory === false).map((c) => c.product_id));
+}
+
+function aggStock(lines, stockByPid, madeToOrder = new Set()) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
@@ -313,7 +357,7 @@ function aggStock(lines, stockByPid) {
       name: (st && st.name) || i.name || i.sku || pid, sku: i.sku || '', size, need: 0,
       ours: Number(((st && st.size_stock) || {})[size]) || 0,
       vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0,
-      tracked: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
+      tracked: !!st && !madeToOrder.has(pid), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
     };
     agg[k].need += need;
   });
@@ -328,8 +372,8 @@ function aggStock(lines, stockByPid) {
 // ─── Store-close stock / shortage report ─────────────────────────────
 // "What can we fill from stock, what do we need to order from Adidas, and what
 // is nobody able to supply (backorder)." Vendor-split, not the combined view.
-function buildStockReport(store, label, lines, stockByPid) {
-  const rows = aggStock(lines, stockByPid);
+function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set()) {
+  const rows = aggStock(lines, stockByPid, madeToOrder);
   const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
   const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
     .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
@@ -1735,7 +1779,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel || !detail) return;
     const { open, lines, stockByPid, orderById } = gatherBatch();
     if (!open.length) { flash('No unbatched orders to report'); return; }
-    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById);
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog));
   }, [sel, detail, gatherBatch, flash]);
 
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
@@ -1764,7 +1808,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel || !detail) return;
     const { valid, lines, stockByPid } = gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid);
+    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog));
   }, [sel, detail, gatherAll, flash]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
@@ -1780,7 +1824,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
-      const rows = aggStock(lines, stockByPid)
+      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog))
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
         .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
@@ -1804,11 +1848,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Adidas vendor stock and surface any shortfalls before creating the SO.
     const stockByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
+    // produced to demand, so they're never a stock shortfall — same as products with
+    // no stock record (which the `if (!st) return` below already skips).
+    const mto = madeToOrderPids(detail.catalog);
     const demand = {};
     lines.forEach((i) => { if (!i.product_id) return; const k = i.product_id + '|' + (i.size || 'OS'); demand[k] = (demand[k] || 0) + (i.qty || 1); });
     const shortages = [];
     Object.entries(demand).forEach(([k, q]) => {
-      const [pid, size] = k.split('|'); const st = stockByPid[pid]; if (!st) return;
+      const [pid, size] = k.split('|'); if (mto.has(pid)) return; const st = stockByPid[pid]; if (!st) return;
       const wh = Number((st.size_stock || {})[size]) || 0;
       const ven = Number((st.vendor_size_stock || {})[size]) || 0;
       const avail = wh + ven;
@@ -2847,6 +2895,7 @@ const BLANK = {
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
   fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
+  processing_pct: 5,
   size_upcharge_enabled: true,
   public_listed: true,
   decoration_mode: 'in_house',
@@ -3006,6 +3055,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
     payload.close_at = payload.close_at || null;
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
+    payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
     payload.org_type = orgType;
     // Team stores collect numbers per item (Catalog), so there's no store-wide
     // enable toggle — mark numbers active so order views/claims behave.
@@ -3082,6 +3132,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         <Row label="Payment mode"><select className="form-select" value={f.payment_mode} onChange={(e) => set('payment_mode', e.target.value)}>
           <option value="paid">Card only (parents pay)</option><option value="unpaid">Invoice only (team tab)</option><option value="either">Both — card or team tab</option>
         </select></Row>
+        <Row label="Processing fee (% of items)"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input className="form-input" type="number" step="0.5" min={0} style={{ maxWidth: 120 }} value={f.processing_pct} onChange={(e) => set('processing_pct', e.target.value)} placeholder="5" /><span style={{ color: '#6A7180', fontWeight: 700 }}>%</span></div></Row>
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>Added to each order at checkout as a separate line, charged on the item subtotal only (not shipping, tax, or fundraising). Standard is 5%. Set to 0 to turn off.</div>
         <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
         <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
         <Toggle label="Findable on the public Team Stores search" checked={f.public_listed !== false} onChange={(v) => set('public_listed', v)} />
@@ -3557,7 +3609,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
-          {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
+          {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
@@ -5244,14 +5296,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
         </ItemSection>
         {inventoryBacked && (
-          <ItemSection title="Inventory tracking" hint="· stop selling a size when it runs out">
+          <ItemSection title="Inventory tracking" hint="· turn off for custom / made-to-order items">
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
               <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
               <span>
                 <span style={{ fontWeight: 700, fontSize: 13, color: '#191919' }}>Follow vendor &amp; in-house stock</span>
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{trackInv
                   ? 'On — a size stops selling when it runs out of stock (and shows as sold out).'
-                  : 'Off — every offered size keeps selling regardless of stock (made-to-order).'}</div>
+                  : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
               </span>
             </label>
           </ItemSection>
@@ -7626,7 +7678,7 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
 }
 
 // Store analytics — computed live from orders.
-function AnalyticsTab({ orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
+function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
@@ -7643,6 +7695,30 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp, catalog = [], 
   const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const fundPending = fundraise - fundPaid;
   const paid = orders.filter((o) => o.payment_mode === 'paid');
+
+  // ── Accounting ledger — every dollar in and out of the store ──
+  // Reconciliation (per checkout): total = subtotal − discount + fundraise + shipping + tax.
+  // cc_fee and label_cost are booked after the sale (Stripe / postage) and are costs, not
+  // money a buyer paid us. Team-tab orders collect $0 through the store — that balance is
+  // billed to the club on the Sales Order / invoice instead of a card.
+  const sumF = (f) => orders.reduce((a, o) => a + (Number(o[f]) || 0), 0);
+  const acct = {
+    grossSales: sumF('subtotal'),      // product retail before discounts
+    discounts: sumF('discount_amt'),   // coupon savings given to buyers
+    fundraiseAll: sumF('fundraise_amt'),
+    shipCharged: sumF('shipping_fee'),
+    processing: sumF('processing_fee'),
+    taxColl: sumF('tax'),
+    grossColl: sumF('total'),          // what every live order was billed
+    refunds: sumF('refunded_amt'),
+    ccFees: sumF('cc_fee'),
+    labelCost: sumF('label_cost'),
+  };
+  acct.netColl = acct.grossColl - acct.refunds;
+  acct.netAfterFees = acct.netColl - acct.ccFees - acct.labelCost;
+  const cardColl = paid.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const tabColl = acct.grossColl - cardColl;
+
   // Scope line items to LIVE orders only — orderItems carries items for every order
   // in the store (incl. abandoned pre-payment carts and cancellations), which would
   // otherwise inflate Units, Top sellers, and the Size breakdown.
@@ -7693,6 +7769,17 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp, catalog = [], 
 
   const Bar = ({ frac, color }) => <div style={{ flex: 1, height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: Math.round(frac * 100) + '%', height: '100%', background: color }} /></div>;
 
+  // One line of the accounting ledger. `sign` colors and prefixes a deduction;
+  // `sub` indents a memo line; `bold` + `divider` mark a subtotal.
+  const Led = ({ label, amt, sign = '', bold, sub, color, note, divider }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: bold ? '9px 0' : '6px 0', borderTop: divider ? '1px solid #e2e8f0' : 'none', marginTop: divider ? 2 : 0 }}>
+      <div style={{ fontSize: bold ? 14 : 13, fontWeight: bold ? 800 : (sub ? 400 : 600), color: sub ? '#94a3b8' : '#334155', paddingLeft: sub ? 16 : 0 }}>
+        {label}{note && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>{note}</span>}
+      </div>
+      <div style={{ fontSize: bold ? 16 : 14, fontWeight: bold ? 900 : 700, color: color || (sign === '−' ? '#b91c1c' : '#1e293b'), fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{sign}{money(Math.abs(amt))}</div>
+    </div>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
@@ -7701,6 +7788,28 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp, catalog = [], 
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
       </div>
+
+      <div className="card"><div style={{ padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 800 }}>Accounting · money flow</div>
+          <button className="btn btn-secondary" onClick={() => printAccounting(store, acct, { cardColl, tabColl, orders: orders.length })}>🖨️ Print statement</button>
+        </div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, marginBottom: 6 }}>Every dollar collected, discounted, and paid out across {orders.length} live order{orders.length === 1 ? '' : 's'}.</div>
+        <Led label="Product sales" amt={acct.grossSales} sign="+" note="retail before discounts" />
+        <Led label="Coupon discounts" amt={acct.discounts} sign="−" />
+        {acct.fundraiseAll > 0.005 && <Led label="Club fundraising" amt={acct.fundraiseAll} sign="+" color="#166534" />}
+        <Led label="Shipping charged" amt={acct.shipCharged} sign="+" />
+        {acct.processing > 0.005 && <Led label="Processing fees" amt={acct.processing} sign="+" />}
+        <Led label="Sales tax collected" amt={acct.taxColl} sign="+" />
+        <Led label="Gross collected" amt={acct.grossColl} bold divider />
+        <Led label="card payments" amt={cardColl} sub note="charged to cards" />
+        <Led label="team tab" amt={tabColl} sub note="billed on club invoice" />
+        {acct.refunds > 0.005 && <><Led label="Refunds issued" amt={acct.refunds} sign="−" divider /><Led label="Net collected" amt={acct.netColl} bold /></>}
+        <Led label="Card processing fees" amt={acct.ccFees} sign="−" divider />
+        <Led label="Shipping label cost" amt={acct.labelCost} sign="−" />
+        <Led label="Net after fees" amt={acct.netAfterFees} bold color="#166534" divider />
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.5 }}>Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
+      </div></div>
 
       {fundraise > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>

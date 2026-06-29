@@ -45,6 +45,7 @@ async function sendOrderConfirmation(sb, order) {
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
   const accent = store.accent_color || '#e11d2a';
   const shipping = Number(order.shipping_fee) || 0;
+  const processing = Number(order.processing_fee) || 0;
   const discount = Number(order.discount_amt) || 0;
   const tax = Number(order.tax) || 0;
   const a = order.ship_address || null;
@@ -65,6 +66,7 @@ async function sendOrderConfirmation(sb, order) {
       <p style="margin:0 0 14px">Thanks, ${order.buyer_name || ''}! ${paid ? "We've received your payment." : 'Your order is in — the team will be invoiced for it.'}</p>
       <table style="width:100%;border-collapse:collapse;font-size:14px">${lines}
         ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+        ${processing > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Processing fee</td><td style="padding:8px 0;text-align:right">${money(processing)}</td></tr>` : ''}
         ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
         ${tax > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Sales tax</td><td style="padding:8px 0;text-align:right">${money(tax)}</td></tr>` : ''}
         <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>

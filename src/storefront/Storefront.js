@@ -29,7 +29,12 @@ const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0)
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
-const grandTotal = (store, items) => cartTotal(items) + shipFee(store);
+// Processing fee: a percent of the item subtotal only — base price + size upcharge,
+// excluding fundraising and name upcharge (mirrors the server's priceCart subtotal).
+const procPct = (store) => Math.max(0, Number(store && store.processing_pct) || 0);
+const cartProcBase = (items) => items.reduce((a, l) => a + ((Number(l.unit_price) || 0) + (Number(l.size_extra) || 0)) * (l.qty || 1), 0);
+const procFeeAmt = (store, items) => Math.round(procPct(store) / 100 * cartProcBase(items) * 100) / 100;
+const grandTotal = (store, items) => cartTotal(items) + shipFee(store) + procFeeAmt(store, items);
 
 // Type system aligned with the NSA design system:
 // Barlow Condensed for display (uppercase headlines/buttons/badges/prices),
@@ -1314,6 +1319,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
           <Row label="Subtotal" value={money(cartTotal(cart))} theme={theme} />
           <Row label="Custom decoration" value="Included" theme={theme} green />
           <Row label={store.delivery_mode === 'ship_home' ? 'Shipping' : 'Team delivery'} value={shipFee(store) > 0 ? money(shipFee(store)) : 'Free'} theme={theme} green={shipFee(store) <= 0} />
+          {procFeeAmt(store, cart) > 0 && <Row label={`Processing fee (${procPct(store)}%)`} value={money(procFeeAmt(store, cart))} theme={theme} />}
           <div style={{ borderTop: `1px solid ${theme.line}`, margin: '14px 0', paddingTop: 14, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', color: theme.ink }}>Total</span>
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: theme.primary }}>{money(grandTotal(store, cart))}</span>
@@ -1399,7 +1405,8 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.zip || '').length === 5));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
-  const payable = Math.max(0, cartTotal(cart) + ship_ - discount);
+  const processing = procFeeAmt(store, cart);
+  const payable = Math.max(0, cartTotal(cart) + ship_ + processing - discount);
   const comped = payable <= 0; // fully covered by a code → no card, invoice the program
 
   const applyCoupon = async () => {
@@ -1489,9 +1496,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
       {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>Shipping (flat)</span><span>{money(ship_)}</span></div>}
       {coupon && coupon.kind === 'free_shipping' && shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
-      {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
-      {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
-      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0 || taxInfo) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+      {processing > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Processing fee ({procPct(store)}%)</span><span>{money(processing)}</span></div>}
+      {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
+      {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
+      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0 || processing > 0 || taxInfo) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
         <span>Total</span><span>{money(payable + (taxInfo ? Number(taxInfo.tax) || 0 : 0))}</span>
       </div>
 
@@ -1601,10 +1609,11 @@ function OrderStatusPage({ store, theme, orderId }) {
   const paid = order.payment_mode === 'paid';
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
+  const processing = Number(order.processing_fee) || 0;
   const tax = Number(order.tax) || 0;
   // Use the stored subtotal so it ties to the sum of the item rows above (each row
   // shows unit_price); fundraising/name add-ons are surfaced as their own line.
-  const subtotal = order.subtotal != null ? Number(order.subtotal) : Number(order.total) - shipping - tax + discount;
+  const subtotal = order.subtotal != null ? Number(order.subtotal) : Number(order.total) - shipping - processing - tax + discount;
   const fundraise = Number(order.fundraise_amt) || 0;
   const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
 
@@ -1786,6 +1795,7 @@ function OrderStatusPage({ store, theme, orderId }) {
           {fundraise > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Team fundraiser</span><span style={{ color: INK, fontWeight: 600 }}>{money(fundraise)}</span></div>}
           {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#1E6B3A' }}>Discount{order.coupon_code ? ` (${order.coupon_code})` : ''}</span><span style={{ color: '#1E6B3A', fontWeight: 600 }}>−{money(discount)}</span></div>}
           {shipping > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Shipping</span><span style={{ color: INK, fontWeight: 600 }}>{money(shipping)}</span></div>}
+          {processing > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Processing fee</span><span style={{ color: INK, fontWeight: 600 }}>{money(processing)}</span></div>}
           {tax > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sales tax</span><span style={{ color: INK, fontWeight: 600 }}>{money(tax)}</span></div>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 16, paddingTop: 16, borderTop: `1px solid ${LINE}` }}>
