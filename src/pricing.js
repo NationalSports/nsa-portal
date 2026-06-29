@@ -194,7 +194,10 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
     });
   });
   const ship=o.shipping_type==='pct'?rev*_sNum(o.shipping_value)/100:_sNum(o.shipping_value);
-  const taxRate=o.tax_exempt?0:_sNum(o.tax_rate||custTaxRate);
+  // Webstore SOs collect/remit tax at checkout, so their stored tax_rate (0) is
+  // authoritative — never fall back to the customer's default, or we'd double-tax.
+  // (0 || custTaxRate picked up the customer rate; webstore SOs must honor the explicit 0.)
+  const taxRate=o.tax_exempt?0:(o.source==='webstore'?_sNum(o.tax_rate):_sNum(o.tax_rate||custTaxRate));
   const tax=rev*taxRate;
   return{rev,ship,tax,grand:rev+ship+tax};
 };
