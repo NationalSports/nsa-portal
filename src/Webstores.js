@@ -647,10 +647,33 @@ function flyerHtml(store, items = []) {
   const primaryDark = dk(primary, 0.34);
   const accentDeep = dk(accent, 0.24);
   const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
+  // The Player Pack (bundle) gets a highlighted feature band at the top; everything
+  // else flows into the product grid below.
+  const pkg = (items || []).find((i) => !i.archived && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && !i.archived && i.kind !== 'bundle');
   const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;background:#fff;display:flex;align-items:center;justify-content:center;padding:4px"><img src="${_esc(it.image_front_url)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name)}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
-  const p1Items = visItems.slice(0, 8);
-  const p2Items = visItems.slice(8);
+  // Render an item array as rows of 4.
+  const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
+  // Highlighted Player Pack band (only when the store has a bundle).
+  const pkgBand = pkg ? `
+    <div style="margin:16px 40px 0">
+      <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
+        ${pkg.image_front_url ? `<div style="flex:0 0 130px;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px"><img src="${_esc(pkg.image_front_url)}" alt="" style="max-width:100%;max-height:120px;object-fit:contain"/></div>` : ''}
+        <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
+          <div>
+            <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
+            <div style="font-weight:800;font-size:30px;text-transform:uppercase;line-height:1.02;margin-top:3px">${_esc(pkg.name)}</div>
+            <div style="font-size:13px;color:rgba(255,255,255,.82);margin-top:6px;font-family:Arial,sans-serif">Everything your player needs in one bundle &mdash; add it to the cart in one click.</div>
+          </div>
+          <div style="text-align:center;flex-shrink:0">
+            <div style="font-weight:800;font-size:42px;color:#fff;line-height:1">$${Math.round(Number(pkg.retail_price))}</div>
+            <div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.72)">Complete Pack</div>
+          </div>
+        </div>
+      </div>
+    </div>` : '';
+  const p1Items = visItems.slice(0, 12);
+  const p2Items = visItems.slice(12);
   return `<!doctype html><html><head>
   <meta charset="utf-8">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&display=swap" rel="stylesheet">
@@ -673,36 +696,36 @@ function flyerHtml(store, items = []) {
       <span><span style="color:${accent}">&#9733;</span> Official Team Store</span>
       <span style="color:rgba(255,255,255,.62)">Powered by National Sports Apparel</span>
     </div>
-    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:22px 40px 20px;position:relative">
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:18px 40px 14px;position:relative">
       <div style="position:absolute;inset:0;background:repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.045) 26px,rgba(255,255,255,.045) 52px)"></div>
-      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:14px">
-        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:48px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
+      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:12px">
+        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:46px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
         <div>
           <div style="font-weight:700;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent}">${_esc(store.name)}</div>
           ${closeDate ? `<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.6)">Order by ${_esc(closeDate)}</div>` : ''}
         </div>
       </div>
-      <h1 style="position:relative;font-weight:800;font-size:52px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
-      <p style="position:relative;font-size:14px;line-height:1.5;color:rgba(255,255,255,.85);max-width:560px;margin:10px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
+      <h1 style="position:relative;font-weight:800;font-size:46px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
+      <p style="position:relative;font-size:13.5px;line-height:1.45;color:rgba(255,255,255,.85);max-width:560px;margin:8px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);background:${ink}">
       <div style="padding:12px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
       <div style="padding:12px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
       <div style="padding:12px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
     </div>
+    ${pkgBand}
     ${p1Items.length > 0 ? `
-    <div style="padding:22px 40px 120px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
+    <div style="padding:18px 40px 120px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
         <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">${p1Items.slice(0,4).map((it)=>itemCard(it,100)).join('')}</div>
-      ${p1Items.length>4?`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:12px">${p1Items.slice(4,8).map((it)=>itemCard(it,100)).join('')}</div>`:''}
-    </div>` : `
+      ${grid(p1Items, pkg ? 86 : 100)}
+    </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
       <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team ~4–5 weeks after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
-    </div>`}
+    </div>`)}
     <div style="position:absolute;bottom:0;left:0;right:0">
       <div style="background:${cream};border-top:1px solid ${line};padding:14px 40px;display:flex;justify-content:space-between;align-items:center">
         <div>
@@ -729,7 +752,7 @@ function flyerHtml(store, items = []) {
     </div>
     <div style="padding:22px 40px 80px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">Also Available</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">${p2Items.slice(0,8).map((it)=>itemCard(it,110)).join('')}</div>
+      ${grid(p2Items.slice(0, 16), 100)}
     </div>
     <div style="position:absolute;bottom:0;left:0;right:0;background:${ink};padding:9px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
       <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
@@ -782,39 +805,57 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
   doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
   y += 44;
-  // Items — include bundles (Player Pack) so stores with only a bundle aren't blank
-  const visItems = (items||[]).filter((i)=>!i.archived).slice(0,8);
+  // Items — the Player Pack (bundle) gets a highlighted band; the rest fill a 3-row grid.
+  const pkg = (items||[]).find((i)=>!i.archived && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
+  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && !i.archived && i.kind!=='bundle').slice(0,12);
+  // Pre-load product images (best-effort, CORS permitting), including the package image.
+  const imgCache = {};
+  await Promise.all([...visItems, ...(pkg ? [pkg] : [])].map(async (item) => {
+    if (!item.image_front_url) return;
+    try {
+      const resp = await fetch(item.image_front_url);
+      const blob = await resp.blob();
+      imgCache[item.image_front_url] = await new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); });
+    } catch(_) {}
+  }));
+  const addImg = (b64, x, iy, w, h) => { try { const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x,iy,w,h,'','FAST'); return true; } catch(_) { return false; } };
+  // Player Pack highlight band
+  if (pkg) {
+    y += 14;
+    const bh = 88;
+    doc.setFillColor(pr,pg,pb); doc.setDrawColor(ar,ag,ab); doc.setLineWidth(1.5); doc.roundedRect(40,y,W-80,bh,6,6,'FD');
+    const pb64 = imgCache[pkg.image_front_url];
+    let tx = 54;
+    if (pb64) { doc.setFillColor(255,255,255); doc.roundedRect(48,y+8,72,bh-16,4,4,'F'); if (addImg(pb64,52,y+12,64,bh-24)) tx = 132; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(ar,ag,ab); doc.text('REQUIRED FOR EVERY PLAYER', tx, y+20);
+    doc.setFontSize(20); doc.setTextColor(255,255,255);
+    const pn=doc.splitTextToSize(pkg.name.toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
+    if (pn[1]) { doc.setFontSize(14); doc.text(pn[1], tx, y+58); }
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(225,228,235); doc.text('Everything your player needs in one bundle.', tx, y+72);
+    doc.setFont('helvetica','bold'); doc.setFontSize(30); doc.setTextColor(255,255,255); doc.text('$'+Math.round(Number(pkg.retail_price)), W-52, y+44, {align:'right'});
+    doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab); doc.text('COMPLETE PACK', W-52, y+58, {align:'right'});
+    y += bh;
+  }
   if (visItems.length > 0) {
-    // Pre-load product images (best-effort, CORS permitting)
-    const imgCache = {};
-    await Promise.all(visItems.map(async (item) => {
-      if (!item.image_front_url) return;
-      try {
-        const resp = await fetch(item.image_front_url);
-        const blob = await resp.blob();
-        imgCache[item.image_front_url] = await new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); });
-      } catch(_) {}
-    }));
     y += 16;
     doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(...INK);
     doc.text("WHAT'S IN THE STORE", 40, y);
     doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
     y += 12;
-    const GAP=8, colW=(W-80-GAP*3)/4, imgH=90, textH=36, cardH=imgH+textH;
-    visItems.slice(0,8).forEach((item,idx)=>{
+    const GAP=8, colW=(W-80-GAP*3)/4, imgH=pkg?72:90, textH=34, cardH=imgH+textH;
+    visItems.forEach((item,idx)=>{
       const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
       doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,cardH,'FD');
       const b64=imgCache[item.image_front_url];
-      if(b64){ try{ const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x+2,iy+2,colW-4,imgH-4,'','FAST'); }catch(_){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); } }
-      else { doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
+      if(!(b64 && addImg(b64,x+2,iy+2,colW-4,imgH-4))){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
       doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...INK);
       const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-8);
       doc.text(nl[0],x+colW/2,iy+imgH+11,{align:'center'});
-      if(nl[1]) doc.text(nl[1],x+colW/2,iy+imgH+21,{align:'center'});
-      if(item.retail_price){doc.setFontSize(12);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+imgH+32,{align:'center'});}
+      if(nl[1]) doc.text(nl[1],x+colW/2,iy+imgH+20,{align:'center'});
+      if(item.retail_price){doc.setFontSize(12);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+imgH+31,{align:'center'});}
     });
-    y += Math.ceil(Math.min(visItems.length,8)/4)*(cardH+GAP)+14;
-  } else {
+    y += Math.ceil(visItems.length/4)*(cardH+GAP)+14;
+  } else if (!pkg) {
     // Fallback: How To Order steps (mirrors the HTML flyer)
     y += 20;
     doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...INK);
