@@ -24,10 +24,22 @@ async function sendOrderConfirmation(sb, order) {
     const det = [i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ');
     const im = i.image_url || imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null);
     const label = i.name || i.sku || (i.is_bundle_parent ? 'Player Pack' : 'Item');
+    // For a package, list the included pieces with their sizes/numbers so the buyer
+    // can verify their selections straight from the email (components are $0 lines
+    // hidden from the totals, matched to this parent by bundle_ref).
+    const kids = i.is_bundle_parent
+      ? (items || []).filter((c) => !c.is_bundle_parent && (i.bundle_ref ? c.bundle_ref === i.bundle_ref : c.bundle_product_id === i.bundle_product_id))
+      : [];
+    const subList = kids.length
+      ? `<div style="font-size:12px;color:#64748b;margin-top:4px">${kids.map((c) => {
+          const cd = [c.size && 'Size ' + c.size, c.player_number && '#' + c.player_number, c.player_name].filter(Boolean).join(' · ');
+          return `&bull; ${c.name || c.sku || 'Item'}${cd ? ' &mdash; ' + cd : ''}`;
+        }).join('<br>')}</div>`
+      : '';
     const imgCell = im
       ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${im}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
       : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
-    return `<tr>${imgCell}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${label}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
+    return `<tr>${imgCell}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${label}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}${subList}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
   }).join('');
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
