@@ -804,11 +804,11 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: theme.warm, overflow: 'hidden' }}>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '88%', height: '88%', objectFit: 'contain', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
+            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '95%', height: '95%', objectFit: 'contain', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Stock / package badge — skewed −6°, top-right */}
