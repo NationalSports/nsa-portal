@@ -226,17 +226,20 @@ serve(async (req: Request) => {
     payload = wh.verify(raw, headers) as HookPayload;
   } catch (_e) {
     // Signature mismatch — reject so GoTrue doesn't treat the email as sent.
+    console.error("[send-auth-email] Signature verification failed:", (_e as Error).message);
     return new Response(JSON.stringify({ error: { message: "Invalid signature" } }), {
       status: 401,
       headers: { "Content-Type": "application/json" },
     });
   }
+  console.log("[send-auth-email] Verified payload for:", payload.user.email, "type:", payload.email_data?.email_action_type);
 
   try {
     const { subject, html } = render(payload);
     await sendViaBrevo(payload.user.email, subject, html);
   } catch (e) {
     // GoTrue surfaces a non-2xx as a send failure and will not mark the email sent.
+    console.error("[send-auth-email] Brevo error:", (e as Error).message);
     return new Response(JSON.stringify({ error: { message: (e as Error).message } }), {
       status: 502,
       headers: { "Content-Type": "application/json" },
