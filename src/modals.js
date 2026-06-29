@@ -6,7 +6,7 @@ import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES,
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
-import { invokeEdgeFn, getBillingContacts } from './utils';
+import { invokeEdgeFn, getBillingContacts, cloudUpload } from './utils';
 
 function VendorB2BPanel({vendor}){
   const[showPw,setShowPw]=useState(false);
@@ -350,6 +350,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
+  const[logoUp,setLogoUp]=useState(false);
+  const pickLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{const file=inp.files&&inp.files[0];if(!file)return;setLogoUp(true);try{const url=await cloudUpload(file,'nsa-school-logos');sv('logo_url',url)}catch(e){setValMsg('Logo upload failed: '+e.message)}finally{setLogoUp(false)}};inp.click()};
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
     // Alpha tag must be unique — it's the portal URL identifier.
     const dupTag=f.alpha_tag&&(allCustomers||[]).find(c=>c.id!==f.id&&(c.alpha_tag||'').trim().toLowerCase()===f.alpha_tag.trim().toLowerCase());
@@ -423,6 +425,15 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Customer Portal Payment</div>
     <div><label className="form-label">Online Pay (Credit Card / ACH)</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.disable_cc_pay?'#166534':'#f8fafc',color:!f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',false)}>Enabled</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.disable_cc_pay?'#dc2626':'#f8fafc',color:f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',true)}>Disabled (Check/ACH only)</button></div><div style={{fontSize:10,color:f.disable_cc_pay?'#dc2626':'#64748b',marginTop:4}}>{f.disable_cc_pay?'"Pay Now" button hidden in the portal — customer remits offline by check or ACH.':'Coach sees the "Pay Now" button in their portal.'}{ct==='parent'?' Setting cascades to all sub-accounts on save.':''}</div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Logo</div>
+    <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      {f.logo_url
+        ?<img src={f.logo_url} alt="School logo" style={{height:54,maxWidth:170,objectFit:'contain',border:'1px solid #e2e8f0',borderRadius:10,padding:6,background:'#fff'}}/>
+        :<div style={{height:54,width:54,borderRadius:10,border:'1px dashed #cbd5e1',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:22}}>🏫</div>}
+      <button type="button" className="btn btn-sm btn-secondary" disabled={logoUp} onClick={pickLogo}>{logoUp?'Uploading…':(f.logo_url?'Replace logo':'Upload logo')}</button>
+      {f.logo_url&&<button type="button" className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca'}} onClick={()=>sv('logo_url',null)}>Remove</button>}
+    </div>
+    <div style={{fontSize:10,color:'#94a3b8',marginTop:5,marginBottom:4}}>Shown in the coach portal hero. A transparent PNG/SVG looks best. Saves when you hit Save.</div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Colors (Pantone)</div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
       {(f.pantone_colors||[]).map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';

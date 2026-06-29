@@ -285,5 +285,24 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   return total;
 };
 
+// ── calcAdidasItemSpend — adidas product revenue ONLY (no decoration, shipping, or tax) ──
+// For the coach-portal Adidas-only reporting section. Counts unit_sell × qty for items whose
+// brand is adidas/agron; decorations are intentionally excluded. Free-promo items don't count.
+export const calcAdidasItemSpend=(o)=>{
+  if(!o)return 0;
+  const items=_sItems(o);
+  let total=0;
+  items.forEach(it=>{
+    if(it.is_free_promo)return;
+    if(!isAdidasPriced(it.brand))return;
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)total+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});}
+    else{total+=q*_sNum(it.unit_sell);}
+  });
+  return total;
+};
+
 // ── mergeColors — pure function for combining customer + parent colors ──
 export const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
