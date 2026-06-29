@@ -3257,13 +3257,13 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     { id: 'catalog', label: `Catalog (${catalog.length})` },
     { id: 'orders', label: `Orders (${orders.length})` },
     { id: 'art', label: 'Art & Logos' },
-    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
     { id: 'analytics', label: 'Analytics' },
   ];
   const MORE_TABS = [
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
+    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
   ];
   // The tab buttons render as their own row on most tabs, but on the Catalog tab
   // they share one line with the Add items / Tools / view controls (passed into
