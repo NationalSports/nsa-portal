@@ -243,13 +243,23 @@ async function taxcloudRate({ street1, city, state, zip }) {
 }
 
 // Returns { tax, rate, state, source } for a taxable base (product subtotal).
-async function calcTax(store, ship, taxableBase) {
+async function calcTax(store, ship, taxableBase, billing) {
   const base = Math.max(0, Number(taxableBase) || 0);
   if (base <= 0) return { tax: 0, rate: 0, state: '', source: 'zero_base' };
   const isPickup = store.delivery_mode !== 'ship_home';
-  const dest = isPickup
-    ? { ...TAX_ORIGIN }
-    : { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
+  let dest;
+  if (isPickup) {
+    // Club-delivery: tax at the BUYER's home ZIP (their address), not NSA's origin.
+    // CA buyers pay their local rate; a ZIP outside CA's range is treated as out-of-state
+    // (we only collect where registered). No ZIP → can't source tax, so $0.
+    const zip = String((billing && billing.zip) || '').replace(/\D/g, '').slice(0, 5);
+    if (!zip) return { tax: 0, rate: 0, state: '', source: 'no_buyer_zip' };
+    const zn = Number(zip);
+    const isCaZip = zn >= 90001 && zn <= 96162;
+    dest = { street1: '', city: '', state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(), zip };
+  } else {
+    dest = { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
+  }
   if (!dest.state || !taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
   if (dest.state === 'CA') {
     let rate = await cdtfaRate(dest);
@@ -328,7 +338,7 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal) : { tax: 0 };
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal, { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax, total };
@@ -435,7 +445,7 @@ async function placeOrder(sb, body) {
 // Price + tax preview (no order written) so the storefront can show the tax line
 // once it knows the ship-to address, before the shopper commits to paying.
 async function quoteTotals(sb, body) {
-  const { storeSlug, cart, ship, couponCode } = body;
+  const { storeSlug, cart, ship, couponCode, billing } = body;
   const { data: stores } = await sb.from('webstores').select('*').eq('slug', String(storeSlug || '')).limit(1);
   const store = stores && stores[0];
   if (!store) return bad(404, 'Store not found');
@@ -447,7 +457,7 @@ async function quoteTotals(sb, body) {
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
   const preTax = Math.max(0, r2(cartTotal + shipping - discount));
-  const taxRes = await calcTax(store, ship || {}, priced.subtotal);
+  const taxRes = await calcTax(store, ship || {}, priced.subtotal, billing);
   const total = r2(preTax + taxRes.tax);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }

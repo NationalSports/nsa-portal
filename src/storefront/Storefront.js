@@ -1363,7 +1363,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [stripePromise, setStripePromise] = useState(null);
   useEffect(() => { if (allowPaid) _getStripePromise().then((p) => setStripePromise(p || null)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '' });
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -1379,13 +1379,14 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
-  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : 'pickup';
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ('pickup|' + (buyer.zip || ''));
   const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty]));
   useEffect(() => {
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
+    if (!needAddr && (buyer.zip || '').length < 5) { setTaxInfo(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, couponCode: coupon ? coupon.code : null });
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { zip: buyer.zip }, couponCode: coupon ? coupon.code : null });
       if (!cancelled && r && r.totals) setTaxInfo(r.totals);
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -1394,7 +1395,8 @@ function CheckoutPage({ store, theme, cart, onClear }) {
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
-  const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email) && (!needAddr || (ship.street1 && ship.city && ship.state && ship.zip));
+  const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.zip || '').length === 5));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const payable = Math.max(0, cartTotal(cart) + ship_ - discount);
@@ -1463,7 +1465,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
           <Field label="State"><input style={inp} value={ship.state} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
           <Field label="ZIP"><input style={inp} value={ship.zip} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
         </div></>
-      ) : <div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>}
+      ) : (
+        <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
+        <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
+      )}
 
       {/* Coupon / scholarship code */}
       <div style={{ marginTop: 16 }}>
