@@ -2574,7 +2574,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
   const totalSales = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const playerCount = new Set(orderItems.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
+  const totalItems = orderItems.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
   // Sales Orders created from this store's batches, with how many orders each covers.
   const soSummary = (() => {
@@ -2667,7 +2667,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         return (
           <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 12, marginBottom: 12, background: `linear-gradient(120deg, ${primary} 0%, ${shadeHex(primary, -24)} 100%)`, borderBottom: `3px solid ${accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.14)' }}>
             <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
-            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '14px 18px', color: '#fff' }}>
+            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, padding: '14px 18px', color: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 13, minWidth: 0 }}>
                 {s.logo_url
                   ? <img src={s.logo_url} alt="" style={{ height: 48, width: 48, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, flexShrink: 0, boxShadow: '0 2px 8px rgba(0,0,0,.28)' }} />
@@ -2678,9 +2678,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
                   <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start', paddingTop: 2 }}>
                 <BannerStat label="Orders" value={orders.length} />
-                <BannerStat label="Players" value={playerCount} />
+                <BannerStat label="Items" value={totalItems} />
                 <BannerStat label="Sales" value={money(totalSales)} />
                 {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
               </div>
