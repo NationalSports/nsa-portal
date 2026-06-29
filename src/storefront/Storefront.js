@@ -808,9 +808,11 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '95%', height: '95%', objectFit: 'contain', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }} />
+            ? <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '95%', height: '95%' }}>
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+                {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
+              </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
-        {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
         {/* Stock / package badge — skewed −6°, top-right */}
         <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
         {/* Category label — bottom-right */}
