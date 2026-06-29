@@ -2247,7 +2247,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel, detail?.catalog || [])} />
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, detail?.catalog || [])} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
@@ -3543,6 +3543,34 @@ function MenuButton({ label, items = [], primary = false, align = 'left', icon }
 }
 
 // Launch confirmation — going live, with an explicit option to email the coach/director
+function EmailStoreLinkModal({ store, onClose, onSend }) {
+  const onFile = (store.director_email || store.coach_contact_email || '').trim();
+  const [email, setEmail] = useState(onFile);
+  const [busy, setBusy] = useState(false);
+  const valid = /.+@.+\..+/.test(email.trim());
+  const go = async () => { if (!valid) return; setBusy(true); await onSend(email.trim()); setBusy(false); onClose(); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 460, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>✉️ Email store link</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, color: '#334155', marginBottom: 12 }}>Send the store link, QR code, and PDF flyer to a coach or parent.</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Recipient email</div>
+          <input className="form-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} autoFocus />
+          {!valid && email && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email address.</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={busy || !valid} onClick={go}>{busy ? 'Sending…' : 'Send email'}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // the store link + QR (prefilled from the email on file; a newly typed one is saved).
 function LaunchStoreModal({ store, onClose, onLaunch }) {
   const onFile = (store.coach_contact_email || store.director_email || '').trim();
@@ -3586,6 +3614,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [emailLinkOpen, setEmailLinkOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -3697,9 +3726,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           <MenuButton label="Share" align="right" items={[
             portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
-            (s.director_email || s.coach_contact_email)
-              ? { label: 'Email store link', icon: '✉️', title: `Email the launch link + QR to ${s.director_email || s.coach_contact_email}`, onClick: onEmailDirector }
-              : { label: 'Email store link', icon: '✉️', title: 'Add a coach/director email in Settings first', disabled: true },
+            { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
           {onSetStatus && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
@@ -3708,6 +3735,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         </div>
       </div>
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
+      {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
         const primary = s.primary_color || '#192853';
