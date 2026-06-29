@@ -8464,6 +8464,7 @@ export default function App(){
       const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const NAVY='#1e3a8a',NAVY2='#1e40af',RED='#dc2626',SLATE='#475569';
       const _saleDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))};
+      const _invDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}const dt=new Date(d);return isNaN(dt)?null:dt};
       const now=new Date(),cY=now.getFullYear(),cM=now.getMonth();
       const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
       const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
@@ -8483,7 +8484,7 @@ export default function App(){
       // ── Rep view: own sales by month within the period ──
       if(scopeRepId){
         const byMonth=new Map();
-        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byMonth.set(key,seg)});
+        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so)||so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byMonth.set(key,seg)});
         const rows=[...byMonth.values()].sort((a,b)=>a.sortKey-b.sortKey);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         return(<div className="card">
@@ -8495,9 +8496,9 @@ export default function App(){
         </div>);
       }
       // ── Admin view: multi-report panel ──
-      const periodSOs=sos.filter(inPeriod);
+      const periodSOs=sos.filter(so=>inPeriod(so)&&so.status!=='cancelled'&&so.status!=='deleted'&&!so.deleted_at);
       const report=dashSalesReport;
-      const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs'};
+      const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs',sales_vs_billed:'💰 Sales vs Billed'};
       let body=null;
       if(report==='top_customers'){
         const byCust=new Map();
@@ -8528,6 +8529,32 @@ export default function App(){
             <div style={{width:42,textAlign:'right',fontSize:12,fontWeight:700,color:NAVY,flexShrink:0}}>{r.pct}%</div>
           </div>)}</div></>}
         </>;
+      }else if(report==='sales_vs_billed'){
+        const byRep=new Map();
+        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),sales:0,billed:0,orders:0};seg.sales+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
+        invs.forEach(inv=>{if(inv.status==='void')return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;const linkedSO=sos.find(s=>s.id===inv.so_id);const repId=linkedSO?repOf(linkedSO):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id);if(!repId)return;const seg=byRep.get(repId)||{label:repName(repId),sales:0,billed:0,orders:0};seg.billed+=Number(inv.total)||0;byRep.set(repId,seg)});
+        const rows=[...byRep.values()].filter(s=>s.sales>0||s.billed>0).sort((a,b)=>b.sales-a.sales);
+        const tSales=rows.reduce((a,s)=>a+s.sales,0),tBilled=rows.reduce((a,s)=>a+s.billed,0);
+        const maxVal=Math.max(...rows.map(r=>Math.max(r.sales,r.billed)),1);
+        const GREEN='#166534';
+        body=<>
+          {_summary([['Sold',_$(tSales),NAVY],['Billed',_$(tBilled),GREEN],['Gap',_$(tBilled-tSales),tBilled>=tSales?GREEN:RED]])}
+          {rows.length===0?<div className="empty" style={{padding:'24px 8px'}}>No data in this period</div>:
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {rows.map((s,i)=><div key={i} style={{display:'flex',flexDirection:'column',gap:3}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}} title={s.label+' Sold: '+_$(s.sales)+' · '+s.orders+' order'+(s.orders!==1?'s':'')}>
+                <div style={{width:96,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{i===0?'🥇 ':''}{s.label}</div>
+                <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:14,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.sales/maxVal)*100)+'%',background:NAVY2,borderRadius:6}}/></div>
+                <div style={{width:58,textAlign:'right',fontSize:11,fontWeight:700,color:NAVY,flexShrink:0}}>{_$k(s.sales)}</div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8}} title={s.label+' Billed: '+_$(s.billed)}>
+                <div style={{width:96,fontSize:10,color:'#94a3b8',flexShrink:0}}>Billed</div>
+                <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:14,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.billed/maxVal)*100)+'%',background:GREEN,borderRadius:6}}/></div>
+                <div style={{width:58,textAlign:'right',fontSize:11,fontWeight:700,color:GREEN,flexShrink:0}}>{_$k(s.billed)}</div>
+              </div>
+            </div>)}
+          </div>}
+        </>;
       }else{
         const byRep=new Map();
         periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
@@ -8539,7 +8566,7 @@ export default function App(){
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{titles[report]}</h2>{periodSelect}</div>
         <div className="card-body" style={{padding:'12px 14px',maxHeight:392,overflow:'auto'}}>
           <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-            {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
+            {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs'],['sales_vs_billed','Sales vs Billed']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
             {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin'||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
           </div>
           {body}
