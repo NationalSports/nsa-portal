@@ -15974,7 +15974,7 @@ export default function App(){
         const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
 
         // Tax expected from open SOs (not yet invoiced)
-        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
+        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0&&so.source!=='webstore'}).map(so=>{
           const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
           const taxAmt=m.rev*(c.tax_rate||0);
           return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
