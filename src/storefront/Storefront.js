@@ -18,6 +18,8 @@ async function _getStripePromise() {
   } catch {}
   return stripePromiseCache;
 }
+// Fire immediately so the key + Stripe.js are cached before the user reaches checkout.
+if (typeof window !== 'undefined') _getStripePromise();
 
 // ── Cart (localStorage, per store slug) ──────────────────────────────
 const cartKey = (slug) => 'nsa_cart_' + slug;
