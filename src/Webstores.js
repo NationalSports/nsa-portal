@@ -2429,10 +2429,10 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                             </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); window.open('https://nationalsportsapparel.com/shop/' + s.slug, '_blank', 'noopener'); }}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: s.accent_color || '#e11d2a', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 13, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: `0 2px 8px ${(s.accent_color || '#e11d2a')}55` }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
                             >
                               Open Store
-                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
                             </button>
                           </div>
                         </td>
