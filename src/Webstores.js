@@ -2083,7 +2083,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }; // end proceed
 
     // Open the styled confirm modal; it calls proceed() on Create.
-    setSoPrompt({ count: open.length, shortages, proceed, stockByPid });
+    setSoPrompt({ count: open.length, shortages, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -2187,7 +2187,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
+      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
@@ -2212,12 +2212,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 }
 
 // Searchable product picker for substitute SKUs in the SO confirm modal.
-// Queries the products table as the rep types; shows stock for the specific
-// size being substituted so they can pick something actually in stock.
-function SkuSearchInput({ size, value, onChange, stockByPid }) {
+// Queries products as the rep types; fetches live stock from webstore_storefront_products
+// for that size so they can see what's actually available before picking.
+// Uses position:fixed for the dropdown so it escapes the modal's overflow:hidden.
+function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
   const [q, setQ] = useState(value || '');
   const [results, setResults] = useState([]);
+  const [resultStock, setResultStock] = useState({});
   const [open, setOpen] = useState(false);
+  const [dropPos, setDropPos] = useState(null);
+  const wrapRef = useRef(null);
   const timer = useRef(null);
   const search = (text) => {
     setQ(text);
@@ -2226,40 +2230,52 @@ function SkuSearchInput({ size, value, onChange, stockByPid }) {
     if (!text.trim()) { setResults([]); setOpen(false); return; }
     timer.current = setTimeout(async () => {
       const { data } = await supabase.from('products').select('id,sku,name,brand,color').or(`sku.ilike.%${text}%,name.ilike.%${text}%`).limit(8);
-      setResults(data || []);
+      const rows = data || [];
+      setResults(rows);
+      // Fetch size stock for found products from this store's storefront view.
+      if (rows.length && storeId) {
+        const pids = rows.map((p) => p.id);
+        const { data: sr } = await supabase.from('webstore_storefront_products').select('product_id,size_stock,vendor_size_stock').eq('store_id', storeId).in('product_id', pids);
+        const fresh = {};
+        (sr || []).forEach((r) => { fresh[r.product_id] = r; });
+        setResultStock(fresh);
+      }
+      if (wrapRef.current) {
+        const r = wrapRef.current.getBoundingClientRect();
+        setDropPos({ top: r.bottom + 4, left: r.left });
+      }
       setOpen(true);
     }, 250);
   };
-  const select = (p) => { setQ(p.sku); onChange(p.sku); setOpen(false); setResults([]); };
+  const openAgain = () => { if (results.length) { if (wrapRef.current) { const r = wrapRef.current.getBoundingClientRect(); setDropPos({ top: r.bottom + 4, left: r.left }); } setOpen(true); } };
+  const select = (p) => { setQ(p.sku); onChange(p.sku); setOpen(false); };
   return (
-    <div style={{ position: 'relative', flex: '0 0 auto' }}>
+    <div ref={wrapRef} style={{ flex: '0 0 auto' }}>
       <input className="form-input" value={q} onChange={(e) => search(e.target.value)}
-        onFocus={() => results.length && setOpen(true)}
+        onFocus={openAgain}
         onBlur={() => setTimeout(() => setOpen(false), 180)}
         placeholder="Search SKU or name…"
-        style={{ fontSize: 12, padding: '4px 8px', width: 210, fontFamily: 'monospace' }} />
-      {open && results.length > 0 && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 2px)', left: 0, zIndex: 300, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.18)', minWidth: 340, maxHeight: 260, overflowY: 'auto' }}>
+        style={{ fontSize: 12, padding: '4px 8px', width: 220, fontFamily: 'monospace' }} />
+      {open && results.length > 0 && dropPos && (
+        <div style={{ position: 'fixed', top: dropPos.top, left: dropPos.left, zIndex: 9999, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.22)', minWidth: 360, maxHeight: 280, overflowY: 'auto' }}>
           {results.map((p, i) => {
-            const st = stockByPid[p.id];
+            const st = resultStock[p.id] || stockByPid[p.id];
             const wh = st ? (Number((st.size_stock || {})[size]) || 0) : null;
             const ven = st ? (Number((st.vendor_size_stock || {})[size]) || 0) : null;
             const inStock = wh !== null ? wh + ven : null;
             return (
               <div key={p.id} onMouseDown={() => select(p)}
-                style={{ padding: '8px 12px', cursor: 'pointer', borderTop: i ? '1px solid #f1f5f9' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}
+                style={{ padding: '9px 13px', cursor: 'pointer', borderTop: i ? '1px solid #f1f5f9' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = '#f8fafc'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 12, color: '#1e293b' }}>{p.sku}</span>
                   {p.brand && <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 6 }}>{p.brand}</span>}
-                  <div style={{ fontSize: 12, color: '#475569', marginTop: 1 }}>{p.name}{p.color ? ` · ${p.color}` : ''}</div>
+                  <div style={{ fontSize: 12, color: '#475569', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{p.color ? ` · ${p.color}` : ''}</div>
                 </div>
-                {inStock !== null && (
-                  <div style={{ fontSize: 11, fontWeight: 700, color: inStock > 0 ? '#15803d' : '#dc2626', whiteSpace: 'nowrap', marginLeft: 10, marginTop: 2 }}>
-                    {size}: {inStock > 0 ? `${inStock} avail` : 'out of stock'}
-                  </div>
-                )}
+                <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0, color: inStock === null ? '#94a3b8' : inStock > 0 ? '#15803d' : '#dc2626' }}>
+                  {inStock === null ? 'stock N/A' : inStock > 0 ? `${size}: ${inStock} avail` : `${size}: out of stock`}
+                </div>
               </div>
             );
           })}
@@ -2273,7 +2289,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid }) {
 // shows the order count and any inventory shortfalls before the batch runs.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {} }) {
+function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
@@ -2298,10 +2314,13 @@ function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid
               <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, overflow: 'hidden' }}>
                 {shortages.map((s, i) => (
                   <div key={i} style={{ borderTop: i ? '1px solid #fde68a' : 'none', padding: '10px 12px' }}>
-                    <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.4, marginBottom: 6 }}>{s.label}</div>
+                    <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.4, marginBottom: 6 }}>
+                      {s.label}
+                      {s.sku && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 12, color: '#92400e', background: '#fef3c7', borderRadius: 4, padding: '1px 5px' }}>{s.sku}</span>}
+                    </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', fontWeight: 600 }}>Sub for {s.size}:</span>
-                      <SkuSearchInput size={s.size} value={overrideSkus[s.pid + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid, s.size, v)} stockByPid={stockByPid} />
+                      <SkuSearchInput size={s.size} value={overrideSkus[s.pid + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid, s.size, v)} stockByPid={stockByPid} storeId={storeId} />
                     </div>
                   </div>
                 ))}
