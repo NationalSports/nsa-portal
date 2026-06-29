@@ -1620,21 +1620,22 @@ function OrderStatusPage({ store, theme, orderId }) {
               {bundleChildren.length > 0 && (
                 <div style={{ margin: '0 18px 14px', padding: '10px 14px', background: theme.warm, borderRadius: 8 }}>
                   <div style={{ fontFamily: DISPLAY, fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>Included in package</div>
-                  {bundleChildren.map((child, ci) => {
-                    const childDets = [child.size && 'Size ' + child.size, child.player_number && '#' + child.player_number, child.player_name].filter(Boolean).join(' · ');
-                    return (
-                      <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: ci > 0 ? 8 : 0, paddingTop: ci > 0 ? 8 : 0, borderTop: ci > 0 ? `1px solid ${theme.line || '#e2e8f0'}` : 'none' }}>
-                        {child.image_url
-                          ? <img src={child.image_url} alt={child.name || child.sku} style={{ width: 42, height: 42, minWidth: 42, objectFit: 'cover', borderRadius: 6, background: '#f4f6f9', display: 'block' }} />
-                          : <div style={{ width: 42, height: 42, minWidth: 42, borderRadius: 6, background: '#e2e8f0', display: 'grid', placeItems: 'center', fontSize: 16 }}>👕</div>
-                        }
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, color: theme.ink }}>{child.name || child.sku || 'Item'}{child.qty > 1 ? ` ×${child.qty}` : ''}</div>
-                          {childDets && <div style={{ fontSize: 11, color: theme.subText }}>{childDets}</div>}
-                        </div>
+                  {bundleChildren.map((child, ci) => (
+                    <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: ci > 0 ? 8 : 0, paddingTop: ci > 0 ? 8 : 0, borderTop: ci > 0 ? `1px solid ${theme.line || '#e2e8f0'}` : 'none' }}>
+                      {child.image_url
+                        ? <img src={child.image_url} alt={child.name || child.sku} style={{ width: 42, height: 42, minWidth: 42, objectFit: 'cover', borderRadius: 6, background: '#f4f6f9', display: 'block' }} />
+                        : <div style={{ width: 42, height: 42, minWidth: 42, borderRadius: 6, background: '#e2e8f0', display: 'grid', placeItems: 'center', fontSize: 16 }}>👕</div>
+                      }
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: theme.ink }}>{child.name || child.sku || 'Item'}{child.qty > 1 ? ` ×${child.qty}` : ''}</div>
                       </div>
-                    );
-                  })}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        {child.size && <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, color: theme.ink, background: '#fff', border: `1px solid ${theme.line || '#e2e8f0'}`, borderRadius: 5, padding: '2px 8px' }}>Size {child.size}</span>}
+                        {child.player_number && <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 800, color: theme.accent, background: theme.accent + '15', borderRadius: 5, padding: '2px 8px' }}>#{child.player_number}</span>}
+                        {child.player_name && <span style={{ fontSize: 12, color: theme.subText }}>{child.player_name}</span>}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
