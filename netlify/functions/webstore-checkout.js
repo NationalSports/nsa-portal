@@ -325,7 +325,10 @@ async function placeOrder(sb, body) {
   }
 
   // Sales tax on the product subtotal (CA via CDTFA, registered out-of-state via TaxCloud).
-  const taxRes = await calcTax(store, ship || {}, priced.subtotal);
+  // When a coupon fully covers the pre-tax total the order is comped — charge no tax
+  // either, so we never create an "unpaid" order carrying tax that is never collected
+  // (and never email a buyer a total they weren't charged).
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal) : { tax: 0 };
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, tax, total };

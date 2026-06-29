@@ -1630,14 +1630,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (it._removed) await supabase.from('webstore_order_items').delete().eq('id', it.id);
       else await supabase.from('webstore_order_items').update({ size: it.size || null, qty: Number(it.qty) || 1 }).eq('id', it.id);
     }
-    const remaining = edited.filter((i) => !i._removed);
-    const subtotal = remaining.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
-    const fundraise = remaining.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
-    const total = Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    // Recompute over ALL of the order's items, not just the edited (component) rows.
+    // A bundle's price lives on its parent row (components are $0) and the parent is
+    // never in the editable set — summing only `edited` would drop every package's
+    // value and zero out the order's revenue and the club's fundraising payout.
+    const editById = {}; edited.forEach((e) => { editById[e.id] = e; });
+    const effective = (detail?.orderItems || []).filter((i) => i.order_id === order.id).map((i) => {
+      const e = editById[i.id];
+      if (!e) return i;                 // parents / untouched rows keep their stored price
+      if (e._removed) return null;
+      return { ...i, size: e.size, qty: Number(e.qty) || 1 };
+    }).filter(Boolean);
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
+    const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
+    const total = round2(Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0));
     const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   // Refund: Stripe for card orders, recorded credit for team-tab orders.
   // Guarded against double-processing: an in-flight latch blocks double-clicks, and the
@@ -1809,15 +1820,41 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
     (detail.bundleItems || []).forEach((b) => { if (b.product_id) { const e = personalize[b.product_id] || { num: false, name: false }; personalize[b.product_id] = { num: e.num || !!b.takes_number, name: e.name || !!b.takes_name }; } });
 
+    // SO sell price = what the buyer actually paid, NOT catalog retail. The webstore
+    // charges a flat price per line (retail + size upcharge + fundraise + name upcharge),
+    // stored as unit_price + unit_fundraise; numbers are free. We carry that collected
+    // revenue onto each garment's unit_sell and suppress the name/number deco sells
+    // (their COST still counts) so the SO total reconciles to SUM(order subtotal+fundraise).
+    // Bundle components are stored at $0 with the whole package price on the parent row
+    // (excluded from production), so we allocate the parent's price across its components
+    // weighted by each component's catalog retail (a jersey absorbs more than socks).
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const retailByPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
+    const allItems = (detail.orderItems || []).filter((i) => openIds.has(i.order_id));
+    const allocById = {}; // component order_item id -> allocated package $
+    allItems.filter((p) => p.is_bundle_parent).forEach((p) => {
+      const kids = allItems.filter((c) => !c.is_bundle_parent && c.order_id === p.order_id && c.bundle_ref && c.bundle_ref === p.bundle_ref);
+      if (!kids.length) return;
+      const parentValue = (Number(p.unit_price) || 0) + (Number(p.unit_fundraise) || 0);
+      const weights = kids.map((c) => retailByPid[c.product_id] || 0);
+      const wsum = weights.reduce((a, b) => a + b, 0);
+      kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(parentValue * weights[idx] / wsum) : r2(parentValue / kids.length); });
+    });
+    const collectedForLine = (i) => allocById[i.id] != null
+      ? allocById[i.id]
+      : r2(((Number(i.unit_price) || 0) + (Number(i.unit_fundraise) || 0)) * (i.qty || 1));
+
     // Aggregate by product + size; build parallel number/name rosters per size
     // (one entry per garment unit) so they attach as real deco lines.
     const byProduct = {};
     lines.forEach((i) => {
       const pid = i.product_id || i.sku || 'unknown';
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {} };
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[pid]; const sz = i.size || 'OS'; const q = i.qty || 1;
       const pdef = personalize[i.product_id] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
+      g.collected = r2(g.collected + collectedForLine(i));
       for (let u = 0; u < q; u++) {
         if (pdef.num) (g.numbers[sz] = g.numbers[sz] || []).push(i.player_number ? String(i.player_number) : '');
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
@@ -1888,8 +1925,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
-      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: g.numbers });
-      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_each: 6, cost_each: 3, names: g.names });
+      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers });
+      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
       (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
@@ -1914,8 +1951,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
+      // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
+      // so unit_sell × qty reconciles to what buyers paid. Deco sells are suppressed above.
+      const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
+      const unitSell = r2((g.collected || 0) / qtyTot);
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
-        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
+        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
@@ -8255,8 +8296,12 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
   const hasChanges = rows.some((r, i) => r._removed || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
-  const newSubtotal = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
-  const newFund = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+  // Bundle parents hold the package price (components are $0) and aren't editable, so
+  // seed the recompute with their value — otherwise the New total drops every package.
+  const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+  const bundleBaseFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+  const newSubtotal = bundleBaseSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+  const newFund = bundleBaseFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
   const newTotal = Math.max(0, newSubtotal + newFund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
 
   const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
