@@ -617,6 +617,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
+  const [storeStats, setStoreStats] = useState({});
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
 
@@ -653,10 +654,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
       setStores([]);
     } else {
-      // Hide OMG pop-up shadow stores — they're created by the OMG ingest to track
-      // those orders on the webstore rails and are managed on the OMG Stores page,
-      // not here. (Filtered client-side to avoid PostgREST's null-vs-neq gotcha.)
       setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
+      // Fetch per-store aggregate stats
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total');
+      const stats = {};
+      (aggOrders || []).forEach((o) => {
+        if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0 };
+        stats[o.store_id].revenue += Number(o.total) || 0;
+        stats[o.store_id].orders += 1;
+      });
+      setStoreStats(stats);
     }
     setLoading(false);
   }, []);
@@ -1854,7 +1861,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
     </>
   );
@@ -1924,64 +1931,504 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
   );
 }
 
-function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults }) {
+const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
+const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
+
+function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults }) {
+  const [view, setView] = useState('stores');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [repFilter, setRepFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [sortKey, setSortKey] = useState('status');
+  const [sortDir, setSortDir] = useState('asc');
+
   const templates = stores.filter((s) => s.is_template);
+  const nonTemplates = stores.filter((s) => !s.is_template);
+
+  const money = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
+  const initials = (name) => (name || '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const fmt = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const fmtYear = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
+
+  const repColorMap = useMemo(() => {
+    const m = {};
+    REPS.forEach((r, i) => { m[r.id] = REP_PALETTE[i % REP_PALETTE.length]; });
+    return m;
+  }, [REPS]);
+
+  const storeStatus = (s) => {
+    if (s.status === 'closed') return 'Closed';
+    if (s.status === 'draft') return 'Draft';
+    if (!s.open_at && !s.close_at) return s.status === 'open' ? 'Open' : 'Draft';
+    const now = Date.now();
+    const openTs = s.open_at ? new Date(s.open_at).getTime() : null;
+    const closeTs = s.close_at ? new Date(s.close_at).getTime() : null;
+    if (openTs && openTs > now) return 'Scheduled';
+    if (closeTs) {
+      const diff = (closeTs - now) / 86400000;
+      if (diff <= 3 && diff > 0) return 'Closing soon';
+    }
+    if (s.status === 'open') return 'Open';
+    return 'Closed';
+  };
+
+  const daysLeft = (s) => {
+    if (!s.close_at) return null;
+    return Math.ceil((new Date(s.close_at).getTime() - Date.now()) / 86400000);
+  };
+
+  const statusStyle = (st) => {
+    const map = {
+      Open: ['#E3F4EA', '#1B7F4B'],
+      'Closing soon': ['#F6E4E5', '#962C32'],
+      Scheduled: ['#E4ECF8', '#2A6FDB'],
+      Draft: ['#FBEFD6', '#9A6B12'],
+      Closed: ['#EAEDF3', '#5A6075'],
+    };
+    const [bg, fg] = map[st] || ['#EAEDF3', '#5A6075'];
+    return { display: 'inline-block', background: bg, color: fg, fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 700, fontSize: 11.5, padding: '3px 9px', borderRadius: 4, transform: 'skewX(-4deg)', whiteSpace: 'nowrap' };
+  };
+
+  const setSort = (key) => {
+    setSortKey((prev) => {
+      if (prev === key) { setSortDir((d) => d === 'asc' ? 'desc' : 'asc'); return key; }
+      setSortDir(['revenue', 'orders'].includes(key) ? 'desc' : 'asc');
+      return key;
+    });
+  };
+
+  const sortArrow = (key) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
+  const matchesFilter = (s) => {
+    const st = storeStatus(s);
+    if (statusFilter !== 'all' && st !== statusFilter) return false;
+    if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+    }
+    return true;
+  };
+
+  let filtered = nonTemplates.filter(matchesFilter);
+  filtered = [...filtered].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    let av, bv;
+    switch (sortKey) {
+      case 'store': av = a.name; bv = b.name; break;
+      case 'status': av = STATUS_RANK[storeStatus(a)]; bv = STATUS_RANK[storeStatus(b)]; break;
+      case 'rep': av = repName(a.rep_id); bv = repName(b.rep_id); break;
+      case 'revenue': av = (storeStats[a.id] || {}).revenue || 0; bv = (storeStats[b.id] || {}).revenue || 0; break;
+      case 'orders': av = (storeStats[a.id] || {}).orders || 0; bv = (storeStats[b.id] || {}).orders || 0; break;
+      case 'window': av = daysLeft(a) == null ? 9999 : daysLeft(a); bv = daysLeft(b) == null ? 9999 : daysLeft(b); break;
+      default: av = STATUS_RANK[storeStatus(a)]; bv = STATUS_RANK[storeStatus(b)];
+    }
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return ((av || 0) - (bv || 0)) * dir;
+  });
+
+  // Summary stats
+  const allStats = nonTemplates;
+  const openCount = allStats.filter((s) => { const st = storeStatus(s); return st === 'Open' || st === 'Closing soon'; }).length;
+  const draftCount = allStats.filter((s) => storeStatus(s) === 'Draft').length;
+  const closedCount = allStats.filter((s) => storeStatus(s) === 'Closed').length;
+  const totalRev = Object.values(storeStats).reduce((a, s) => a + (s.revenue || 0), 0);
+  const totalOrders = Object.values(storeStats).reduce((a, s) => a + (s.orders || 0), 0);
+
+  const summaryStats = [
+    { label: 'Total Stores', value: allStats.length, sub: openCount + ' currently live', bar: '#192853' },
+    { label: 'Open', value: openCount, sub: 'Accepting orders', bar: '#1B7F4B' },
+    { label: 'Drafts', value: draftCount, sub: 'Awaiting launch', bar: '#E0A92B' },
+    { label: 'Closed', value: closedCount, sub: 'This season', bar: '#5A6075' },
+    { label: 'Gross Sales', value: moneyK(totalRev), sub: totalOrders + ' orders', bar: '#962C32' },
+    { label: 'Total Orders', value: totalOrders.toLocaleString(), sub: 'Across all stores', bar: '#2A6FDB' },
+  ];
+
+  // Status chip counts (against rep+search filtered, ignoring status filter)
+  const repSearchSet = nonTemplates.filter((s) => {
+    if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+  const statusCounts = { all: repSearchSet.length, Open: 0, 'Closing soon': 0, Scheduled: 0, Draft: 0, Closed: 0 };
+  repSearchSet.forEach((s) => { const st = storeStatus(s); if (statusCounts[st] !== undefined) statusCounts[st]++; });
+
+  // Reporting: rep stats
+  const repStatsMap = {};
+  nonTemplates.forEach((s) => {
+    const rid = s.rep_id;
+    if (!repStatsMap[rid]) repStatsMap[rid] = { revenue: 0, orders: 0, count: 0 };
+    repStatsMap[rid].revenue += (storeStats[s.id] || {}).revenue || 0;
+    repStatsMap[rid].orders += (storeStats[s.id] || {}).orders || 0;
+    repStatsMap[rid].count++;
+  });
+  const repLeaderboard = REPS.filter((r) => repStatsMap[r.id]).map((r) => ({
+    id: r.id, name: r.name, color: repColorMap[r.id] || '#5A6075',
+    revenue: repStatsMap[r.id].revenue, orders: repStatsMap[r.id].orders, count: repStatsMap[r.id].count,
+  })).sort((a, b) => b.revenue - a.revenue);
+  const maxRepRev = Math.max(1, ...repLeaderboard.map((r) => r.revenue));
+
+  const BCN = { fontFamily: "'Barlow Condensed',sans-serif" };
+  const CHIP_BASE = { ...BCN, textTransform: 'uppercase', letterSpacing: '.7px', fontWeight: 700, fontSize: 13, padding: '7px 13px', borderRadius: 7, cursor: 'pointer', border: 'none', display: 'inline-flex', gap: 7, alignItems: 'center', transform: 'skewX(-4deg)', transition: 'all .12s' };
+  const chipStyle = (active) => ({ ...CHIP_BASE, background: active ? '#192853' : '#fff', color: active ? '#fff' : '#5A6075', border: active ? '1.5px solid #192853' : '1.5px solid #E2E6EE' });
+  const repChipStyle = (active) => ({ fontFamily: "'Source Sans 3',sans-serif", fontWeight: 600, fontSize: 13, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', border: active ? '1.5px solid #192853' : '1.5px solid #E2E6EE', background: active ? '#192853' : '#fff', color: active ? '#fff' : '#5A6075', transition: 'all .12s' });
+  const TAB = { ...BCN, textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 700, fontSize: 14, padding: '8px 18px', borderRadius: 6, cursor: 'pointer', border: 'none', transition: 'all .15s' };
+  const tabStyle = (key) => ({ ...TAB, background: view === key ? '#192853' : 'transparent', color: view === key ? '#fff' : '#5A6075', boxShadow: view === key ? '0 3px 10px rgba(25,40,83,.22)' : 'none' });
+  const TH = { ...BCN, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, fontSize: 12, color: '#5A6075', padding: '12px', userSelect: 'none' };
+  const TD = { padding: '13px 12px', verticalAlign: 'middle' };
+
+  const storeWindowText = (s) => {
+    const st = storeStatus(s);
+    if (st === 'Draft') return { main: 'Not scheduled', sub: 'Draft', subColor: '#8A93A8' };
+    if (st === 'Scheduled') return { main: fmt(s.open_at), sub: '→ ' + fmt(s.close_at), subColor: '#2A6FDB' };
+    if (st === 'Closed') return { main: (fmt(s.open_at) || '?') + ' – ' + (fmt(s.close_at) || '?'), sub: 'Closed', subColor: '#8A93A8' };
+    const dl = daysLeft(s);
+    return {
+      main: s.close_at ? 'Closes ' + fmt(s.close_at) : 'No close date',
+      sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
+      subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
+    };
+  };
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>{stores.length} store{stores.length === 1 ? '' : 's'}{templates.length > 0 ? ` · ${templates.length} template${templates.length === 1 ? '' : 's'}` : ''}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {onNewFromTemplate && templates.length > 0 && (
-            <select className="form-input" style={{ maxWidth: 230, fontSize: 13 }} value="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t) onNewFromTemplate(t); e.target.value = ''; }}>
-              <option value="">+ New from template…</option>
-              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          )}
-          {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Store defaults</button>}
+      {/* Page heading + tabs */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 22 }}>
+        <div>
+          <div style={{ ...BCN, fontWeight: 700, fontSize: 13, letterSpacing: 2, textTransform: 'uppercase', color: '#962C32', marginBottom: 4 }}>Sales — Team Stores</div>
+          <h1 style={{ ...BCN, fontWeight: 800, fontSize: 36, letterSpacing: '.5px', textTransform: 'uppercase', color: '#192853', margin: 0, lineHeight: 1 }}>
+            {view === 'stores' ? 'Club Webstores' : view === 'reporting' ? 'Store Reporting' : 'Store Templates'}
+          </h1>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 5, background: '#fff', border: '1px solid #E2E6EE', borderRadius: 9, padding: 5, boxShadow: '0 2px 12px rgba(0,0,0,.04)' }}>
+            {['stores', 'reporting', 'templates'].map((k) => (
+              <button key={k} style={tabStyle(k)} onClick={() => setView(k)}>{k.charAt(0).toUpperCase() + k.slice(1)}</button>
+            ))}
+          </div>
+          {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
           <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
         </div>
       </div>
-      {stores.length === 0 ? (
-        <div className="card"><div className="card-body" style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-          No webstores yet. Click <b>+ New Store</b> to create the first one.
-        </div></div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {stores.map((s) => {
-            const fmt = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
-            const window_ = fmt(s.open_at) || fmt(s.close_at) ? `${fmt(s.open_at) || 'now'} → ${fmt(s.close_at) || 'open'}` : 'No close date';
-            const pay = s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only';
-            const deliver = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
-            const coachReview = s.created_via === 'coach' && s.status === 'draft';
-            return (
-              <div key={s.id} className="card" style={{ cursor: 'pointer', width: '100%', borderLeft: coachReview ? '3px solid #f59e0b' : undefined }} onClick={() => onOpen(s)}>
-                <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-                  <div style={{ minWidth: 220, flex: '1 1 240px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 17, fontWeight: 800, color: '#1e293b' }}>{s.name}</span>
-                      <StatusBadge status={s.status} />
-                      {s.is_template && <Chip label="Template" tone="blue" />}
-                      {s.created_via === 'coach' && <Chip label={coachReview ? '★ Coach submission — review' : 'Coach-built'} tone="amber" />}
+
+      {/* ══════════ STORES VIEW ══════════ */}
+      {view === 'stores' && (
+        <>
+          {/* Summary stats strip */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14, marginBottom: 22 }}>
+            {summaryStats.map((st) => (
+              <div key={st.label} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 8, padding: '16px 18px', boxShadow: '0 2px 12px rgba(0,0,0,.04)', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: st.bar }} />
+                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>{st.label}</div>
+                <div style={{ ...BCN, fontWeight: 800, fontSize: 28, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{st.value}</div>
+                <div style={{ fontSize: 11.5, color: '#8A93A8', marginTop: 1 }}>{st.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Toolbar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              {[['all', 'All'], ['Open', 'Open'], ['Closing soon', 'Closing Soon'], ['Scheduled', 'Scheduled'], ['Draft', 'Draft'], ['Closed', 'Closed']].map(([key, label]) => (
+                <button key={key} style={chipStyle(statusFilter === key)} onClick={() => setStatusFilter(key)}>
+                  {label}<span style={{ opacity: .65, fontFamily: "'Source Sans 3',sans-serif", fontWeight: 600 }}>{statusCounts[key] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ height: 24, width: 1, background: '#D1D5DE' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>Rep</span>
+              <select className="form-select" value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={{ fontSize: 13, padding: '6px 10px', minWidth: 140 }}>
+                <option value="all">All reps</option>
+                {REPS.filter((r) => nonTemplates.some((s) => s.rep_id === r.id)).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
+            </div>
+          </div>
+
+          {/* Table */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 900 }}>
+              <thead>
+                <tr style={{ background: '#FAFBFD', borderBottom: '1.5px solid #EEF1F6' }}>
+                  <th style={{ ...TH, width: 34, padding: '12px 8px' }}></th>
+                  <th onClick={() => setSort('store')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Store{sortArrow('store')}</th>
+                  <th onClick={() => setSort('status')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Status{sortArrow('status')}</th>
+                  <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
+                  <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
+                  <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
+                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Sale Window{sortArrow('window')}</th>
+                  <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
+                  <th style={{ ...TH, width: 28 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((s) => {
+                  const st = storeStatus(s);
+                  const ss = storeStats[s.id] || { revenue: 0, orders: 0 };
+                  const rn = repName(s.rep_id);
+                  const rc = repColorMap[s.rep_id] || '#5A6075';
+                  const isExp = !!expanded[s.id];
+                  const wt = storeWindowText(s);
+                  const coachReview = s.created_via === 'coach' && s.status === 'draft';
+                  return (
+                    <React.Fragment key={s.id}>
+                      <tr
+                        onClick={() => setExpanded((p) => ({ ...p, [s.id]: !p[s.id] }))}
+                        style={{ cursor: 'pointer', borderBottom: isExp ? 'none' : '1px solid #EEF1F6', background: isExp ? '#FAFBFD' : '#fff', transition: 'background .1s' }}
+                        onMouseEnter={(e) => { if (!isExp) e.currentTarget.style.background = '#FAFBFD'; }}
+                        onMouseLeave={(e) => { if (!isExp) e.currentTarget.style.background = '#fff'; }}
+                      >
+                        <td style={{ ...TD, textAlign: 'center', color: '#8A93A8', padding: '13px 8px' }}>
+                          <span style={{ display: 'inline-block', transition: 'transform .15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 11 }}>▶</span>
+                        </td>
+                        <td style={TD}>
+                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {s.name}
+                            {coachReview && <span style={{ fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
+                          </div>
+                          <div style={{ color: '#8A93A8', fontSize: 12.5 }}>{custName(s.customer_id)}</div>
+                        </td>
+                        <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
+                        <td style={TD}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ width: 26, height: 26, borderRadius: '50%', background: rc, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{initials(rn)}</div>
+                            <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{rn}</span>
+                          </div>
+                        </td>
+                        <td style={{ ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#192853' }}>{ss.revenue ? money(ss.revenue) : <span style={{ color: '#D1D5DE' }}>—</span>}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#2A2F3E' }}>{ss.orders || <span style={{ color: '#D1D5DE' }}>—</span>}</td>
+                        <td style={TD}>
+                          <div style={{ fontWeight: 600, color: '#2A2F3E' }}>{wt.main}</div>
+                          <div style={{ fontSize: 12, color: wt.subColor, fontWeight: 600 }}>{wt.sub}</div>
+                        </td>
+                        <td style={{ ...TD, padding: '13px 16px 13px 12px' }}>
+                          <a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: '#2A6FDB', textDecoration: 'none', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                            /shop/{s.slug}
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                          </a>
+                        </td>
+                        <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                            {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onOpen(s); }} style={{ whiteSpace: 'nowrap' }}>Open →</button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExp && (
+                        <tr style={{ borderBottom: '1px solid #EEF1F6' }}>
+                          <td colSpan={9} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr', gap: 26, padding: '22px 24px 24px 50px', animation: 'wsExpand .18s ease-out' }}>
+                              {/* Col 1: Sales Reporting */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Sales Reporting</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px', marginBottom: 16 }}>
+                                  {[
+                                    ['Gross Sales', ss.revenue ? money(ss.revenue) : '—'],
+                                    ['Orders', ss.orders ? ss.orders.toLocaleString() : '—'],
+                                    ['Avg Order', ss.orders ? money(ss.revenue / ss.orders) : '—'],
+                                    ['Catalog Items', s.catalog_count ?? '—'],
+                                  ].map(([label, val]) => (
+                                    <div key={label}>
+                                      <div style={{ fontSize: 11.5, color: '#8A93A8', textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 600 }}>{label}</div>
+                                      <div style={{ ...BCN, fontWeight: 800, fontSize: 24, color: '#192853', lineHeight: 1.1 }}>{val}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <button className="btn btn-sm btn-secondary" onClick={() => onOpen(s)}>Open Orders Tab →</button>
+                              </div>
+                              {/* Col 2: Store URL + quick links */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Storefront</div>
+                                <div style={{ fontSize: 13.5, color: '#2A6FDB', fontFamily: 'monospace', marginBottom: 12, wordBreak: 'break-all' }}>/shop/{s.slug}</div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 8, marginTop: 4 }}>Links</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                  <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                </div>
+                              </div>
+                              {/* Col 3: Store Setup */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Store Setup</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', fontSize: 13.5, marginBottom: 16 }}>
+                                  {[
+                                    ['Payment', s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
+                                    ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
+                                    ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
+                                    ['Opened', fmtYear(s.open_at) || 'Not opened'],
+                                    ['Closes', fmtYear(s.close_at) || 'No close date'],
+                                  ].map(([label, val]) => (
+                                    <React.Fragment key={label}>
+                                      <span style={{ color: '#8A93A8' }}>{label}</span>
+                                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
+                                    </React.Fragment>
+                                  ))}
+                                </div>
+                                <button className="btn btn-sm btn-primary" onClick={() => onOpen(s)}>Open Store →</button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={9} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {nonTemplates.length > 0 && <div style={{ marginTop: 10, fontSize: 13, color: '#8A93A8' }}>Showing {filtered.length} of {nonTemplates.length} stores</div>}
+        </>
+      )}
+
+      {/* ══════════ REPORTING VIEW ══════════ */}
+      {view === 'reporting' && (
+        <>
+          {/* KPI tiles */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 16 }}>
+            {[
+              { label: 'Gross Sales', value: moneyK(totalRev) },
+              { label: 'Orders', value: totalOrders.toLocaleString() },
+              { label: 'Avg Order', value: totalOrders ? money(totalRev / totalOrders) : '—' },
+              { label: 'Open Stores', value: openCount },
+            ].map((k) => (
+              <div key={k.label} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 8, padding: '16px 18px', boxShadow: '0 2px 12px rgba(0,0,0,.04)' }}>
+                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 12, color: '#5A6075' }}>{k.label}</div>
+                <div style={{ ...BCN, fontWeight: 800, fontSize: 30, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{k.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Sales by Rep */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
+            <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 12 }}>Sales by Rep</div>
+            {repLeaderboard.length === 0 && <div style={{ fontSize: 14, color: '#8A93A8' }}>No sales data yet.</div>}
+            {repLeaderboard.map((r) => {
+              const share = (r.revenue / Math.max(1, totalRev) * 100).toFixed(1);
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 0', borderBottom: '1px solid #EEF1F6' }}>
+                  <div style={{ width: 38, height: 38, borderRadius: '50%', background: r.color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 14, flexShrink: 0 }}>{initials(r.name)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                      <span style={{ fontWeight: 700, color: '#192853', fontSize: 14.5 }}>{r.name}</span>
+                      <span style={{ ...BCN, fontWeight: 800, fontSize: 18, color: '#192853' }}>{moneyK(r.revenue)}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
-                  </div>
-                  <Quick label="Storefront"><a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontFamily: 'monospace', fontSize: 12, color: '#2563eb', textDecoration: 'none' }}>/shop/{s.slug} ↗</a></Quick>
-                  <Quick label="Payment">{pay}</Quick>
-                  <Quick label="Delivery">{deliver}</Quick>
-                  <Quick label="Numbers">{s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'}</Quick>
-                  <Quick label="Sale window">{window_}</Quick>
-                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {onToggleTemplate && <button className="btn btn-sm btn-secondary" title={s.is_template ? 'Remove from templates' : 'Save as a reusable template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }}>{s.is_template ? '★ Template' : '☆ Template'}</button>}
-                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Exact copy of this store as a new draft" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
-                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Copy this store for a new team, then open settings to swap the customer, colors & logo" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; rebrand</button>}
-                    <span style={{ color: '#cbd5e1', fontSize: 20 }}>›</span>
+                    <div style={{ fontSize: 12.5, color: '#8A93A8', margin: '2px 0 7px' }}>{r.count} store{r.count === 1 ? '' : 's'} · {r.orders} order{r.orders === 1 ? '' : 's'} · {share}% of total</div>
+                    <div style={{ height: 6, borderRadius: 3, background: '#EEF1F6', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: (r.revenue / maxRepRev * 100).toFixed(1) + '%', background: r.color, borderRadius: 3 }} />
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+
+          {/* Stores by status */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 16 }}>Stores by Status</div>
+              {[['Open', '#1B7F4B'], ['Closing soon', '#962C32'], ['Scheduled', '#2A6FDB'], ['Draft', '#E0A92B'], ['Closed', '#5A6075']].map(([st, color]) => {
+                const count = nonTemplates.filter((s) => storeStatus(s) === st).length;
+                return (
+                  <div key={st} style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5, marginBottom: 4 }}>
+                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{st}</span>
+                      <span style={{ color: '#8A93A8' }}>{count} store{count === 1 ? '' : 's'}</span>
+                    </div>
+                    <div style={{ height: 8, borderRadius: 4, background: '#EEF1F6', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: (count / Math.max(1, nonTemplates.length) * 100).toFixed(0) + '%', background: color, borderRadius: 4 }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 16 }}>Top Stores <span style={{ color: '#962C32', fontStyle: 'italic' }}>by Revenue</span></div>
+              {nonTemplates.filter((s) => (storeStats[s.id] || {}).revenue > 0).sort((a, b) => (storeStats[b.id]?.revenue || 0) - (storeStats[a.id]?.revenue || 0)).slice(0, 8).map((s, i) => {
+                const rev = storeStats[s.id]?.revenue || 0;
+                const maxR = Math.max(1, ...nonTemplates.map((x) => storeStats[x.id]?.revenue || 0));
+                return (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', background: i < 3 ? '#962C32' : '#192853', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{i + 1}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13, marginBottom: 3 }}>
+                        <span style={{ color: '#2A2F3E', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                        <span style={{ color: '#8A93A8', whiteSpace: 'nowrap' }}>{money(rev)}</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 3, background: '#EEF1F6', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: (rev / maxR * 100).toFixed(0) + '%', background: '#192853', borderRadius: 3 }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {nonTemplates.filter((s) => (storeStats[s.id] || {}).revenue > 0).length === 0 && <div style={{ fontSize: 14, color: '#8A93A8' }}>No revenue data yet.</div>}
+            </div>
+          </div>
+        </>
       )}
+
+      {/* ══════════ TEMPLATES VIEW ══════════ */}
+      {view === 'templates' && (
+        <>
+          <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
+            {/* Blank store card */}
+            <button onClick={onNew} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 10, padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 200, gap: 12, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 19, color: '#192853', letterSpacing: '.5px' }}>Start from Blank</div>
+              <div style={{ fontSize: 13 }}>Build a store from scratch</div>
+            </button>
+            {templates.map((t) => {
+              const pay = t.payment_mode === 'either' ? 'Paid + Invoice' : t.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only';
+              const deliver = t.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
+              const nums = t.number_enabled ? (t.number_unique ? 'Unique #s' : 'On') : 'Off';
+              return (
+                <div key={t.id} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden' }}>
+                    <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(-55deg,rgba(255,255,255,0.05) 0 1px,transparent 1px 9px)' }} />
+                    <div style={{ position: 'relative', ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 20, letterSpacing: '.5px', color: '#fff', lineHeight: 1 }}>{t.name}</div>
+                  </div>
+                  <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid #EEF1F6' }}>
+                      {[['Delivery', deliver], ['Payment', pay], ['Numbers', nums]].map(([l, v]) => (
+                        <div key={l}>
+                          <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontSize: 10.5, fontWeight: 700, color: '#8A93A8' }}>{l}</div>
+                          <div style={{ fontSize: 12.5, color: '#2A2F3E', fontWeight: 600, lineHeight: 1.2, marginTop: 2 }}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                      {onNewFromTemplate && <button className="btn btn-sm btn-primary" onClick={() => onNewFromTemplate(t)} style={{ flex: 1 }}>Start Store</button>}
+                      {onToggleTemplate && <button className="btn btn-sm btn-secondary" onClick={() => onToggleTemplate(t)}>Remove Template</button>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {templates.length === 0 && (
+              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
+            )}
+          </div>
+        </>
+      )}
+
+      <style>{`@keyframes wsExpand{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}`}</style>
     </div>
   );
 }
@@ -2574,7 +3021,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
   const totalSales = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const playerCount = new Set(orderItems.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
+  const totalItems = orderItems.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
   // Sales Orders created from this store's batches, with how many orders each covers.
   const soSummary = (() => {
@@ -2695,7 +3142,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         return (
           <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 12, marginBottom: 12, background: `linear-gradient(120deg, ${primary} 0%, ${shadeHex(primary, -24)} 100%)`, borderBottom: `3px solid ${accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.14)' }}>
             <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
-            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '14px 18px', color: '#fff' }}>
+            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, padding: '14px 18px', color: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 13, minWidth: 0 }}>
                 {s.logo_url
                   ? <img src={s.logo_url} alt="" style={{ height: 48, width: 48, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, flexShrink: 0, boxShadow: '0 2px 8px rgba(0,0,0,.28)' }} />
@@ -2706,9 +3153,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
                   <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start', paddingTop: 2 }}>
                 <BannerStat label="Orders" value={orders.length} />
-                <BannerStat label="Players" value={playerCount} />
+                <BannerStat label="Items" value={totalItems} />
                 <BannerStat label="Sales" value={money(totalSales)} />
                 {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
               </div>
@@ -7491,7 +7938,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
               <React.Fragment key={o.id}>
-              <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+              <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
@@ -7504,13 +7951,13 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
               {isOpen && (
-                <tr style={{ background: '#f8fafc' }}>
+                <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                       <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
                         {lineItems.map((i) => (
-                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                          <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
                             <td style={td}>{i.sku || i.name || '—'}</td>
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
