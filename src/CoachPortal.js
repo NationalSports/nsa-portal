@@ -1484,7 +1484,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
-              {k:'shop',t:'Shop Gear',sub:'Browse the team store',icon:'🛍️',accent:false},
+              {k:'shop',t:'Catalogs',sub:'Browse the team store',icon:'🛍️',accent:false},
               ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
@@ -1916,7 +1916,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {page==='shop'&&<div style={{marginBottom:24}}>
           <div style={{marginBottom:22}}>
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>{customer.name} Team Store</div>
-            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Shop Gear</h1>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Catalogs</h1>
             <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
           </div>
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',minHeight:260,display:'flex',flexDirection:'column',justifyContent:'center'}}>
