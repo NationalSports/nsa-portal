@@ -8171,7 +8171,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                       <tbody>
                         {lineItems.map((i) => (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}>{i.sku || i.name || '—'}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
