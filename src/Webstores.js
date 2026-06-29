@@ -1389,6 +1389,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const groupFields = {};
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
+    if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
     if (Object.keys(groupFields).length) {
       const cat = detail?.catalog || [];
       const me = cat.find((c) => c.id === id);
@@ -1769,7 +1770,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const openIds = new Set(open.map((o) => o.id));
     const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
     const stockByPid = {};
-    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     return { open, openIds, lines, stockByPid, orderById };
   }, [detail]);
@@ -1789,7 +1790,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const ids = new Set(valid.map((o) => o.id));
     const lines = (detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent);
     const stockByPid = {};
-    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
     return { valid, lines, stockByPid, orderById, roster: detail?.roster || [] };
   }, [detail]);
@@ -1847,7 +1848,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
     const stockByPid = {};
-    (detail.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
     // produced to demand, so they're never a stock shortfall — same as products with
     // no stock record (which the `if (!st) return` below already skips).
@@ -1860,10 +1861,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const wh = Number((st.size_stock || {})[size]) || 0;
       const ven = Number((st.vendor_size_stock || {})[size]) || 0;
       const avail = wh + ven;
-      if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
+      if (q > avail) shortages.push({ pid, size, sku: st.sku || '', label: `${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}` });
     });
     // Everything from here on runs once the user confirms in the modal below.
-    const proceed = async () => {
+    // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
+    const proceed = async (inlineOverrides = {}) => {
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
@@ -1907,11 +1909,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // Aggregate by product + size; build parallel number/name rosters per size
     // (one entry per garment unit) so they attach as real deco lines.
+    // size_skus overrides: if a size maps to a different vendor SKU, it becomes its
+    // own SO line (same art/deco, same price, but a different item number to source).
+    const sizeSkusByCatPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
     const byProduct = {};
     lines.forEach((i) => {
-      const pid = i.product_id || i.sku || 'unknown';
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[pid]; const sz = i.size || 'OS'; const q = i.qty || 1;
+      const basePid = i.product_id || i.sku || 'unknown';
+      const sz = i.size || 'OS';
+      const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
+      const pid = basePid + '§' + effectiveSku;
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[pid]; const q = i.qty || 1;
       const pdef = personalize[i.product_id] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
       g.collected = r2(g.collected + collectedForLine(i));
@@ -2074,7 +2083,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }; // end proceed
 
     // Open the styled confirm modal; it calls proceed() on Create.
-    setSoPrompt({ count: open.length, shortages, proceed });
+    setSoPrompt({ count: open.length, shortages, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -2178,7 +2187,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} onCancel={() => setSoPrompt(null)} onConfirm={async () => { const p = soPrompt.proceed; setSoPrompt(null); await p(); }} />}
+      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
@@ -2202,19 +2211,101 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   );
 }
 
+// Searchable product picker for substitute SKUs in the SO confirm modal.
+// Queries products as the rep types; fetches live stock from webstore_storefront_products
+// for that size so they can see what's actually available before picking.
+// Uses position:fixed for the dropdown so it escapes the modal's overflow:hidden.
+function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
+  const [q, setQ] = useState(value || '');
+  const [results, setResults] = useState([]);
+  const [resultStock, setResultStock] = useState({});
+  const [open, setOpen] = useState(false);
+  const [dropPos, setDropPos] = useState(null);
+  const wrapRef = useRef(null);
+  const timer = useRef(null);
+  const search = (text) => {
+    setQ(text);
+    onChange(text);
+    if (timer.current) clearTimeout(timer.current);
+    if (!text.trim()) { setResults([]); setOpen(false); return; }
+    timer.current = setTimeout(async () => {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color').or(`sku.ilike.%${text}%,name.ilike.%${text}%`).limit(8);
+      const rows = data || [];
+      setResults(rows);
+      // Fetch size stock for found products from this store's storefront view.
+      if (rows.length && storeId) {
+        const pids = rows.map((p) => p.id);
+        const { data: sr } = await supabase.from('webstore_storefront_products').select('product_id,size_stock,vendor_size_stock').eq('store_id', storeId).in('product_id', pids);
+        const fresh = {};
+        (sr || []).forEach((r) => { fresh[r.product_id] = r; });
+        setResultStock(fresh);
+      }
+      if (wrapRef.current) {
+        const r = wrapRef.current.getBoundingClientRect();
+        setDropPos({ top: r.bottom + 4, left: r.left });
+      }
+      setOpen(true);
+    }, 250);
+  };
+  const openAgain = () => { if (results.length) { if (wrapRef.current) { const r = wrapRef.current.getBoundingClientRect(); setDropPos({ top: r.bottom + 4, left: r.left }); } setOpen(true); } };
+  const select = (p) => { setQ(p.sku); onChange(p.sku); setOpen(false); };
+  return (
+    <div ref={wrapRef} style={{ flex: '0 0 auto' }}>
+      <input className="form-input" value={q} onChange={(e) => search(e.target.value)}
+        onFocus={openAgain}
+        onBlur={() => setTimeout(() => setOpen(false), 180)}
+        placeholder="Search SKU or name…"
+        style={{ fontSize: 12, padding: '4px 8px', width: 220, fontFamily: 'monospace' }} />
+      {open && results.length > 0 && dropPos && (
+        <div style={{ position: 'fixed', top: dropPos.top, left: dropPos.left, zIndex: 9999, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.22)', minWidth: 360, maxHeight: 280, overflowY: 'auto' }}>
+          {results.map((p, i) => {
+            const st = resultStock[p.id] || stockByPid[p.id];
+            const wh = st ? (Number((st.size_stock || {})[size]) || 0) : null;
+            const ven = st ? (Number((st.vendor_size_stock || {})[size]) || 0) : null;
+            const inStock = wh !== null ? wh + ven : null;
+            return (
+              <div key={p.id} onMouseDown={() => select(p)}
+                style={{ padding: '9px 13px', cursor: 'pointer', borderTop: i ? '1px solid #f1f5f9' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f8fafc'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 12, color: '#1e293b' }}>{p.sku}</span>
+                  {p.brand && <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 6 }}>{p.brand}</span>}
+                  <div style={{ fontSize: 12, color: '#475569', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{p.color ? ` · ${p.color}` : ''}</div>
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0, color: inStock === null ? '#94a3b8' : inStock > 0 ? '#15803d' : '#dc2626' }}>
+                  {inStock === null ? 'stock N/A' : inStock > 0 ? `${size}: ${inStock} avail` : `${size}: out of stock`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Styled confirm for "Create Sales Order" — replaces the native window.confirm,
 // shows the order count and any inventory shortfalls before the batch runs.
-function SoConfirmModal({ count, shortages = [], onCancel, onConfirm }) {
+// Shortfall rows have a product search so the rep can pick a substitute SKU
+// with live stock verification without leaving the modal.
+function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
-  const go = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  // keyed by "pid|size" → altSku string
+  const [overrideSkus, setOverrideSkus] = useState({});
+  const setOverride = (pid, size, val) => setOverrideSkus((prev) => {
+    const k = pid + '|' + size; const n = { ...prev };
+    const v = val.trim().toUpperCase(); if (v) n[k] = v; else delete n[k]; return n;
+  });
+  const go = async () => { setBusy(true); try { await onConfirm(overrideSkus); } finally { setBusy(false); } };
   return (
     <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 560, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
         <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
           <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
           <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
         </div>
-        <div style={{ padding: '20px 22px', maxHeight: '52vh', overflowY: 'auto' }}>
+        <div style={{ padding: '20px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
           {shortages.length ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
@@ -2222,10 +2313,19 @@ function SoConfirmModal({ count, shortages = [], onCancel, onConfirm }) {
               </div>
               <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, overflow: 'hidden' }}>
                 {shortages.map((s, i) => (
-                  <div key={i} style={{ fontSize: 13, color: '#7c2d12', padding: '8px 12px', borderTop: i ? '1px solid #fde68a' : 'none', lineHeight: 1.4 }}>{s.replace(/^•\s*/, '')}</div>
+                  <div key={i} style={{ borderTop: i ? '1px solid #fde68a' : 'none', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.4, marginBottom: 6 }}>
+                      {s.label}
+                      {s.sku && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 12, color: '#92400e', background: '#fef3c7', borderRadius: 4, padding: '1px 5px' }}>{s.sku}</span>}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', fontWeight: 600 }}>Sub for {s.size}:</span>
+                      <SkuSearchInput size={s.size} value={overrideSkus[s.pid + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid, s.size, v)} stockByPid={stockByPid} storeId={storeId} />
+                    </div>
+                  </div>
                 ))}
               </div>
-              <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>These may need a PO or backorder. Run the <b>Stock report</b> to see exactly who's affected. You can still create the Sales Order — shortfalls flow through as items to source.</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
             </>
           ) : (
             <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
@@ -4788,6 +4888,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _invSrc = invSrcByPid[item.product_id];
   const inventoryBacked = !isBundle && !!_invSrc && _invSrc !== 'manual';
   const [trackInv, setTrackInv] = useState(item.track_inventory !== false);
+  const [sizeSkus, setSizeSkus] = useState(item.size_skus || {});
   // Estimated NSA decoration cost — NSA's cost to decorate this item, which raises the sale
   // price to keep the margin (the delta is stored as deco_upcharge). Defaults to $5 when the
   // item has artwork, $0 when it doesn't. Rep-editable.
@@ -4988,7 +5089,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
@@ -5021,6 +5122,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
       // Inventory tracking only matters for stock-backed items; persist the choice there.
       if (inventoryBacked) fields.track_inventory = !!trackInv;
+      // Size-level SKU overrides: only persist when there's something set.
+      fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
     }
     onSave(fields);
     _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
@@ -5306,6 +5409,28 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                   : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
               </span>
             </label>
+          </ItemSection>
+        )}
+        {!isBundle && item.product_id && sizeList.length > 0 && (
+          <ItemSection title="SKU overrides by size" hint="· substitute a different item number for specific sizes — same decoration, same price">
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Leave blank to use the default SKU{item.sku ? ` (${item.sku})` : ''}. Sizes with an override become a separate line on the Sales Order.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'center' }}>
+              {sizeList.map((sz) => (
+                <React.Fragment key={sz}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{sz}</span>
+                  <input
+                    className="form-input"
+                    value={sizeSkus[sz] || ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim().toUpperCase();
+                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = v; else delete n[sz]; return n; });
+                    }}
+                    placeholder={item.sku || 'e.g. JL5412XL'}
+                    style={{ fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
           </ItemSection>
         )}
         </div>
@@ -8556,6 +8681,18 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   const [busy, setBusy] = useState(false);
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
+
+  // Auto-suggest refund = value of removed items when user clicks "remove"
+  useEffect(() => {
+    if (!rows.some((r) => r._removed)) { setRefundAmt(''); return; }
+    const bSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+    const bFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+    const sub = bSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+    const fund = bFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+    const nt = Math.max(0, sub + fund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    const delta = Math.max(0, (Number(order.total) || 0) - (Number(order.tax) || 0) - nt);
+    setRefundAmt(delta > 0.005 ? delta.toFixed(2) : '');
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only recompute total when the user has actually made a change — bundle
   // components have unit_price:0 (price lives on the parent row which is
