@@ -12,8 +12,8 @@ const money = (n) => '$' + (Number(n) || 0).toFixed(2);
 async function buildBreakdown(admin, store) {
   const { data: orders } = await admin.from('webstore_orders')
     .select('id,status,subtotal,fundraise_amt,total').eq('store_id', store.id);
-  // Real demand only — drop cancelled / never-paid carts.
-  const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'pending' && o.status !== 'pending_payment');
+  // Real demand only — drop cancelled / refunded / never-paid carts.
+  const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending' && o.status !== 'pending_payment');
   const orderIds = live.map((o) => o.id);
   let units = 0;
   for (let i = 0; i < orderIds.length; i += 200) {
@@ -61,8 +61,9 @@ async function notifyStoreClosed(admin, store, opts = {}) {
     if (error) console.error('[webstore-close] todo insert failed:', error.message);
   }
 
-  // 2. Email the rep + assigned CSR.
-  const ids = [store.rep_id, store.csr_id].filter(Boolean);
+  // 2. Email the assigned CSR — they process the closed store. Fall back to the
+  //    rep only when no CSR is assigned (the rep otherwise gets the daily digest).
+  const ids = [store.csr_id || store.rep_id].filter(Boolean);
   let emailed = [];
   if (ids.length && brevoKey) {
     const { data: members } = await admin.from('team_members').select('id,name,email').in('id', ids);

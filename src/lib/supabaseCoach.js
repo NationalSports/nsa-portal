@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { makeBreakerFetch } from './requestBreaker';
 
 const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || 'https://your-project.supabase.co';
 const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY || 'your-anon-key';
@@ -30,6 +31,7 @@ export const supabaseCoach = createClient(supabaseUrl, supabaseAnonKey, {
   },
   global: {
     headers: { 'x-client-info': 'nsa-portal-coach' },
+    fetch: makeBreakerFetch({ label: 'circuit-breaker:coach' }),
   },
   db: {
     schema: 'public',
