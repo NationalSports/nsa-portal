@@ -1973,7 +1973,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
     const discNote = totalDiscount > 0 ? `\nCoupon discounts applied: −$${totalDiscount.toFixed(2)} (spread across line prices).` : '';
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}`;
+    // Payment split — production runs as ONE order, but card orders are already
+    // collected via Stripe; only the team-tab total should be invoiced to the club.
+    const cardOrders = open.filter((o) => o.payment_mode === 'paid');
+    const tabOrders = open.filter((o) => o.payment_mode !== 'paid');
+    const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+    const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
+    const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
+    const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
