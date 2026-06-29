@@ -648,7 +648,7 @@ function flyerHtml(store, items = []) {
   const accentDeep = dk(accent, 0.24);
   const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && !i.archived && i.kind !== 'bundle');
-  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;overflow:hidden"><img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:cover"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name)}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
+  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;background:#fff;display:flex;align-items:center;justify-content:center;padding:4px"><img src="${_esc(it.image_front_url)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name)}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
   const p1Items = visItems.slice(0, 8);
   const p2Items = visItems.slice(8);
   return `<!doctype html><html><head>
@@ -805,7 +805,7 @@ async function generateFlyerPdfBase64(store, items = []) {
       const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
       doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,cardH,'FD');
       const b64=imgCache[item.image_front_url];
-      if(b64){ try{ doc.addImage(b64,'JPEG',x+2,iy+2,colW-4,imgH-4); }catch(_){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); } }
+      if(b64){ try{ const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x+2,iy+2,colW-4,imgH-4,'','FAST'); }catch(_){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); } }
       else { doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
       doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...INK);
       const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-8);
@@ -890,17 +890,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [cust]);
 
   // Send the family-facing launch email with PDF flyer attached.
-  const emailDirector = useCallback(async (store) => {
-    const to = (store.director_email || store.coach_contact_email || '').trim();
+  // emailOverride lets the EmailStoreLinkModal specify a different recipient.
+  const emailDirector = useCallback(async (store, emailOverride) => {
+    const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
-    const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+    const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
     const items = (catalog || []).filter((i) => !i.archived);
+    // Fall back to master product image when the store item has no custom mockup.
+    const missingImgPids = [...new Set(items.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
+    if (missingImgPids.length) {
+      const { data: pRows } = await supabase.from('products').select('id,image_front_url').in('id', missingImgPids);
+      const frontByPid = {}; (pRows || []).forEach((p) => { if (p.image_front_url) frontByPid[p.id] = p.image_front_url; });
+      items.forEach((i) => { if (!i.image_front_url && frontByPid[i.product_id]) i.image_front_url = frontByPid[i.product_id]; });
+    }
     let attachment;
     try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
     const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
     if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Family email sent to ' + to + (attachment ? ' with PDF flyer' : ''));
+    else flash('Store link emailed to ' + to + (attachment ? ' with PDF flyer' : ''));
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
@@ -966,13 +974,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
     const costByPid = {};
+    const imgFrontByPid = {};
     const imgBackByPid = {};
     const invSrcByPid = {}; // product_id -> inventory_source ('manual' = custom / not stock-tracked)
     if (pidList.length) {
-      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost,image_back_url,inventory_source').in('id', pidList);
+      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost,image_front_url,image_back_url,inventory_source').in('id', pidList);
       for (const cp of costRows || []) {
         const cc = (cp.is_clearance && cp.clearance_cost != null) ? Number(cp.clearance_cost) : Number(cp.nsa_cost);
         costByPid[cp.id] = Number.isFinite(cc) ? cc : null;
+        if (cp.image_front_url) imgFrontByPid[cp.id] = cp.image_front_url;
         if (cp.image_back_url) imgBackByPid[cp.id] = cp.image_back_url;
         invSrcByPid[cp.id] = cp.inventory_source || null;
       }
@@ -984,6 +994,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // The storefront snapshot doesn't carry back images — fall back to the master product's
     // image_back_url so the editor's Back tab (and mockups) show it without a manual upload.
     catalog.forEach((c) => { const back = c.product_id && imgBackByPid[c.product_id]; if (!back) return; const s = stockByWp[c.id]; if (s) { if (!s.image_back_url) s.image_back_url = back; } else { stockByWp[c.id] = { image_back_url: back }; } });
+    // Same for front image — if the store item has no custom mockup, use the master product photo.
+    catalog.forEach((c) => { if (!c.image_front_url && c.product_id && imgFrontByPid[c.product_id]) c.image_front_url = imgFrontByPid[c.product_id]; });
     // Customer art LIBRARY — the SAME sources as the customer's Artwork tab: the team's
     // + parent org's saved art_files, PLUS every art file off their sales orders &
     // estimates (assembled in memory — that's where most file-backed art lives, which is
@@ -1071,8 +1083,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+      const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
       const items = (catalog || []).filter((i) => !i.archived);
+      const _mpids = [...new Set(items.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
+      if (_mpids.length) { const { data: _pr } = await supabase.from('products').select('id,image_front_url').in('id', _mpids); const _fp = {}; (_pr||[]).forEach((p) => { if (p.image_front_url) _fp[p.id] = p.image_front_url; }); items.forEach((i) => { if (!i.image_front_url && _fp[i.product_id]) i.image_front_url = _fp[i.product_id]; }); }
       let attachment;
       try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
       await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
@@ -3413,8 +3427,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
               <button type="button" onClick={async () => {
                 try {
                   setBusy(true);
-                  const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+                  const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
                   const pdfItems = (cat || []).filter((i) => !i.archived);
+                  const missingPids = [...new Set(pdfItems.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
+                  if (missingPids.length) { const { data: pr } = await supabase.from('products').select('id,image_front_url').in('id', missingPids); const fp = {}; (pr||[]).forEach((p) => { if (p.image_front_url) fp[p.id] = p.image_front_url; }); pdfItems.forEach((i) => { if (!i.image_front_url && fp[i.product_id]) i.image_front_url = fp[i.product_id]; }); }
                   const b64 = await generateFlyerPdfBase64(store, pdfItems);
                   const a = document.createElement('a');
                   a.href = 'data:application/pdf;base64,' + b64;
@@ -3426,8 +3442,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
                 ↓ Download Flyer PDF
               </button>
               <button type="button" onClick={async () => {
-                const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+                const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,product_id,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
                 const printItems = (cat || []).filter((i) => !i.archived);
+                const missingPids = [...new Set(printItems.filter((i) => !i.image_front_url && i.product_id).map((i) => i.product_id))];
+                if (missingPids.length) { const { data: pr } = await supabase.from('products').select('id,image_front_url').in('id', missingPids); const fp = {}; (pr||[]).forEach((p) => { if (p.image_front_url) fp[p.id] = p.image_front_url; }); printItems.forEach((i) => { if (!i.image_front_url && fp[i.product_id]) i.image_front_url = fp[i.product_id]; }); }
                 const w = window.open('', '_blank');
                 if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
                 w.document.write(flyerHtml(store, printItems)); w.document.close();
