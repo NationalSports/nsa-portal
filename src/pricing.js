@@ -42,7 +42,10 @@ export const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
   const qty=params.qty||1;const tiers=p.pricing_tiers.tiers;
   let tier=null;
   if(decoType==='embroidery'){
-    const st=params.stitches||0;
+    // Default a missing stitch count to the standard left-chest size (8000) — same default the
+    // UI uses — so an unspecified design prices at a realistic tier instead of silently matching
+    // the cheapest min_stitches:0 tier.
+    const st=params.stitches||8000;
     tier=tiers.find(t=>st>=t.min_stitches&&st<=(t.max_stitches||999999));
   }else if(decoType==='screen_print'){
     const colors=params.colors||1;
