@@ -1553,31 +1553,92 @@ function OrderStatusPage({ store, theme, orderId }) {
   }, [orderId]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
-  // Stage index handles both the original 4-step flow and the OMG 6-value set
-  // (received/bagging). complete maps to the final step.
+
   const stepIdxOf = (ls) => ({ pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 }[ls] ?? 0);
+  const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
   const curIdx = Math.max(0, ...items.filter((i) => !i.is_bundle_parent).map((i) => stepIdxOf(i.line_status)));
+  const STEPS = ['Ordered', 'Received', 'In Production', 'Bagging', 'Shipped'];
+  const statusBadge = (ls) => {
+    const s = (ls || 'pending').replace(/_/g, ' ');
+    const map = { pending: ['#fef3c7', '#b45309'], received: ['#dbeafe', '#1d4ed8'], in_production: [theme.primary + '22', theme.primary], bagging: ['#ede9fe', '#7c3aed'], shipped: ['#dcfce7', '#15803d'], complete: ['#dcfce7', '#15803d'] };
+    const [bg, fg] = map[(ls || 'pending')] || map.pending;
+    return <span style={{ background: bg, color: fg, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', padding: '4px 10px', borderRadius: 20, whiteSpace: 'nowrap' }}>{s}</span>;
+  };
+
+  const paid = order.payment_mode === 'paid';
+  const discount = Number(order.discount_amt) || 0;
+  const shipping = Number(order.shipping_fee) || 0;
+  const tax = Number(order.tax) || 0;
+  const subtotal = Number(order.total) - shipping - tax + discount;
+
   return (
-    <div style={{ paddingTop: 26, maxWidth: 640 }}>
+    <div style={{ paddingTop: 22, maxWidth: 660 }}>
       <BackLink store={store} theme={theme} />
-      <div style={{ textAlign: 'center', marginBottom: 26 }}>
-        <div style={{ width: 64, height: 64, borderRadius: '50%', background: theme.primary, color: '#fff', display: 'grid', placeItems: 'center', fontSize: 30, margin: '0 auto 14px' }}>✓</div>
-        <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,5vw,42px)', letterSpacing: 0.3, textTransform: 'uppercase', margin: '0 0 8px', color: theme.ink }}>Order Received</h1>
-        <div style={{ fontSize: 15, color: theme.subText }}>{order.payment_mode === 'paid' ? 'Paid in full' : 'Invoiced to the team'} · a confirmation was sent to {order.buyer_email}.</div>
+
+      {/* Hero confirmation card */}
+      <div style={{ background: '#fff', borderLeft: `5px solid ${theme.accent}`, borderRadius: 10, padding: '22px 24px', marginBottom: 20, display: 'flex', gap: 18, alignItems: 'center', boxShadow: '0 1px 6px rgba(0,0,0,.07)' }}>
+        <div style={{ width: 52, height: 52, minWidth: 52, borderRadius: '50%', background: theme.accent, color: '#fff', display: 'grid', placeItems: 'center', fontSize: 24 }}>✓</div>
+        <div>
+          <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(22px,4vw,30px)', letterSpacing: 0.3, textTransform: 'uppercase', margin: '0 0 4px', color: theme.ink, lineHeight: 1 }}>Order Confirmed</h1>
+          <div style={{ fontSize: 14, color: theme.subText }}>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <b style={{ color: theme.ink }}>{order.buyer_email}</b></div>
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 22, flexWrap: 'wrap' }}>
-        {['Ordered', 'Received', 'In production', 'Bagging', 'Shipped'].map((s, i) => (
-          <div key={s} style={{ flex: 1, minWidth: 92, textAlign: 'center', padding: '11px 6px', borderRadius: 4, fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', background: i <= curIdx ? theme.primary : theme.warm, color: i <= curIdx ? '#fff' : theme.subText }}>{s}</div>
+
+      {/* Progress tracker */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 24 }}>
+        {STEPS.map((s, i) => (
+          <div key={s} style={{ flex: 1, textAlign: 'center', padding: '9px 4px', borderRadius: 6, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', background: i <= curIdx ? theme.primary : theme.warm, color: i <= curIdx ? '#fff' : theme.subText, transition: 'background .2s' }}>{i < curIdx ? '✓ ' : ''}{s}</div>
         ))}
       </div>
-      {items.filter((i) => !i.is_bundle_parent).map((i) => (
-        <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #eef1f5', fontSize: 14 }}>
-          <div>{i.sku}{i.variant_label ? ' · ' + i.variant_label : ''}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}</div>
-          <div style={{ color: '#64748b' }}>{(i.line_status || 'pending').replace(/_/g, ' ')}</div>
+
+      {/* Item cards */}
+      <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 10 }}>Your Order</div>
+      <div style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 6px rgba(0,0,0,.07)', marginBottom: 20 }}>
+        {displayItems.map((item, idx) => {
+          const img = item.image_url;
+          const label = item.name || item.sku || (item.is_bundle_parent ? 'Player Pack' : 'Item');
+          const details = [item.variant_label, item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name].filter(Boolean).join(' · ');
+          return (
+            <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', borderBottom: idx < displayItems.length - 1 ? `1px solid ${theme.warm}` : 'none' }}>
+              {img
+                ? <img src={img} alt={label} style={{ width: 64, height: 64, minWidth: 64, objectFit: 'cover', borderRadius: 8, background: '#f4f6f9', display: 'block' }} />
+                : <div style={{ width: 64, height: 64, minWidth: 64, borderRadius: 8, background: theme.warm, display: 'grid', placeItems: 'center', fontSize: 22 }}>👕</div>
+              }
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: theme.ink, marginBottom: 3 }}>{label}{item.qty > 1 ? ` ×${item.qty}` : ''}</div>
+                {details && <div style={{ fontSize: 12, color: theme.subText }}>{details}</div>}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                {statusBadge(item.line_status)}
+                {item.unit_price > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: theme.ink }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Order summary */}
+      <div style={{ background: '#fff', borderRadius: 10, padding: '18px 20px', boxShadow: '0 1px 6px rgba(0,0,0,.07)', marginBottom: 20 }}>
+        {subtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Subtotal</span><span>{money(subtotal)}</span></div>}
+        {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: '#16a34a', marginBottom: 8 }}><span>Discount{order.coupon_code ? ` (${order.coupon_code})` : ''}</span><span>−{money(discount)}</span></div>}
+        {shipping > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Shipping</span><span>{money(shipping)}</span></div>}
+        {tax > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Sales tax</span><span>{money(tax)}</span></div>}
+        <div style={{ borderTop: `1px solid ${theme.warm}`, marginTop: 10, paddingTop: 12, display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink }}>Total</span>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, color: theme.ink }}>{money(order.total)}</span>
         </div>
-      ))}
-      <div style={{ marginTop: 18, fontWeight: 900, fontSize: 18 }}>Total: {money(order.total)}</div>
+        {store.delivery_mode !== 'ship_home' && <div style={{ marginTop: 12, fontSize: 13, color: theme.subText }}>📦 Delivered to the team — no shipping needed.</div>}
+      </div>
+
       {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+
+      {/* What's next */}
+      <div style={{ background: theme.warm, borderRadius: 10, padding: '18px 20px', marginBottom: 24 }}>
+        <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>What's next</div>
+        <div style={{ fontSize: 14, color: theme.ink, lineHeight: 1.6 }}>Your order has been received and will be processed with the rest of the team's gear. You'll get an email update when items move into production. Everything ships together when the store closes.</div>
+      </div>
+
+      <button onClick={() => navTo('/shop/' + store.slug)} style={{ ...cta(theme), display: 'inline-block', width: 'auto', padding: '13px 28px', fontSize: 14 }}>← Back to store</button>
     </div>
   );
 }
