@@ -3465,12 +3465,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const icon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'🎨';
                     return<span key={di} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'1px 6px 1px 1px'}}>
                       <span title={artF?.name||'No artwork selected'} style={{width:22,height:22,borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,overflow:'hidden',background:_thumb?'white':(!d.art_file_id||d.art_file_id==='__tbd')?'#fef3c7':'#ede9fe',border:_thumb?'1px solid #e2e8f0':'none'}}>{_thumb?<img src={_thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:icon}</span>
-                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else{changeArtFileId(idx,di,v||null)}}}>
+                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e2=>({...e2,art_files:[...(e2.art_files||[]),newTbd],items:safeItems(e2).map((it2,x)=>x===idx?{...it2,decorations:it2.decorations.map((d2,i)=>i===di?{...d2,art_file_id:newTbd.id}:d2)}:it2),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                         <option value="">⚠️ Select artwork...</option>
                         <option value="__tbd">🎨 Art TBD</option>
+                        <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
-                      {d.position&&<span style={{fontSize:10,color:'#7c3aed',fontWeight:600,whiteSpace:'nowrap'}}>{d.position}</span>}
+                      <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
                   });
                 })()}
@@ -10993,11 +10994,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const isTopstar=!!dp.topstar_service;
         const _poParentLabel=isE?'Estimate':'SO';
         const _rate=safeNum(dp.unit_cost);
+        // Per-item costing: each covered item can carry its own rate in dp.item_costs[idx];
+        // falls back to the PO-level unit_cost when no override is set. expected_cost is the
+        // sum of (item qty × item rate) so downstream totals stay correct for mixed rates.
+        const _rowRate=ii=>dp.item_costs&&dp.item_costs[ii]!=null?safeNum(dp.item_costs[ii]):_rate;
+        const _hasPerItem=!!(dp.item_costs&&Object.keys(dp.item_costs).length>0);
         const _saveDp=(updatedDp,msg)=>{
           const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
           setO(updated);onSave(updated);
           setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
           if(msg)nf(msg);
+        };
+        // Commit a per-item rate override, pruning empties and re-deriving expected_cost.
+        const _setRowCost=(ii,val)=>{
+          const v=val===''||val==null?null:Math.round((parseFloat(val)||0)*100)/100;
+          const ic={...(dp.item_costs||{})};
+          if(v==null)delete ic[ii];else ic[ii]=v;
+          const exp=(dp.item_idxs||[]).reduce((a,k)=>{const it=soItems[k];if(!it)return a;const q=Object.values(safeSizes(it)).reduce((s,x)=>s+safeNum(x),0);const r=ic[k]!=null?ic[k]:_rate;return a+q*r},0);
+          _saveDp({...dp,item_costs:Object.keys(ic).length?ic:undefined,expected_cost:Math.round(exp*100)/100},'Updated per-item cost');
         };
         const _szSort=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);if(ia!==-1||ib!==-1)return(ia===-1?99:ia)-(ib===-1?99:ib);const na=parseFloat(a),nb=parseFloat(b);if(!isNaN(na)&&!isNaN(nb))return na-nb;return String(a).localeCompare(String(b))};
         // One row per covered SO item: live size spread, qty, and outside-deco instructions.
@@ -11005,10 +11019,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>_szSort(a,b));
           const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
           const decos=(it.decorations||[]).filter(d=>d&&d.kind==='outside_deco');
-          return{idx:ii,it,sizes,qty,decos,lineTotal:Math.round(qty*_rate*100)/100};
+          const rate=_rowRate(ii);
+          return{idx:ii,it,sizes,qty,decos,rate,lineTotal:Math.round(qty*rate*100)/100};
         }).filter(Boolean);
         const liveQty=coveredRows.reduce((a,r)=>a+r.qty,0);
-        const liveExpected=Math.round(liveQty*_rate*100)/100;
+        const liveExpected=Math.round(coveredRows.reduce((a,r)=>a+r.lineTotal,0)*100)/100;
         const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
@@ -11093,14 +11108,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }}>📥 Download</button>
               <button className="btn btn-sm" style={{marginLeft:'auto',background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
                 if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
-                const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null);nf('Deleted '+(dp.po_id||'decoration PO'));
+                // Unlink covered items: clear the outside-routing soft flags so they don't linger
+                // as "outsourced with no PO" (which would zero their deco cost and skip in-house jobs).
+                // Leave any item still covered by ANOTHER deco PO flagged.
+                const _remaining=(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id);
+                const _stillCovered=new Set(_remaining.flatMap(p=>p.item_idxs||[]));
+                const _clr=new Set((dp.item_idxs||[]).filter(ii=>!_stillCovered.has(ii)));
+                const updated={...o,
+                  items:safeItems(o).map((it,xi)=>_clr.has(xi)?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'&&(d.fulfillment==='outside'||d.deco_po_id)?{...d,fulfillment:undefined,deco_po_id:undefined,vendor:undefined}:d)}:it),
+                  deco_pos:_remaining,updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null);nf('Deleted '+(dp.po_id||'decoration PO')+' — covered items returned to in-house');
               }}>🗑 Delete PO</button>
             </div>
             <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
               <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
                 <div><div style={{fontSize:11,opacity:0.7}}>Units Covered</div><div style={{fontSize:24,fontWeight:800}}>{dp.qty||0}</div></div>
-                <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${safeNum(dp.unit_cost).toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>{_hasPerItem?'Avg Unit Cost':'Unit Cost'}</div><div style={{fontSize:24,fontWeight:800}}>${(_hasPerItem&&liveQty>0?liveExpected/liveQty:safeNum(dp.unit_cost)).toFixed(2)}{_hasPerItem&&<span style={{fontSize:10,fontWeight:600,opacity:0.6,marginLeft:4}}>per-item</span>}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>Expected</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${expected.toFixed(2)}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>Actual (billed)</div><div style={{fontSize:24,fontWeight:800,color:actual>0?'#4ade80':'#94a3b8'}}>${actual.toFixed(2)}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>{(dp._bill_details||[]).length}</div></div>
@@ -11136,7 +11159,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(!finalVendor){nf('Pick a vendor (or type a name under Other)','error');return}
                       const uc=Math.round((parseFloat(decoEditPo.unit_cost)||0)*100)/100;
                       const dv=decoVendors.find(v=>v.name===finalVendor);
-                      const updatedDp={...dp,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:Math.round(safeNum(dp.qty)*uc*100)/100,drop_ship:decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
+                      // Recompute expected from per-item rates (uc is the fallback for un-overridden items).
+                      const _exp=_hasPerItem?Math.round((dp.item_idxs||[]).reduce((a,k)=>{const it=soItems[k];if(!it)return a;const q=Object.values(safeSizes(it)).reduce((s,x)=>s+safeNum(x),0);const r=dp.item_costs&&dp.item_costs[k]!=null?safeNum(dp.item_costs[k]):uc;return a+q*r},0)*100)/100:Math.round(safeNum(dp.qty)*uc*100)/100;
+                      const updatedDp={...dp,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_exp,drop_ship:decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
                       _saveDp(updatedDp,'✎ Updated '+newPoId);
                       setDecoEditPo(null);
                     }}>Save Details</button>
@@ -11152,7 +11177,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const editQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const editableItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>editQty(it)>0||(dp.item_idxs||[]).includes(it._idx));
               const newQty=editing?editableItems.reduce((a,it)=>a+(decoEditItems.sel[it._idx]?editQty(it):0),0):0;
-              const newExpected=Math.round(newQty*safeNum(dp.unit_cost)*100)/100;
+              const newExpected=editing?Math.round(editableItems.reduce((a,it)=>a+(decoEditItems.sel[it._idx]?editQty(it)*_rowRate(it._idx):0),0)*100)/100:0;
               return<div className="card" style={{marginBottom:16}}>
               <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><h2>Items on this PO ({coveredRows.length})<span style={{fontSize:10,fontWeight:400,color:'#94a3b8',marginLeft:8}}>drives price-list lookup and item badges</span></h2>
                 {!editing?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const sel={};(dp.item_idxs||[]).forEach(ii=>{sel[ii]=true});setDecoEditItems({decoPoId:dpKey,sel})}}>✎ Edit Items</button>
@@ -11162,7 +11187,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
                     const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
                     if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
-                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected};
+                    // Drop per-item rate overrides for items no longer on the PO.
+                    const prunedCosts=dp.item_costs?Object.fromEntries(Object.entries(dp.item_costs).filter(([k])=>itemIdxs.includes(Number(k)))):null;
+                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
                     _saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
                     setDecoEditItems(null);
                   }}>Save Items</button>
@@ -11182,7 +11209,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
                       <th style={{padding:'6px 8px',textAlign:'left'}}>Sizes</th>
                       <th style={{padding:'6px 8px',textAlign:'center'}}>Units</th>
-                      <th style={{padding:'6px 8px',textAlign:'right'}}>Rate</th>
+                      <th style={{padding:'6px 8px',textAlign:'right'}}>Rate <span style={{fontSize:9,fontWeight:400,color:'#94a3b8'}}>(per item)</span></th>
                       <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
                     </tr></thead>
                     <tbody>
@@ -11195,7 +11222,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <td style={{padding:'6px 8px',color:'#64748b'}}>{r.it.color||'—'}</td>
                         <td style={{padding:'6px 8px'}}>{r.sizes.length>0?<div style={{display:'flex',flexWrap:'wrap',gap:4}}>{r.sizes.map(([sz,q])=><span key={sz} style={{fontFamily:'monospace',fontSize:11,fontWeight:700,padding:'1px 6px',borderRadius:4,background:'#f1f5f9',color:'#334155',whiteSpace:'nowrap'}}>{sz}×{q}</span>)}</div>:<span style={{color:'#94a3b8'}}>—</span>}</td>
                         <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{r.qty}</td>
-                        <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${_rate.toFixed(2)}</td>
+                        <td style={{padding:'6px 8px',textAlign:'right'}}><span style={{color:'#94a3b8',fontSize:11,marginRight:1}}>$</span><input type="number" step="0.01" min="0" defaultValue={r.rate.toFixed(2)} key={dpKey+'-rate-'+r.idx+'-'+r.rate} onBlur={e=>{const nv=e.target.value;if((parseFloat(nv)||0).toFixed(2)!==r.rate.toFixed(2))_setRowCost(r.idx,nv)}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} title="Per-item rate — overrides the PO unit cost for this item. Clear to revert to the PO rate." style={{width:72,textAlign:'right',fontWeight:600,fontSize:12,padding:'2px 4px',border:'1px solid #ddd6fe',borderRadius:4,...(dp.item_costs&&dp.item_costs[r.idx]!=null?{background:'#faf5ff',color:'#6d28d9'}:{})}}/></td>
                         <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:13}}>${r.lineTotal.toFixed(2)}</td>
                       </tr>)}
                       <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
@@ -11217,7 +11244,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>)}
                   <div style={{display:'flex',justifyContent:'flex-end',gap:16,marginTop:8,paddingTop:8,borderTop:'1px dashed #e2e8f0',fontSize:13}}>
                     <span style={{color:'#64748b'}}>Units: <strong style={{color:'#1e40af'}}>{newQty}</strong></span>
-                    <span style={{color:'#64748b'}}>× ${safeNum(dp.unit_cost).toFixed(2)}/unit</span>
+                    {!_hasPerItem&&<span style={{color:'#64748b'}}>× ${safeNum(dp.unit_cost).toFixed(2)}/unit</span>}
                     <span style={{color:'#64748b'}}>Expected: <strong style={{color:'#166534'}}>${newExpected.toFixed(2)}</strong></span>
                   </div>
                 </>}
