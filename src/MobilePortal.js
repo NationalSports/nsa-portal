@@ -1535,9 +1535,15 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     let poList=pos.filter(p=>!p.dropShip);// drop-ship POs never arrive — keep them out of the warehouse list
     if(whPoFilter==='open')poList=poList.filter(p=>p.status!=='received');
     if(whQ.length>=2){const s=whQ.toLowerCase();poList=poList.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
-    // Group the filtered POs by batch number (NSA ####) so a whole batch can be checked in from one card.
-    const _bGroups={};poList.forEach(p=>{if(!p.batchPoNumber)return;const g=_bGroups[p.batchPoNumber]||(_bGroups[p.batchPoNumber]={batchNo:p.batchPoNumber,vendor:p.vendor||'',poKeys:[],totOpen:0,totRcv:0,totOrd:0});if(!g.vendor&&p.vendor)g.vendor=p.vendor;g.poKeys.push(p.key);g.totOpen+=p.totOpen;g.totRcv+=p.totRcv;g.totOrd+=p.totOrd});
-    const batchList=Object.values(_bGroups).filter(g=>g.poKeys.length>1);
+    // Group by batch number using all non-drop-ship POs (including received ones) so a batch
+    // card stays visible when the "open" filter hides some already-received POs in the batch.
+    // Apply the same search filter but skip the open/received filter so the full batch context
+    // is preserved. Only show the batch card if at least one PO is still open (in poList).
+    let _posForBatch=pos.filter(p=>!p.dropShip);
+    if(whQ.length>=2){const s=whQ.toLowerCase();_posForBatch=_posForBatch.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
+    const _openPoKeys=new Set(poList.map(p=>p.key));
+    const _bGroups={};_posForBatch.forEach(p=>{if(!p.batchPoNumber)return;const g=_bGroups[p.batchPoNumber]||(_bGroups[p.batchPoNumber]={batchNo:p.batchPoNumber,vendor:p.vendor||'',poKeys:[],totOpen:0,totRcv:0,totOrd:0});if(!g.vendor&&p.vendor)g.vendor=p.vendor;g.poKeys.push(p.key);g.totOpen+=p.totOpen;g.totRcv+=p.totRcv;g.totOrd+=p.totOrd});
+    const batchList=Object.values(_bGroups).filter(g=>g.poKeys.length>1&&g.poKeys.some(k=>_openPoKeys.has(k)));
     return<div className="mp-page">
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
