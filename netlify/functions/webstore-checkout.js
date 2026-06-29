@@ -505,7 +505,18 @@ async function getOrder(sb, body) {
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   const { data: items } = await sb.from('webstore_order_items').select('*').eq('order_id', order.id);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: items || [] }) };
+  const rows = items || [];
+  // Enrich items that have no stored image_url with catalog fallback images.
+  const needImg = rows.filter((i) => !i.image_url);
+  if (needImg.length) {
+    const imgByPid = {};
+    const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
+    (cat || []).forEach((c) => { if (c.image_url) { if (c.product_id) imgByPid[c.product_id] = c.image_url; imgByPid['wp:' + c.id] = c.image_url; } });
+    const pids = [...new Set(needImg.map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
+    if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
+    rows.forEach((i) => { if (!i.image_url) i.image_url = imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null) || null; });
+  }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: rows }) };
 }
 
 // ── Order tracking (by emailed status_token) ─────────────────────────

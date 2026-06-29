@@ -1554,91 +1554,247 @@ function OrderStatusPage({ store, theme, orderId }) {
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
 
-  const stepIdxOf = (ls) => ({ pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 }[ls] ?? 0);
-  const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
-  const curIdx = Math.max(0, ...items.filter((i) => !i.is_bundle_parent).map((i) => stepIdxOf(i.line_status)));
-  const STEPS = ['Ordered', 'Received', 'In Production', 'Bagging', 'Shipped'];
-  const statusBadge = (ls) => {
-    const s = (ls || 'pending').replace(/_/g, ' ');
-    const map = { pending: ['#fef3c7', '#b45309'], received: ['#dbeafe', '#1d4ed8'], in_production: [theme.primary + '22', theme.primary], bagging: ['#ede9fe', '#7c3aed'], shipped: ['#dcfce7', '#15803d'], complete: ['#dcfce7', '#15803d'] };
-    const [bg, fg] = map[(ls || 'pending')] || map.pending;
-    return <span style={{ background: bg, color: fg, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', padding: '4px 10px', borderRadius: 20, whiteSpace: 'nowrap' }}>{s}</span>;
-  };
+  // Stage definitions — icons are SVG path strings
+  const STAGE_IDX = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 };
+  const CHECK = 'M20 6 9 17l-5-5';
+  const STAGES = [
+    { label: 'Ordered',       icon: CHECK },
+    { label: 'Received',      icon: 'M22 12h-6l-2 3h-4l-2-3H2 M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z' },
+    { label: 'In Production', icon: 'M6 9V2h12v7 M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2 M6 14h12v8H6z' },
+    { label: 'Bagging',       icon: 'M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z M3 6h18 M16 10a4 4 0 0 1-8 0' },
+    { label: 'Shipped',       icon: 'M10 17h4V5H2v12h3 M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1 M14 17h1 M5 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z M15 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z' },
+  ];
+  const STAGE_MSGS = [
+    "Your order is in. It will be produced alongside the rest of the team's gear once the store closes.",
+    "We've received and verified your order. It's queued for production with the team.",
+    "Your gear is being custom-decorated right now — names, numbers, and team marks applied.",
+    "Items are decorated and being sorted and bagged by player for the team delivery.",
+    "Your team's order has shipped to the school. Your coach will hand out gear when it arrives.",
+  ];
 
+  const curIdx = Math.max(0, ...items.filter((i) => !i.is_bundle_parent).map((i) => STAGE_IDX[i.line_status] ?? 0));
+  const curStageLabel = STAGES[curIdx]?.label || 'Ordered';
+  const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
+  const bundleParents = displayItems.filter((i) => i.is_bundle_parent);
+  const soloItems = displayItems.filter((i) => !i.is_bundle_parent);
+
+  // Colors
+  const P = theme.primary || '#192853';
+  const A = theme.accent || '#962C32';
+  const LINE = '#E7DFD0';
+  const SUB = '#6B6256';
+  const INK = '#1E2742';
+  const WARM = '#F2ECE0';
+
+  // Financials
   const paid = order.payment_mode === 'paid';
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
   const tax = Number(order.tax) || 0;
   const subtotal = Number(order.total) - shipping - tax + discount;
+  const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
+
+  // Labels
+  const shortId = '#' + (order.id || '').slice(0, 8).toUpperCase();
+  const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+  const updatedAt = order.updated_at || order.created_at;
+  const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 14 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+
+  // Inline helpers
+  const chip = (text) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: A + '1a', color: A, fontFamily: DISPLAY, fontWeight: 700, fontSize: 11.5, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', borderRadius: 3 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: A, flexShrink: 0 }} />{text}
+    </span>
+  );
+  const itemChip = (lineStatus) => {
+    const idx = STAGE_IDX[lineStatus] ?? 0;
+    return chip(STAGES[idx]?.label || 'Ordered');
+  };
+  const sizeTag = (label) => (
+    <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase', color: P, border: `1px solid ${LINE}`, background: '#fff', padding: '4px 9px', borderRadius: 3, whiteSpace: 'nowrap' }}>{label}</span>
+  );
+  const numTag = (num) => (
+    <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, letterSpacing: 0.5, color: A, border: `1px solid ${A}4d`, background: A + '0f', padding: '4px 9px', borderRadius: 3, whiteSpace: 'nowrap' }}>#{num}</span>
+  );
+  const imgThumb = (item, size) => item.image_url
+    ? <img src={item.image_url} alt={item.name || item.sku} style={{ width: size, height: size, minWidth: size, objectFit: 'cover', borderRadius: 5, border: `1px solid ${LINE}`, display: 'block', flexShrink: 0 }} />
+    : <div style={{ width: size, height: size, minWidth: size, borderRadius: 5, background: 'linear-gradient(150deg,#F4EFE6,#E8E0D0)', border: `1px solid ${LINE}`, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        <svg width="52%" height="52%" viewBox="0 0 24 24" fill="none" stroke={P} strokeOpacity="0.2" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z" /></svg>
+      </div>;
+
+  // Tracker geometry
+  const nStages = STAGES.length;
+  const edge = 100 / (nStages * 2);
+  const fillPct = edge + (curIdx / (nStages - 1)) * (100 - edge * 2);
 
   return (
-    <div style={{ paddingTop: 22, maxWidth: 660 }}>
+    <div style={{ maxWidth: 920, margin: '0 auto', padding: '24px 0 80px' }}>
+      <style>{`@keyframes nsaPulse{0%,100%{box-shadow:0 0 0 0 ${A}70}50%{box-shadow:0 0 0 8px ${A}00}}`}</style>
+
       <BackLink store={store} theme={theme} />
 
-      {/* Hero confirmation card */}
-      <div style={{ background: '#fff', borderLeft: `5px solid ${theme.accent}`, borderRadius: 10, padding: '22px 24px', marginBottom: 20, display: 'flex', gap: 18, alignItems: 'center', boxShadow: '0 1px 6px rgba(0,0,0,.07)' }}>
-        <div style={{ width: 52, height: 52, minWidth: 52, borderRadius: '50%', background: theme.accent, color: '#fff', display: 'grid', placeItems: 'center', fontSize: 24 }}>✓</div>
-        <div>
-          <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(22px,4vw,30px)', letterSpacing: 0.3, textTransform: 'uppercase', margin: '0 0 4px', color: theme.ink, lineHeight: 1 }}>Order Confirmed</h1>
-          <div style={{ fontSize: 14, color: theme.subText }}>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <b style={{ color: theme.ink }}>{order.buyer_email}</b></div>
+      {/* Confirmed banner */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, background: '#fff', border: `1px solid ${LINE}`, borderLeft: `5px solid ${A}`, borderRadius: 8, padding: '24px 26px', marginBottom: 18 }}>
+        <div style={{ flexShrink: 0, width: 60, height: 60, borderRadius: '50%', background: A, display: 'grid', placeItems: 'center', color: '#fff' }}>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>Order Confirmed</h1>
+          <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></p>
         </div>
       </div>
 
-      {/* Progress tracker */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24 }}>
-        {STEPS.map((s, i) => (
-          <div key={s} style={{ flex: 1, textAlign: 'center', padding: '9px 4px', borderRadius: 6, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', background: i <= curIdx ? theme.primary : theme.warm, color: i <= curIdx ? '#fff' : theme.subText, transition: 'background .2s' }}>{i < curIdx ? '✓ ' : ''}{s}</div>
+      {/* Meta strip */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', background: P, borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
+        {[{ label: 'Order', value: shortId }, { label: 'Placed', value: placedDate }, { label: 'Items', value: totalPieces + ' pieces' }, { label: 'Est. Delivery', value: estDelivery }].map((m, i) => (
+          <div key={m.label} style={{ padding: '14px 18px', borderRight: i < 3 ? '1px solid rgba(255,255,255,0.12)' : 'none' }}>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 10.5, letterSpacing: 1.5, textTransform: 'uppercase', color: A, marginBottom: 2 }}>{m.label}</div>
+            <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 19, textTransform: 'uppercase', color: '#fff', lineHeight: 1.15 }}>{m.value}</div>
+          </div>
         ))}
       </div>
 
-      {/* Item cards */}
-      <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 10 }}>Your Order</div>
-      <div style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 6px rgba(0,0,0,.07)', marginBottom: 20 }}>
-        {displayItems.map((item, idx) => {
-          const img = item.image_url;
-          const label = item.name || item.sku || (item.is_bundle_parent ? 'Player Pack' : 'Item');
-          const details = [item.variant_label, item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name].filter(Boolean).join(' · ');
-          return (
-            <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', borderBottom: idx < displayItems.length - 1 ? `1px solid ${theme.warm}` : 'none' }}>
-              {img
-                ? <img src={img} alt={label} style={{ width: 64, height: 64, minWidth: 64, objectFit: 'cover', borderRadius: 8, background: '#f4f6f9', display: 'block' }} />
-                : <div style={{ width: 64, height: 64, minWidth: 64, borderRadius: 8, background: theme.warm, display: 'grid', placeItems: 'center', fontSize: 22 }}>👕</div>
-              }
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 14, color: theme.ink, marginBottom: 3 }}>{label}{item.qty > 1 ? ` ×${item.qty}` : ''}</div>
-                {details && <div style={{ fontSize: 12, color: theme.subText }}>{details}</div>}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-                {statusBadge(item.line_status)}
-                {item.unit_price > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: theme.ink }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>}
-              </div>
-            </div>
-          );
-        })}
+      {/* Order status tracker */}
+      <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '26px 26px 22px', marginBottom: 26 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', color: P, margin: 0 }}>Order Status</h2>
+            {chip(curStageLabel)}
+          </div>
+          {updatedLabel && <span style={{ fontSize: 13, color: SUB }}>Updated {updatedLabel}</span>}
+        </div>
+        {/* Rail + nodes */}
+        <div style={{ position: 'relative', padding: '4px 0' }}>
+          <div style={{ position: 'absolute', left: edge + '%', right: edge + '%', top: 23, height: 3, background: LINE, zIndex: 0 }} />
+          <div style={{ position: 'absolute', left: edge + '%', width: (fillPct - edge) + '%', top: 23, height: 3, background: P, zIndex: 1, transition: 'width .35s' }} />
+          <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', zIndex: 2 }}>
+            {STAGES.map((s, i) => {
+              const done = i < curIdx, cur = i === curIdx;
+              return (
+                <div key={s.label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 0 }}>
+                  <div style={{ width: 46, height: 46, borderRadius: '50%', background: done ? P : cur ? A : '#fff', border: `2px solid ${done ? P : cur ? A : LINE}`, display: 'grid', placeItems: 'center', zIndex: 2, position: 'relative', boxShadow: cur ? `0 0 0 4px ${A}1f` : 'none', animation: cur ? 'nsaPulse 2.2s ease-out infinite' : 'none', transition: 'all .2s' }}>
+                    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke={(done || cur) ? '#fff' : '#B8AE9C'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={done ? CHECK : s.icon} /></svg>
+                  </div>
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.6, textTransform: 'uppercase', color: (done || cur) ? P : SUB, marginTop: 9, textAlign: 'center', lineHeight: 1.05 }}>{s.label}</div>
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 11, letterSpacing: 0.4, textTransform: 'uppercase', color: cur ? A : '#A89F8E', marginTop: 3, textAlign: 'center' }}>{cur ? 'In progress' : i === 0 ? orderedDate : ''}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {/* Stage message */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 11, marginTop: 24, paddingTop: 18, borderTop: `1px solid ${LINE}` }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={A} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <p style={{ fontSize: 14.5, lineHeight: 1.55, color: SUB, margin: 0 }}>{STAGE_MSGS[curIdx]}</p>
+        </div>
       </div>
 
-      {/* Order summary */}
-      <div style={{ background: '#fff', borderRadius: 10, padding: '18px 20px', boxShadow: '0 1px 6px rgba(0,0,0,.07)', marginBottom: 20 }}>
-        {subtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Subtotal</span><span>{money(subtotal)}</span></div>}
-        {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: '#16a34a', marginBottom: 8 }}><span>Discount{order.coupon_code ? ` (${order.coupon_code})` : ''}</span><span>−{money(discount)}</span></div>}
-        {shipping > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Shipping</span><span>{money(shipping)}</span></div>}
-        {tax > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: theme.subText, marginBottom: 8 }}><span>Sales tax</span><span>{money(tax)}</span></div>}
-        <div style={{ borderTop: `1px solid ${theme.warm}`, marginTop: 10, paddingTop: 12, display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink }}>Total</span>
-          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, color: theme.ink }}>{money(order.total)}</span>
+      {/* Your Order heading */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+        <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: P, margin: 0, whiteSpace: 'nowrap' }}>Your Order</h2>
+        <div style={{ flex: 1, height: 3, background: A, transform: 'skewX(-12deg)' }} />
+      </div>
+
+      {/* Bundle cards */}
+      {bundleParents.map((item) => {
+        const bundleChildren = items.filter((i) => i.bundle_product_id === item.bundle_product_id && !i.is_bundle_parent);
+        const label = item.name || 'Player Pack';
+        return (
+          <div key={item.id} style={{ background: '#fff', border: `1px solid ${LINE}`, borderTop: `4px solid ${A}`, borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 20px' }}>
+              <div style={{ flexShrink: 0 }}>{imgThumb(item, 64)}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 19, textTransform: 'uppercase', color: P, lineHeight: 1.05 }}>{label}</span>
+                  <span style={{ display: 'inline-block', fontFamily: DISPLAY, fontWeight: 700, fontSize: 10, letterSpacing: 1.4, textTransform: 'uppercase', color: '#fff', background: A, padding: '3px 9px', transform: 'skewX(-6deg)' }}>
+                    <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Bundle · {bundleChildren.length} items</span>
+                  </span>
+                </div>
+                <div style={{ marginTop: 5 }}>{itemChip(item.line_status)}</div>
+              </div>
+              <div style={{ flexShrink: 0, fontFamily: DISPLAY, fontWeight: 800, fontSize: 21, color: P }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>
+            </div>
+            {bundleChildren.length > 0 && (
+              <div style={{ background: WARM, borderTop: `1px solid ${LINE}`, padding: '6px 20px 10px' }}>
+                <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: 1.4, textTransform: 'uppercase', color: SUB, padding: '10px 0 6px' }}>Included In Package</div>
+                {bundleChildren.map((child) => (
+                  <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 13, padding: '9px 0', borderTop: `1px solid ${LINE}` }}>
+                    <div style={{ flexShrink: 0 }}>{imgThumb(child, 46)}</div>
+                    <div style={{ flex: 1, minWidth: 0, fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, textTransform: 'uppercase', color: INK, lineHeight: 1.1 }}>{child.name || child.sku || 'Item'}</div>
+                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {child.size && sizeTag('Size ' + child.size)}
+                      {child.player_number && numTag(child.player_number)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Individual items */}
+      {soloItems.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+          {soloItems.map((item) => {
+            const label = item.name || item.sku || 'Item';
+            const sub = [item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name].filter(Boolean).join(' · ');
+            return (
+              <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '14px 18px' }}>
+                <div style={{ flexShrink: 0 }}>{imgThumb(item, 60)}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', color: P, lineHeight: 1.05 }}>{label}{item.qty > 1 ? ` ×${item.qty}` : ''}</div>
+                  {sub && <div style={{ fontSize: 13.5, color: SUB, marginTop: 2 }}>{sub}</div>}
+                  <div style={{ marginTop: 6 }}>{itemChip(item.line_status)}</div>
+                </div>
+                <div style={{ flexShrink: 0, fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, color: P }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>
+              </div>
+            );
+          })}
         </div>
-        {store.delivery_mode !== 'ship_home' && <div style={{ marginTop: 12, fontSize: 13, color: theme.subText }}>📦 Delivered to the team — no shipping needed.</div>}
+      )}
+
+      {/* Order summary */}
+      <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '22px 24px', marginBottom: 22 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 11, fontSize: 15, color: SUB }}>
+          {subtotal > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span style={{ color: INK, fontWeight: 600 }}>{money(subtotal)}</span></div>}
+          {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#1E6B3A' }}>Discount{order.coupon_code ? ` (${order.coupon_code})` : ''}</span><span style={{ color: '#1E6B3A', fontWeight: 600 }}>−{money(discount)}</span></div>}
+          {shipping > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Shipping</span><span style={{ color: INK, fontWeight: 600 }}>{money(shipping)}</span></div>}
+          {tax > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sales tax</span><span style={{ color: INK, fontWeight: 600 }}>{money(tax)}</span></div>}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 16, paddingTop: 16, borderTop: `1px solid ${LINE}` }}>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: P }}>Total</span>
+          <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: P }}>{money(order.total)}</span>
+        </div>
+        {order.ship_method !== 'ship_home' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 14, fontSize: 14, color: SUB }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={A} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+            Delivered to the team — no shipping needed.
+          </div>
+        )}
       </div>
 
       {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
 
       {/* What's next */}
-      <div style={{ background: theme.warm, borderRadius: 10, padding: '18px 20px', marginBottom: 24 }}>
-        <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>What's next</div>
-        <div style={{ fontSize: 14, color: theme.ink, lineHeight: 1.6 }}>Your order has been received and will be processed with the rest of the team's gear. You'll get an email update when items move into production. Everything ships together when the store closes.</div>
+      <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
+        <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.5, textTransform: 'uppercase', color: A, marginBottom: 8 }}>What's Next</div>
+        <p style={{ fontSize: 15, lineHeight: 1.6, color: INK, margin: 0 }}>Your order has been received and will be produced with the rest of the team's gear. We'll email you each time it moves to a new stage above. Everything ships together to the team once the store closes — no separate shipping or pickup to arrange.</p>
       </div>
 
-      <button onClick={() => navTo('/shop/' + store.slug)} style={{ ...cta(theme), display: 'inline-block', width: 'auto', padding: '13px 28px', fontSize: 14 }}>← Back to store</button>
+      {/* Contact line */}
+      <p style={{ textAlign: 'center', fontSize: 13.5, color: SUB, margin: '0 0 24px' }}>
+        Questions about your order? — <a href="mailto:hello@nationalsportsapparel.com" style={{ color: A, fontWeight: 600, textDecoration: 'none' }}>hello@nationalsportsapparel.com</a>
+      </p>
+
+      {/* Back button */}
+      <div style={{ textAlign: 'center' }}>
+        <button onClick={() => navTo('/shop/' + store.slug)} style={{ display: 'inline-flex', alignItems: 'center', gap: 10, border: 'none', cursor: 'pointer', background: P, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: 1.4, textTransform: 'uppercase', padding: '14px 30px', transform: 'skewX(-3deg)' }}>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>← Back To Store</span>
+        </button>
+      </div>
     </div>
   );
 }
