@@ -28,6 +28,26 @@ const escapeHtml = (s) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+// Reshape a store image into a 1200×630 landscape preview card.
+//
+// Store logos/banners are usually portrait or square (e.g. a 1034×1163 crest),
+// but link-preview cards (iMessage / Slack / Facebook) are wide landscape and
+// center-CROP the image to fill — so a tall logo shows only its top sliver.
+// All store images live on Cloudinary, which can reshape on the fly: pad the
+// whole image, centered, into 1200×630 on a white background (c_pad) so the
+// full logo is always visible. Padding on white (not the brand color) keeps
+// dark logos legible — a navy crest on a navy fill would disappear. We keep
+// the original format (no f_auto) so picky scrapers never get served webp.
+// Non-Cloudinary URLs (e.g. the static NSA default) pass through untouched.
+const CLOUDINARY_MARKER = '/image/upload/';
+const ogImage = (url) => {
+  if (!url || !url.includes('res.cloudinary.com')) return url;
+  const i = url.indexOf(CLOUDINARY_MARKER);
+  if (i === -1) return url;
+  const cut = i + CLOUDINARY_MARKER.length;
+  return `${url.slice(0, cut)}c_pad,w_1200,h_630,b_white/${url.slice(cut)}`;
+};
+
 // Pull the <slug> out of /shop/<slug>[/...]. Bare /shop or /shop/ has none.
 const slugFromPath = (pathname) => {
   const segs = pathname.split('/').filter(Boolean); // ['shop', '<slug>', ...]
@@ -88,7 +108,7 @@ export default async function handler(request, context) {
   const description =
     store.hero_blurb ||
     `The official ${store.name} store — custom team apparel, decorated and delivered. Order before the window closes.`;
-  const image = store.banner_url || store.logo_url || DEFAULT_IMAGE;
+  const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
   const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
 
   const tags = [
