@@ -78,10 +78,18 @@ function StoreStyles() {
         .sf-navitem:hover{color:${NEUTRAL.ink} !important}
         .sf-search:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
         .sf-input:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
+        .sf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:20px}
+        .sf-pdp-media{position:sticky;top:170px}
         @media (max-width:860px){
           .sf-hero-grid{grid-template-columns:1fr !important}
           .sf-hero-collage{display:none !important}
           .sf-2col{grid-template-columns:1fr !important}
+          .sf-pdp-media{position:static !important;top:auto !important}
+        }
+        @media (max-width:600px){
+          .sf-grid{grid-template-columns:1fr 1fr;gap:12px}
+          .sf-topstrip-brand{display:none !important}
+          .sf-topstrip-inner{justify-content:center !important}
         }
       `}</style>
     </>
@@ -205,6 +213,19 @@ function useTheme(store) {
   }, [store]);
 }
 
+// True once the page has scrolled past `px` — drives the collapsing sticky header
+// so the tall three-bar top panel shrinks to a compact bar as the shopper scrolls.
+function useScrolled(px = 56) {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > px);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [px]);
+  return scrolled;
+}
+
 // Team crest — uses the store logo when present, else a shield with initials
 // (mirrors the redesign's placeholder OL crest).
 function Crest({ store, theme, size = 40 }) {
@@ -310,6 +331,7 @@ export default function Storefront() {
 
   useEffect(() => { if (route.slug) load(route.slug); }, [route.slug, load]);
   const theme = useTheme(store);
+  const scrolled = useScrolled(56);
 
   if (status === 'loading') return <Splash>Loading store…</Splash>;
   if (status === 'nomigration') return <Splash>This store isn’t available yet.</Splash>;
@@ -333,8 +355,8 @@ export default function Storefront() {
     <div className="sf-root" style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
-        <TopStrip store={store} theme={theme} />
-        <Header store={store} theme={theme} cartCount={cartCount(cart)} />
+        <TopStrip store={store} theme={theme} collapsed={scrolled} />
+        <Header store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
         <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
@@ -358,34 +380,38 @@ export default function Storefront() {
 const Wrap = ({ children }) => <div style={{ maxWidth: 1240, margin: '0 auto', padding: '0 24px 64px', boxSizing: 'border-box' }}>{children}</div>;
 
 // ── Top strip ────────────────────────────────────────────────────────
-function TopStrip({ store, theme }) {
+function TopStrip({ store, theme, collapsed = false }) {
   const closes = closesLabel(store.close_at);
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
+  // The essential line shoppers need: where it ships + when the store closes. On
+  // mobile this is all that shows (the brand label is hidden via .sf-topstrip-brand);
+  // on desktop the brand label sits on the left and this sits on the right.
+  const status = closes ? `${deliver} · ${closes.text}` : deliver;
   return (
-    <div style={{ background: theme.ink, color: 'rgba(255,255,255,0.82)' }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '7px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.4, textTransform: 'uppercase' }}>
-        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+    <div style={{ background: theme.ink, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 44, overflow: 'hidden', transition: 'max-height .25s ease' }}>
+      <div className="sf-topstrip-inner" style={{ maxWidth: 1240, margin: '0 auto', padding: '7px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.4, textTransform: 'uppercase' }}>
+        <span className="sf-topstrip-brand" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           <span style={{ color: theme.accent }}>★</span> Official Team Store · National Sports Apparel
         </span>
-        <span style={{ whiteSpace: 'nowrap', color: closes && closes.urgent ? theme.accent : 'rgba(255,255,255,0.82)' }}>{closes ? closes.text : deliver}{closes ? ` · ${deliver}` : ''}</span>
+        <span style={{ whiteSpace: 'nowrap', color: closes && closes.urgent ? theme.accent : 'rgba(255,255,255,0.82)' }}>{status}</span>
       </div>
     </div>
   );
 }
 
 // ── Header ───────────────────────────────────────────────────────────
-function Header({ store, theme, cartCount = 0 }) {
+function Header({ store, theme, cartCount = 0, collapsed = false }) {
   return (
     <header style={{ background: theme.paper, borderBottom: `1px solid ${theme.line}`, boxShadow: '0 2px 16px rgba(0,0,0,0.06)' }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer' }} onClick={() => navTo('/shop/' + store.slug)}>
-          <Crest store={store} theme={theme} size={40} />
-          <div style={{ lineHeight: 1.05 }}>
-            <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accentDeep }}>Official Team Store</div>
-            <div style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 800, letterSpacing: 0.3, textTransform: 'uppercase', color: theme.primary }}>{store.name}</div>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '8px 16px' : '14px 24px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap', transition: 'padding .2s ease' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+          <Crest store={store} theme={theme} size={collapsed ? 30 : 40} />
+          <div style={{ lineHeight: 1.05, minWidth: 0 }}>
+            {!collapsed && <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accentDeep }}>Official Team Store</div>}
+            <div style={{ fontFamily: DISPLAY, fontSize: collapsed ? 'clamp(15px,4vw,20px)' : 'clamp(17px,4.6vw,24px)', fontWeight: 800, letterSpacing: 0.3, textTransform: 'uppercase', color: theme.primary }}>{store.name}</div>
           </div>
         </div>
-        <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.primary, color: '#fff', border: 'none', borderRadius: 4, padding: '11px 18px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 1.4, textTransform: 'uppercase' }}>
+        <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.primary, color: '#fff', border: 'none', borderRadius: 4, padding: '11px 18px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 1.4, textTransform: 'uppercase' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, transform: 'skewX(3deg)' }}>
             <CartIcon />Cart
             <span style={{ background: theme.accent, color: theme.ink, borderRadius: 999, minWidth: 20, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, padding: '0 6px' }}>{cartCount}</span>
@@ -480,7 +506,6 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
           : visible.length === 0
           ? <Splash>No gear matches that search.</Splash>
           : (() => {
-              const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(232px,1fr))', gap: 20 };
               const cardOf = ({ rep, rows }) => {
                 if (rep.kind === 'bundle' && rep.card_style === 'banner') return <BannerCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
                 if (rep.kind === 'bundle' && rep.card_style === 'showcase') return <ShowcaseCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
@@ -493,7 +518,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
               const sections = [...byCat.entries()].map(([c, gs]) => ({ cat: c, gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
               sections.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
               const useCats = !filtered && (sections.length > 1 || (sections.length === 1 && sections[0].cat));
-              if (!useCats) return <div style={grid}>{visible.map(cardOf)}</div>;
+              if (!useCats) return <div className="sf-grid">{visible.map(cardOf)}</div>;
               return sections.map((sec) => (
                 <div key={sec.cat || '__more'} style={{ marginBottom: 48 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, margin: '0 0 20px' }}>
@@ -503,7 +528,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
                     </h2>
                     <span style={{ fontFamily: DISPLAY, fontSize: 13, color: theme.subText, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{sec.gs.length} item{sec.gs.length === 1 ? '' : 's'}</span>
                   </div>
-                  <div style={grid}>{sec.gs.map(cardOf)}</div>
+                  <div className="sf-grid">{sec.gs.map(cardOf)}</div>
                 </div>
               ));
             })()}
@@ -545,17 +570,18 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
         </div>
         {showCollage && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }} className="sf-hero-collage">
-            {[0, 1, 2].map((i) => {
-              const p = imgs[i];
+            {imgs.map((p, i) => {
+              // Layout adapts to how many real featured images exist so we never render
+              // an empty placeholder tile: 1 → full-width hero · 2 → two tall columns ·
+              // 3 → one tall left + two stacked right.
               const tall = i === 0;
+              const full = imgs.length === 1;
+              const spanRows = tall || (imgs.length === 2 && i === 1);
               return (
-                <div key={i} style={{ gridColumn: tall ? '1' : '2', gridRow: tall ? '1 / span 2' : 'auto', aspectRatio: tall ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
+                <div key={i} style={{ gridColumn: full ? '1 / span 2' : tall ? '1' : '2', gridRow: spanRows ? '1 / span 2' : 'auto', aspectRatio: full ? '4 / 3' : spanRows ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                    {p ? <>
-                          <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          <DecoOverlay decorations={p.decorations} colorName={p.color} />
-                        </>
-                       : <GarmentTile theme={theme} store={store} kind={['top', 'bottom', 'cap'][i] || 'top'} />}
+                    <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <DecoOverlay decorations={p.decorations} colorName={p.color} />
                   </div>
                 </div>
               );
@@ -820,14 +846,14 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ position: 'relative', width: '100%', aspectRatio: '3 / 4', background: '#fff', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '95%', height: '95%' }}>
-                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+            ? <>
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
-              </div>
+              </>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {/* Stock / package badge — skewed −6°, top-right */}
         <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
@@ -1020,7 +1046,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
     <div style={{ paddingTop: 24 }}>
       <BackLink store={store} theme={theme} />
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
-        <div style={{ position: 'sticky', top: 170 }}>
+        <div className="sf-pdp-media">
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
