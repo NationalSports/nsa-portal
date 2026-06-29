@@ -88,11 +88,17 @@ C. In the cart, for each product row, type the quantities into the size cells �
      header and the row total matches the line's total. Fix any mismatch.
 
 D. **Hatched / disabled size cells**: If ALL size cells for a product row appear
-   greyed-out or hatched (diagonal lines — no cell accepts input), that SKU has
-   no available inventory in any size. Record it in `issues` (e.g., "KB5529: all
-   sizes unavailable/hatched in portal — 0 entered"). Continue with remaining lines.
-   If EVERY line on the order has this problem (nothing could be entered at all),
-   set status to "blocked" and explain in `summary`.
+   greyed-out or hatched (diagonal lines):
+   1. **Hover over one of the hatched cells first** — look for a tooltip with a
+      release or restock date (e.g. "Re-stock in Jul 1, 2026" or "Available Jul 1").
+   2. If a date appears → this is a **pre-release / backorder** item, not a
+      permanently unavailable one. Follow the **Backorders** section above:
+      set the delivery date to that date, attempt to enter the full quantities,
+      and stop with `needs_input` so the rep can confirm the plan.
+   3. If hovering shows **no date at all** → the item is genuinely unavailable.
+      Record it in `issues` (e.g., "KB5529: all sizes hatched, no restock date")
+      and continue with remaining lines. If EVERY line is blocked this way, use
+      status "blocked".
 
 # Work efficiently
 Move quickly and decisively — this is routine data entry, not research. Avoid
