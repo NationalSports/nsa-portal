@@ -2134,6 +2134,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
   const [expanded, setExpanded] = useState({});
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
+  const [copiedId, setCopiedId] = useState(null);
 
   const templates = stores.filter((s) => s.is_template);
   const nonTemplates = stores.filter((s) => !s.is_template);
@@ -2405,15 +2406,34 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                           <div style={{ fontSize: 12, color: wt.subColor, fontWeight: 600 }}>{wt.sub}</div>
                         </td>
                         <td style={{ ...TD, padding: '13px 16px 13px 12px' }}>
-                          <a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: '#2A6FDB', textDecoration: 'none', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, wordBreak: 'break-all', fontFamily: 'monospace' }}>
-                            /shop/{s.slug}
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
-                          </a>
+                          <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#8A93A8', wordBreak: 'break-all' }}>/shop/{s.slug}</div>
                         </td>
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                             {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
-                            <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onOpen(s); }} style={{ whiteSpace: 'nowrap' }}>Open →</button>
+                            <button
+                              title="Copy store link"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const url = 'https://nationalsportsapparel.com/shop/' + s.slug;
+                                navigator.clipboard.writeText(url).catch(() => {});
+                                setCopiedId(s.id);
+                                setTimeout(() => setCopiedId((cur) => cur === s.id ? null : cur), 1800);
+                              }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: copiedId === s.id ? '#dcfce7' : '#f1f5f9', color: copiedId === s.id ? '#15803d' : '#64748b', border: `1px solid ${copiedId === s.id ? '#bbf7d0' : '#e2e8f0'}`, borderRadius: 7, padding: '7px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all .15s' }}
+                            >
+                              {copiedId === s.id
+                                ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied</>
+                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</>
+                              }
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); window.open('https://nationalsportsapparel.com/shop/' + s.slug, '_blank', 'noopener'); }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: s.accent_color || '#e11d2a', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 13, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: `0 2px 8px ${(s.accent_color || '#e11d2a')}55` }}
+                            >
+                              Open Store
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
