@@ -8209,7 +8209,7 @@ export default function App(){
       }
       if(!so)return false;
       if(cu.role==='rep')return msgRepId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
       return true;
     };
     const unreadMsgs=allUnread.filter(isMyMsg);
@@ -8404,7 +8404,7 @@ export default function App(){
       if(t.role==='all')return true;
       if(t.role==='gm'&&(cu.role==='gm'||cu.role==='admin'||cu.role==='super_admin'))return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
       return true;
     });
     // Admin-view todos: filterable by rep selector
@@ -9193,7 +9193,7 @@ export default function App(){
     {dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
-      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&(myReps.length===0||myReps.includes(c?.primary_rep_id||s.created_by))}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
@@ -11116,7 +11116,7 @@ export default function App(){
     const filtered=todos.filter(t=>{
       if(t.role==='all')return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
       return t.role==='production';
     });
     return filtered;
@@ -27789,7 +27789,7 @@ export default function App(){
       // Rep: see messages on their customer orders
       if(cu.role==='rep')return msgRepId===cu.id;
       // CSR: see messages on orders where their assigned rep is involved
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
       // Other roles: only tagged/authored (already handled above)
       return false;
     };
