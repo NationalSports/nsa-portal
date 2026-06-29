@@ -633,7 +633,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Send the polished launch email (shop link + QR + key info + tracking portal).
   const emailDirector = useCallback(async (store) => {
     const to = (store.director_email || store.coach_contact_email || '').trim();
-    if (!to) { flash('Add a coach/director email in the store’s Settings first'); return; }
+    if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
     if (r && r.error) flash('Email failed: ' + r.error);
     else flash('Launch email sent to ' + to);
@@ -854,7 +854,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (status === 'open' && opts.emailCoach && coachEmail) notifyCoachPublished({ ...data, coach_contact_email: coachEmail });
     // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
-    else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
+    else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
@@ -1059,7 +1059,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       seen.add(product.id);
       return { product, price: (it.price != null && it.price !== '') ? it.price : product.retail_price, fundraise: it.fundraise || 0, category: sectionCat || it.category || null, kit_name: it.kit || null, required: !!it.required };
     }).filter(Boolean);
-    if (!rows.length) { flash('All of this template’s items are already in the store'); return { added: 0 }; }
+    if (!rows.length) { flash("All of this template's items are already in the store"); return { added: 0 }; }
     return addManyFromList(rows);
   }, [detail, flash, addManyFromList]);
 
@@ -2187,7 +2187,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
 
   const submit = async () => {
     setError('');
-    if (uploading > 0) return setError('Hold on — an image is still uploading. It’ll just be a moment.');
+    if (uploading > 0) return setError("Hold on — an image is still uploading. It'll just be a moment.");
     if (!f.name.trim()) return setError('Store name is required.');
     if (!f.slug.trim()) return setError('A URL slug is required.');
     setBusy(true);
@@ -2232,7 +2232,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
-          <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? 'Update this store’s setup.' : 'Set it up here — add products and artwork after it’s created.'}</div>
+          <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? "Update this store's setup." : "Set it up here — add products and artwork after it's created."}</div>
         </div>
         <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
           {['team', 'club'].map((t) => (
@@ -2347,7 +2347,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
         <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
-          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}’s default address`}</option>
+          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>
         </select></Row>
         {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
@@ -4193,18 +4193,18 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         {isBundle && (
           <ItemSection title="Card style" hint="· how this package appears in the store grid">
-            <div style={{ display: ‘flex’, gap: 10, flexWrap: ‘wrap’ }}>
-              <button type="button" onClick={() => setCardStyle(‘’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
-                <svg viewBox="0 0 88 100" style={{ display: ‘block’, width: 88, height: 100 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => setCardStyle('')} style={{ padding: 0, border: '2px solid ' + (cardStyle === '' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 88 100" style={{ display: 'block', width: 88, height: 100 }}>
                   <rect width="88" height="100" fill="#f8fafc" />
                   <rect x="0" y="0" width="88" height="66" fill="#e2e8f0" />
                   <rect x="14" y="74" width="44" height="6" rx="3" fill="#cbd5e1" />
                   <rect x="14" y="84" width="30" height="5" rx="2" fill="#e2e8f0" />
                 </svg>
-                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Standard card</div>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === '' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === '' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === '' ? '#bfdbfe' : '#f1f5f9') }}>Standard card</div>
               </button>
-              <button type="button" onClick={() => setCardStyle(‘banner’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘banner’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
-                <svg viewBox="0 0 176 76" style={{ display: ‘block’, width: 176, height: 76 }}>
+              <button type="button" onClick={() => setCardStyle('banner')} style={{ padding: 0, border: '2px solid ' + (cardStyle === 'banner' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 176 76" style={{ display: 'block', width: 176, height: 76 }}>
                   <rect width="176" height="76" fill="#1e293b" />
                   <rect x="10" y="16" width="8" height="8" rx="2" fill="#ef4444" />
                   <rect x="21" y="17" width="32" height="5" rx="2" fill="rgba(239,68,68,0.7)" />
@@ -4216,10 +4216,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                   <rect x="100" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
                   <rect x="138" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
                 </svg>
-                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘banner’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘banner’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘banner’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Banner + collage</div>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === 'banner' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === 'banner' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === 'banner' ? '#bfdbfe' : '#f1f5f9') }}>Banner + collage</div>
               </button>
-              <button type="button" onClick={() => setCardStyle(‘showcase’)} style={{ padding: 0, border: ‘2px solid ‘ + (cardStyle === ‘showcase’ ? ‘#191919’ : ‘#d1d5db’), borderRadius: 8, background: ‘#fff’, cursor: ‘pointer’, overflow: ‘hidden’ }}>
-                <svg viewBox="0 0 176 90" style={{ display: ‘block’, width: 176, height: 90 }}>
+              <button type="button" onClick={() => setCardStyle('showcase')} style={{ padding: 0, border: '2px solid ' + (cardStyle === 'showcase' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 176 90" style={{ display: 'block', width: 176, height: 90 }}>
                   <rect width="176" height="90" fill="#f8fafc" />
                   <rect width="176" height="26" fill="#1e293b" />
                   <rect x="10" y="9" width="72" height="8" rx="3" fill="rgba(255,255,255,0.85)" />
@@ -4233,16 +4233,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                   <rect x="92" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
                   <rect x="134" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
                 </svg>
-                <div style={{ padding: ‘4px 8px 6px’, fontWeight: 700, fontSize: 11, color: cardStyle === ‘showcase’ ? ‘#191919’ : ‘#374151’, textAlign: ‘center’, background: cardStyle === ‘showcase’ ? ‘#f0f9ff’ : ‘#fff’, borderTop: ‘1px solid ‘ + (cardStyle === ‘showcase’ ? ‘#bfdbfe’ : ‘#f1f5f9’) }}>Showcase (each item)</div>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === 'showcase' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === 'showcase' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === 'showcase' ? '#bfdbfe' : '#f1f5f9') }}>Showcase (each item)</div>
               </button>
             </div>
-            <div style={{ fontSize: 11, color: ‘#94a3b8’, marginTop: 8 }}>Banner and Showcase span the full store grid width.</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Banner and Showcase span the full store grid width.</div>
           </ItemSection>
         )}
 
         </div>
         <div>
-        <ItemSection title="Store placement" hint="· section, kit & whether it’s required">
+        <ItemSection title="Store placement" hint="· section, kit & whether it's required">
           <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
@@ -5359,7 +5359,7 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
                 <button key={v} type="button" onClick={() => setReusable(v === 'reuse')} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: on ? '#fff' : 'transparent', color: on ? '#191919' : '#6A7180', boxShadow: on ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
               ); })}
             </div>
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>{reusable ? 'Recurring item — kept in the catalog so you can drop it into other stores later.' : 'Just for this store — it won’t clutter the shared catalog or product search.'}</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>{reusable ? "Recurring item — kept in the catalog so you can drop it into other stores later." : "Just for this store — it won't clutter the shared catalog or product search."}</div>
           </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
@@ -5473,13 +5473,13 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
             <div style={{ textAlign: 'center', padding: '20px 10px' }}>
               <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
               <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 4 }}>Imported {done.added} item{done.added === 1 ? '' : 's'}</div>
-              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They’re in the catalog now — set art, colors and any per-item overrides next.</div>
+              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog now — set art, colors and any per-item overrides next.</div>
               <button className="btn btn-primary" onClick={onClose}>Done</button>
             </div>
           ) : (
             <>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>
-                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item’s list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
+                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item's list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
                 <button type="button" onClick={downloadTemplate} style={{ marginLeft: 6, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}>Download template ↓</button>
               </div>
 
@@ -7567,7 +7567,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
 
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '22px 0 6px', borderTop: '1px solid #eef1f5', paddingTop: 16 }}>Refund</div>
           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
-            {order.stripe_pi_id ? 'Refunds the buyer’s card via Stripe.' : 'Team-tab order — records a credit/adjustment (no card to refund).'}
+            {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
             {Number(order.refunded_amt) > 0 && <> Already refunded {money(order.refunded_amt)}; up to <b>{money(remaining)}</b> remaining.</>}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
