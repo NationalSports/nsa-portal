@@ -2489,11 +2489,11 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                               }
                             </button>
                             <button
-                              onClick={(e) => { e.stopPropagation(); window.open('https://nationalsportsapparel.com/shop/' + s.slug, '_blank', 'noopener'); }}
+                              onClick={(e) => { e.stopPropagation(); onOpen(s); }}
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
                             >
-                              Open Store
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                              Store
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
                             </button>
                           </div>
                         </td>
@@ -2548,7 +2548,6 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                                     </React.Fragment>
                                   ))}
                                 </div>
-                                <button className="btn btn-sm btn-primary" onClick={() => onOpen(s)}>Open Store →</button>
                               </div>
                             </div>
                           </td>
