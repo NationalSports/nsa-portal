@@ -2084,10 +2084,22 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   useEffect(() => {
     if (!store?.id) return;
     let live = true;
-    supabase.from('webstore_storefront_products')
-      .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
-      .eq('store_id', store.id).order('sort_order')
-      .then(({ data }) => { if (live) setFeatProducts((data || []).filter((p) => p.kind !== 'bundle')); });
+    Promise.all([
+      supabase.from('webstore_storefront_products')
+        .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
+        .eq('store_id', store.id).order('sort_order'),
+      supabase.from('webstore_products')
+        .select('id,display_name,image_url')
+        .eq('store_id', store.id).eq('active', false),
+    ]).then(([{ data: vis }, { data: arch }]) => {
+      if (!live) return;
+      const visSet = new Set((vis || []).map((p) => p.webstore_product_id));
+      const archItems = (arch || []).filter((p) => !visSet.has(p.id)).map((p) => ({
+        webstore_product_id: p.id, name: p.display_name || '(unnamed)',
+        image_front_url: p.image_url || null, kind: 'single', sort_order: 99999, _archived: true,
+      }));
+      setFeatProducts([...(vis || []).filter((p) => p.kind !== 'bundle'), ...archItems]);
+    });
     return () => { live = false; };
   }, [store?.id]);
   // Team vs club only relabels the form (most stores are team stores). The
@@ -2411,6 +2423,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
                             </div>
                             {on && <span style={{ position: 'absolute', top: 6, right: 6, width: 18, height: 18, borderRadius: '50%', background: '#191919', color: '#fff', fontSize: 11, display: 'grid', placeItems: 'center', fontWeight: 800 }}>{idx + 1}</span>}
                             <div style={{ fontSize: 10.5, fontWeight: 700, color: '#3A4150', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                            {p._archived && <div style={{ fontSize: 9, fontWeight: 800, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>in package</div>}
                           </button>
                         );
                       })}

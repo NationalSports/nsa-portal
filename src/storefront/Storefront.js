@@ -452,7 +452,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
     <>
       {theme.look === 'bold'
         ? <HeroBold store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} />
-        : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} />}
+        : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} compExtras={compExtras} />}
 
       <ValueStrip store={store} theme={theme} />
 
@@ -497,10 +497,10 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 }
 
 // Open hero — team-color gradient, two-column, curated product collage on the right.
-function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
+function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], compExtras = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
-  const imgs = featuredHeroImgs(store, products);
+  const imgs = featuredHeroImgs(store, products, compExtras);
   const showCollage = imgs.length > 0;
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(135deg, ${theme.primary}, ${theme.deep})`, color: '#fff' }}>
@@ -554,8 +554,8 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [] }) {
 // Hero collage images: an admin-curated list of webstore_product_ids when set,
 // else mandatory (package) items first, then any items, up to 3.
 //   null/undefined → auto (mandatory first, then top items) · [] → none · [ids] → those (≤3).
-function featuredHeroImgs(store, products) {
-  const pool = (products || []).filter((p) => p.kind !== 'bundle' && p.image_front_url);
+function featuredHeroImgs(store, products, compExtras = []) {
+  const pool = [...(products || []), ...(compExtras || [])].filter((p) => p.kind !== 'bundle' && p.image_front_url);
   const featured = store && Array.isArray(store.featured_product_ids) ? store.featured_product_ids : null;
   if (!featured) {
     const mandatory = pool.filter((p) => p.required);
