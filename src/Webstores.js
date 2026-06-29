@@ -2141,12 +2141,14 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
               ))}
             </div>
             <div style={{ height: 24, width: 1, background: '#D1D5DE' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>Rep</span>
-              <button style={repChipStyle(repFilter === 'all')} onClick={() => setRepFilter('all')}>All reps</button>
-              {REPS.filter((r) => nonTemplates.some((s) => s.rep_id === r.id)).map((r) => (
-                <button key={r.id} style={repChipStyle(repFilter === r.id)} onClick={() => setRepFilter(r.id)}>{r.name.split(' ')[0]} {r.name.split(' ').slice(-1)[0][0]}.</button>
-              ))}
+              <select className="form-select" value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={{ fontSize: 13, padding: '6px 10px', minWidth: 140 }}>
+                <option value="all">All reps</option>
+                {REPS.filter((r) => nonTemplates.some((s) => s.rep_id === r.id)).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
