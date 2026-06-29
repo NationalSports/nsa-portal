@@ -5855,8 +5855,9 @@ export default function App(){
   React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
-  // Share-for-rebuild modal: generates a link + packing list from a previous OMG store.
+  // Share-for-rebuild modal: generates a token + link + packing list from a previous OMG store.
   const[omgShareOpen,setOmgShareOpen]=useState(false);const[omgShareCopied,setOmgShareCopied]=useState(false);
+  const[omgShareToken,setOmgShareToken]=useState(null);const[omgShareTokenLoading,setOmgShareTokenLoading]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -17287,7 +17288,15 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
                 <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
-                {(s.products||[]).length>0&&<button onClick={()=>{setOmgShareOpen(true);setOmgShareCopied(false)}} title="Copy a rebuild link and print a packing list — share with a coach to kick off a new webstore with the same items pre-selected" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
+                {(s.products||[]).length>0&&<button onClick={async()=>{
+                  setOmgShareOpen(true);setOmgShareCopied(false);setOmgShareToken(null);setOmgShareTokenLoading(true);
+                  try{
+                    const items=(s.products||[]).filter(p=>p.sku).map(p=>({sku:p.sku,name:p.name||'',image_url:p.image_url||''}));
+                    const{data,error}=await supabase.from('omg_rebuild_tokens').insert({store_name:s.store_name||'',sale_code:s._omg_sale_code||'',items}).select('token').single();
+                    if(!error&&data?.token)setOmgShareToken(data.token);
+                  }catch(e){console.warn('[OMG Rebuild token]',e);}
+                  setOmgShareTokenLoading(false);
+                }} title="Copy a rebuild link (with decorated mockup images) and print a packing list — share with a coach to kick off a new webstore with the same items" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
               </div>
             </div>
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
@@ -17808,7 +17817,9 @@ export default function App(){
         {omgShareOpen&&(()=>{
           const prods=s.products||[];
           const skuStr=prods.map(p=>p.sku).filter(Boolean).join(',');
-          const rebuildUrl='https://nationalsportsapparel.com/team-stores?skus='+encodeURIComponent(skuStr);
+          const rebuildUrl=omgShareToken
+            ?'https://nationalsportsapparel.com/team-stores?rebuild='+omgShareToken
+            :'https://nationalsportsapparel.com/team-stores?skus='+encodeURIComponent(skuStr);
           const SZ_ORD=['4XS','3XS','2XS','XS/S','XS','S/M','YXS','YS','S','YM','M/L','M','YL','L/XL','L','YXL','XL/XXL','XL','2XL','3XL','4XL','5XL','OS'];
           const allSizes=[...new Set(prods.flatMap(p=>Object.keys(p.sizes||{})))].sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)});
           const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
@@ -17837,9 +17848,10 @@ export default function App(){
                   <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:5}}>Rebuild link</div>
                   <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Send this to a coach or rep. Opening it in the new webstore builder pre-selects all <b>{prods.length} items</b> from this store. They can adjust, add branding, and submit a new store request.</div>
                   <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                    <input readOnly value={rebuildUrl} onClick={e=>e.target.select()} style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,background:'#f8fafc',color:'#0f172a',cursor:'text'}}/>
-                    <button onClick={copyLink} style={{fontSize:12,fontWeight:700,padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',background:omgShareCopied?'#166534':'',color:omgShareCopied?'#fff':'#2563eb',cursor:'pointer',whiteSpace:'nowrap',transition:'all 0.2s',minWidth:90}}>{omgShareCopied?'✓ Copied!':'Copy link'}</button>
+                    <input readOnly value={omgShareTokenLoading?'Generating link with images…':rebuildUrl} onClick={e=>e.target.select()} style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,background:'#f8fafc',color:omgShareTokenLoading?'#94a3b8':'#0f172a',cursor:'text'}}/>
+                    <button onClick={copyLink} disabled={omgShareTokenLoading||!omgShareToken&&!skuStr} style={{fontSize:12,fontWeight:700,padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',background:omgShareCopied?'#166534':omgShareTokenLoading?'#f1f5f9':'',color:omgShareCopied?'#fff':omgShareTokenLoading?'#94a3b8':'#2563eb',cursor:omgShareTokenLoading?'not-allowed':'pointer',whiteSpace:'nowrap',transition:'all 0.2s',minWidth:90}}>{omgShareCopied?'✓ Copied!':omgShareTokenLoading?'Wait…':'Copy link'}</button>
                   </div>
+                  {omgShareToken&&<div style={{fontSize:11,color:'#0e7490',marginTop:6,display:'flex',alignItems:'center',gap:4}}>🖼 Decorated mockup images included — {prods.filter(p=>p.image_url).length} of {prods.length} items have images</div>}
                 </div>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
                   <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Packing list · {prods.length} items · {totalUnits} units</div>
