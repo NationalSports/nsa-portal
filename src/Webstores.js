@@ -1915,14 +1915,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // fall back to the catalog product photo.
     const catImgByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.image_url && !catImgByPid[c.product_id]) catImgByPid[c.product_id] = c.image_url; });
+    // SKU/color resolved from the product — the webstore order LINE's sku is null for
+    // singles, so keying mockups off i.sku silently dropped every garment (the SO line
+    // then showed "No mockup uploaded"). Key by the SO line's sku|color AND the bare sku
+    // so the SO's mockup lookup (m[sku|color] → m[sku]) always resolves regardless of how
+    // the line's stored color string compares to the master product color.
+    const skuByPid = {}; const colorByPid = {};
+    Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
     const itemMockups = {};
     lines.forEach((i) => {
-      const sku = i.sku; if (!sku) return;
+      const rsku = i.sku || skuByPid[i.product_id] || '';
+      if (!rsku) return;
       const img = i.image_url || catImgByPid[i.product_id] || '';
       if (!img) return;
-      const key = sku + '|' + (i.color || '');
-      const bucket = (itemMockups[key] = itemMockups[key] || []);
-      if (!bucket.includes(img)) bucket.push(img);
+      const color = i.color || colorByPid[i.product_id] || '';
+      [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
     });
     // Every art file carries the per-garment mockups (production filters by the
     // job's SKUs, same as OMG). Merge so library art keeps its own mockups too.
