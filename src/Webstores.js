@@ -782,25 +782,55 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
   doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
   y += 44;
-  // Items
-  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent&&!i.archived&&i.kind!=='bundle').slice(0,8);
+  // Items — include bundles (Player Pack) so stores with only a bundle aren't blank
+  const visItems = (items||[]).filter((i)=>!i.archived).slice(0,8);
   if (visItems.length > 0) {
+    // Pre-load product images (best-effort, CORS permitting)
+    const imgCache = {};
+    await Promise.all(visItems.map(async (item) => {
+      if (!item.image_front_url) return;
+      try {
+        const resp = await fetch(item.image_front_url);
+        const blob = await resp.blob();
+        imgCache[item.image_front_url] = await new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); });
+      } catch(_) {}
+    }));
     y += 16;
     doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(...INK);
     doc.text("WHAT'S IN THE STORE", 40, y);
     doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
     y += 12;
-    const GAP=8, colW=(W-80-GAP*3)/4;
+    const GAP=8, colW=(W-80-GAP*3)/4, imgH=90, textH=36, cardH=imgH+textH;
     visItems.slice(0,8).forEach((item,idx)=>{
-      const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(74+GAP);
-      doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,74,'FD');
-      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(...INK);
-      const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-10);
-      doc.text(nl[0],x+colW/2,iy+20,{align:'center'});
-      if(nl[1]) doc.text(nl[1],x+colW/2,iy+31,{align:'center'});
-      if(item.retail_price){doc.setFontSize(13);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+57,{align:'center'});}
+      const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
+      doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,cardH,'FD');
+      const b64=imgCache[item.image_front_url];
+      if(b64){ try{ doc.addImage(b64,'JPEG',x+2,iy+2,colW-4,imgH-4); }catch(_){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); } }
+      else { doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...INK);
+      const nl=doc.splitTextToSize(item.name.toUpperCase(),colW-8);
+      doc.text(nl[0],x+colW/2,iy+imgH+11,{align:'center'});
+      if(nl[1]) doc.text(nl[1],x+colW/2,iy+imgH+21,{align:'center'});
+      if(item.retail_price){doc.setFontSize(12);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+imgH+32,{align:'center'});}
     });
-    y += Math.ceil(Math.min(visItems.length,8)/4)*(74+GAP)+14;
+    y += Math.ceil(Math.min(visItems.length,8)/4)*(cardH+GAP)+14;
+  } else {
+    // Fallback: How To Order steps (mirrors the HTML flyer)
+    y += 20;
+    doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...INK);
+    doc.text('HOW TO ORDER', 40, y);
+    doc.setFillColor(ar,ag,ab); doc.rect(40+doc.getTextWidth('HOW TO ORDER')+12,y-5,W-40-doc.getTextWidth('HOW TO ORDER')-52,3,'F');
+    y += 22;
+    const closeDate2 = _fmtDate(store.close_at);
+    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. Gear ships to the team ~4–5 weeks after close.`]].forEach(([num,title,body])=>{
+      doc.setFillColor(pr,pg,pb); doc.circle(54,y+6,9,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(255,255,255); doc.text(num,54,y+10,{align:'center'});
+      doc.setTextColor(...INK); doc.setFontSize(13); doc.text(title.toUpperCase(),70,y+10);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
+      const bl=doc.splitTextToSize(body,W-120); doc.text(bl,70,y+22);
+      y += 52;
+    });
+    y += 10;
   }
   // QR
   y = Math.max(y, H-250);
@@ -865,7 +895,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
     const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-    const items = (catalog || []).filter((i) => !i.is_bundle_parent && i.kind !== 'bundle' && !i.archived);
+    const items = (catalog || []).filter((i) => !i.archived);
     let attachment;
     try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
     const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
@@ -1042,7 +1072,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
       const { data: catalog } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
-      const items = (catalog || []).filter((i) => !i.is_bundle_parent && i.kind !== 'bundle' && !i.archived);
+      const items = (catalog || []).filter((i) => !i.archived);
       let attachment;
       try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
       await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
@@ -3383,8 +3413,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
               <button type="button" onClick={async () => {
                 try {
                   setBusy(true);
-                  const items = featProducts.map((p) => ({ name: p.name, image_front_url: p.image_front_url, kind: p.kind, is_bundle_parent: false, archived: false }));
-                  const b64 = await generateFlyerPdfBase64(store, items);
+                  const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+                  const pdfItems = (cat || []).filter((i) => !i.archived);
+                  const b64 = await generateFlyerPdfBase64(store, pdfItems);
                   const a = document.createElement('a');
                   a.href = 'data:application/pdf;base64,' + b64;
                   a.download = `${store.slug || 'team-store'}-flyer.pdf`;
@@ -3394,11 +3425,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
               }} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
                 ↓ Download Flyer PDF
               </button>
-              <button type="button" onClick={() => {
-                const items = featProducts.map((p) => ({ name: p.name, image_front_url: p.image_front_url, kind: p.kind, is_bundle_parent: false, archived: false }));
+              <button type="button" onClick={async () => {
+                const { data: cat } = await supabase.from('webstore_products').select('id,name,retail_price,image_front_url,kind,archived,is_bundle_parent').eq('store_id', store.id).eq('active', true).order('sort_order');
+                const printItems = (cat || []).filter((i) => !i.archived);
                 const w = window.open('', '_blank');
                 if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
-                w.document.write(flyerHtml(store, items)); w.document.close();
+                w.document.write(flyerHtml(store, printItems)); w.document.close();
               }} style={{ background: '#fff', color: '#191919', border: '1px solid #e2e6ec', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
                 Print Flyer
               </button>
