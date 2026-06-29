@@ -3257,13 +3257,13 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     { id: 'catalog', label: `Catalog (${catalog.length})` },
     { id: 'orders', label: `Orders (${orders.length})` },
     { id: 'art', label: 'Art & Logos' },
+    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
     { id: 'analytics', label: 'Analytics' },
   ];
   const MORE_TABS = [
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
-    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
   ];
   // The tab buttons render as their own row on most tabs, but on the Catalog tab
   // they share one line with the Add items / Tools / view controls (passed into
@@ -7348,23 +7348,31 @@ function BundleBuilder({ components = [], setComponents, designOptions = [], num
 // or free-shipping promos. Redemption count is tracked per code.
 function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRemove }) {
   const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState('single'); // 'single' | 'bulk'
+  const [customCode, setCustomCode] = useState('');
   const [kind, setKind] = useState('percent');
-  const [value, setValue] = useState(100);
+  const [value, setValue] = useState(10);
   const [count, setCount] = useState(10);
-  const [single, setSingle] = useState(true);
+  const [single, setSingle] = useState(false);
   const [coverShip, setCoverShip] = useState(true);
   const [prefix, setPrefix] = useState('');
   const [label, setLabel] = useState('');
   const [expires, setExpires] = useState('');
-  const [generated, setGenerated] = useState(null); // codes from the last batch
+  const [generated, setGenerated] = useState(null);
 
-  // Live redemption count = orders that used the code (more reliable than a counter).
   const usedByCode = {};
   orders.forEach((o) => { if (o.coupon_code && o.status !== 'cancelled' && o.status !== 'pending_payment') { const k = o.coupon_code.toUpperCase(); usedByCode[k] = (usedByCode[k] || 0) + 1; } });
 
   const submit = async () => {
-    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
-    if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    if (mode === 'single') {
+      const code = customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!code) return;
+      const r = await onCreate({ kind, value, count: 1, single, prefix: '', batch_label: label, expires_at: expires || null, cover_shipping: coverShip, code });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); setCustomCode(''); }
+    } else {
+      const r = await onCreate({ kind, value, count, single: true, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    }
   };
   const copyAll = () => { if (generated) navigator.clipboard?.writeText(generated.join('\n')); };
 
@@ -7372,21 +7380,33 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>Codes apply a discount at checkout. Single-use codes (one order each) are ideal for comping a player — the discounted order still gets batched and invoiced to the program.</div>
-        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Create codes</button>
+        <div style={{ fontSize: 13, color: '#64748b' }}>Discount codes families enter at checkout. Use named codes (e.g. TEAM10) for store-wide promos, or bulk-generate single-use codes for comping individual players.</div>
+        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Add code</button>
       </div>
 
-      {adding && <div className="card"><div style={{ padding: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
-        {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
-        <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
-        <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
-        <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="2026 scholarships" /></Row>
-        <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
-        <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use (one order per code)</label>
-        {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
-        <button className="btn btn-primary" onClick={submit}>Generate</button>
-        <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+      {adding && <div className="card"><div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <button onClick={() => setMode('single')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'single' ? '#0b1f3a' : '#e2e8f0', background: mode === 'single' ? '#0b1f3a' : '#fff', color: mode === 'single' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Named code</button>
+          <button onClick={() => setMode('bulk')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'bulk' ? '#0b1f3a' : '#e2e8f0', background: mode === 'bulk' ? '#0b1f3a' : '#fff', color: mode === 'bulk' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Bulk single-use</button>
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {mode === 'single' ? (
+            <Row label="Code (letters & numbers)"><input className="form-input" value={customCode} onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} placeholder="e.g. TEAM10" style={{ width: 160, fontFamily: 'monospace', fontWeight: 700 }} /></Row>
+          ) : (
+            <>
+              <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
+              <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
+            </>
+          )}
+          <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
+          {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
+          <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Spring promo" /></Row>
+          <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
+          {mode === 'single' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use</label>}
+          {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
+          <button className="btn btn-primary" onClick={submit}>{mode === 'bulk' ? 'Generate' : 'Create'}</button>
+          <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+        </div>
       </div></div>}
 
       {generated && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16 }}>
