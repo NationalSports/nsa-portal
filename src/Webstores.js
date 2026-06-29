@@ -800,6 +800,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
+  const [soPrompt, setSoPrompt] = useState(null); // { count, shortages[], proceed() } for the Create-SO modal
   const [storeStats, setStoreStats] = useState({});
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
@@ -1813,10 +1814,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const avail = wh + ven;
       if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
     });
-    const head = `Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`;
-    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Use "Availability report" to see who's affected.\n\nCreate the Sales Order anyway?` : head;
-    if (!window.confirm(msg)) return;
-
+    // Everything from here on runs once the user confirms in the modal below.
+    const proceed = async () => {
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
@@ -1994,6 +1993,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     else if ((linked || []).length < openIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${openIds.size} (some were just batched elsewhere)`);
     else flash(`Created ${soId} · linked ${open.length} orders`);
     loadDetail(sel);
+    }; // end proceed
+
+    // Open the styled confirm modal; it calls proceed() on Create.
+    setSoPrompt({ count: open.length, shortages, proceed });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -2097,6 +2100,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
+      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} onCancel={() => setSoPrompt(null)} onConfirm={async () => { const p = soPrompt.proceed; setSoPrompt(null); await p(); }} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
@@ -2117,6 +2121,44 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
     </>
+  );
+}
+
+// Styled confirm for "Create Sales Order" — replaces the native window.confirm,
+// shows the order count and any inventory shortfalls before the batch runs.
+function SoConfirmModal({ count, shortages = [], onCancel, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  return (
+    <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
+        <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
+          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
+        </div>
+        <div style={{ padding: '20px 22px', maxHeight: '52vh', overflowY: 'auto' }}>
+          {shortages.length ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
+                <span style={{ fontSize: 16 }}>⚠️</span> Inventory shortfalls for this batch
+              </div>
+              <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, overflow: 'hidden' }}>
+                {shortages.map((s, i) => (
+                  <div key={i} style={{ fontSize: 13, color: '#7c2d12', padding: '8px 12px', borderTop: i ? '1px solid #fde68a' : 'none', lineHeight: 1.4 }}>{s.replace(/^•\s*/, '')}</div>
+                ))}
+              </div>
+              <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>These may need a PO or backorder. Run the <b>Stock report</b> to see exactly who's affected. You can still create the Sales Order — shortfalls flow through as items to source.</div>
+            </>
+          ) : (
+            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
+          <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" onClick={go} disabled={busy}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3485,7 +3527,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
-          {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} />}
+          {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
@@ -7554,11 +7596,15 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
 }
 
 // Store analytics — computed live from orders.
-function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
+function AnalyticsTab({ orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
+  // Catalog (with placed decorations) + art names, for the decoration breakdown.
+  const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
+  const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
+  const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
@@ -7582,11 +7628,34 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
   const byPkg = {}; pkgLines.forEach((i) => { const k = i.name || 'Package'; byPkg[k] = (byPkg[k] || 0) + (i.qty || 1); });
   const pkgRows = Object.entries(byPkg).sort((a, b) => b[1] - a[1]);
 
-  const bySku = {}; lines.forEach((i) => { const k = i.sku || i.product_id || '?'; bySku[k] = (bySku[k] || 0) + (i.qty || 1); });
-  const topSellers = Object.entries(bySku).map(([sku, q]) => ({ sku, q, name: nameBySku[sku] || sku })).sort((a, b) => b.q - a.q).slice(0, 8);
-  const bySize = {}; lines.forEach((i) => { if (i.size) bySize[i.size] = (bySize[i.size] || 0) + (i.qty || 1); });
-  const SZ = ['YXS', 'YS', 'YM', 'YL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
-  const sizeRows = Object.entries(bySize).sort((a, b) => { const ia = SZ.indexOf(a[0]), ib = SZ.indexOf(b[0]); return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib); });
+  // Top sellers keyed by product, labelled with the real item name (the order line
+  // stores it; fall back to the storefront catalog name, then sku).
+  const byProd = {}; lines.forEach((i) => {
+    const k = i.sku || i.product_id || '?';
+    if (!byProd[k]) byProd[k] = { q: 0, name: i.name || nameBySku[i.sku] || '' };
+    byProd[k].q += (i.qty || 1);
+    if (!byProd[k].name && i.name) byProd[k].name = i.name;
+  });
+  const topSellers = Object.entries(byProd).map(([sku, v]) => ({ sku, q: v.q, name: v.name || nameBySku[sku] || sku })).sort((a, b) => b.q - a.q).slice(0, 8);
+
+  // Decoration breakdown — how many ordered units carry each placed logo. A product's
+  // logos live on its catalog row's `decorations` (kind:'art'); every ordered unit of
+  // that product (single or bundle component, matched by product_id then sku) counts
+  // once per distinct logo it carries.
+  const decoCounts = {};
+  lines.forEach((i) => {
+    const c = (i.product_id && catByPid[i.product_id]) || (i.sku && catBySku[String(i.sku).toUpperCase()]) || null;
+    const decos = (c && Array.isArray(c.decorations)) ? c.decorations : [];
+    const seen = new Set();
+    decos.filter((d) => d && d.kind === 'art' && (d.art_id || d.art_url)).forEach((d) => {
+      const key = d.art_id || d.art_url;
+      if (seen.has(key)) return; seen.add(key); // don't double-count the same logo twice on one garment
+      const label = (d.art_id && artName[d.art_id]) || d.name || (d.side === 'back' ? 'Back logo' : 'Front logo');
+      if (!decoCounts[key]) decoCounts[key] = { label, units: 0 };
+      decoCounts[key].units += (i.qty || 1);
+    });
+  });
+  const decoRows = Object.values(decoCounts).sort((a, b) => b.units - a.units);
   const byDay = {}; orders.forEach((o) => { const d = (o.created_at || '').slice(0, 10); if (d) byDay[d] = (byDay[d] || 0) + 1; });
   const days = Object.entries(byDay).sort((a, b) => a[0].localeCompare(b[0]));
   const maxSeller = Math.max(1, ...topSellers.map((s) => s.q));
@@ -7632,8 +7701,9 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
         </div></div>
 
         <div className="card"><div style={{ padding: 16 }}>
-          <div style={{ fontWeight: 800, marginBottom: 12 }}>Size breakdown</div>
-          {sizeRows.length === 0 ? <div style={{ fontSize: 13, color: '#94a3b8' }}>No sized items.</div> : sizeRows.map(([sz, q]) => { const m = Math.max(...sizeRows.map((r) => r[1])); return <div key={sz} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}><div style={{ width: 44, fontWeight: 700 }}>{sz}</div><Bar frac={q / m} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{q}</div></div>; })}
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>Decoration breakdown</div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>Ordered units carrying each placed logo — how many of each decoration to produce.</div>
+          {decoRows.length === 0 ? <div style={{ fontSize: 13, color: '#94a3b8' }}>No logos placed on this store's items yet.</div> : decoRows.map((d, idx) => { const m = Math.max(...decoRows.map((r) => r.units)); return <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}><div style={{ width: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.label}>{d.label}</div><Bar frac={d.units / m} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{d.units}</div></div>; })}
         </div></div>
       </div>
 
