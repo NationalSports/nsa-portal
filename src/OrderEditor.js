@@ -7755,16 +7755,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{out[sz]=safeNum(v)});
         return out;
       };
-      const _giFulSizes=(gi,maxSizes)=>{
-        if(gi.fulSizes)return{...gi.fulSizes};
-        const it=safeItems(o)[gi.item_idx];if(!it)return{};
-        const out={};
-        Object.entries(maxSizes||_giSizes(gi)).forEach(([sz,cap])=>{
-          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-          out[sz]=Math.min(safeNum(cap),pQ+rQ);
-        });
-        return out;
+      // Received units PER JOB are family-apportioned via allocateJobFulfillment (parent/received
+      // slices claim first, a split_open backorder claims last) — the same allocation the rest of
+      // the app counts by. Callers below read fulSizes from that allocation rather than the stored
+      // gi.fulSizes: a backorder slice is created with fulSizes:{} and its stored map can lag the SO
+      // line's actual pulls/receipts, so trusting it makes a size that is really in-hand look open
+      // and wrongly carries it into the next split. (SO-1186: JOB-1186-03-S held a pulled 2XL whose
+      // stored fulSizes omitted it, so splitting off the 3XL backorder dragged the received 2XL too.)
+      const _jobFulSizes=jIdx=>{
+        const a=allocateJobFulfillment(jobs,safeItems(o))[jIdx];
+        return (a&&a.fulSizes)||[];
       };
       // Split job by received — carve the received/pulled units off into a new job that can go
       // to production now; the open balance stays on the original. Both halves get explicit
@@ -7777,9 +7777,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Split off the BACKORDER: the received/pulled units stay on the original job (it keeps its
         // number and stays producible); the not-yet-received units move to a new -S backorder job.
         const keepItems=[];const openItems=[];let keepTotal=0;let openTotal=0;
-        j.items.forEach(gi=>{
+        const _fulSizes=_jobFulSizes(jIdx);
+        j.items.forEach((gi,gii)=>{
           const curSizes=_giSizes(gi);
-          const curFul=_giFulSizes(gi,curSizes);
+          const curFul=_fulSizes[gii]||{};
           const rcvdSizes={};const openSizes={};
           let rUnits=0,oUnits=0;
           Object.entries(curSizes).forEach(([sz,v])=>{
@@ -7894,9 +7895,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
         const splitItems=[];const keepItems=[];
         let splitTotal=0,splitFul=0,keepTotal=0,keepFul=0;
-        j.items.forEach(gi=>{
+        const _fulSizes=_jobFulSizes(jIdx);
+        j.items.forEach((gi,gii)=>{
           const curSizes=_giSizes(gi);
-          const curFul=_giFulSizes(gi,curSizes);
+          const curFul=_fulSizes[gii]||{};
           const reqSizes=splitItemSizes?.[gi.item_idx]||{};
           const splitSizes={};const remainSizes={};
           let sUnits=0,rUnits=0;
@@ -9737,7 +9739,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </tr>
             {/* Grouped items under this job */}
             {(j.items||[]).map((gi,gii)=>{
-              const giSizes=_giSizes(gi);const giFul=_giFulSizes(gi,giSizes);
+              const giSizes=_giSizes(gi);const giFul=_jobFulSizes(ji)[gii]||{};
               const _giSzOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
               const giSzEntries=Object.entries(giSizes).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>{const ai=_giSzOrd.indexOf(a),bi=_giSzOrd.indexOf(b);return(ai===-1?99:ai)-(bi===-1?99:bi)});
               return<tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
@@ -9755,9 +9757,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {splitModal&&(()=>{
         const j=jobs[splitModal.jIdx];if(!j)return null;
         const _szOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
-        const items=(j.items||[]).map(gi=>{
+        const _fulSizes=_jobFulSizes(splitModal.jIdx);
+        const items=(j.items||[]).map((gi,gii)=>{
           const sizes=_giSizes(gi);
-          const fulSizes=_giFulSizes(gi,sizes);
+          const fulSizes=_fulSizes[gii]||{};
           const received=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
           return{...gi,sizes,fulSizes,received};
         });
