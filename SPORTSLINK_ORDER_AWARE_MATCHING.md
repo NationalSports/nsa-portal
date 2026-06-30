@@ -129,7 +129,7 @@ exact and the expected lines/qtys known**; it does not literally bypass size nor
 |---|---|---|
 | **SanMar** | 4,113 / 4,137 usable EDI lines; item# + **clean** size + color | ✅ **Solid** — already clean+complete; capture per-line `Unique_Key` for exact PO+line. |
 | **Augusta (Momentec)** | 1,411 / 1,433 usable; item# + size + color, size/color **truncated** | ✅ **Solid in practice** — PO# join exact, truncation handled by round-1/2; capture `orderId` + qtys for reconciliation. |
-| **S&S** | SI bill **scanned/header-only** (200/200, 0 usable) — **but** S&S's own `GET /Orders?lines=true` has clean line data | ✅ **Solvable — bypass Sports Inc.** Pull bills from S&S directly (below); `yourSku` echoes our own SKU → exact match. |
+| **S&S** | SI bill **scanned/header-only** (200/200, 0 usable) — **but** S&S's own `GET /Orders?lines=true` has clean line data | ✅ **BUILT (this PR) — bypasses Sports Inc.** Pull bills from S&S directly (below); `yourSku` echoes our own SKU → exact match. |
 
 **S&S solution — source the bill from S&S, not Sports Inc (verified against the S&S V2 docs).**
 The `/Invoices` endpoint returns a *PDF* (useless — same problem as the SI scan), but **`GET /Orders`

@@ -273,8 +273,9 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
+import { mapSsOrderToBill } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -24613,6 +24614,48 @@ export default function App(){
       _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
     };
 
+    // Pull supplier bills straight from S&S Activewear's own Orders API (NOT Sports Inc, which
+    // only delivers S&S as scanned/header-only PDFs with no usable lines). S&S returns clean
+    // structured lines, and `yourSku` echoes OUR SKU back, so they match our Sales Orders
+    // exactly with no normalization. Drops into the same review/apply pipeline as the SportsLink
+    // and PDF paths — nothing writes to Billed tracking until staff click "Push to Portal".
+    const pullFromSS=async(filters={})=>{
+      setBillImport(x=>({...x,uploading:true}));
+      let orders=[];
+      try{
+        // Default (no filters) pulls ?All=True — every S&S order from the last 3 months — with
+        // lines. Covers ALL S&S orders, not just API-placed ones (direct ssactivewear.com orders too).
+        orders=await ssGetOrders(filters);
+      }catch(e){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('S&S pull failed: '+(e.message||'connection error'),'error');
+        return;
+      }
+      if(!orders.length){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('No S&S orders found (nothing in the last 3 months)','success');
+        return;
+      }
+      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let idx=0;
+      orders.forEach(order=>{
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        // No shipped lines (backordered / not yet shipped) → nothing to bill; leave it.
+        if(!parsed.has_usable_lines){empty++;return}
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        // Two-key dedup, same as the SportsLink pull: an order applied before S&S assigned its
+        // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
+        // re-add it. Checking both the invoice # and the order # catches it either way.
+        const sdn=String(parsed.si_doc_number||'').trim();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        if(dn)seenDocs.add(dn);
+        const label='S&S Activewear · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
+        idx++;
+      });
+      const extraNote=empty?' — '+empty+' order(s) with no shipped lines skipped':'';
+      _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
+    };
+
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
     // Build PO-match candidates from the live orders: every portal PO line + deco PO, tagged
     // with its customer alpha_tag and the SO's SKUs, so the matcher can triangulate (PO# +
@@ -26709,11 +26752,23 @@ export default function App(){
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Scanned/OCR documents (e.g. S&amp;S Activewear) are left for the manual PDF parse below.</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
               </div>
               <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
                 onClick={()=>pullFromSportsInc()}>
                 {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
+              </button>
+            </div>
+          </div>
+          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#0891b2',background:'#ecfeff'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API)</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+                onClick={()=>pullFromSS()}>
+                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
               </button>
             </div>
           </div>
