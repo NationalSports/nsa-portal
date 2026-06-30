@@ -654,7 +654,9 @@ function flyerHtml(store, items = []) {
   // Bundle parents rarely carry their own photo — borrow the first component image.
   const pkgImg = (pkg && pkg.image_front_url) || ((items || []).find((i) => i.active === false && i.image_front_url) || {}).image_front_url || '';
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
-  const itemCard = (it, h=100) => `<div style="border:1px solid ${line};border-radius:5px;overflow:hidden;background:#fff">${it.image_front_url?`<div style="height:${h}px;background:#fff;display:flex;align-items:center;justify-content:center;padding:4px"><img src="${_esc(it.image_front_url)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`:`<div style="height:${h}px;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}<div style="padding:7px 8px 9px"><div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;color:${ink};line-height:1.1">${_esc(it.name || it.display_name || '')}</div>${it.retail_price?`<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:14px;color:${primary};margin-top:2px">$${Math.round(Number(it.retail_price))}</div>`:''}</div></div>`;
+  // Image fills the whole card; the price floats as a pill badge over the bottom-left
+  // corner so the product photo gets the maximum area.
+  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:contain;padding:8px"/>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${ink};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
@@ -723,7 +725,7 @@ function flyerHtml(store, items = []) {
         <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
         <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
       </div>
-      ${grid(p1Items, pkg ? 106 : 116)}
+      ${grid(p1Items, pkg ? 150 : 162)}
     </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
@@ -755,7 +757,7 @@ function flyerHtml(store, items = []) {
     </div>
     <div style="padding:22px 40px 80px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">Also Available</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      ${grid(p2Items.slice(0, 16), 100)}
+      ${grid(p2Items.slice(0, 16), 150)}
     </div>
     <div style="position:absolute;bottom:0;left:0;right:0;background:${ink};padding:9px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
       <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
@@ -847,17 +849,19 @@ async function generateFlyerPdfBase64(store, items = []) {
     doc.text("WHAT'S IN THE STORE", 40, y);
     doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
     y += 12;
-    const GAP=8, colW=(W-80-GAP*3)/4, imgH=pkg?72:90, textH=34, cardH=imgH+textH;
+    // Image fills the card; price floats as a pill over the bottom-left corner.
+    const GAP=8, colW=(W-80-GAP*3)/4, cardH=pkg?100:128;
     visItems.forEach((item,idx)=>{
       const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
-      doc.setFillColor(250,246,239); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.rect(x,iy,colW,cardH,'FD');
+      doc.setFillColor(255,255,255); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.roundedRect(x,iy,colW,cardH,4,4,'FD');
       const b64=imgCache[item.image_front_url];
-      if(!(b64 && addImg(b64,x+2,iy+2,colW-4,imgH-4))){ doc.setFillColor(235,231,224); doc.rect(x+2,iy+2,colW-4,imgH-4,'F'); }
-      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...INK);
-      const nl=doc.splitTextToSize((item.name || item.display_name || '').toUpperCase(),colW-8);
-      doc.text(nl[0],x+colW/2,iy+imgH+11,{align:'center'});
-      if(nl[1]) doc.text(nl[1],x+colW/2,iy+imgH+20,{align:'center'});
-      if(item.retail_price){doc.setFontSize(12);doc.setTextColor(pr,pg,pb);doc.text('$'+Math.round(Number(item.retail_price)),x+colW/2,iy+imgH+31,{align:'center'});}
+      if(!(b64 && addImg(b64,x+5,iy+5,colW-10,cardH-10))){ doc.setFillColor(235,231,224); doc.rect(x+5,iy+5,colW-10,cardH-10,'F'); }
+      if(item.retail_price){
+        const lbl='$'+Math.round(Number(item.retail_price));
+        doc.setFont('helvetica','bold'); doc.setFontSize(11); const tw=doc.getTextWidth(lbl);
+        doc.setFillColor(...INK); doc.roundedRect(x+6, iy+cardH-21, tw+12, 16, 8, 8, 'F');
+        doc.setTextColor(255,255,255); doc.text(lbl, x+6+(tw+12)/2, iy+cardH-10, {align:'center'});
+      }
     });
     y += Math.ceil(visItems.length/4)*(cardH+GAP)+14;
   } else if (!pkg) {
