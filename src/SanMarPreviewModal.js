@@ -26,7 +26,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipToDecoId = null, decoVendors = [], onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -44,7 +44,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : 'nsa'); // 'nsa' | 'deco'
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
   const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
-  const [dpoNumber, setDpoNumber] = useState('');
+  const [dpoNumber, setDpoNumber] = useState(initialDpoNumber || '');
   const [inlineAddr, setInlineAddr] = useState({ address_line1: '', address_line2: '', city: '', state: '', zip: '' });
 
   // Keep selectedDecoId in sync if decoVendors loads after mount

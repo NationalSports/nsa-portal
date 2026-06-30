@@ -1908,8 +1908,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(n.includes('s&s')||n.includes('s & s')||n.includes('ss activewear'))return 'sss';
     return null;};
   const buildApiOrderFromPO=(po,lines)=>{
-    if(!po||po.po_type==='outside_deco'||po.drop_ship)return null;// drop ship goes direct to the customer — API order isn't valid
+    if(!po||po.po_type==='outside_deco')return null;
     const vk=_apiVendorKey(po.vendor);if(!vk)return null;
+    // For drop-ship POs, only allow API ordering when blanks are going to a decorator
+    // (not directly to the customer — we can't pre-determine customer ship-to here).
+    const lineIdxs=new Set((lines||[]).map(ln=>ln.lineIdx));
+    const relDeco=po.drop_ship?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).some(ix=>lineIdxs.has(ix))&&dp.deco_vendor_id):null;
+    if(po.drop_ship&&!relDeco)return null;
     const poId=po.po_id;const items=safeItems(o);const payloadItems=[];
     (lines||[]).forEach(ln=>{const it=items[ln.lineIdx];if(!it)return;
       const pl=(it.po_lines||[]).find(p=>p.po_id===poId);if(!pl)return;
@@ -1920,7 +1925,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
     if(!payloadItems.length)return null;
-    return {vendorKey:vk,poNumber:poId,vendorName:po.vendor,batchPOs:[{so_id:o.id,items:payloadItems}]};
+    return {
+      vendorKey:vk,poNumber:poId,vendorName:po.vendor,
+      batchPOs:[{so_id:o.id,items:payloadItems}],
+      // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
+      ...(relDeco?{
+        shipToDecoId:relDeco.deco_vendor_id,
+        initialDpoNumber:String(relDeco.po_id||'').replace(/^DPO\s*/i,''),
+      }:{}),
+    };
   };
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
   const _recordApiOrder=(desc,r)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return;
