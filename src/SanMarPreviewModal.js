@@ -26,7 +26,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, decoVendors = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -39,15 +39,50 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
   const [resolveErr, setResolveErr] = useState('');
 
+  // Ship-to selector state
+  const [shipMode, setShipMode] = useState('nsa'); // 'nsa' | 'deco'
+  const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
+  const [selectedDecoId, setSelectedDecoId] = useState(() => activeDecoVendors[0]?.id || '');
+  const [dpoNumber, setDpoNumber] = useState('');
+  const [inlineAddr, setInlineAddr] = useState({ address_line1: '', address_line2: '', city: '', state: '', zip: '' });
+
+  // Keep selectedDecoId in sync if decoVendors loads after mount
+  useEffect(() => {
+    if (!selectedDecoId && activeDecoVendors.length > 0) setSelectedDecoId(activeDecoVendors[0].id);
+  }, [activeDecoVendors, selectedDecoId]);
+
+  const selectedDeco = useMemo(() => activeDecoVendors.find(v => v.id === selectedDecoId) || null, [activeDecoVendors, selectedDecoId]);
+  const hasDecoAddr = selectedDeco && selectedDeco.address_line1 && selectedDeco.city && selectedDeco.state && selectedDeco.zip;
+
   const isLive = env === 'prod';
 
-  // SanMar ships to NSA's receiving address (caller can override via the shipTo prop).
-  const ship = shipTo || NSA_SHIP_TO;
-  // Base payload (no network) — exact lines/totals from the batch.
+  // Compute the effective ship-to address inside the memo so it stays a stable dep.
   const base = useMemo(() => {
-    const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: ship });
-    return { payload: p, baseLines: p.PO.lineItems, totals: p._summary };
-  }, [batchPOs, poNumber, ship]);
+    let effectiveShip;
+    if (shipMode === 'deco' && selectedDeco) {
+      const a1 = selectedDeco.address_line1 || inlineAddr.address_line1 || '';
+      const a2 = selectedDeco.address_line2 || inlineAddr.address_line2 || '';
+      const city = selectedDeco.city || inlineAddr.city || '';
+      const state = selectedDeco.state || inlineAddr.state || '';
+      const zip = selectedDeco.zip || inlineAddr.zip || '';
+      effectiveShip = {
+        attentionTo: dpoNumber.trim() ? 'DPO ' + dpoNumber.trim() : (selectedDeco.contact_name || 'Receiving'),
+        companyName: selectedDeco.name,
+        address1: a1,
+        address2: a2,
+        city,
+        region: state,
+        postalCode: zip,
+        country: 'US',
+      };
+    } else {
+      effectiveShip = shipTo || NSA_SHIP_TO;
+    }
+    const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: effectiveShip });
+    return { payload: p, baseLines: p.PO.lineItems, totals: p._summary, effectiveShip };
+  }, [batchPOs, poNumber, shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
+
+  const ship = base.effectiveShip;
 
   // Lines still missing a partId after the base build — these need a live lookup.
   const missing = useMemo(
@@ -92,7 +127,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
+  // Block submit if decorator mode but address is incomplete
+  const decoAddrIncomplete = shipMode === 'deco' && selectedDeco && !hasDecoAddr
+    && (!inlineAddr.address_line1.trim() || !inlineAddr.city.trim() || !inlineAddr.state.trim() || !inlineAddr.zip.trim());
+  const decoNoVendor = shipMode === 'deco' && !selectedDeco;
+
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -177,6 +217,112 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             </div>
           )}
 
+          {/* Ship-to selector */}
+          {!done && (
+            <div style={{ marginBottom: 12, padding: '10px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              <div style={{ fontWeight: 700, fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Ship To</div>
+              <div style={{ display: 'flex', gap: 20, marginBottom: shipMode === 'deco' ? 10 : 0 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'nsa' ? 700 : 400 }}>
+                  <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'nsa'} onChange={() => setShipMode('nsa')} />
+                  NSA Warehouse
+                </label>
+                {activeDecoVendors.length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'deco' ? 700 : 400, color: shipMode === 'deco' ? '#7c3aed' : 'inherit' }}>
+                    <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'deco'} onChange={() => setShipMode('deco')} />
+                    Decorator (outside deco)
+                  </label>
+                )}
+              </div>
+
+              {shipMode === 'deco' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>Decorator</label>
+                      <select
+                        className="form-select"
+                        style={{ fontSize: 12, minWidth: 180 }}
+                        value={selectedDecoId}
+                        onChange={e => { setSelectedDecoId(e.target.value); setInlineAddr({ address_line1: '', address_line2: '', city: '', state: '', zip: '' }); }}
+                      >
+                        {activeDecoVendors.map(dv => <option key={dv.id} value={dv.id}>{dv.name}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line)</span></label>
+                      <input
+                        className="form-input"
+                        style={{ fontSize: 12, width: 140 }}
+                        placeholder="e.g. 1042"
+                        value={dpoNumber}
+                        onChange={e => setDpoNumber(e.target.value)}
+                      />
+                    </div>
+                    {dpoNumber.trim() && (
+                      <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>
+                        Attn: <strong>DPO {dpoNumber.trim()}</strong>
+                      </div>
+                    )}
+                  </div>
+
+                  {selectedDeco && hasDecoAddr && (
+                    <div style={{ fontSize: 11, color: '#475569', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '5px 8px' }}>
+                      📍 <strong>{selectedDeco.name}</strong> · {selectedDeco.address_line1}{selectedDeco.address_line2 ? ', ' + selectedDeco.address_line2 : ''}, {selectedDeco.city} {selectedDeco.state} {selectedDeco.zip}
+                    </div>
+                  )}
+
+                  {selectedDeco && !hasDecoAddr && (
+                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', marginBottom: 6 }}>
+                        No address on file for {selectedDeco.name} — enter it below for this order (or save it first in Settings → Deco Vendors):
+                      </div>
+                      <div style={{ display: 'grid', gap: 6, maxWidth: 480 }}>
+                        <input
+                          className="form-input"
+                          style={{ fontSize: 12 }}
+                          placeholder="Street address *"
+                          value={inlineAddr.address_line1}
+                          onChange={e => setInlineAddr(a => ({ ...a, address_line1: e.target.value }))}
+                        />
+                        <input
+                          className="form-input"
+                          style={{ fontSize: 12 }}
+                          placeholder="Suite / unit (optional)"
+                          value={inlineAddr.address_line2}
+                          onChange={e => setInlineAddr(a => ({ ...a, address_line2: e.target.value }))}
+                        />
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <input
+                            className="form-input"
+                            style={{ fontSize: 12, flex: 2 }}
+                            placeholder="City *"
+                            value={inlineAddr.city}
+                            onChange={e => setInlineAddr(a => ({ ...a, city: e.target.value }))}
+                          />
+                          <input
+                            className="form-input"
+                            style={{ fontSize: 12, width: 60 }}
+                            placeholder="State *"
+                            maxLength={2}
+                            value={inlineAddr.state}
+                            onChange={e => setInlineAddr(a => ({ ...a, state: e.target.value.toUpperCase() }))}
+                          />
+                          <input
+                            className="form-input"
+                            style={{ fontSize: 12, width: 90 }}
+                            placeholder="Zip *"
+                            value={inlineAddr.zip}
+                            onChange={e => setInlineAddr(a => ({ ...a, zip: e.target.value }))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
             <Stat label="PO Number" value={poNumber} mono />
             <Stat label="Line Items" value={totals.lineCount} />
@@ -185,6 +331,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           </div>
           <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
             <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
+            {ship.attentionTo && ship.attentionTo !== 'Receiving' && <span style={{ marginLeft: 6, color: '#7c3aed', fontWeight: 700 }}>· Attn: {ship.attentionTo}</span>}
           </div>
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
@@ -257,7 +404,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up Part IDs…' : blocked ? 'Every line needs a matched SanMar Part ID first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={
+                  resolving ? 'Looking up Part IDs…'
+                  : decoAddrIncomplete ? 'Enter the decorator\'s full address first'
+                  : decoNoVendor ? 'Select a decorator first'
+                  : blocked ? 'Every line needs a matched SanMar Part ID first'
+                  : !confirmed ? 'Check the confirmation box first'
+                  : ''
+                }
                 style={{ background: isLive ? '#b91c1c' : '#1e40af', borderColor: isLive ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up Part IDs…' : isLive ? '🚀 Submit Order to SanMar' : '🧪 Submit Test Order'}
