@@ -651,19 +651,21 @@ function flyerHtml(store, items = []) {
   // else flows into the product grid below. Inactive items (active===false) are bundle
   // components — they're represented by the package band, so keep them out of the grid.
   const pkg = (items || []).find((i) => i.active !== false && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
-  // Bundle parents rarely carry their own photo — borrow the first component image.
-  const pkgImg = (pkg && pkg.image_front_url) || ((items || []).find((i) => i.active === false && i.image_front_url) || {}).image_front_url || '';
+  // The pack's component photos (all items in the bundle); fall back to a single image.
+  const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
+    ? pkg._componentImages.slice(0, 4)
+    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items || []).filter((i) => i.active === false && i.image_front_url).map((i) => i.image_front_url).slice(0, 4)));
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
-  // Image fills the whole card; the price floats as a pill badge over the bottom-left
-  // corner so the product photo gets the maximum area.
-  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:contain;padding:8px"/>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${ink};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  // Image fills the whole card; the price floats as a pill badge (team accent color)
+  // over the bottom-left corner so the product photo gets the maximum area.
+  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:contain;padding:8px"/>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
   const pkgBand = pkg ? `
     <div style="margin:16px 40px 0">
       <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
-        ${pkgImg ? `<div style="flex:0 0 130px;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px"><img src="${_esc(pkgImg)}" alt="" style="max-width:100%;max-height:120px;object-fit:contain"/></div>` : ''}
+        ${pkgImgs.length ? `<div style="flex:0 0 130px;background:#fff;display:grid;grid-template-columns:repeat(${pkgImgs.length === 1 ? 1 : 2},1fr);gap:3px;padding:6px;align-content:center">${pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;height:${pkgImgs.length <= 2 ? 104 : 52}px"><img src="${_esc(u)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`).join('')}</div>` : ''}
         <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
           <div>
             <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
@@ -701,22 +703,22 @@ function flyerHtml(store, items = []) {
       <span><span style="color:${accent}">&#9733;</span> Official Team Store</span>
       <span style="color:rgba(255,255,255,.62)">Powered by National Sports Apparel</span>
     </div>
-    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:18px 40px 14px;position:relative">
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:14px 40px 12px;position:relative">
       <div style="position:absolute;inset:0;background:repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.045) 26px,rgba(255,255,255,.045) 52px)"></div>
-      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:12px">
-        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:46px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
+      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:9px">
+        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:42px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
         <div>
           <div style="font-weight:700;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent}">${_esc(store.name)}</div>
           ${closeDate ? `<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.6)">Order by ${_esc(closeDate)}</div>` : ''}
         </div>
       </div>
-      <h1 style="position:relative;font-weight:800;font-size:46px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
-      <p style="position:relative;font-size:13.5px;line-height:1.45;color:rgba(255,255,255,.85);max-width:560px;margin:8px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
+      <h1 style="position:relative;font-weight:800;font-size:40px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
+      <p style="position:relative;font-size:12.5px;line-height:1.4;color:rgba(255,255,255,.85);max-width:560px;margin:7px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);background:${ink}">
-      <div style="padding:12px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
-      <div style="padding:12px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
-      <div style="padding:12px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:22px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
+      <div style="padding:9px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
+      <div style="padding:9px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
+      <div style="padding:9px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
     </div>
     ${pkgBand}
     ${p1Items.length > 0 ? `
@@ -725,7 +727,7 @@ function flyerHtml(store, items = []) {
         <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
         <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
       </div>
-      ${grid(p1Items, pkg ? 150 : 162)}
+      ${grid(p1Items, pkg ? 142 : 156)}
     </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
@@ -813,11 +815,13 @@ async function generateFlyerPdfBase64(store, items = []) {
   // Items — the Player Pack (bundle) gets a highlighted band; the rest fill the grid.
   // Inactive items (active===false) are bundle components, surfaced via the band only.
   const pkg = (items||[]).find((i)=>i.active!==false && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
-  const pkgImg = (pkg && pkg.image_front_url) || ((items||[]).find((i)=>i.active===false && i.image_front_url) || {}).image_front_url || '';
+  const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
+    ? pkg._componentImages.slice(0, 4)
+    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items||[]).filter((i)=>i.active===false && i.image_front_url).map((i)=>i.image_front_url).slice(0, 4)));
   const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle').slice(0,8);
-  // Pre-load product images (best-effort, CORS permitting), including the package image.
+  // Pre-load product images (best-effort, CORS permitting), including the package images.
   const imgCache = {};
-  await Promise.all([...visItems, ...(pkgImg ? [{image_front_url: pkgImg}] : [])].map(async (item) => {
+  await Promise.all([...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].map(async (item) => {
     if (!item.image_front_url) return;
     try {
       const resp = await fetch(item.image_front_url);
@@ -831,9 +835,14 @@ async function generateFlyerPdfBase64(store, items = []) {
     y += 14;
     const bh = 88;
     doc.setFillColor(pr,pg,pb); doc.setDrawColor(ar,ag,ab); doc.setLineWidth(1.5); doc.roundedRect(40,y,W-80,bh,6,6,'FD');
-    const pb64 = imgCache[pkgImg];
     let tx = 54;
-    if (pb64) { doc.setFillColor(255,255,255); doc.roundedRect(48,y+8,72,bh-16,4,4,'F'); if (addImg(pb64,52,y+12,64,bh-24)) tx = 132; }
+    if (pkgImgs.length) {
+      const bx=48, by=y+8, bw=72, bhh=bh-16;
+      doc.setFillColor(255,255,255); doc.roundedRect(bx,by,bw,bhh,4,4,'F');
+      if (pkgImgs.length === 1) { const b=imgCache[pkgImgs[0]]; if (b) addImg(b, bx+4, by+4, bw-8, bhh-8); }
+      else { const cols=2, rows=Math.ceil(pkgImgs.length/2), cw=(bw-6)/cols, ch=(bhh-6)/rows; pkgImgs.forEach((u,k)=>{ const b=imgCache[u]; if(!b) return; const cx=bx+3+(k%2)*cw, cy=by+3+Math.floor(k/2)*ch; addImg(b, cx+1, cy+1, cw-2, ch-2); }); }
+      tx = 132;
+    }
     doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(ar,ag,ab); doc.text('REQUIRED FOR EVERY PLAYER', tx, y+20);
     doc.setFontSize(20); doc.setTextColor(255,255,255);
     const pn=doc.splitTextToSize((pkg.name || pkg.display_name || 'Player Pack').toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
@@ -859,7 +868,7 @@ async function generateFlyerPdfBase64(store, items = []) {
       if(item.retail_price){
         const lbl='$'+Math.round(Number(item.retail_price));
         doc.setFont('helvetica','bold'); doc.setFontSize(11); const tw=doc.getTextWidth(lbl);
-        doc.setFillColor(...INK); doc.roundedRect(x+6, iy+cardH-21, tw+12, 16, 8, 8, 'F');
+        doc.setFillColor(ar,ag,ab); doc.roundedRect(x+6, iy+cardH-21, tw+12, 16, 8, 8, 'F');
         doc.setTextColor(255,255,255); doc.text(lbl, x+6+(tw+12)/2, iy+cardH-10, {align:'center'});
       }
     });
@@ -920,11 +929,33 @@ async function loadFlyerItems(store) {
     const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
     (pr || []).forEach((p) => { meta[p.id] = p; });
   }
-  return rows.map((r) => ({
+  const items = rows.map((r) => ({
     ...r,
     name: r.display_name || (r.product_id && meta[r.product_id]?.name) || 'Item',
     image_front_url: r.image_url || (r.product_id && meta[r.product_id]?.image_front_url) || null,
   }));
+  // Attach each package's component images so the flyer can show the full pack.
+  const bundleIds = items.filter((i) => i.kind === 'bundle' || i.is_bundle_parent).map((i) => i.id);
+  if (bundleIds.length) {
+    const { data: bis } = await supabase.from('webstore_bundle_items').select('bundle_id,webstore_product_id,sort_order').in('bundle_id', bundleIds);
+    attachBundleImages(items, bis || []);
+  }
+  return items;
+}
+
+// Attach a `_componentImages` array (the pack's member photos) to each bundle parent,
+// resolved from the catalog by the bundle_items join. De-duped, in pack order.
+function attachBundleImages(items, bundleItems) {
+  const byId = {}; items.forEach((i) => { byId[i.id] = i; });
+  const imgOf = (it) => (it && (it.image_url || it.image_front_url)) || '';
+  items.forEach((p) => {
+    if (p.kind !== 'bundle' && !p.is_bundle_parent) return;
+    const comps = (bundleItems || []).filter((bi) => bi.bundle_id === p.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const imgs = [];
+    comps.forEach((bi) => { const u = imgOf(byId[bi.webstore_product_id]); if (u && !imgs.includes(u)) imgs.push(u); });
+    if (imgs.length) p._componentImages = imgs;
+  });
+  return items;
 }
 
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
@@ -2308,7 +2339,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, detail?.catalog || [])} />
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
       )}
