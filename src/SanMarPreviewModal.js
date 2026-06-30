@@ -26,7 +26,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, decoVendors = [], onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipToDecoId = null, decoVendors = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -39,10 +39,11 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
   const [resolveErr, setResolveErr] = useState('');
 
-  // Ship-to selector state
-  const [shipMode, setShipMode] = useState('nsa'); // 'nsa' | 'deco'
+  // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker)
+  const isPrescribed = !!shipToDecoId;
+  const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : 'nsa'); // 'nsa' | 'deco'
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
-  const [selectedDecoId, setSelectedDecoId] = useState(() => activeDecoVendors[0]?.id || '');
+  const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
   const [dpoNumber, setDpoNumber] = useState('');
   const [inlineAddr, setInlineAddr] = useState({ address_line1: '', address_line2: '', city: '', state: '', zip: '' });
 
@@ -219,84 +220,120 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
           {/* Ship-to selector */}
           {!done && (
-            <div style={{ marginBottom: 12, padding: '10px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-              <div style={{ fontWeight: 700, fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Ship To</div>
-              <div style={{ display: 'flex', gap: 20, marginBottom: shipMode === 'deco' ? 10 : 0 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'nsa' ? 700 : 400 }}>
-                  <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'nsa'} onChange={() => setShipMode('nsa')} />
-                  NSA Warehouse
-                </label>
-                {activeDecoVendors.length > 0 && (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'deco' ? 700 : 400, color: shipMode === 'deco' ? '#7c3aed' : 'inherit' }}>
-                    <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'deco'} onChange={() => setShipMode('deco')} />
-                    Decorator (outside deco)
-                  </label>
-                )}
-              </div>
+            <div style={{ marginBottom: 12, padding: '10px 12px', background: isPrescribed ? '#faf5ff' : '#f8fafc', border: '1px solid ' + (isPrescribed ? '#ede9fe' : '#e2e8f0'), borderRadius: 6 }}>
+              <div style={{ fontWeight: 700, fontSize: 10, color: isPrescribed ? '#7c3aed' : '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Ship To{isPrescribed ? ' — Decorator' : ''}</div>
 
-              {shipMode === 'deco' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>Decorator</label>
-                      <select
-                        className="form-select"
-                        style={{ fontSize: 12, minWidth: 180 }}
-                        value={selectedDecoId}
-                        onChange={e => { setSelectedDecoId(e.target.value); setInlineAddr({ address_line1: '', address_line2: '', city: '', state: '', zip: '' }); }}
-                      >
-                        {activeDecoVendors.map(dv => <option key={dv.id} value={dv.id}>{dv.name}</option>)}
-                      </select>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line)</span></label>
-                      <input
-                        className="form-input"
-                        style={{ fontSize: 12, width: 140 }}
-                        placeholder="e.g. 1042"
-                        value={dpoNumber}
-                        onChange={e => setDpoNumber(e.target.value)}
-                      />
-                    </div>
-                    {dpoNumber.trim() && (
-                      <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>
-                        Attn: <strong>DPO {dpoNumber.trim()}</strong>
-                      </div>
-                    )}
-                  </div>
-
+              {isPrescribed ? (
+                /* Prescribed deco mode — locked to the batch's deco vendor, show address + DPO# */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {selectedDeco && hasDecoAddr && (
-                    <div style={{ fontSize: 11, color: '#475569', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '5px 8px' }}>
+                    <div style={{ fontSize: 12, color: '#475569', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '6px 10px', fontWeight: 500 }}>
                       📍 <strong>{selectedDeco.name}</strong> · {selectedDeco.address_line1}{selectedDeco.address_line2 ? ', ' + selectedDeco.address_line2 : ''}, {selectedDeco.city} {selectedDeco.state} {selectedDeco.zip}
                     </div>
                   )}
-
                   {selectedDeco && !hasDecoAddr && (
                     <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '8px 10px' }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', marginBottom: 6 }}>
-                        No address on file for {selectedDeco.name} — enter it below for this order (or save it first in Settings → Deco Vendors):
+                        No address on file for {selectedDeco.name} — enter it below:
                       </div>
                       <div style={{ display: 'grid', gap: 6, maxWidth: 480 }}>
-                        <input
-                          className="form-input"
-                          style={{ fontSize: 12 }}
-                          placeholder="Street address *"
-                          value={inlineAddr.address_line1}
-                          onChange={e => setInlineAddr(a => ({ ...a, address_line1: e.target.value }))}
-                        />
-                        <input
-                          className="form-input"
-                          style={{ fontSize: 12 }}
-                          placeholder="Suite / unit (optional)"
-                          value={inlineAddr.address_line2}
-                          onChange={e => setInlineAddr(a => ({ ...a, address_line2: e.target.value }))}
-                        />
+                        <input className="form-input" style={{ fontSize: 12 }} placeholder="Street address *" value={inlineAddr.address_line1} onChange={e => setInlineAddr(a => ({ ...a, address_line1: e.target.value }))} />
+                        <input className="form-input" style={{ fontSize: 12 }} placeholder="Suite / unit (optional)" value={inlineAddr.address_line2} onChange={e => setInlineAddr(a => ({ ...a, address_line2: e.target.value }))} />
                         <div style={{ display: 'flex', gap: 6 }}>
+                          <input className="form-input" style={{ fontSize: 12, flex: 2 }} placeholder="City *" value={inlineAddr.city} onChange={e => setInlineAddr(a => ({ ...a, city: e.target.value }))} />
+                          <input className="form-input" style={{ fontSize: 12, width: 60 }} placeholder="State *" maxLength={2} value={inlineAddr.state} onChange={e => setInlineAddr(a => ({ ...a, state: e.target.value.toUpperCase() }))} />
+                          <input className="form-input" style={{ fontSize: 12, width: 90 }} placeholder="Zip *" value={inlineAddr.zip} onChange={e => setInlineAddr(a => ({ ...a, zip: e.target.value }))} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line — optional)</span></label>
+                      <input className="form-input" style={{ fontSize: 12, width: 160 }} placeholder="e.g. 1042" value={dpoNumber} onChange={e => setDpoNumber(e.target.value)} />
+                    </div>
+                    {dpoNumber.trim() && <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>Attn: <strong>DPO {dpoNumber.trim()}</strong></div>}
+                  </div>
+                </div>
+              ) : (
+                /* Manual mode — radio picker + decorator dropdown */
+                <>
+                  <div style={{ display: 'flex', gap: 20, marginBottom: shipMode === 'deco' ? 10 : 0 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'nsa' ? 700 : 400 }}>
+                      <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'nsa'} onChange={() => setShipMode('nsa')} />
+                      NSA Warehouse
+                    </label>
+                    {activeDecoVendors.length > 0 && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'deco' ? 700 : 400, color: shipMode === 'deco' ? '#7c3aed' : 'inherit' }}>
+                        <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'deco'} onChange={() => setShipMode('deco')} />
+                        Decorator (outside deco)
+                      </label>
+                    )}
+                  </div>
+
+                  {shipMode === 'deco' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>Decorator</label>
+                          <select
+                            className="form-select"
+                            style={{ fontSize: 12, minWidth: 180 }}
+                            value={selectedDecoId}
+                            onChange={e => { setSelectedDecoId(e.target.value); setInlineAddr({ address_line1: '', address_line2: '', city: '', state: '', zip: '' }); }}
+                          >
+                            {activeDecoVendors.map(dv => <option key={dv.id} value={dv.id}>{dv.name}</option>)}
+                          </select>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line)</span></label>
                           <input
                             className="form-input"
-                            style={{ fontSize: 12, flex: 2 }}
-                            placeholder="City *"
-                            value={inlineAddr.city}
+                            style={{ fontSize: 12, width: 140 }}
+                            placeholder="e.g. 1042"
+                            value={dpoNumber}
+                            onChange={e => setDpoNumber(e.target.value)}
+                          />
+                        </div>
+                        {dpoNumber.trim() && (
+                          <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>
+                            Attn: <strong>DPO {dpoNumber.trim()}</strong>
+                          </div>
+                        )}
+                      </div>
+
+                      {selectedDeco && hasDecoAddr && (
+                        <div style={{ fontSize: 11, color: '#475569', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '5px 8px' }}>
+                          📍 <strong>{selectedDeco.name}</strong> · {selectedDeco.address_line1}{selectedDeco.address_line2 ? ', ' + selectedDeco.address_line2 : ''}, {selectedDeco.city} {selectedDeco.state} {selectedDeco.zip}
+                        </div>
+                      )}
+
+                      {selectedDeco && !hasDecoAddr && (
+                        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '8px 10px' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', marginBottom: 6 }}>
+                            No address on file for {selectedDeco.name} — enter it below for this order (or save it first in Settings → Deco Vendors):
+                          </div>
+                          <div style={{ display: 'grid', gap: 6, maxWidth: 480 }}>
+                            <input
+                              className="form-input"
+                              style={{ fontSize: 12 }}
+                              placeholder="Street address *"
+                              value={inlineAddr.address_line1}
+                              onChange={e => setInlineAddr(a => ({ ...a, address_line1: e.target.value }))}
+                            />
+                            <input
+                              className="form-input"
+                              style={{ fontSize: 12 }}
+                              placeholder="Suite / unit (optional)"
+                              value={inlineAddr.address_line2}
+                              onChange={e => setInlineAddr(a => ({ ...a, address_line2: e.target.value }))}
+                            />
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <input
+                                className="form-input"
+                                style={{ fontSize: 12, flex: 2 }}
+                                placeholder="City *"
+                                value={inlineAddr.city}
                             onChange={e => setInlineAddr(a => ({ ...a, city: e.target.value }))}
                           />
                           <input
@@ -319,6 +356,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                     </div>
                   )}
                 </div>
+              )}
+                </>
               )}
             </div>
           )}
