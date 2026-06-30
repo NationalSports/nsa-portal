@@ -1057,7 +1057,11 @@ const _dbLoad = async (opts={}) => {
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
-    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
+    // so_item_pick_lines / so_item_po_lines MUST be included: a timeout on either loads SOs with empty pick_lines/
+    // po_lines, and if the poll/realtime reload doesn't bail here it overwrites the snapshot with un-hydrated SOs,
+    // diffing every SO as "changed" → a mass background re-save whose stale (childless) payloads trip the per-SO
+    // restore guard and fire one data-loss alert per SO (the 2026-06-30 ~340-email storm).
+    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files')||_lastLoadTimedOut.has('so_item_pick_lines')||_lastLoadTimedOut.has('so_item_po_lines');
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
@@ -4484,6 +4488,14 @@ export default function App(){
           if(localPickCount>0&&dbPickCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
           }
+          // Same protection for po_lines (this guard was missing — a timed-out/mid-save so_item_po_lines read would
+          // drop them from state, then the next save's restore guard re-injected them from the DB and fired a
+          // data-loss alert per SO). Deliberate PO deletions still reconcile via _hydratedPoIds in the save path.
+          const localPoCount=(local.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          if(localPoCount>0&&dbPoCount===0&&m.items?.length){
+            m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
+          }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];return li?.decorations?.length&&!si.decorations?.length?{...si,decorations:li.decorations}:si});
@@ -4799,10 +4811,23 @@ export default function App(){
   // with art already complete, so the person checking in knows it can move to decoration now.
   const notifyDecoReady=(readyJobs)=>{if(readyJobs&&readyJobs.length)nf('🎽 Ready for decoration: '+readyJobs.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   _onEstStatusMerge=(id,status,approved_by,approved_at)=>setEsts(prev=>prev.map(e=>e.id===id?{...e,status,...(approved_by?{approved_by}:{}),...(approved_at?{approved_at}:{})}:e));
-  // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
+  // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min, with a global
+  // per-window email cap so a mass re-save can't flood the inbox. Auto-restores are logged only (data preserved).
   const _alertDedupeRef=React.useRef({});
-  _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
+  // Global flood backstop — a bulk/background re-save can trip a save guard on hundreds of distinct SOs in a row;
+  // per-SO dedupe doesn't help (each SO is a different key), so cap total emails per rolling window. Tracks the
+  // current window and how many alert emails were sent vs suppressed within it.
+  const _alertFloodRef=React.useRef({windowStart:0,sent:0,suppressed:0,noticed:false});
+  _dataLossAlert=({kind,soId,prevCount,newCount,reason,restored})=>{
     try{
+      // Auto-restore is a SUCCESS, not a loss: the DB save layer re-injected PO/pick lines the client's save
+      // omitted (stale/un-hydrated in-memory state), so nothing was actually lost. Record it for audit but never
+      // email — on a bulk/background re-save this fires once per SO and would otherwise flood the admin inbox with
+      // false "Items lost" alarms (the 2026-06-30 storm: ~340 emails across as many SOs, every SO's data intact).
+      if(kind==='po_restored'||kind==='picks_restored'){
+        logChange('data_restored','SO',soId,'Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)');
+        return;
+      }
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
       const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked'||kind==='qty_wipe_blocked';
       const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
@@ -4811,6 +4836,19 @@ export default function App(){
       // bg_shrink_blocked falls through so admin gets a heads-up that stale state nearly wiped an estimate
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
       if(now-last<5*60*1000)return; // already emailed within 5 min
+      // Global flood cap: never send more than MAX alert emails per WINDOW, no matter how many distinct SOs trip a
+      // guard. Past the cap the event is still logged above (audit intact) but the email is suppressed; one digest
+      // notice is sent per window so the admin knows alerts are being throttled and where to look.
+      const fr=_alertFloodRef.current;const WINDOW=10*60*1000,MAX=8;
+      if(now-fr.windowStart>WINDOW){fr.windowStart=now;fr.sent=0;fr.suppressed=0;fr.noticed=false;}
+      if(fr.sent>=MAX){
+        fr.suppressed++;_alertDedupeRef.current[dedupeKey]=now;
+        if(!fr.noticed){fr.noticed=true;
+          sendBrevoEmail({to:[{email:'steve@nationalsportsapparel.com',name:'Steve Peterson'}],subject:'⚠️ NSA Portal — data-loss alerts throttled (possible bulk re-save)',htmlContent:'<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a"><p>More than '+MAX+' save-guard alerts fired within 10 minutes, so further alert emails are being suppressed to protect your inbox. This pattern usually means a bulk or background re-save is tripping the guards across many orders rather than a single genuine loss.</p><p>No alerts are lost — every event is still recorded in <strong>System Health &rarr; Change Log</strong>. Please review it there.</p></div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] throttle notice failed:',e));
+        }
+        return;
+      }
+      fr.sent++;
       _alertDedupeRef.current[dedupeKey]=now;
       const adminEmail='steve@nationalsportsapparel.com';
       const ccEmail=companyInfo?.email&&companyInfo.email!==adminEmail?companyInfo.email:null;
