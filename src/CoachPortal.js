@@ -66,14 +66,19 @@ function cpTeamTheme(customer) {
   return { primary, accent };
 }
 
-function CoachStore({ customer }) {
+function CoachStore({ customer, storeIds }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
   const [loaded, setLoaded] = useState(false);
+  // For an athletic-dept (parent) account, storeIds covers the dept + every sub-team so
+  // the parent sees all its teams' stores; for a single team it's [self, parent]. Falls
+  // back to [self, parent] when no explicit set is passed.
+  const _storeIdKey = (storeIds && storeIds.length ? storeIds : [customer.id, customer.parent_id]).filter(Boolean).join(',');
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const ids = [customer.id, customer.parent_id].filter(Boolean);
+      const ids = _storeIdKey ? _storeIdKey.split(',') : [];
+      if (!ids.length) { setLoaded(true); return; }
       const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
@@ -93,7 +98,7 @@ function CoachStore({ customer }) {
       if (!cancel) { setData(out); setLoaded(true); }
     })();
     return () => { cancel = true; };
-  }, [customer.id, customer.parent_id]);
+  }, [_storeIdKey]);
 
   if (!loaded) return null;
   // The coach sees their own submissions as "pending review"; staff work-in-
@@ -297,8 +302,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // top-level lookup (the full per-store tracking is fetched by <CoachStore/> when the
   // tab is opened). A store earns the tab when the coach should see it: any live/non-draft
   // store, or their own submitted draft awaiting review (mirrors CoachStore's render rule).
+  // Parent/athletic-dept accounts track the dept's own store + every sub-team's store;
+  // a single team tracks its own + its parent dept's. This same id set gates the nav tab
+  // and is passed to <CoachStore/> so the tab's visibility always matches what it renders.
+  const cpStoreCustomerIds=(isP?ids:[customer.id,customer.parent_id]).filter(Boolean);
   const[cpStores,setCpStores]=useState([]);
-  const _cpStoreKey=ids.filter(Boolean).join(',');
+  const _cpStoreKey=cpStoreCustomerIds.join(',');
   useEffect(()=>{let cancel=false;(async()=>{
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
@@ -1973,7 +1982,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {page==='store'&&<div>
           <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Team Store Tracking</div>
           <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Live orders, fundraising and production status for your team store{cpVisibleStores.length>1?'s':''}.</div>
-          <CoachStore customer={customer}/>
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
         </div>}
 
         {page==='shop'&&<div>
@@ -2033,7 +2042,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
 
           {/* Team Stores — inline (CoachStore renders existing stores) */}
-          <CoachStore customer={customer} />
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} />
 
           {/* Custom & Catalog Gear tile */}
           <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>
