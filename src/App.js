@@ -9799,8 +9799,11 @@ export default function App(){
     // ── Phase 4: PO tracking per vendor ── gather every PO that names this vendor,
     // mirroring the aggregation on the main Purchase Orders page (rPOs) but scoped
     // to one vendor: SO po_lines, SO-level decoration POs, submitted batches, inv POs.
-    const vName=(selV.name||'').trim().toLowerCase();
-    const vMatch=v=>!!vName&&(v||'').trim().toLowerCase()===vName;
+    // PO lines store the vendor as EITHER the vendor's display name (e.g. "Momentec",
+    // "SanMar") OR the vendor's id (e.g. "v1780447907300", "ns_100") depending on which
+    // code path created the PO — so match against both keys, case/space-insensitively.
+    const vKeys=new Set([selV.id,selV.name].filter(Boolean).map(s=>String(s).trim().toLowerCase()));
+    const vMatch=v=>{const k=(v==null?'':String(v)).trim().toLowerCase();return !!k&&vKeys.has(k)};
     const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','tracking_numbers'];
     const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
     const vPOs=[];
