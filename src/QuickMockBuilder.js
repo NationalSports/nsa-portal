@@ -52,8 +52,63 @@ const hexToRgb = h => {
   const m = (h || '').replace('#', '').match(/.{2}/g);
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
+// One-click placements, tuned to the 460x560 mock canvas: cx/cy = the art's
+// center, w = its width in px. Staff can still drag/resize after snapping.
+const PLACE_PRESETS = {
+  left_chest:   {label: 'Left chest', cx: 300, cy: 198, w: 92},
+  full_front:   {label: 'Full front', cx: 230, cy: 288, w: 238},
+  full_back:    {label: 'Full back',  cx: 230, cy: 258, w: 250},
+  left_sleeve:  {label: 'L. sleeve',  cx: 392, cy: 300, w: 62},
+  right_sleeve: {label: 'R. sleeve',  cx: 68,  cy: 300, w: 62},
+  center:       {label: 'Center',     cx: 230, cy: 286, w: 178},
+};
+// Auto-contrast for "apply to all colors": white logo on dark garments.
+const _lumOf = hex => { const {r, g, b} = hexToRgb(hex); return 0.299 * r + 0.587 * g + 0.114 * b; };
+const garmentIsDark = color => { const hxs = hexesForColor(color); const avg = hxs.reduce((a, h) => a + _lumOf(h), 0) / (hxs.length || 1); return avg < 110; };
+const tintWhite = obj => {
+  if (typeof obj.getObjects === 'function') {
+    const walk = o => { if (typeof o.getObjects === 'function') { o.getObjects().forEach(walk); return; } if (o.fill && o.fill !== 'transparent') o.set('fill', '#ffffff'); if (o.stroke && o.stroke !== 'transparent') o.set('stroke', '#ffffff'); };
+    walk(obj); obj.dirty = true; return;
+  }
+  try {
+    const el = obj.getElement(); const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+    const off = document.createElement('canvas'); off.width = w; off.height = h;
+    const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, w, h);
+    const id = ctx.getImageData(0, 0, w, h); const d = id.data;
+    for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) { d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; } }
+    ctx.putImageData(id, 0, 0); obj.setElement(off);
+  } catch (e) {}
+};
 
-export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
+// ── NSA brand design system (navy dominant, red as accent only) ──────────────
+// Mirrors the design-system tokens (tokens/colors.css, typography.css). The whole
+// builder is restyled to this palette/typography; all canvas/recolor logic below
+// is unchanged from the prior version.
+const NSA = {
+  navy: '#192853', navyDark: '#0F1A38', navyMid: '#1c2d4f',
+  red: '#962C32', redBright: '#B8333B', redLight: '#D94A52',
+  white: '#ffffff', offWhite: '#F7F8FB', light: '#EEF1F6', mid: '#D1D5DE',
+  text: '#2A2F3E', textLight: '#5A6075', textMuted: '#8A90A0', green: '#1F7A3D',
+};
+const F_DISPLAY = "'Barlow Condensed','Arial Narrow',sans-serif";
+const F_BODY = "'Source Sans 3','Segoe UI',system-ui,sans-serif";
+// Athletic slanted look used on brand CTAs — skew the button, un-skew the label.
+const SKEW = {transform: 'skewX(-3deg)'};
+const UNSKEW = {display: 'inline-block', transform: 'skewX(3deg)'};
+// Uppercase Barlow eyebrow used on every rail/section header.
+const railLabel = {fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.5, textTransform: 'uppercase', color: NSA.textLight};
+// Front/Back segmented toggle button (navy when active).
+const sideBtn = on => ({border: 'none', cursor: 'pointer', padding: '7px 18px', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: .6, textTransform: 'uppercase', background: on ? NSA.navy : '#fff', color: on ? '#fff' : NSA.textLight});
+// Compact body-font action button used inside the right-rail artwork cards.
+const smallBtn = {display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: F_BODY, fontWeight: 600, fontSize: 11, padding: '5px 9px', borderRadius: 5, border: '1px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, cursor: 'pointer'};
+// Placement-preset chip in the Location section.
+const locChip = {cursor: 'pointer', border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, padding: '6px 12px', borderRadius: 5, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .5, textTransform: 'uppercase'};
+// Garment silhouette (from the design) used as a tinted thumbnail when a real
+// product photo isn't on file, so each colorway still reads at a glance.
+const TEE_PATH = "M150 28 C140 28 131 31 124 36 L78 64 C73 67 71 73 73 78 L92 120 C94 125 100 127 105 124 L120 116 L120 304 C120 309 124 313 129 313 L171 313 C176 313 180 309 180 304 L180 116 L195 124 C200 127 206 125 208 120 L227 78 C229 73 227 67 222 64 L176 36 C169 31 160 28 150 28 Z";
+const TeeSvg = ({fill, style}) => <svg viewBox="0 0 300 340" style={style}><path d={TEE_PATH} fill={fill} stroke="rgba(0,0,0,.18)" strokeWidth="4" /></svg>;
+
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage, appliedByGarment}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
@@ -98,9 +153,21 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // art; pickedColor is the one the user chose to change (null = recolor everything).
   const [pickedColor, setPickedColor] = useState(null);
   const [artColors, setArtColors] = useState([]);
+  const [sampling, setSampling] = useState(false); // cross-browser eyedropper: awaiting a canvas click
   // Identifies which drop zone (if any) a dragged file is currently hovering, so we can
   // highlight it: 'canvas', 'product', or 'layer-<idx>' for a specific art location.
   const [dragOver, setDragOver] = useState(null);
+  // Size slider value for the selected art (1 = the default placement width). Seeded from
+  // the selected object's current width so the slider reflects what's on the canvas.
+  const [sizeVal, setSizeVal] = useState(1);
+  // Colorway whose hover-zoom preview popup is showing in the left rail (null = none).
+  const [hoverGi, setHoverGi] = useState(null);
+  // Layer ids (artFileId) whose art is currently placed on the canvas, so a Logo Library tile can
+  // show it's applied and offer a one-click remove. Kept in sync with canvas add/remove events.
+  const [placedIds, setPlacedIds] = useState([]);
+  // "Apply art to items" grid: open flag + the set of garment keys currently checked.
+  const [applyGrid, setApplyGrid] = useState(false);
+  const [applySel, setApplySel] = useState(() => new Set());
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
@@ -128,8 +195,11 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     // dirty; placing/recoloring art marks it dirty in those handlers. Restoring a saved scene and
     // adding the garment backdrop must NOT mark dirty, so we only listen to modify/remove here.
     clearDirty();
+    setPlacedIds([]);
+    const refreshPlaced = () => setPlacedIds([...new Set(c.getObjects().filter(o => o._isArt).map(o => o._layerId).filter(Boolean))]);
+    c.on('object:added', refreshPlaced);
     c.on('object:modified', () => { markDirty(); });
-    c.on('object:removed', () => { if (c.getObjects().some(o => o._isArt)) markDirty(); });
+    c.on('object:removed', () => { if (c.getObjects().some(o => o._isArt)) markDirty(); refreshPlaced(); });
     const delHandler = e => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && e.target === document.body) {
         const sel = c.getActiveObject();
@@ -148,6 +218,27 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         objs.forEach(o => { styleArt(o); c.add(o); });
         c.renderAll();
       }).catch(() => {});
+    } else {
+      // No scene yet for this color/side — auto-place any art already APPLIED to this garment
+      // (from the item detail / artist) at its saved placement, so it shows up pre-placed and
+      // editable. Percent coords mirror the storefront/item-detail preview. Not marked dirty:
+      // it's shown for review, not auto-saved, until the rep edits or hits Save.
+      const applied = ((appliedByGarment || {})[garment.key] || []).filter(a => (a.side || 'front') === side);
+      applied.forEach(a => {
+        const addAt = imgEl => {
+          if (disposed) return;
+          const w = imgEl.naturalWidth || imgEl.width; if (!w) return;
+          const img = new fabric.FabricImage(imgEl);
+          img.set({left: (a.xPct / 100) * 460, top: (a.yPct / 100) * 560});
+          styleArt(img); img._layerId = a.artFileId;
+          if (typeof img.scaleToWidth === 'function') img.scaleToWidth((a.wPct / 100) * 460);
+          img.setCoords(); c.add(img); c.renderAll();
+        };
+        const el = new Image(); el.crossOrigin = 'anonymous';
+        el.onload = () => addAt(el);
+        el.onerror = () => { const dir = new Image(); dir.crossOrigin = 'anonymous'; dir.onload = () => addAt(dir); dir.onerror = () => {}; dir.src = a.url; };
+        el.src = /^data:/.test(a.url) ? a.url : ('/.netlify/functions/image-proxy?url=' + encodeURIComponent(a.url));
+      });
     }
 
     if (!garmentUrl) {
@@ -309,7 +400,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       const set = new Set();
       const walk = o => { if (typeof o.getObjects === 'function') { o.getObjects().forEach(walk); return; } [o.fill, o.stroke].forEach(c => { if (c && c !== 'transparent' && c !== '') { const hx = fabricColorToHex(c); if (hx) set.add(hx.toLowerCase()); } }); };
       walk(obj);
-      return [...set].slice(0, 12);
+      const vout = []; [...set].forEach(hx => { const rgb = hexToRgb(hx); if (vout.length < 6 && !vout.some(o => rgbDist(hexToRgb(o), rgb) < 42)) vout.push(hx); }); return vout;
     }
     try {
       const el = obj.getElement();
@@ -329,11 +420,14 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         bk.count++; bk.r += d[i]; bk.g += d[i + 1]; bk.b += d[i + 2];
       }
       if (!total) return [];
-      const reps = Object.values(buckets).filter(b => b.count / total >= 0.02)
-        .sort((a, b) => b.count - a.count).slice(0, 8)
+      // Only colors that cover a meaningful share of the art, most-used first,
+      // then collapse near-duplicates hard so the picker shows a few clean swatches
+      // (a logo's real ink colors) instead of dozens of anti-aliased near-greys.
+      const reps = Object.values(buckets).filter(b => b.count / total >= 0.045)
+        .sort((a, b) => b.count - a.count).slice(0, 14)
         .map(b => '#' + [b.r, b.g, b.b].map(s => Math.round(s / b.count).toString(16).padStart(2, '0')).join(''));
       const out = [];
-      reps.forEach(hx => { const rgb = hexToRgb(hx); if (!out.some(o => rgbDist(hexToRgb(o), rgb) < 40)) out.push(hx); });
+      reps.forEach(hx => { const rgb = hexToRgb(hx); if (out.length < 6 && !out.some(o => rgbDist(hexToRgb(o), rgb) < 58)) out.push(hx); });
       return out;
     } catch (e) { return []; }
   };
@@ -376,12 +470,69 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     } catch (e) { nf && nf('Could not recolor this art — try re-placing it', 'error'); }
   };
 
+  // Native eyedropper — sample any color straight off the artwork (or anywhere on
+  // screen) and target it for recolor, instead of hunting through swatches.
+  const eyedrop = async () => {
+    if (typeof window !== 'undefined' && window.EyeDropper) {
+      try { const res = await new window.EyeDropper().open(); if (res && res.sRGBHex) setPickedColor(res.sRGBHex.toLowerCase()); }
+      catch (_) { /* user cancelled */ }
+      return;
+    }
+    // No native eyedropper (Safari/Firefox) — sample the next canvas click instead.
+    setSampling(true); nf && nf('Click a color on the artwork to sample it', 'info');
+  };
+
+  // When sampling, the next click on the canvas reads the pixel under the cursor
+  // and targets that color for recolor — so the eyedropper works in every browser.
+  useEffect(() => {
+    if (!canvas || !sampling) return;
+    const onDown = (opt) => {
+      try {
+        const p = canvas.getPointer(opt.e);
+        const ctx = canvas.lowerCanvasEl.getContext('2d', {willReadFrequently: true});
+        const d = ctx.getImageData(Math.round(p.x), Math.round(p.y), 1, 1).data;
+        if (d[3] > 0) setPickedColor('#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join(''));
+      } catch (_) {}
+      setSampling(false);
+    };
+    canvas.on('mouse:down', onDown);
+    canvas.defaultCursor = 'crosshair';
+    return () => { canvas.off('mouse:down', onDown); canvas.defaultCursor = 'default'; };
+  }, [canvas, sampling]);
+
+  // Knock a logo's white box out to transparent so it sits cleanly on the garment.
+  const knockoutWhite = () => {
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) { nf && nf('Select an art element first', 'error'); return; }
+    if (typeof obj.getObjects === 'function') { nf && nf('White knockout works on image logos (PNG/JPG)', 'error'); return; }
+    try {
+      const el = obj.getElement(); const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      const off = document.createElement('canvas'); off.width = w; off.height = h;
+      const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, w, h);
+      const id = ctx.getImageData(0, 0, w, h); const d = id.data;
+      for (let i = 0; i < d.length; i += 4) { if (d[i] >= 240 && d[i + 1] >= 240 && d[i + 2] >= 240) d[i + 3] = 0; }
+      ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll(); markDirty(); setArtColors(computePalette(obj));
+    } catch (e) { nf && nf('Could not process this image', 'error'); }
+  };
+
+  // Snap the selected art to a standard placement (center origin + target width).
+  const applyPlacement = (id) => {
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) { nf && nf('Select an art element first', 'error'); return; }
+    const pr = PLACE_PRESETS[id]; if (!pr) return;
+    obj.set({originX: 'center', originY: 'center', left: pr.cx, top: pr.cy});
+    if (typeof obj.scaleToWidth === 'function') obj.scaleToWidth(pr.w);
+    obj.setCoords(); canvas.requestRenderAll(); markDirty();
+  };
+
   // Detect the art's colors whenever an art layer is selected, so the user can pick
   // which one to change. Clearing the selection resets the palette.
   useEffect(() => {
     if (!canvas) return;
-    const onSel = () => { const o = canvas.getActiveObject(); if (o && o._isArt) setArtColors(computePalette(o)); };
-    const onClear = () => { setArtColors([]); setPickedColor(null); };
+    const onSel = () => { const o = canvas.getActiveObject(); if (o && o._isArt) { setArtColors(computePalette(o)); const w = typeof o.getScaledWidth === 'function' ? o.getScaledWidth() : 150; setSizeVal(Math.max(0.4, Math.min(1.7, w / 150))); } };
+    const onClear = () => { setArtColors([]); setPickedColor(null); setSizeVal(1); };
     canvas.on('selection:created', onSel);
     canvas.on('selection:updated', onSel);
     canvas.on('selection:cleared', onClear);
@@ -504,7 +655,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   });
 
   // Render a stored scene (placed art for one garment+side) to a PNG and upload it as a mock.
-  const _renderSceneMock = async (g, sd, sceneObjs) => {
+  const _renderSceneMock = async (g, sd, sceneObjs, makeWhite) => {
     const el = document.createElement('canvas');
     const c = new fabric.Canvas(el, {width: 460, height: 560, backgroundColor: '#ffffff'});
     try {
@@ -518,6 +669,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       }
       const objs = await fabric.util.enlivenObjects(sceneObjs);
       objs.forEach(o => c.add(o));
+      if (makeWhite) objs.forEach(tintWhite);
       c.renderAll();
       const dataUrl = c.toDataURL({format: 'png', multiplier: 2});
       const blob = await (await fetch(dataUrl)).blob();
@@ -573,141 +725,357 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     } finally { setBusy(false); }
   };
 
+  // Apply the current placement to EVERY garment color in one pass — auto-whitening
+  // the logo on dark garments. Renders + uploads a mock for each, all editable after.
+  const applyToAllColors = async () => {
+    if (!canvas) return;
+    const artObjs = canvas.getObjects().filter(o => o._isArt);
+    if (!artObjs.length) { nf && nf('Place the logo first, then apply it to all colors', 'error'); return; }
+    const sceneObjs = artObjs.map(o => { const j = o.toObject(['_isArt', '_layerId']); if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous'; return j; });
+    setBusy(true);
+    try {
+      let next = {...mocks}; let n = 0;
+      for (let i = 0; i < garments.length; i++) {
+        const g = garments[i];
+        sceneRef.current[i + '|front'] = sceneObjs; // keep editable per garment
+        const res = await _renderSceneMock(g, 'front', sceneObjs, garmentIsDark(g.color));
+        if (res) { next = {...next, [res.key]: [...(next[res.key] || []).filter(m => m.name !== res.entry.name), res.entry]}; n++; }
+      }
+      setMocks(next); clearDirty();
+      nf && nf('Logo applied to ' + n + ' color' + (n === 1 ? '' : 's') + ' — review any, then Done');
+    } catch (e) { nf && nf('Could not apply to all colors: ' + (e.message || e), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  // Make sure the NSA brand webfonts (Barlow Condensed / Source Sans 3) are present even
+  // when the host page (the main portal) didn't load them — the storefront does, the app shell doesn't.
+  useEffect(() => {
+    const id = 'nsa-brand-fonts';
+    if (typeof document === 'undefined' || document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id; link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap';
+    document.head.appendChild(link);
+  }, []);
+
+  // Resize the selected art from the Size slider (1 = the default placement width of 150px).
+  const applySize = v => {
+    setSizeVal(v);
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) return;
+    if (typeof obj.scaleToWidth === 'function') obj.scaleToWidth(150 * v);
+    obj.setCoords(); canvas.requestRenderAll(); markDirty();
+  };
+
+  // Best thumbnail for a garment row: the rep's uploaded override, else the catalog front photo.
+  const thumbFor = g => imgOverride[g.key] || g.frontUrl || '';
+
+  // "Apply art to items" grid — open with every item checked by default.
+  const openApplyGrid = () => {
+    if (!canvas || !canvas.getObjects().some(o => o._isArt)) { nf && nf('Place the logo first, then choose which items get it', 'error'); return; }
+    setApplySel(new Set(garments.map(g => g.key)));
+    setApplyGrid(true);
+  };
+  const toggleApply = key => setApplySel(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  // Apply the logo currently on the canvas (same placement/size) to each checked item: render its
+  // mock and seed its scene so it stays individually editable — select any item afterward to
+  // drag/resize the art if it didn't land right on that garment.
+  const applyToSelected = async () => {
+    if (!canvas) return;
+    const artObjs = canvas.getObjects().filter(o => o._isArt);
+    if (!artObjs.length) { nf && nf('Place the logo first', 'error'); return; }
+    const chosen = garments.map((g, i) => ({g, i})).filter(({g}) => applySel.has(g.key));
+    if (!chosen.length) { nf && nf('Pick at least one item', 'error'); return; }
+    const sceneObjs = artObjs.map(o => { const j = o.toObject(['_isArt', '_layerId']); if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous'; return j; });
+    setBusy(true);
+    try {
+      let next = {...mocks}; let n = 0;
+      for (const {g, i} of chosen) {
+        sceneRef.current[i + '|' + side] = sceneObjs; // keep each item independently editable
+        const res = await _renderSceneMock(g, side, sceneObjs, garmentIsDark(g.color));
+        if (res) { next = {...next, [res.key]: [...(next[res.key] || []).filter(m => m.name !== res.entry.name), res.entry]}; n++; }
+      }
+      setMocks(next); clearDirty();
+      nf && nf('Logo applied to ' + n + ' item' + (n === 1 ? '' : 's') + ' — select any item to fine-tune its size/position');
+    } catch (e) { nf && nf('Could not apply to items: ' + (e.message || e), 'error'); }
+    finally { setBusy(false); setApplyGrid(false); }
+  };
+
+  // Does a location have art to place (a preview or art on file)? New art is added in the art
+  // folder on the prior page — the builder only places/positions/recolors existing art.
+  const layerHasArt = l => !!(l.preview || l.source || l.hasExisting);
+
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
+  const pct = garments.length ? Math.round(savedCount / garments.length * 100) : 0;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{maxWidth: 940, width: '95%'}} onClick={e => e.stopPropagation()}>
-        <div className="modal-header" style={{background: 'linear-gradient(135deg,#7c3aed,#a78bfa)', color: 'white'}}>
-          <h2 style={{color: 'white', margin: 0}}>Quick Mock Builder</h2>
-          <button className="modal-close" style={{color: 'white'}} onClick={onClose}>×</button>
+    <>
+    <div onClick={onClose} style={{position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
+      <style>{'@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}'}</style>
+      <div onClick={e => e.stopPropagation()} style={{width: 1040, maxWidth: '100%', height: 792, maxHeight: '94vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
+
+        {/* ── Header ── */}
+        <div style={{background: 'linear-gradient(120deg,' + NSA.navy + ',' + NSA.navyMid + ')', color: '#fff', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '4px solid ' + NSA.red, flex: 'none'}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 14, minWidth: 0}}>
+            <div style={{width: 38, height: 38, borderRadius: 6, background: NSA.red, display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'skewX(-6deg)', flex: 'none'}}>
+              <span style={{transform: 'skewX(6deg)', fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 22, lineHeight: 1}}>★</span>
+            </div>
+            <div style={{minWidth: 0}}>
+              <div style={{fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 24, letterSpacing: .5, textTransform: 'uppercase', lineHeight: 1}}>Mock Builder</div>
+              <div style={{fontSize: 13, color: 'rgba(255,255,255,.72)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{[garment.name || garment.sku, garment.color].filter(Boolean).join(' · ') || 'Build mockups for coach review'}</div>
+            </div>
+          </div>
+          <div style={{display: 'flex', alignItems: 'center', gap: 22, flex: 'none'}}>
+            <div style={{textAlign: 'right'}}>
+              <div style={{fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', color: 'rgba(255,255,255,.7)'}}>Progress</div>
+              <div style={{fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 20, lineHeight: 1}}>{savedCount} of {garments.length} mocked</div>
+              <div style={{width: 180, height: 5, background: 'rgba(255,255,255,.18)', borderRadius: 4, marginTop: 5, overflow: 'hidden'}}><div style={{height: '100%', background: NSA.redLight, borderRadius: 4, width: pct + '%', transition: 'width .25s'}} /></div>
+            </div>
+            <button onClick={onClose} style={{width: 30, height: 30, borderRadius: 6, background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, cursor: 'pointer', lineHeight: 1}}>×</button>
+          </div>
         </div>
-        <div className="modal-body" style={{maxHeight: '78vh', overflowY: 'auto'}}>
-          <div style={{fontSize: 12, color: '#64748b', marginBottom: 12}}>
-            Drop your vector/art onto the garment and drag the handles to size and position it. Build a mockup for each garment color — the coach reviews these, skipping the artist on the mockup phase. Your source files stay attached to each artwork for the artist's separation work later.
+
+        {/* ── Body: three columns ── */}
+        <div style={{flex: 1, display: 'flex', minHeight: 0}}>
+
+          {/* Left rail — garment colors */}
+          <div style={{width: 262, borderRight: '1px solid ' + NSA.light, display: 'flex', flexDirection: 'column', minHeight: 0, flex: 'none'}}>
+            <div style={{padding: '14px 18px 10px', flex: 'none'}}>
+              <div style={railLabel}>Garment Colors · {garments.length}</div>
+              <div style={{fontSize: 12.5, color: NSA.textMuted, marginTop: 2}}>Pick a color to build its mockup</div>
+            </div>
+            <div style={{flex: 1, overflowY: 'auto', padding: '0 10px 12px'}}>
+              {garments.map((g, i) => { const active = i === gi; const done = (mocks[g.key] || []).length > 0; const tu = thumbFor(g); return (
+                <button key={g.key} onClick={() => switchGarment(i)} onMouseEnter={() => setHoverGi(i)} onMouseLeave={() => setHoverGi(h => h === i ? null : h)} disabled={busy}
+                  style={{position: 'relative', width: '100%', textAlign: 'left', border: 'none', cursor: busy ? 'default' : 'pointer', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 11px', borderRadius: 6, marginBottom: 3, borderLeft: '3px solid ' + (active ? NSA.red : 'transparent'), background: active ? NSA.light : '#fff'}}>
+                  <span style={{position: 'relative', flex: 'none', display: 'flex'}}>
+                    <span style={{width: 36, height: 36, borderRadius: 6, background: '#F4F6FA', border: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden'}}>
+                      {tu ? <img src={tu} alt="" style={{width: '100%', height: '100%', objectFit: 'contain'}} /> : <TeeSvg fill={hexesForColor(g.color)[0]} style={{width: '122%', height: '122%'}} />}
+                    </span>
+                    {hoverGi === i && <span style={{position: 'absolute', left: 'calc(100% + 14px)', top: '50%', transform: 'translateY(-50%)', zIndex: 60, width: 186, background: '#fff', border: '1px solid ' + NSA.light, borderRadius: 10, boxShadow: '0 18px 44px rgba(15,26,56,.26)', padding: 12, pointerEvents: 'none'}}>
+                      <span style={{position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 150, background: NSA.offWhite, borderRadius: 7, overflow: 'hidden'}}>
+                        {tu ? <img src={tu} alt="" style={{maxWidth: '92%', maxHeight: '92%', objectFit: 'contain'}} /> : <TeeSvg fill={hexesForColor(g.color)[0]} style={{width: '82%', height: '82%'}} />}
+                      </span>
+                      <span style={{display: 'block', textAlign: 'center', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 16, color: NSA.navy, marginTop: 9, lineHeight: 1.05}}>{g.name || g.sku || 'Item'}</span>
+                      <span style={{display: 'block', textAlign: 'center', fontSize: 12, color: NSA.textMuted}}>{g.sku || ''}</span>
+                    </span>}
+                  </span>
+                  <span style={{flex: 1, minWidth: 0}}>
+                    <span style={{display: 'block', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: .3, color: NSA.navy, lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.name || g.sku || 'Item'}</span>
+                    <span style={{display: 'block', fontSize: 12, color: NSA.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.sku || ''}</span>
+                  </span>
+                  {done ? <span style={{flex: 'none', width: 20, height: 20, borderRadius: '50%', background: NSA.green, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontWeight: 800}}>✓</span>
+                    : <span style={{flex: 'none', width: 18, height: 18, borderRadius: '50%', border: '2px dashed ' + NSA.mid}} />}
+                </button>
+              ); })}
+            </div>
+            <div style={{padding: '11px 14px', borderTop: '1px solid ' + NSA.light, flex: 'none'}}>
+              <button onClick={openApplyGrid} disabled={busy} title="Choose which items get the logo you've placed (auto-white on dark garments)"
+                style={{width: '100%', border: '1.5px solid ' + NSA.navy, background: '#fff', color: NSA.navy, cursor: busy ? 'default' : 'pointer', padding: 9, borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: .8, textTransform: 'uppercase', opacity: busy ? .6 : 1, ...SKEW}}><span style={UNSKEW}>⚡ Apply art to items…</span></button>
+            </div>
           </div>
 
-          {garments.length > 1 && <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12}}>
-            {garments.map((g, i) => <button key={g.key} title={[g.name, g.color].filter(Boolean).join(' — ')} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5}}
-              onClick={() => switchGarment(i)}>{g.color && <ColorSwatch name={g.color} />}<span>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}</span>{(mocks[g.key] || []).length > 0 && <span>✓</span>}</button>)}
-          </div>}
-
-          <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
-            <div>
-              <div style={{fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6}}>Art Locations</div>
-              {layers.map((l, idx) => !layerForGarment(l) ? null : <div key={l.artFileId || idx}
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
-                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f); }}
-                style={{padding: 8, border: '1px solid ' + (dragOver === 'layer-' + idx ? '#7c3aed' : '#e2e8f0'), borderRadius: 6, marginBottom: 8, background: dragOver === 'layer-' + idx ? '#f5f3ff' : '#fff', transition: 'background 0.12s, border-color 0.12s'}}>
-                <div style={{fontSize: 12, fontWeight: 700, color: '#1e293b'}}>{l.name || 'Artwork'}</div>
-                {l.position && <div style={{fontSize: 10, color: '#94a3b8', marginBottom: 4}}>{l.position}</div>}
-                {l.source ? <div style={{fontSize: 10, color: '#166534', display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6}}>
-                  <Icon name="check" size={12} /> {l.source.name}{!l.preview && <span style={{color: '#d97706'}}>(stand-in)</span>}
-                </div> : l.hasExisting ? <div style={{fontSize: 10, color: '#166534', display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6}}>
-                  <Icon name="check" size={12} /> Using art on file{(l.files && l.files[l.fileIdx || 0]) ? ': ' + l.files[l.fileIdx || 0].name : (l.existingFiles[0] ? ': ' + l.existingFiles[0].name : '')}{!l.preview && <span style={{color: '#d97706'}}> (stand-in)</span>}
-                </div> : <div style={{fontSize: 10, color: '#94a3b8', marginBottom: 6}}>No file yet</div>}
-                {!l.source && l.files && l.files.length > 1 && <div style={{display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, fontSize: 10, color: '#475569'}}>
-                  <span style={{fontWeight: 700}}>File</span>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize: 11, padding: '0 7px', lineHeight: 1.6}} disabled={busy || (l.fileIdx || 0) <= 0} onClick={() => setLayerFile(idx, -1)}>◀</button>
-                  <span style={{minWidth: 24, textAlign: 'center', fontWeight: 700}}>{(l.fileIdx || 0) + 1}/{l.files.length}</span>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize: 11, padding: '0 7px', lineHeight: 1.6}} disabled={busy || (l.fileIdx || 0) >= l.files.length - 1} onClick={() => setLayerFile(idx, 1)}>▶</button>
-                  <span style={{color: '#94a3b8'}}>wrong art? try another file</span>
+          {/* Center — canvas */}
+          <div style={{flex: 1, display: 'flex', flexDirection: 'column', background: NSA.offWhite, minWidth: 0}}>
+            <div style={{padding: '14px 22px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', flex: 'none'}}>
+              <div style={{display: 'flex', alignItems: 'center', gap: 10, minWidth: 0}}>
+                {garment.color && <ColorSwatch name={garment.color} size={18} />}
+                <span style={{fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 18, color: NSA.navy, textTransform: 'uppercase', letterSpacing: .3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{garment.name || garment.sku} — {garment.color || 'Default'}</span>
+              </div>
+              <div style={{display: 'flex', alignItems: 'center', gap: 10, flex: 'none'}}>
+                <button onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }} title="Delete selected art"
+                  style={{display: 'inline-flex', alignItems: 'center', gap: 5, border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, cursor: 'pointer', padding: '6px 12px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .4, textTransform: 'uppercase'}}><Icon name="trash" size={13} /> Delete</button>
+                {garment.backUrl && <div style={{display: 'flex', border: '1.5px solid ' + NSA.mid, borderRadius: 6, overflow: 'hidden'}}>
+                  <button onClick={() => switchSide('front')} disabled={busy} style={sideBtn(side === 'front')}>Front</button>
+                  <button onClick={() => switchSide('back')} disabled={busy} style={{...sideBtn(side === 'back'), borderLeft: '1.5px solid ' + NSA.mid}}>Back</button>
                 </div>}
-                <div style={{display: 'flex', gap: 4}}>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} disabled={busy}
-                    onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) uploadLayerFile(idx, inp.files[0]); }; inp.click(); }}>
-                    <Icon name="upload" size={11} /> {(l.source || l.hasExisting) ? 'Replace' : 'Upload'}
-                  </button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} disabled={busy} onClick={() => placeLayer(l)}>
-                    <Icon name="plus" size={11} /> Place
-                  </button>
+              </div>
+            </div>
+            <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '6px 12px 16px', minHeight: 0}}>
+              <div style={{position: 'relative', flex: 'none'}}>
+                <div style={{position: 'relative', background: '#fff', border: '1px solid ' + NSA.light, borderRadius: 10, overflow: 'hidden', boxShadow: '0 10px 24px rgba(25,40,83,.08)'}}>
+                  <div ref={wrapRef} />
+                  {(imgLoading || (!garmentUrl && garment.pending)) && <div style={{position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(247,248,251,0.85)', pointerEvents: 'none'}}>
+                    <span style={{width: 26, height: 26, border: '3px solid ' + NSA.light, borderTopColor: NSA.red, borderRadius: '50%', animation: 'spin 1s linear infinite'}} />
+                    <span style={{fontSize: 12, color: NSA.navy, fontWeight: 600}}>Loading product image…</span>
+                  </div>}
+                  {!garmentUrl && !garment.pending && !imgLoading && <div style={{position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, pointerEvents: 'none'}}>
+                    <Icon name="image" size={28} style={{color: NSA.mid}} />
+                    <span style={{fontSize: 12, color: NSA.textMuted, fontWeight: 600}}>No product image — upload one</span>
+                  </div>}
                 </div>
-              </div>)}
-              {!layers.some(layerForGarment) && <div style={{fontSize: 11, color: '#94a3b8'}}>No art locations for this garment.</div>}
+              </div>
+              <div style={{fontSize: 11.5, color: NSA.textMuted, textAlign: 'center'}}>Tap a logo at right to place it. Click art to select; drag to move, corners to resize. Press Delete (or the ✕ on its tile) to remove.</div>
+              {(mocks[garment.key] || []).length > 0 && <div style={{width: '100%', maxWidth: 480, paddingTop: 8, borderTop: '1px solid ' + NSA.light}}>
+                <div style={{fontSize: 11, fontWeight: 700, color: NSA.green, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}>
+                  <Icon name="check" size={12} /> Saved mock{(mocks[garment.key].length > 1 ? 's' : '')} for {garment.color || garment.sku}
+                </div>
+                <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+                  {(mocks[garment.key] || []).map((m, mi) => <div key={mi} style={{position: 'relative', border: '1px solid ' + NSA.light, borderRadius: 6, padding: 4, background: '#fff'}}>
+                    <img src={m.url} alt={m.name} style={{width: 72, height: 88, objectFit: 'contain', display: 'block'}} />
+                    <button title="Remove this mock" onClick={() => setMocks(prev => ({...prev, [garment.key]: (prev[garment.key] || []).filter((_, x) => x !== mi)}))}
+                      style={{position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', border: 'none', background: NSA.red, color: '#fff', fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0}}>×</button>
+                  </div>)}
+                </div>
+              </div>}
+            </div>
+          </div>
 
+          {/* Right rail — tools */}
+          <div style={{width: 290, borderLeft: '1px solid ' + NSA.light, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', flex: 'none'}}>
+
+            {/* Logo Library — pick a logo to place it; new art is managed in the art folder on the prior page */}
+            <div style={{padding: '16px 18px 4px'}}>
+              <div style={{...railLabel, marginBottom: 2}}>Logo Library</div>
+              <div style={{fontSize: 11.5, color: NSA.textMuted, marginBottom: 9, lineHeight: 1.35}}>Tap a logo to place it on the garment</div>
+              {layers.some(layerForGarment) ? <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
+                {layers.map((l, idx) => !layerForGarment(l) ? null : (
+                  <div key={l.artFileId || idx}
+                    style={{position: 'relative', border: '2px solid ' + (placedIds.includes(l.artFileId) ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', transition: 'border-color .12s'}}>
+                    <button onClick={() => layerHasArt(l) ? placeLayer(l) : (nf && nf('Add this logo in the art folder on the previous page first', 'info'))} disabled={busy || !layerHasArt(l)} title={layerHasArt(l) ? 'Tap to place ' + (l.name || 'logo') : 'No art yet — add it in the art folder'}
+                      style={{display: 'block', width: '100%', border: 'none', background: 'transparent', cursor: (busy || !layerHasArt(l)) ? 'default' : 'pointer', padding: 0, opacity: layerHasArt(l) ? 1 : .65}}>
+                      <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: 74, padding: 8}}>
+                        {l.preview && l.preview.url
+                          ? <img src={l.preview.url} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} />
+                          : layerHasArt(l)
+                          ? <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.textMuted}}><Icon name="file" size={20} /><span style={{fontSize: 9.5, fontWeight: 600}}>Attached</span></span>
+                          : <span style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: NSA.mid}}><Icon name="image" size={20} /><span style={{fontSize: 9.5, fontWeight: 600, color: NSA.textMuted}}>No art</span></span>}
+                      </span>
+                      <span style={{display: 'block', background: placedIds.includes(l.artFileId) ? NSA.red : NSA.navy, color: '#fff', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 11, letterSpacing: .4, textTransform: 'uppercase', textAlign: 'center', padding: '4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{l.name || l.position || 'Logo'}</span>
+                    </button>
+                    {placedIds.includes(l.artFileId) && <button onClick={() => clearLayer(l.artFileId)} disabled={busy} title="Remove this logo from the garment"
+                      style={{position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: '50%', border: 'none', background: NSA.red, color: '#fff', cursor: busy ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, lineHeight: 1, padding: 0, boxShadow: '0 1px 3px rgba(0,0,0,.25)'}}>×</button>}
+                    {!l.source && l.files && l.files.length > 1 && <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 10, color: NSA.textLight, padding: '3px 0', borderTop: '1px solid ' + NSA.light, background: NSA.offWhite}}>
+                      <button style={{border: 'none', background: 'transparent', cursor: 'pointer', color: NSA.textLight, padding: '0 4px', fontWeight: 700}} disabled={busy || (l.fileIdx || 0) <= 0} onClick={() => setLayerFile(idx, -1)}>◀</button>
+                      <span style={{fontWeight: 700}}>{(l.fileIdx || 0) + 1}/{l.files.length}</span>
+                      <button style={{border: 'none', background: 'transparent', cursor: 'pointer', color: NSA.textLight, padding: '0 4px', fontWeight: 700}} disabled={busy || (l.fileIdx || 0) >= l.files.length - 1} onClick={() => setLayerFile(idx, 1)}>▶</button>
+                    </div>}
+                  </div>
+                ))}
+              </div> : <div style={{fontSize: 12, color: NSA.textMuted, lineHeight: 1.5}}>No logos in the art folder for this garment yet — add art on the previous page.</div>}
+            </div>
+
+            {/* Product image */}
+            <div style={{padding: '6px 18px 4px'}}>
               <div
                 onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('product'); }}
                 onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'product' ? null : d); }}
                 onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!f.type.startsWith('image/')) { nf && nf('Drop an image file for the product photo', 'error'); return; } uploadGarmentImg(f); }}
-                style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0', borderRadius: 6, background: dragOver === 'product' ? '#f5f3ff' : 'transparent', boxShadow: dragOver === 'product' ? '0 0 0 2px #7c3aed' : 'none', transition: 'background 0.12s, box-shadow 0.12s'}}>
-                <div style={{fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4}}>Product Image</div>
-                {garmentUrl ? <div style={{fontSize: 10, color: '#166534'}}>Using catalog image</div>
-                  : <div style={{fontSize: 10, color: '#d97706', marginBottom: 4}}>Not in system — drag an image here or upload</div>}
-                <button className="btn btn-sm btn-secondary" style={{fontSize: 10, marginTop: 4}} disabled={busy}
+                style={{borderRadius: 7, padding: dragOver === 'product' ? 8 : 0, background: dragOver === 'product' ? '#FBE9EA' : 'transparent', boxShadow: dragOver === 'product' ? '0 0 0 1.5px ' + NSA.red : 'none', transition: 'background .12s'}}>
+                <div style={{...railLabel, marginBottom: 6}}>Product Image</div>
+                {garmentUrl ? <div style={{fontSize: 11.5, color: NSA.green, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}><Icon name="check" size={12} /> Using catalog image</div>
+                  : <div style={{fontSize: 11.5, color: NSA.redBright, marginBottom: 6}}>Not in system — drag an image here or upload</div>}
+                <button style={{...smallBtn, opacity: busy ? .6 : 1}} disabled={busy}
                   onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { if (inp.files[0]) uploadGarmentImg(inp.files[0]); }; inp.click(); }}>
                   <Icon name="upload" size={11} /> Upload Product Image
                 </button>
               </div>
             </div>
 
-            <div>
-              <div style={{display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap'}}>
-                <span style={{fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'inline-flex', alignItems: 'center', gap: 5}}>{garment.color && <ColorSwatch name={garment.color} size={14} />}{garment.name || garment.sku} — {garment.color || 'Default'}</span>
-                {garment.backUrl && <div style={{display: 'flex', gap: 2}}>
-                  <button className={`btn btn-sm ${side === 'front' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} disabled={busy} onClick={() => switchSide('front')}>Front</button>
-                  <button className={`btn btn-sm ${side === 'back' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} disabled={busy} onClick={() => switchSide('back')}>Back</button>
-                </div>}
-                <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
-                  <Icon name="trash" size={11} /> Delete
-                </button>
-                <div style={{display: 'flex', alignItems: 'center', gap: 4}} title="Pick which color of the logo to change, then pick what to change it to.">
-                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600}}>Change:</span>
-                  <button onClick={() => setPickedColor(null)} title="Recolor the whole design" style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid ' + (!pickedColor ? '#7c3aed' : '#cbd5e1'), background: !pickedColor ? '#ede9fe' : '#fff', color: !pickedColor ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 600}}>All</button>
-                  {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 8; return <button key={c} onClick={() => setPickedColor(c)} title={'Change this color (' + c + ')'} style={{width: 18, height: 18, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0, border: sel ? '2px solid #7c3aed' : '1px solid #cbd5e1', boxShadow: sel ? '0 0 0 2px #ede9fe' : 'none'}} />; })}
-                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600, marginLeft: 4}}>to:</span>
-                  <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
-                  <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
-                  <input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 22, height: 20, padding: 0, border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer', background: '#fff'}} />
-                  <button onClick={() => recolorActive(null, true)} disabled={!pickedColor} title={pickedColor ? 'Remove this color (make it transparent)' : 'Pick a color above first, then remove it'} style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid #cbd5e1', background: pickedColor ? '#fff' : '#f1f5f9', color: pickedColor ? '#b91c1c' : '#94a3b8', cursor: pickedColor ? 'pointer' : 'not-allowed', fontWeight: 600, marginLeft: 2}}>Remove</button>
-                </div>
-                <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
-                  <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
-                </button>
+            {/* Location (placement presets) */}
+            <div style={{padding: '12px 18px 4px'}}>
+              <div style={{...railLabel, marginBottom: 9}}>Location</div>
+              <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+                {Object.entries(PLACE_PRESETS).map(([id, pr]) => <button key={id} onClick={() => applyPlacement(id)} title={'Snap the selected art to ' + pr.label} style={locChip}>{pr.label}</button>)}
               </div>
-              <div
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('canvas'); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'canvas' ? null : d); }}
-                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (f) dropArtOnCanvas(f); }}
-                style={{display: 'flex', justifyContent: 'center', background: '#f8fafc', borderRadius: 8, padding: 12, position: 'relative', outline: dragOver === 'canvas' ? '2px dashed #7c3aed' : 'none', outlineOffset: -4}}>
-                <div ref={wrapRef} />
-                {(imgLoading || (!garmentUrl && garment.pending)) && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(248,250,252,0.85)', borderRadius: 8, pointerEvents: 'none'}}>
-                  <Icon name="loader" size={26} style={{animation: 'spin 1s linear infinite', color: '#7c3aed'}} />
-                  <span style={{fontSize: 12, color: '#6d28d9', fontWeight: 600}}>Loading product image…</span>
-                </div>}
-                {!garmentUrl && !garment.pending && !imgLoading && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, pointerEvents: 'none'}}>
-                  <Icon name="image" size={28} style={{color: '#cbd5e1'}} />
-                  <span style={{fontSize: 12, color: '#94a3b8', fontWeight: 600}}>No product image — upload one</span>
-                </div>}
-                {dragOver === 'canvas' && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'rgba(124,58,237,0.08)', borderRadius: 8, pointerEvents: 'none'}}>
-                  <Icon name="upload" size={28} style={{color: '#7c3aed'}} />
-                  <span style={{fontSize: 12, color: '#6d28d9', fontWeight: 700}}>Drop art to place it on the garment</span>
-                </div>}
+            </div>
+
+            {/* Size */}
+            <div style={{padding: '12px 18px 4px'}}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7}}>
+                <span style={railLabel}>Size</span>
+                <span style={{fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, color: NSA.navy}}>{Math.round(sizeVal * 100)}%</span>
               </div>
-              <div style={{fontSize: 10, color: '#94a3b8', marginTop: 6, textAlign: 'center'}}>Drag an art file onto the garment to place it. Click art to select; drag to move, corners to resize. Press Delete to remove.</div>
-              {(mocks[garment.key] || []).length > 0 && <div style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0'}}>
-                <div style={{fontSize: 10, fontWeight: 700, color: '#166534', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}>
-                  <Icon name="check" size={12} /> Saved mock{(mocks[garment.key].length > 1 ? 's' : '')} for {garment.color || garment.sku}
+              <input type="range" min="0.4" max="1.7" step="0.02" value={sizeVal} onChange={e => applySize(parseFloat(e.target.value))} style={{width: '100%', accentColor: NSA.red}} />
+            </div>
+
+            {/* Recolor — two-step picker (pick a color in the logo, then change it) */}
+            <div style={{padding: '12px 18px 6px'}}>
+              <div style={{...railLabel, marginBottom: 9}}>Recolor Art</div>
+              {artColors.length > 0 ? (<>
+                <div style={{fontSize: 12, fontWeight: 700, color: NSA.textLight, marginBottom: 7}}>1 · Pick a color</div>
+                <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12}}>
+                  <button onClick={() => setPickedColor(null)} title="Recolor the whole design at once" style={{fontSize: 11.5, padding: '5px 11px', borderRadius: 999, border: '1.5px solid ' + (!pickedColor ? NSA.navy : NSA.mid), background: !pickedColor ? NSA.light : '#fff', color: NSA.navy, cursor: 'pointer', fontWeight: 700}}>Whole</button>
+                  {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 12; return <button key={c} onClick={() => setPickedColor(c)} title={c} style={{width: 30, height: 30, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0, border: sel ? '3px solid ' + NSA.navy : '2px solid rgba(0,0,0,.12)', boxShadow: '0 1px 3px rgba(0,0,0,.12),inset 0 0 0 1px rgba(0,0,0,.06)'}} />; })}
+                  <button onClick={eyedrop} title="Eyedropper — sample a color from the artwork" style={{display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700, padding: '6px 11px', borderRadius: 999, border: '1.5px solid ' + (sampling ? NSA.navy : NSA.mid), background: sampling ? NSA.light : '#fff', color: NSA.navy, cursor: 'pointer'}}><span aria-hidden="true" style={{fontSize: 14, lineHeight: 1}}>🎯</span> {sampling ? 'Click art…' : 'Pick'}</button>
+                  <button onClick={knockoutWhite} title="Make the logo's white background transparent" style={{fontSize: 11.5, fontWeight: 700, padding: '6px 11px', borderRadius: 999, border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.navy, cursor: 'pointer'}}>Knock out white</button>
                 </div>
-                <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
-                  {(mocks[garment.key] || []).map((m, mi) => <div key={mi} style={{position: 'relative', border: '1px solid #e2e8f0', borderRadius: 6, padding: 4, background: '#fff'}}>
-                    <img src={m.url} alt={m.name} style={{width: 72, height: 88, objectFit: 'contain', display: 'block'}} />
-                    <button title="Remove this mock" onClick={() => setMocks(prev => ({...prev, [garment.key]: (prev[garment.key] || []).filter((_, x) => x !== mi)}))}
-                      style={{position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', border: 'none', background: '#ef4444', color: '#fff', fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0}}>×</button>
-                  </div>)}
+                <div style={{fontSize: 12, fontWeight: 700, color: NSA.textLight, marginBottom: 7}}>2 · Change {pickedColor ? 'it' : 'everything'} to</div>
+                <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center'}}>
+                  <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 30, height: 30, borderRadius: '50%', background: '#fff', border: '2px solid ' + NSA.mid, cursor: 'pointer', padding: 0}} />
+                  <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 30, height: 30, borderRadius: '50%', background: '#111827', border: '2px solid rgba(0,0,0,.12)', cursor: 'pointer', padding: 0}} />
+                  <button onClick={() => recolorActive(NSA.navy)} title="Navy" style={{width: 30, height: 30, borderRadius: '50%', background: NSA.navy, border: '2px solid rgba(0,0,0,.12)', cursor: 'pointer', padding: 0}} />
+                  <button onClick={() => recolorActive(NSA.red)} title="Red" style={{width: 30, height: 30, borderRadius: '50%', background: NSA.red, border: '2px solid rgba(0,0,0,.12)', cursor: 'pointer', padding: 0}} />
+                  <label style={{display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700, color: NSA.textLight, cursor: 'pointer'}}>Custom<input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 32, height: 28, padding: 0, border: '1px solid ' + NSA.mid, borderRadius: 7, cursor: 'pointer', background: '#fff'}} /></label>
                 </div>
-              </div>}
+                <div style={{display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap'}}>
+                  {pickedColor && <span style={{display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: NSA.textLight, fontWeight: 600}}>targeting<span style={{width: 16, height: 16, borderRadius: 4, background: pickedColor, border: '1px solid ' + NSA.mid}} />{pickedColor}</span>}
+                  <button onClick={() => recolorActive(null, true)} disabled={!pickedColor} title={pickedColor ? 'Make this color transparent' : 'Pick a color first'} style={{fontSize: 11.5, padding: '6px 12px', borderRadius: 999, border: '1.5px solid ' + (pickedColor ? '#f0bcc0' : NSA.light), background: '#fff', color: pickedColor ? NSA.red : NSA.textMuted, cursor: pickedColor ? 'pointer' : 'not-allowed', fontWeight: 700, marginLeft: 'auto'}}>Remove color</button>
+                </div>
+              </>) : (
+                <div style={{fontSize: 12, color: NSA.textMuted, lineHeight: 1.5}}>Click a placed logo on the garment to recolor it. Drag it to reposition; resize with the slider above.</div>
+              )}
+            </div>
+
+            {/* Save */}
+            <div style={{marginTop: 'auto', padding: '14px 18px 16px', borderTop: '1px solid ' + NSA.light}}>
+              <button onClick={saveColorMock} disabled={busy}
+                style={{width: '100%', border: 'none', cursor: busy ? 'default' : 'pointer', background: NSA.red, color: '#fff', padding: 11, borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 15, letterSpacing: .8, textTransform: 'uppercase', boxShadow: '0 6px 18px rgba(150,44,50,.32)', opacity: busy ? .6 : 1, ...SKEW}}><span style={UNSKEW}>{busy ? 'Working…' : '💾 Save mock for ' + (garment.color || garment.sku)}</span></button>
             </div>
           </div>
         </div>
-        <div className="modal-footer" style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-          <span style={{fontSize: 11, color: savedCount > 0 ? '#166534' : '#94a3b8', fontWeight: 600}}>
-            {savedCount} of {garments.length} color{garments.length === 1 ? '' : 's'} mocked
-          </span>
-          <button className="btn btn-primary" style={{marginLeft: 'auto', background: '#166534', borderColor: '#166534'}} disabled={(savedCount === 0 && !hasPending) || busy} onClick={handleDone}>Done — Attach Mockups</button>
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+
+        {/* ── Footer ── */}
+        <div style={{padding: '13px 24px', borderTop: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff', flex: 'none'}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 9, fontSize: 13.5, color: NSA.textLight}}><span style={{fontFamily: F_DISPLAY, fontWeight: 800, color: NSA.navy, fontSize: 16}}>{savedCount}/{garments.length}</span> color{garments.length === 1 ? '' : 's'} mocked — coach reviews these directly</div>
+          <div style={{display: 'flex', gap: 10}}>
+            <button onClick={onClose} style={{border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, cursor: 'pointer', padding: '9px 20px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: .6, textTransform: 'uppercase'}}>Cancel</button>
+            <button onClick={handleDone} disabled={(savedCount === 0 && !hasPending) || busy}
+              style={{border: 'none', background: NSA.navy, color: '#fff', cursor: ((savedCount === 0 && !hasPending) || busy) ? 'default' : 'pointer', padding: '9px 24px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 14, letterSpacing: .6, textTransform: 'uppercase', opacity: ((savedCount === 0 && !hasPending) || busy) ? .5 : 1, ...SKEW}}><span style={UNSKEW}>Done — Attach Mockups</span></button>
+          </div>
         </div>
       </div>
     </div>
+
+    {/* "Apply art to items" — pick which items get the logo currently on the canvas */}
+    {applyGrid && <div onClick={() => setApplyGrid(false)} style={{position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(15,26,56,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: F_BODY}}>
+      <div onClick={e => e.stopPropagation()} style={{width: 760, maxWidth: '100%', maxHeight: '88vh', background: '#fff', borderRadius: 8, boxShadow: '0 30px 70px rgba(0,0,0,.45)', overflow: 'hidden', display: 'flex', flexDirection: 'column', color: NSA.text}}>
+        <div style={{background: 'linear-gradient(120deg,' + NSA.navy + ',' + NSA.navyMid + ')', color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '4px solid ' + NSA.red, flex: 'none'}}>
+          <div>
+            <div style={{fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 19, letterSpacing: .5, textTransform: 'uppercase', lineHeight: 1}}>Apply Art to Items</div>
+            <div style={{fontSize: 12.5, color: 'rgba(255,255,255,.72)', marginTop: 2}}>The logo you placed goes onto each checked item, at the same spot</div>
+          </div>
+          <button onClick={() => setApplyGrid(false)} style={{width: 28, height: 28, borderRadius: 6, background: 'rgba(255,255,255,.12)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 17, lineHeight: 1}}>×</button>
+        </div>
+        <div style={{padding: '10px 18px', borderBottom: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', gap: 12, flex: 'none'}}>
+          <span style={{...railLabel, fontSize: 12}}>{applySel.size} of {garments.length} selected</span>
+          <button onClick={() => setApplySel(new Set(garments.map(g => g.key)))} style={{...smallBtn, marginLeft: 'auto'}}>Select all</button>
+          <button onClick={() => setApplySel(new Set())} style={smallBtn}>Clear</button>
+        </div>
+        <div style={{flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, minHeight: 0}}>
+          {garments.map((g) => { const on = applySel.has(g.key); const tu = thumbFor(g); return (
+            <button key={g.key} onClick={() => toggleApply(g.key)} title={[g.name, g.color].filter(Boolean).join(' — ')}
+              style={{position: 'relative', textAlign: 'left', border: '2px solid ' + (on ? NSA.red : NSA.light), borderRadius: 9, overflow: 'hidden', background: '#fff', cursor: 'pointer', padding: 0}}>
+              <span style={{position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 5, border: '2px solid ' + (on ? NSA.red : NSA.mid), background: on ? NSA.red : 'rgba(255,255,255,.9)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, zIndex: 1}}>{on ? '✓' : ''}</span>
+              <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: 116, background: NSA.offWhite, padding: 8}}>
+                {tu ? <img src={tu} alt="" style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain'}} /> : <TeeSvg fill={hexesForColor(g.color)[0]} style={{width: '70%', height: '70%'}} />}
+              </span>
+              <span style={{display: 'block', padding: '6px 8px', borderTop: '1px solid ' + NSA.light}}>
+                <span style={{display: 'block', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 12.5, color: NSA.navy, textTransform: 'uppercase', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{g.name || g.sku}</span>
+                <span style={{display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: NSA.textMuted}}>{g.color && <ColorSwatch name={g.color} size={10} />}{g.color || g.sku}</span>
+              </span>
+            </button>
+          ); })}
+        </div>
+        <div style={{padding: '12px 18px', borderTop: '1px solid ' + NSA.light, display: 'flex', alignItems: 'center', gap: 10, flex: 'none'}}>
+          <span style={{fontSize: 12, color: NSA.textMuted}}>You can fine-tune each item afterward — select it in the list and drag/resize the art.</span>
+          <button onClick={() => setApplyGrid(false)} style={{marginLeft: 'auto', border: '1.5px solid ' + NSA.mid, background: '#fff', color: NSA.textLight, cursor: 'pointer', padding: '9px 18px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .6, textTransform: 'uppercase'}}>Cancel</button>
+          <button onClick={applyToSelected} disabled={busy || applySel.size === 0}
+            style={{border: 'none', background: NSA.red, color: '#fff', cursor: (busy || applySel.size === 0) ? 'default' : 'pointer', padding: '9px 22px', borderRadius: 6, fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: .6, textTransform: 'uppercase', opacity: (busy || applySel.size === 0) ? .5 : 1, boxShadow: '0 6px 18px rgba(150,44,50,.32)', ...SKEW}}><span style={UNSKEW}>{busy ? 'Applying…' : 'Apply to ' + applySel.size + ' item' + (applySel.size === 1 ? '' : 's')}</span></button>
+        </div>
+      </div>
+    </div>}
+    </>
   );
 }

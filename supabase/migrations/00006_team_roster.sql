@@ -41,7 +41,7 @@ insert into public.user_profiles (id, full_name, role, pin) values
 
   -- CSR (4) — Sharon is CSR with sales-rep-level account access
   ('00000000-0000-0000-0000-000000000030', 'Sharon Day-Monroe',   'csr',        null),
-  ('00000000-0000-0000-0000-000000000031', 'Rachel Najara',       'csr',        null),
+  ('00000000-0000-0000-0000-000000000031', 'Rachel Najera',       'csr',        null),
   ('00000000-0000-0000-0000-000000000032', 'Tegan Peterson',      'csr',        null),
   ('00000000-0000-0000-0000-000000000033', 'Tamara Rodriguez',    'csr',        null),
 

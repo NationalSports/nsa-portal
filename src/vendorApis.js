@@ -3,15 +3,18 @@
 // Vendor API integrations — all use Netlify proxy functions
 // ═══════════════════════════════════════════
 import { NSA } from './constants';
-import { calcSOStatus } from './components';
+import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { authFetch } from './utils';
+import { buildSportsLinkDocsQuery } from './sportsLink';
+import { normSzName } from './pricing';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -44,20 +47,43 @@ const testShipStationConnection = async () => {
   }
 };
 
-const convertSOToShipStation = (so, customer) => {
-  const shipToAddress = customer.shipping_address_line1 ? {
-    name: customer.name, company: customer.name,
+// Ship-to block for ShipStation orders/labels. Honors the SO's selected ship-to
+// (alternate shipping address or custom text) before falling back to the customer's
+// default shipping/billing address — labels must print the address chosen on the SO.
+const ssShipToAddress = (so, customer) => {
+  const phone = customer.contacts?.[0]?.phone || '';
+  const sel = resolveOrderShipTo(so, customer);
+  if (sel && sel.street) {
+    return { name: sel.attention || sel.name || customer.name, company: customer.name,
+      street1: sel.street, street2: '', city: sel.city, state: sel.state,
+      postalCode: sel.zip, country: 'US', phone, residential: true };
+  }
+  if (sel && sel.text) {
+    // Custom free-text address — labels need structured fields, so parse "street / city, ST zip"
+    const m = sel.text.replace(/<br\s*\/?>/gi, '\n').match(/^\s*([\s\S]+?)[,\n]\s*([^,\n]+?),?\s+([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (m) return { name: customer.name, company: customer.name,
+      street1: m[1].replace(/\s*\n\s*/g, ', ').trim(), street2: '',
+      city: m[2].trim(), state: m[3].toUpperCase(), postalCode: m[4], country: 'US', phone, residential: true };
+    console.warn('[ShipStation] Could not parse custom ship-to address, using customer default:', sel.text);
+  }
+  const attnName = customer.shipping_attention || customer.name;
+  return customer.shipping_address_line1 ? {
+    name: attnName, company: customer.name,
     street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
     city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
+    postalCode: customer.shipping_zip, country: 'US', phone, residential: true
   } : {
-    name: customer.name, company: customer.name,
+    name: attnName, company: customer.name,
     street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
     city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
+    postalCode: customer.billing_zip, country: 'US', phone, residential: true
   };
+};
+
+const convertSOToShipStation = (so, customer, shipToOverride) => {
+  // shipToOverride lets callers (e.g. Manual Ship) print to a different recipient —
+  // our own warehouse or a decorator — instead of the customer's default address.
+  const shipToAddress = shipToOverride || ssShipToAddress(so, customer);
   const items = so.items.map(item => {
     const totalQty = Object.values(item.sizes).reduce((sum, qty) => sum + qty, 0);
     return {
@@ -100,13 +126,13 @@ const convertSOToShipStation = (so, customer) => {
   };
 };
 
-const pushSOToShipStation = async (so, customer) => {
+const pushSOToShipStation = async (so, customer, shipToOverride) => {
   const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received', 'waiting_receive', 'needs_pull', 'need_order', 'partial_received'];
   const soStatus = calcSOStatus(so);
   if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus) && so.status !== 'complete') {
     throw new Error('Only active Sales Orders can be shipped');
   }
-  const ssOrder = convertSOToShipStation(so, customer);
+  const ssOrder = convertSOToShipStation(so, customer, shipToOverride);
   return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
 };
 
@@ -123,42 +149,53 @@ const fetchRecentShipments = async () => {
 
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
-  // Validate customer address before calling API
-  const hasShipAddr = customer.shipping_address_line1 && customer.shipping_city && customer.shipping_state && customer.shipping_zip;
-  const hasBillAddr = customer.billing_address_line1 && customer.billing_city && customer.billing_state && customer.billing_zip;
-  if (!hasShipAddr && !hasBillAddr) throw new Error('Customer has no shipping or billing address. Please add an address to the customer record first.');
-  // Ensure order exists in ShipStation first
-  let ssOrderId = so._shipstation_order_id;
-  if (!ssOrderId) {
-    const ssOrder = await pushSOToShipStation(so, customer);
-    ssOrderId = ssOrder.orderId;
-  }
-  if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
-  const shipTo = hasShipAddr ? {
-    name: customer.name, company: customer.name,
-    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
-    city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  } : {
-    name: customer.name, company: customer.name,
-    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
-    city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  };
+const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions, shipToOverride) => {
+  // Resolve and validate the ship-to. shipToOverride (Manual Ship → typed address /
+  // warehouse / decorator) takes precedence over the SO-selected address or customer default.
+  const shipTo = shipToOverride || ssShipToAddress(so, customer);
+  if (!shipTo.street1 || !shipTo.city || !shipTo.state || !shipTo.postalCode) throw new Error('Ship-to address is incomplete (needs street, city, state, zip). Check the address selected on the SO or the customer record.');
   // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
   const carrierLower = (carrier || 'fedex').toLowerCase();
   const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
   const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
+  const dims = dimensions && dimensions.length && dimensions.width && dimensions.height
+    ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
+    : undefined;
+  const shipFrom = { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone };
+
+  // ── Explicit ship-to override → ORDERLESS label (/shipments/createlabel) ──
+  // CRITICAL: /orders/createlabelfororder prints the ORDER's stored recipient and IGNORES
+  // any shipTo we pass — so an order previously pushed with a decorator/customer address
+  // would silently mis-ship a manually-typed address. /shipments/createlabel has no order
+  // and ships to EXACTLY the shipTo given, guaranteeing the parcel goes where it was typed.
+  if (shipToOverride) {
+    const directPayload = {
+      carrierCode: cm.carrierCode, serviceCode: cm.serviceCode, packageCode: 'package',
+      confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+      weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+      shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+      internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` }, testLabel: false
+    };
+    console.log('[ShipStation] Orderless label payload (shipToOverride):', JSON.stringify(directPayload, null, 2));
+    return await shipStationCall('/shipments/createlabel', { method: 'POST', body: JSON.stringify(directPayload) });
+  }
+
+  // ── No override → ship to the order's resolved address (keeps ShipStation order linkage) ──
+  // Upsert the order (createorder updates by orderKey) so the label prints the resolved address.
+  let ssOrderId = so._shipstation_order_id;
+  try {
+    const ssOrder = await pushSOToShipStation(so, customer, shipToOverride);
+    ssOrderId = ssOrder.orderId || ssOrderId;
+  } catch (e) {
+    if (!ssOrderId) throw e;
+    console.warn('[ShipStation] Order refresh failed, using existing order:', e.message);
+  }
+  if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
   const labelPayload = {
     orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' },
-    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
-      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : undefined,
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
-    shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+    weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+    shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
   };
@@ -247,7 +284,7 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -787,7 +824,7 @@ const sanmarApiCall = async (service, action, params = {}) => {
   try {
     const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
     const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -829,6 +866,99 @@ const testSanMarConnection = async () => {
   catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
 };
 
+// Submit a built PromoStandards PO payload (from buildSanMarPOPayload in sanmarPO.js)
+// to SanMar. The proxy injects credentials server-side and POSTs the sendPO SOAP
+// envelope. `env` selects the SanMar endpoint:
+//   'test' — onboarding/validation TEST host (no goods ship)
+//   'prod' — LIVE production host (ships real goods)
+// Defaults to 'test' so an accidental call can never place a real order — a caller
+// that means to go live must pass 'prod' explicitly. Resolves to
+// { ok, env, transactionId, orderNumber }; throws Error(<SanMar message>) on failure.
+const sanmarSubmitPO = async (payload, env = 'test') => {
+  const qs = `service=po&action=sendPO&env=${encodeURIComponent(env)}`;
+  const response = await authFetch(`/.netlify/functions/sanmar-proxy?${qs}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || !data.transactionId) {
+    console.error('[SanMar] sendPO failed:', data.error || response.status, data.raw || '');
+    throw new Error(data.error || `SanMar sendPO failed (HTTP ${response.status})`);
+  }
+  console.log(`[SanMar] sendPO ok (${env}):`, data.transactionId);
+  return data;
+};
+
+// ─── SanMar Unique_Key (partId) resolution for PO submission ───
+// sendPO keys every line by its Unique_Key (partId), which is specific to one
+// style+color+size. Orders built in the portal don't carry it, so before a PO can
+// be submitted we resolve it live from the product catalog. CORRECTNESS RULE: a key
+// is only assigned when a returned product's color AND size both normalize-equal the
+// line's — we never guess, so an unmatched line stays blocked (caller falls back to
+// manual ordering) rather than risk shipping the wrong item.
+const _smNorm = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Size match key. Run the size through normSzName first so an order's gendered
+// label ("Mens S", "Women's L", "Youth M") collapses to the bare size SanMar
+// returns ("S"/"L"/"M") before stripping punctuation — otherwise "MENSS" never
+// equals "S" and every gendered line is left without a partId (blocked PO).
+const _smSizeNorm = (s) => _smNorm(normSzName(s));
+const _smColor = (bi) => bi.catalogColor || bi.color || bi.colorName || bi.millColor || bi.colorCode || '';
+const _smSize = (bi) => bi.size || bi.sizeName || bi.apparelSize || bi.sizeCode || '';
+const _smKey = (r, bi) => String(bi.uniqueKey || bi.Unique_Key || bi.UniqueKey || r.uniqueKey || r.Unique_Key || '');
+
+// descriptors: [{ key, style, color, size }]. Resolves SanMar Unique_Keys (partIds)
+// via the product API. Returns { resolved: {key: uniqueKey}, candidates: {STYLE:
+// [{color,size,uniqueKey}]} } — candidates surfaces what SanMar actually returned so
+// a near-miss (e.g. color naming) can be diagnosed instead of silently failing.
+const sanmarResolvePartIds = async (descriptors) => {
+  const resolved = {};
+  const candidates = {};
+  const styles = [...new Set((descriptors || [])
+    .map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
+  for (const style of styles) {
+    const cand = [];
+    const map = {}; // normalized "color|size" -> uniqueKey
+    const addItems = (items) => {
+      for (const r of (items || [])) {
+        const bi = r.productBasicInfo || r;
+        const uk = _smKey(r, bi); if (!uk) continue;
+        const color = _smColor(bi), size = _smSize(bi);
+        cand.push({ color, size, uniqueKey: uk });
+        const mk = _smNorm(color) + '|' + _smSizeNorm(size);
+        if (color && size && !(mk in map)) map[mk] = uk;
+      }
+    };
+    // One call per style returns every color/size variant with its Unique_Key.
+    try { const d = await sanmarGetProduct(style); addItems(d && d.items); }
+    catch (e) { console.warn('[SanMar] partId lookup failed for', style, e.message); }
+    const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
+    for (const d of mine) {
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
+      if (map[mk]) resolved[d.key] = map[mk];
+    }
+    // Fallback: size-specific query for any line the bulk lookup didn't resolve
+    // (covers styles whose bulk response omits per-size rows).
+    for (const d of mine) {
+      if (resolved[d.key]) continue;
+      try {
+        const dd = await sanmarGetProduct(style, d.color, d.size);
+        const items = (dd && dd.items) || [];
+        addItems(items);
+        for (const r of items) {
+          const bi = r.productBasicInfo || r;
+          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smSizeNorm(_smSize(bi)) === _smSizeNorm(d.size)) {
+            const uk = _smKey(r, bi); if (uk) { resolved[d.key] = uk; break; }
+          }
+        }
+      } catch (e) { /* leave unresolved — never guess */ }
+    }
+    const seen = new Set();
+    candidates[style] = cand.filter(c => { const k = c.color + '|' + c.size; if (seen.has(k)) return false; seen.add(k); return true; });
+  }
+  return { resolved, candidates };
+};
+
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
@@ -836,7 +966,7 @@ const ssApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -865,6 +995,95 @@ const ssGetStyles = async () => await ssApiCall('/Styles');
 const ssGetBrands = async () => await ssApiCall('/Brands');
 const ssGetCategories = async () => await ssApiCall('/Categories');
 
+// ─── S&S Activewear SKU resolution + order submit ───
+// S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
+// order lines carry style/color/size, so resolve the Sku live from the Products API.
+// CORRECTNESS RULE: only fill a Sku on an exact color+size match — never guess, so an
+// unmatched line stays blocked (caller falls back to manual ordering).
+const ssResolveSkus = async (descriptors) => {
+  const resolved = {};
+  const candidates = {};
+  const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
+  for (const style of styles) {
+    let items = [];
+    try {
+      // S&S /Products?style= expects a numeric styleID, not the style name — so resolve
+      // the styleID first via /Styles?search= (the same path our other S&S lookups use),
+      // then fetch that style's products.
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(style));
+      const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
+      const match = sa.find(s => _smNorm(s.partNumber) === _smNorm(style) || _smNorm(s.styleName) === _smNorm(style)) || sa[0];
+      const styleID = match && (match.styleID || match.StyleID);
+      if (styleID) {
+        const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
+        items = Array.isArray(data) ? data : (data ? [data] : []);
+      }
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
+    const cand = [];
+    const map = {}; // normalized "color|size" -> sku
+    for (const r of items) {
+      const sku = String(r.sku || r.Sku || r.gtin || '');
+      if (!sku) continue;
+      const color = r.colorName || r.color || '';
+      const size = r.sizeName || r.size || '';
+      cand.push({ color, size, sku });
+      const mk = _smNorm(color) + '|' + _smSizeNorm(size);
+      if (color && size && !(mk in map)) map[mk] = sku;
+    }
+    candidates[style] = cand;
+    for (const d of descriptors) {
+      if (String(d.style || '').toUpperCase().trim() !== style) continue;
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
+      if (map[mk]) resolved[d.key] = map[mk];
+    }
+    // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
+    // For any line still unmatched, retry against the base style — still an exact color+size match.
+    const _dash = style.lastIndexOf('-');
+    const _base = _dash > 0 ? style.slice(0, _dash) : '';
+    if (_base && descriptors.some(d => String(d.style || '').toUpperCase().trim() === style && !resolved[d.key])) {
+      let items2 = [];
+      try {
+        const sl2 = await ssApiCall('/Styles?search=' + encodeURIComponent(_base));
+        const sa2 = Array.isArray(sl2) ? sl2 : (sl2 ? [sl2] : []);
+        const m2 = sa2.find(s => _smNorm(s.partNumber) === _smNorm(_base) || _smNorm(s.styleName) === _smNorm(_base)) || sa2[0];
+        const sid2 = m2 && (m2.styleID || m2.StyleID);
+        if (sid2) { const d2 = await ssApiCall('/Products/?style=' + encodeURIComponent(sid2)); items2 = Array.isArray(d2) ? d2 : (d2 ? [d2] : []); }
+      } catch (e) { /* leave unresolved */ }
+      for (const r of items2) {
+        const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
+        const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
+        candidates[style].push({ color, size, sku });
+        const mk2 = _smNorm(color) + '|' + _smSizeNorm(size);
+        for (const d of descriptors) {
+          if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
+          if (_smNorm(d.color) + '|' + _smSizeNorm(d.size) === mk2) resolved[d.key] = sku;
+        }
+      }
+    }
+  }
+  return { resolved, candidates };
+};
+
+// Submit a built S&S order (the `order` object from buildSSOrderPayload) via
+// POST /v2/orders/. When order.testOrder is true, S&S creates & cancels it — a safe
+// validation with nothing shipped. Resolves to { orderNumber, invoiceNumber,
+// lineErrors }; throws Error(<S&S message>) on failure.
+const ssSubmitOrder = async (order) => {
+  const data = await ssApiCall('/orders', { method: 'POST', body: JSON.stringify(order) });
+  const arr = Array.isArray(data) ? data : (data?.Orders || data?.orders || (data?.orderNumber ? [data] : []));
+  const lineErrors = (data && (data.LineErrors || data.lineErrors)) || [];
+  const first = arr[0] || {};
+  const orderNumber = first.orderNumber || first.OrderNumber || data?.orderNumber;
+  if (!orderNumber) {
+    const msg = lineErrors.length
+      ? lineErrors.map(e => e.error || e.Error || e.message || (typeof e === 'string' ? e : JSON.stringify(e))).join('; ')
+      : (data?.message || data?.error || (typeof data === 'string' ? data : 'S&S did not return an order number'));
+    throw new Error(msg);
+  }
+  console.log(`[S&S] order ok (${order.testOrder ? 'TEST' : 'LIVE'}):`, orderNumber);
+  return { orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data };
+};
+
 const testSSConnection = async () => {
   try { await ssGetBrands(); console.log('[S&S] Connection test successful'); return true; }
   catch (error) { console.error('[S&S] Connection test failed:', error); return false; }
@@ -877,7 +1096,7 @@ const richardsonApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
+    const response = await authFetch(proxyUrl, {
       method,
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
@@ -974,6 +1193,127 @@ const momentecSearchProducts = async (term, pageSize = 50, pageNumber = 1) =>
 
 const momentecGetCategories = async () =>
   await momentecApiCall('/categoryview/@top?depthAndLimit=11,11');
+
+// Submit a built Momentec order (the `order` object from buildMomentecOrderPayload) via
+// the proxy, which injects credentials server-side and POSTs to /v2/Order. env: 'stage'
+// (sandbox) | 'prod' (LIVE). Defaults to 'stage' so an accidental call can't place a real
+// production order. Resolves to { ok, env, orderId }; throws Error(<message>) on failure.
+const momentecSubmitOrder = async (order, env = 'stage') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=order&env=${encodeURIComponent(env)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || !data.orderId) {
+    console.error('[Momentec] order failed:', data.error || response.status, data.raw || '');
+    throw new Error((data.error || `Momentec order failed (HTTP ${response.status})`) + (data.raw ? `\n\nMomentec said: ${data.raw}` : ''));
+  }
+  console.log(`[Momentec] order ok (${env}):`, data.orderId);
+  return data;
+};
+
+// ─── Momentec /v2/Style — normalized colors/sizes/images/price/stock ───
+// Fetches real catalog data from the /v2 API (via the proxy's public Basic route)
+// and shapes it to match the vendor-search result the Order Editor consumes:
+//   { sku, styleName, brandName, styleImage, styleBackImage, _mtId, _mtPrice,
+//     colors:[{ colorName, sku, colorCode, colorFrontImage, colorBackImage,
+//               piecePrice, customerPrice, totalQty, sizes:[{sizeName,qty,price}] }] }
+// `design` may be a design number ("412000") or a full colorway sku ("412000.B005") —
+// it's reduced to the design. customerPrice = MSRP less the 15% dealer discount.
+// Per-color images follow the static CDN pattern {design}_{color}_{front|back}.jpg.
+// Returns null when the design has no data.
+const MT_IMG_BASE = 'https://static.momentecbrands.com/product';
+const momentecStyleV2 = async (design, env = 'prod') => {
+  const d = String(design || '').split('.')[0].trim();
+  if (!d) return null;
+  let data;
+  try {
+    const resp = await fetch(`/.netlify/functions/momentec-proxy?service=style&env=${encodeURIComponent(env)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productOrDesignNumber: d }),
+    });
+    if (!resp.ok) return null;
+    data = await resp.json();
+  } catch (error) { console.error('[Momentec] /v2/Style failed:', d, error); return null; }
+  const infos = Array.isArray(data?.productInfo) ? data.productInfo : [];
+  if (!infos.length) return null;
+  const DISCOUNT = 0.15;
+  // Momentec dealer cost = list/MSRP × 0.5 (wholesale) × (1 − dealer discount).
+  // Verified vs momentecbrands.com customer pricing across sizes, e.g. $12.10 × .5 × .85 = $5.14.
+  const cost = (v) => { const n = parseFloat(v); return n > 0 ? Math.round(n * 0.5 * (1 - DISCOUNT) * 100) / 100 : 0; };
+  const usd = (Array.isArray(infos[0]?.MSRP) ? infos[0].MSRP : []).find((m) => String(m.currency).toUpperCase() === 'USD');
+  const msrpCost = cost(usd?.value);
+  const colorsMap = new Map();
+  let styleName = '', styleImage = '', styleBackImage = '';
+  for (const pi of infos) {
+    if (!styleName) styleName = String(pi.Name || d);
+    for (const it of (Array.isArray(pi.items) ? pi.items : [])) {
+      const parts = String(it.SKU || '').split('.');
+      if (parts.length < 3) continue;
+      const dz = parts[0], colorCode = parts[1], size = parts.slice(2).join('.') || 'OSFA';
+      const cwSku = `${dz}.${colorCode}`;
+      const front = `${MT_IMG_BASE}/${dz}_${colorCode}_front.jpg`;
+      const back = `${MT_IMG_BASE}/${dz}_${colorCode}_back.jpg`;
+      if (!styleImage) { styleImage = front; styleBackImage = back; }
+      let c = colorsMap.get(cwSku);
+      if (!c) { c = { colorName: String(it.colorName || 'Default'), sku: cwSku, colorCode, colorFrontImage: front, colorBackImage: back, piecePrice: 0, customerPrice: 0, totalQty: 0, sizes: [] }; colorsMap.set(cwSku, c); }
+      const skCost = cost(it.list_price) || msrpCost;
+      const qty = Math.round(parseFloat(it.quantity) || 0);
+      c.sizes.push({ sizeName: size, qty, price: skCost });
+      c.totalQty += qty;
+      if (skCost > 0 && (c.customerPrice === 0 || skCost < c.customerPrice)) { c.customerPrice = skCost; c.piecePrice = skCost; }
+    }
+  }
+  const colors = [...colorsMap.values()];
+  if (!colors.length) return null;
+  const minPrice = colors.reduce((a, c) => (c.customerPrice > 0 && (a === 0 || c.customerPrice < a) ? c.customerPrice : a), 0);
+  return { sku: d, styleName, brandName: 'Momentec', styleImage, styleBackImage, _mtId: d, _mtPrice: minPrice, colors };
+};
+
+// Collapse Momentec's one-size tokens (OS, OSFA, OSFM, "One Size"…) so an order line's
+// "OSFA" matches a catalog "OS". Real sizes pass through (uppercased, separators stripped).
+const _mtNormSize = (s) => {
+  const u = String(s || '').toUpperCase().replace(/[\s._/-]/g, '');
+  return ['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u) ? 'OS' : u;
+};
+
+// Resolve missing Momentec order SKUs (design.colorCode.size) live from /v2/Style,
+// matching each line's color (name or code) to a colorway. Mirrors ssResolveSkus so
+// the order modal never depends on an SKU stamped at add-time (it also covers items
+// added via change-color / change-SKU / older sessions).
+// `missing` = [{ key, style, color, size }] → { resolved: {key:sku}, candidates: {STYLE:[{color,colorCode,size,sku}]} }.
+const momentecResolveSkus = async (missing) => {
+  const byDesign = new Map();
+  for (const m of (missing || [])) {
+    const design = String(m.style || '').split('.')[0].trim();
+    if (!design) continue;
+    if (!byDesign.has(design)) byDesign.set(design, []);
+    byDesign.get(design).push(m);
+  }
+  const resolved = {}, candidates = {};
+  await Promise.all([...byDesign.keys()].map(async (design) => {
+    const style = await momentecStyleV2(design).catch(() => null);
+    if (!style) return;
+    const cand = [];
+    for (const c of (style.colors || [])) for (const s of (c.sizes || [])) {
+      cand.push({ color: c.colorName, colorCode: c.colorCode, size: s.sizeName, sku: `${c.sku}.${s.sizeName}` });
+    }
+    candidates[String(design).toUpperCase()] = cand;
+    for (const m of byDesign.get(design)) {
+      const wantColor = String(m.color || '').toLowerCase().trim();
+      const wantSize = _mtNormSize(m.size);
+      const colorOf = (x) => String(x.color || '').toLowerCase() === wantColor || String(x.colorCode || '').toLowerCase() === wantColor;
+      // 1) color + normalized size (OSFA/OS/"one size" variants collapse together)
+      let hit = cand.find((x) => colorOf(x) && _mtNormSize(x.size) === wantSize);
+      // 2) one-size fallback: this color exists with exactly one size — take it regardless of token
+      if (!hit) { const cc = cand.filter(colorOf); if (cc.length === 1) hit = cc[0]; }
+      if (hit) resolved[m.key] = hit.sku;
+    }
+  }));
+  return { resolved, candidates };
+};
 
 const testMomentecConnection = async () => {
   try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
@@ -1140,5 +1480,77 @@ const resolveSkuAcrossVendors = async (sku) => {
   return hits[0];
 };
 
+// ─── Sports Inc "SportsLink" API (via Netlify proxy — REST/JSON, X-API-KEY auth) ───
+// Pulls dealer invoice documents from the SportsWeb Invoice Center. The pure
+// document→bill adapter + query builder live in ./sportsLink (unit-tested); this
+// section only handles the network round-trip and pagination.
+// Requires SPORTSLINK_API_KEY in Netlify env (request from mhoerner@hq.sportsinc.com).
+const sportsLinkApiCall = async (path, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/sportslink-proxy?path=${encodeURIComponent(path)}`;
+    const response = await authFetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {}),
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      // The Sports Inc API returns ASP.NET problem+json — the real reason lives in
+      // title/detail/errors, NOT an `error` field — so surface that instead of a bare
+      // status code (e.g. an out-of-range PageSize or a flagged param explains itself).
+      let msg;
+      try {
+        const j = JSON.parse(errText);
+        const errs = j?.errors && typeof j.errors === 'object'
+          ? Object.values(j.errors).flat().filter(Boolean).join('; ') : '';
+        msg = j?.error || j?.detail || errs || j?.title || j?.message;
+      } catch {}
+      throw new Error(msg ? `Sports Inc API ${response.status}: ${msg}` : `Sports Inc API error: ${response.status}`);
+    }
+    if (response.status === 204) return null; // PATCH status returns No Content
+    return await response.json();
+  } catch (error) { console.error('[SportsLink] API call failed:', path, error); throw error; }
+};
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };
+// Fetch dealer documents, following pagination. The API rejects pageSize >= 1000
+// ("Page Size must be less than 1000"), so we page in 500s. Returns a flat array of
+// raw SportsLink document objects.
+const sportsLinkGetDocuments = async (filters = {}) => {
+  const pageSize = filters.pageSize || 500;
+  let page = 1, all = [], guard = 0;
+  while (guard++ < 50) {
+    const p = buildSportsLinkDocsQuery(filters);
+    p.set('pageSize', String(pageSize));
+    p.set('page', String(page));
+    const data = await sportsLinkApiCall(`dealers/documents/?${p.toString()}`);
+    const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+    all = all.concat(items);
+    if (!data || data.hasNextPage !== true) break;
+    page++;
+  }
+  console.log('[SportsLink] pulled', all.length, 'document(s)');
+  return all;
+};
+
+// PATCH dealers/documents/status — move imported docs to Historical (isActive:false)
+// in the SI Invoice Center, or back to Active (true). Our "mark as imported" lever
+// (used by the Phase-2 background sync, not the manual Phase-1 pull).
+const sportsLinkSetStatus = async (siDocNumbers, isActive) => {
+  const arr = (Array.isArray(siDocNumbers) ? siDocNumbers : [siDocNumbers]).map((n) => parseInt(n, 10)).filter(Boolean);
+  if (!arr.length) return null;
+  return await sportsLinkApiCall('dealers/documents/status', {
+    method: 'PATCH',
+    body: JSON.stringify({ siDocNumbers: arr, isActive: !!isActive }),
+  });
+};
+
+const testSportsLinkConnection = async () => {
+  try {
+    const d = await sportsLinkApiCall('dealers/documents/?pageSize=1');
+    return { ok: true, count: d?.totalCount ?? (Array.isArray(d?.items) ? d.items.length : 0) };
+  } catch (e) { return { ok: false, error: e.message }; }
+};
+
+
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

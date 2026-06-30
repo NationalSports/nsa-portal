@@ -607,6 +607,38 @@ describe('Job Building — buildJobs()', () => {
     };
     expect(BL.buildJobs(o)[0].art_status).toBe('art_complete');
   });
+
+  // Regression: a file merely sitting in prod_files (e.g. an order-sheet PDF, or art dropped in
+  // before the real separations exist) must NOT graduate an approved screen-print job to
+  // art_complete — that jumps it past the production-files stage and into the production line
+  // ("in production") with the "Production Files by Design" checkbox never clicked. Only the
+  // explicit confirmation (prod_files_attached) — or an embroidery .dst — may skip the stage.
+  test('approved screen print WITH stray prod_files but no checkbox stays production_files_needed', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'order-sheet.pdf' }, { name: 'art.png' }] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('production_files_needed');
+  });
+
+  test('approved screen print with prod_files_attached=true → art_complete', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'seps.eps' }], prod_files_attached: true }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('art_complete');
+  });
+
+  test('approved DTF WITH stray prod_files but no checkbox stays order_dtf_transfers', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'dtf', status: 'approved', prod_files: [{ name: 'preview.png' }] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('order_dtf_transfers');
+  });
 });
 
 // ═══════════════════════════════════════════════
@@ -1073,16 +1105,14 @@ describe('Edge Cases & Regression Guards', () => {
     expect(result._nq).toBe(8); // 2 names * 2 (front_and_back) * 2 (reversible)
   });
 
-  test('calcTotals handles outside_deco PO cost lines', () => {
+  test('calcTotals handles outside_deco PO cost (so.deco_pos)', () => {
     const o = {
-      items: [{
-        sizes: { S: 10 }, unit_sell: 20, nsa_cost: 8, decorations: [],
-        po_lines: [{ po_type: 'outside_deco', S: 10, unit_cost: 5 }]
-      }],
+      items: [{ sizes: { S: 10 }, unit_sell: 20, nsa_cost: 8, decorations: [] }],
+      deco_pos: [{ qty: 10, unit_cost: 5 }], // outside-deco POs live on so.deco_pos
       art_files: []
     };
     const result = BL.calcTotals(o, {});
-    expect(result.cost).toBeGreaterThan(80); // base cost + outside deco cost
+    expect(result.cost).toBeGreaterThan(80); // base 80 + outside-deco PO 50 = 130
   });
 
   test('calcSOStatus handles partially received POs', () => {
@@ -1275,19 +1305,20 @@ describe('Decoration Lines Preservation — calcTotals() / createInvoice()', () 
     expect(tTwo.cost).toBeGreaterThan(tOne.cost);
   });
 
-  test('calcTotals still captures outside_deco PO cost on items[].po_lines (legacy path)', () => {
-    // Regression guard: supplier-bill refactor moved outside-deco POs onto so.deco_pos[], but the
-    // legacy per-item po_lines path must keep producing cost for historical orders.
+  test('calcTotals captures outside_deco PO cost from so.deco_pos', () => {
+    // The supplier-bill refactor moved outside-deco POs onto so.deco_pos[]; per-item po_lines no
+    // longer carry po_type/unit_cost (the schema dropped those columns and the data migrated to
+    // deco_pos), so the cost must come from deco_pos.
     const o = {
       items: [{
         sku: 'TEE', sizes: { M: 10 }, unit_sell: 15, nsa_cost: 6,
-        decorations: [],
-        po_lines: [{ po_type: 'outside_deco', M: 10, unit_cost: 4 }]
+        decorations: [], po_lines: []
       }],
+      deco_pos: [{ qty: 10, unit_cost: 4 }],
       art_files: []
     };
     const t = BL.calcTotals(o, {});
-    // base (10 * 6) + deco PO (10 * 4) = 100
+    // base (10 * 6) + outside-deco PO (10 * 4) = 100
     expect(t.cost).toBeGreaterThanOrEqual(100);
   });
 

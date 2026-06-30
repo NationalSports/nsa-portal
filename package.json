@@ -13,8 +13,10 @@
     "imagetracerjs": "^1.2.6",
     "jsbarcode": "^3.12.3",
     "jspdf": "^2.5.2",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.263.1",
     "papaparse": "^5.4.1",
+    "pdf-lib": "^1.17.1",
     "puppeteer": "^24.41.0",
     "puppeteer-core": "^22.15.0",
     "react": "^18.2.0",
@@ -25,17 +27,20 @@
     "stripe": "^20.3.1",
     "svg2pdf.js": "^2.7.0",
     "tesseract.js": "^7.0.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zipcodes": "^8.0.0"
   },
   "scripts": {
     "start": "craco start",
     "build": "craco build",
+    "postbuild": "node scripts/write-build-meta.js",
     "test": "react-scripts test --watchAll=false --verbose",
     "test:report": "node scripts/run-tests.js",
     "test:email": "node scripts/run-tests.js --email",
     "test:e2e": "npx playwright test",
     "test:e2e:report": "npx playwright test --reporter=html",
-    "test:e2e:loop": "node scripts/run-e2e-loop.js"
+    "test:e2e:loop": "node scripts/run-e2e-loop.js",
+    "check:schema-drift": "node scripts/check-schema-drift.js"
   },
   "browserslist": {
     "production": [

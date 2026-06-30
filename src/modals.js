@@ -2,11 +2,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
-import { invokeEdgeFn, getBillingContacts } from './utils';
+import { invokeEdgeFn, getBillingContacts, cloudUpload } from './utils';
 
 function VendorB2BPanel({vendor}){
   const[showPw,setShowPw]=useState(false);
@@ -44,7 +44,7 @@ function VendorB2BPanel({vendor}){
   </div></div>;
 }
 
-function VendDetail({vendor,products,onUpdateProducts,onBack}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit,vendorPOs,onOpenPO,fmtCreatedAt}){
   const[syncing,setSyncing]=React.useState(false);
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
@@ -89,7 +89,10 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       alert('S&S Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
     }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
   };
-  return(<div><button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Vendors</button>
+  return(<div><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+    <button className="btn btn-secondary" onClick={onBack}><Icon name="back" size={14}/> All Vendors</button>
+    {onEdit&&<button className="btn btn-primary" onClick={onEdit}><Icon name="edit" size={14}/> Edit Vendor</button>}
+  </div>
   <div className="card" style={{marginBottom:16}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="package" size={28}/></div>
   <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{vendor.name}</span><span className={`badge ${vendor.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{vendor.vendor_type==='api'?'API':'Upload'}</span><span className="badge badge-gray">{vendor.payment_terms?.replace('net','Net ')}</span>{vendor.nsa_carries_inventory&&<span className="badge badge-green">Stock</span>}</div>
@@ -135,7 +138,54 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
   </div></div>
   {(vendor.b2b_url||vendor.b2b_username||(vendor.catalog_files||[]).length>0)&&<VendorB2BPanel vendor={vendor}/>}
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
-  <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
+  <VendorPOTracking pos={vendorPOs} onOpenPO={onOpenPO} fmtCreatedAt={fmtCreatedAt}/></div>)}
+
+// ─── PHASE 4: PURCHASE ORDER TRACKING (per vendor) ───
+// Renders the POs that name this vendor — pulled from SO po_lines, decoration POs,
+// submitted batches and standalone inventory POs (aggregated in App.js rVend).
+function VendorPOTracking({pos,onOpenPO,fmtCreatedAt}){
+  const list=Array.isArray(pos)?pos:[];
+  const[stF,setStF]=useState('all');
+  const fmtDate=fmtCreatedAt||(s=>s||'—');
+  const counts={waiting:0,partial:0,received:0,cancelled:0};
+  let openUnits=0,openValue=0;
+  list.forEach(p=>{if(counts[p.status]!=null)counts[p.status]++;if(p.status!=='cancelled'){openUnits+=p.totalOpen||0;}});
+  const active=list.filter(p=>p.status!=='cancelled');
+  active.forEach(p=>{if((p.totalOpen||0)>0&&(p.totalOrd||0)>0)openValue+=(p.poTotal||0)*((p.totalOpen||0)/(p.totalOrd||1))});
+  const fPOs=stF==='all'?list:list.filter(p=>p.status===stF);
+  const stBadge=st=><span className={`badge ${st==='received'?'badge-green':st==='partial'?'badge-amber':st==='cancelled'?'badge-gray':'badge-blue'}`}>{st==='received'?'Received':st==='partial'?'Partial':st==='cancelled'?'Cancelled':'Waiting'}</span>;
+  const tabs=[['all','All',list.length,'#2563eb'],['waiting','Waiting',counts.waiting,'#d97706'],['partial','Partial',counts.partial,'#2563eb'],['received','Received',counts.received,'#059669']];
+  return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+    <h2>Purchase Orders {list.length>0&&<span style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>({list.length})</span>}</h2>
+    {openUnits>0&&<span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',padding:'4px 10px',borderRadius:8}}>{openUnits} unit{openUnits!==1?'s':''} still open{openValue>0?` · ~$${openValue.toLocaleString(undefined,{maximumFractionDigits:0})} incoming`:''}</span>}
+  </div>
+  <div className="card-body" style={{padding:list.length===0?undefined:0}}>
+    {list.length===0?<div className="empty">No purchase orders reference this vendor yet.</div>:<>
+      <div style={{display:'flex',gap:4,padding:'10px 12px',flexWrap:'wrap',borderBottom:'1px solid #e2e8f0'}}>
+        {tabs.map(([id,label,count,color])=><button key={id} className={`btn btn-sm ${stF===id?'btn-primary':'btn-secondary'}`} style={{background:stF===id?color:'',borderColor:stF===id?color:'',fontSize:11}} onClick={()=>setStF(s=>s===id&&id!=='all'?'all':id)}>{label} ({count})</button>)}
+      </div>
+      <div style={{overflow:'auto'}}><table className="data-table">
+        <thead><tr><th>PO #</th><th>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th>Status</th><th>Created</th><th>Expected</th></tr></thead>
+        <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:28}}>No {stF} purchase orders</td></tr>:
+          fPOs.map((po,i)=>{const clickable=!!onOpenPO&&(po.source!=='deco');const go=()=>{if(clickable)onOpenPO(po)};
+          return<tr key={po.po_id+'-'+i} style={{cursor:clickable?'pointer':'default'}} onClick={go}>
+            <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}{po.isInvPO&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.isDeco&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>DECO</span>}{po.dropShip&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>DS</span>}{po.isBooking&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700}} title="Booking PO">📋</span>}</td>
+            <td>{po.customer||'—'}</td>
+            <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id||'—'}</span></td>
+            <td>{po.itemSku&&<span style={{fontFamily:'monospace',fontSize:11,color:'#64748b'}}>{po.itemSku}</span>}{po.itemSku&&po.itemName?' ':''}{po.itemName}</td>
+            <td style={{textAlign:'right',fontWeight:600}}>{po.totalOrd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalRcvd>0?'#059669':'#94a3b8'}}>{po.totalRcvd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
+            <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
+            <td>{stBadge(po.status)}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtDate(po.created_at)}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
+          </tr>})}
+        </tbody>
+      </table></div>
+    </>}
+  </div></div>;
+}
 
 
 // ─── TAXCLOUD SETTINGS COMPONENT ───
@@ -182,7 +232,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>TaxCloud Connection</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
-          TaxCloud handles sales tax rate lookups and files returns automatically. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
+          TaxCloud handles sales tax rate lookups and tax filing. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
           <button className="btn btn-sm btn-primary" onClick={testConnection} disabled={tcStatus.loading}
@@ -263,7 +313,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
       <div className="card-header"><h3>Tax Filing (AuthorizedWithCapture)</h3></div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
-          When an invoice is fully paid, the portal automatically reports the transaction to TaxCloud via <strong>AuthorizedWithCapture</strong>. This means:
+          Filing is <strong>manual</strong>: open a paid invoice and click <strong>File to TaxCloud</strong> to report the transaction via AuthorizedWithCapture. This means:
         </div>
         <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
           {[['TaxCloud calculates the exact tax for each line item based on TIC codes','#2563eb'],
@@ -347,6 +397,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
+  const[logoUp,setLogoUp]=useState(false);
+  const pickLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{const file=inp.files&&inp.files[0];if(!file)return;setLogoUp(true);try{const url=await cloudUpload(file,'nsa-school-logos');sv('logo_url',url)}catch(e){setValMsg('Logo upload failed: '+e.message)}finally{setLogoUp(false)}};inp.click()};
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
     // Alpha tag must be unique — it's the portal URL identifier.
     const dupTag=f.alpha_tag&&(allCustomers||[]).find(c=>c.id!==f.id&&(c.alpha_tag||'').trim().toLowerCase()===f.alpha_tag.trim().toLowerCase());
@@ -387,6 +439,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       {i>0?<button className="btn btn-sm btn-secondary" onClick={()=>rmC(i)}><Icon name="trash" size={12}/></button>:<div/>}</div>)}
     <button className="btn btn-sm btn-secondary" onClick={addC}><Icon name="plus" size={12}/> Contact</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Shipping</div>
+    <input className="form-input" placeholder="Attn: (optional — individual name at this address)" value={f.shipping_attention||''} onChange={e=>sv('shipping_attention',e.target.value)} style={{marginBottom:6}}/>
     <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:8}}><AddressAutocomplete placeholder="Street" value={f.shipping_address_line1||''} onChange={v=>sv('shipping_address_line1',v)} onPlaceSelect={p=>{setF(x=>({...x,shipping_address_line1:p.street,shipping_city:p.city,shipping_state:p.state,shipping_zip:p.zip}))}}/><input className="form-input" placeholder="City *" value={f.shipping_city||''} onChange={e=>sv('shipping_city',e.target.value)} style={err.c?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ST" value={f.shipping_state||''} onChange={e=>sv('shipping_state',e.target.value)} style={err.s?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ZIP" value={f.shipping_zip||''} onChange={e=>sv('shipping_zip',e.target.value)}/></div>
     <div style={{fontSize:10,color:'#64748b',marginTop:8,marginBottom:4,fontStyle:'italic'}}>Billing address defaults to shipping address above.</div>
     {(f.alt_billing_addresses||[]).length>0&&<div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:6,marginBottom:4}}>Alternate Addresses</div>}
@@ -399,6 +452,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="Label (e.g. Coach's Home, District Office)" value={ab.label||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,label:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <button className="btn btn-sm btn-secondary" onClick={()=>sv('alt_billing_addresses',(f.alt_billing_addresses||[]).filter((_,i)=>i!==ai))} style={{padding:'2px 6px'}}><Icon name="trash" size={12}/></button>
       </div>
+      <input className="form-input" placeholder="Attn: (optional individual name)" value={ab.attention||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,attention:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11,marginBottom:4}}/>
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:6}}>
         <AddressAutocomplete placeholder="Street" value={ab.street||''} onChange={v=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:v};sv('alt_billing_addresses',a)}} onPlaceSelect={p=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:p.street,city:p.city,state:p.state,zip:p.zip};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="City" value={ab.city||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,city:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
@@ -406,7 +460,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="ZIP" value={ab.zip||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,zip:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
       </div>
     </div>)}
-    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
+    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',attention:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
@@ -418,6 +472,15 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Customer Portal Payment</div>
     <div><label className="form-label">Online Pay (Credit Card / ACH)</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.disable_cc_pay?'#166534':'#f8fafc',color:!f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',false)}>Enabled</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.disable_cc_pay?'#dc2626':'#f8fafc',color:f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',true)}>Disabled (Check/ACH only)</button></div><div style={{fontSize:10,color:f.disable_cc_pay?'#dc2626':'#64748b',marginTop:4}}>{f.disable_cc_pay?'"Pay Now" button hidden in the portal — customer remits offline by check or ACH.':'Coach sees the "Pay Now" button in their portal.'}{ct==='parent'?' Setting cascades to all sub-accounts on save.':''}</div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Logo</div>
+    <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      {f.logo_url
+        ?<img src={f.logo_url} alt="School logo" style={{height:54,maxWidth:170,objectFit:'contain',border:'1px solid #e2e8f0',borderRadius:10,padding:6,background:'#fff'}}/>
+        :<div style={{height:54,width:54,borderRadius:10,border:'1px dashed #cbd5e1',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:22}}>🏫</div>}
+      <button type="button" className="btn btn-sm btn-secondary" disabled={logoUp} onClick={pickLogo}>{logoUp?'Uploading…':(f.logo_url?'Replace logo':'Upload logo')}</button>
+      {f.logo_url&&<button type="button" className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca'}} onClick={()=>sv('logo_url',null)}>Remove</button>}
+    </div>
+    <div style={{fontSize:10,color:'#94a3b8',marginTop:5,marginBottom:4}}>Shown in the coach portal hero. A transparent PNG/SVG looks best. Saves when you hit Save.</div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Colors (Pantone)</div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
       {(f.pantone_colors||[]).map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';
@@ -467,7 +530,8 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
   React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
-  const sizePool=isFw?FOOTWEAR_SIZES:APPAREL_SIZES;
+  const isNumeric=!isFw&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
+  const sizePool=isFw?FOOTWEAR_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES);
   const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
@@ -525,13 +589,14 @@ try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
-  const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  const fee=Math.round(amount*_feePct*100)/100;
-  const total=amount+fee;
+  // The fee is fixed by the Card-vs-Bank choice made before this form loaded (see StripePaymentModal):
+  // bank/ACH gets fee=0, card gets the 2.9%. Nothing is detected here, so Link can't muddy it.
+  const _fee=fee||0;
+  const total=amount+_fee;
 
   const handleSubmit=async(e)=>{
     e.preventDefault();
@@ -540,8 +605,11 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
     const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
-    }else if(result.paymentIntent&&result.paymentIntent.status==='succeeded'){
-      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null});
+    }else if(result.paymentIntent&&(result.paymentIntent.status==='succeeded'||result.paymentIntent.status==='processing')){
+      // ACH/bank debits settle asynchronously — confirmPayment returns status 'processing', not
+      // 'succeeded'. Treat that as a (pending) success; the invoice is marked paid on settlement via
+      // the webhook. (Without this, ACH wrongly showed "payment not completed.")
+      onSuccess({intentId:result.paymentIntent.id,amount,fee:_fee,last4:null,brand:null,status:result.paymentIntent.status});
     }else{
       setError('Payment was not completed. Please try again.');setProcessing(false);
     }
@@ -554,12 +622,14 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
       <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
-      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>
+      {_fee>0
+        ?<div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Card processing fee:</span><span>+${_fee.toFixed(2)}</span></div>
+        :<div style={{display:'flex',justifyContent:'space-between',color:'#16a34a'}}><span>No processing fee</span><span>$0.00</span></div>}
       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
     </div>
     <div style={{display:'flex',gap:8}}>
       <button type="submit" disabled={!stripe||processing} style={{flex:1,padding:'14px 20px',background:processing?'#94a3b8':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:processing?'default':'pointer'}}>
-        {processing?'Processing...':'💳 Pay $'+total.toFixed(2)}
+        {processing?'Processing...':'Pay $'+total.toFixed(2)}
       </button>
       <button type="button" onClick={onCancel} style={{padding:'14px 16px',background:'#f1f5f9',color:'#64748b',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14,cursor:'pointer'}}>Cancel</button>
     </div>
@@ -568,52 +638,51 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
 
 
 function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
+  const[payChoice,setPayChoice]=useState(null);// 'card' | 'bank' — picked before Stripe loads; locks the fee + method
   const[clientSecret,setClientSecret]=useState(null);
   const[stripeReady,setStripeReady]=useState(null);
-  const[loading,setLoading]=useState(true);
+  const[loading,setLoading]=useState(false);// true only while creating the intent after a choice
   const[error,setError]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-  const fee=Math.round(totalDue*_feePct*100)/100;
-  const totalCharge=totalDue+fee;
+  const cardFee=Math.round(totalDue*_feePct*100)/100;
+  const chosenFee=payChoice==='card'?cardFee:0;
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
+  // Load Stripe up front, but DON'T create the PaymentIntent until the buyer picks card vs bank. The
+  // choice fixes the amount (with/without the surcharge) AND restricts the method server-side, so the
+  // fee never depends on detecting what was used later — which Link makes impossible (it hides whether
+  // it's bank- or card-funded and doesn't fire a usable change event).
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
       try{
-        // Prefer the build-time key, but fall back to fetching it at runtime so a
-        // stale build (REACT_APP_STRIPE_PK empty at build) can't silently break payments.
         let promise=stripePromise;
         if(!promise){
           const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));
           if(cfg&&cfg.publishableKey)promise=loadStripe(cfg.publishableKey);
         }
-        if(!promise){
-          if(!cancelled){setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');setLoading(false)}
-          return;
-        }
+        if(!promise){if(!cancelled)setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');return;}
         if(!cancelled)setStripeReady(promise);
-        const res=await fetch('/.netlify/functions/stripe-payment',{
-          method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            action:'create_intent',
-            amount_cents:Math.round(totalCharge*100),
-            customer_name:customerName,
-            customer_email:customerEmail,
-            invoice_id:invoiceIds,
-            invoice_memo:invoices[0]?.memo||'',
-            alpha_tag:alphaTag,
-          })
-        });
-        const data=await res.json();
-        if(!res.ok)throw new Error(data.error||'Failed to create payment');
-        if(!cancelled)setClientSecret(data.clientSecret);
       }catch(e){if(!cancelled)setError(e.message)}
-      finally{if(!cancelled)setLoading(false)}
     })();
     return ()=>{cancelled=true};
   },[]);
+
+  const choosePay=async(choice)=>{
+    setPayChoice(choice);setLoading(true);setError(null);
+    const fee=choice==='card'?cardFee:0;
+    try{
+      const res=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag})});
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Failed to create payment');
+      setClientSecret(data.clientSecret);
+    }catch(e){setError(e.message);setPayChoice(null)}
+    finally{setLoading(false)}
+  };
+
+  const choiceBtn={width:'100%',textAlign:'left',padding:'14px 16px',borderRadius:10,border:'2px solid #e2e8f0',background:'white',cursor:'pointer',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:14};
 
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
     <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
@@ -624,20 +693,33 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
       </div>
       <div style={{padding:'20px 24px'}}>
         {paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:12,lineHeight:1.4}}>{paymentNote}</div>}
-        {loading&&<div style={{textAlign:'center',padding:40}}>
-          <div style={{display:'inline-block',width:28,height:28,border:'3px solid #e2e8f0',borderTop:'3px solid #22c55e',borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:10}}/>
-          <div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>This usually takes a few seconds.</div>
-          <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
-        </div>}
         {error&&<div style={{padding:20,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
           <div style={{fontSize:14,color:'#dc2626',fontWeight:600,marginBottom:4}}>{error}</div>
           <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Please try again or contact NSA for assistance.</div>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
-        {clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={totalDue} feePct={_feePct} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+        {!error&&!payChoice&&<div>
+          <div style={{fontSize:12,color:'#64748b'}}>Amount due</div>
+          <div style={{fontSize:30,fontWeight:800,color:'#0f172a',marginBottom:16}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}</div>
+          <div style={{fontSize:13,fontWeight:700,color:'#334155',marginBottom:10}}>How would you like to pay?</div>
+          <button style={choiceBtn} disabled={!stripeReady} onClick={()=>choosePay('bank')}>
+            <span><span style={{fontWeight:700}}>🏦 Bank account (ACH)</span><br/><span style={{fontSize:11,color:'#16a34a'}}>No processing fee</span></span>
+            <span style={{fontWeight:800}}>${totalDue.toFixed(2)}</span>
+          </button>
+          <button style={choiceBtn} disabled={!stripeReady} onClick={()=>choosePay('card')}>
+            <span><span style={{fontWeight:700}}>💳 Credit / debit card</span><br/><span style={{fontSize:11,color:'#d97706'}}>+{(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}% processing fee</span></span>
+            <span style={{fontWeight:800}}>${(totalDue+cardFee).toFixed(2)}</span>
+          </button>
+          <div style={{textAlign:'center',marginTop:6}}>{!stripeReady?<span style={{fontSize:11,color:'#94a3b8'}}>Loading secure checkout…</span>:<button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={onClose}>Cancel</button>}</div>
+        </div>}
+        {!error&&payChoice&&(loading||!clientSecret||!stripeReady)&&<div style={{textAlign:'center',padding:40}}>
+          <div style={{display:'inline-block',width:28,height:28,border:'3px solid #e2e8f0',borderTop:'3px solid #22c55e',borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:10}}/>
+          <div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div>
+          <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
+        </div>}
+        {!error&&payChoice&&clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
+          <StripeCheckoutForm amount={totalDue} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>
@@ -704,16 +786,11 @@ function QuoteForm({token,supabaseClient}){
       await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
       if(andSubmit){
         setSubmitted(true);
-        // Send notification email to rep
+        // Notify the rep via the content-locked server endpoint — the public quote
+        // form is unauthenticated, so it can't use the (staff-only) brevo-proxy.
+        // quote-notify builds recipient/subject/body entirely from DB rows.
         try{
-          const{data:repData}=await supabaseClient.from('team_members').select('email,name').eq('id',qr.created_by).single();
-          if(repData?.email){
-            const itemSummary=itemRows.map((it,i)=>`${i+1}. ${it.sku||it.description} - ${it.color||'no color'} - ${Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(', ')||('Qty: '+(it.total_qty||'TBD'))}`).join('<br/>');
-            await fetch('/.netlify/functions/brevo-proxy',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
-              body:JSON.stringify({sender:{name:'NSA Quote System',email:'noreply@nationalsportsapparel.com'},to:[{email:repData.email}],
-                subject:'Quote Request Submitted — '+custName,
-                htmlContent:`<h2>Quote Request from ${custName}</h2><p><strong>${contactName||'Customer'}</strong> has submitted their quote request.</p><h3>Items:</h3><p>${itemSummary}</p><p>${globalNotes?'<strong>Notes:</strong> '+globalNotes:''}</p><p><a href="${window.location.origin}">Open NSA Portal to review</a></p>`})});
-          }
+          await fetch('/.netlify/functions/quote-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quoteRequestId:qr.id})});
         }catch(emailErr){console.warn('Email notification failed:',emailErr)}
       }
     }catch(e){setError('Save failed: '+e.message)}
@@ -814,7 +891,7 @@ function QuoteForm({token,supabaseClient}){
 // ─── VENDOR MODAL (create / edit) ───
 
 function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
-  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
+  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',address_line1:'',address_line2:'',city:'',state:'',zip:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
   const[f,setF]=useState(baseV);
   const[err,setErr]=useState('');
   const[showPw,setShowPw]=useState(false);
@@ -880,6 +957,17 @@ function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
       </div>
       <div style={{marginTop:10}}>
         <label className="form-label">Website</label><input className="form-input" value={f.website||''} onChange={e=>sv('website',e.target.value)} placeholder="https://"/>
+      </div>
+      <div style={{marginTop:14,padding:12,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+        <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:4}}>Ship-To Address</div>
+        <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>Where we ship blanks/goods to this vendor — prefills decoration / drop-ship POs (Manual Ship). Attention &amp; phone use the Contact Name / Phone above.</div>
+        <div><label className="form-label">Street Address</label><input className="form-input" value={f.address_line1||''} onChange={e=>sv('address_line1',e.target.value)} placeholder="123 Main St"/></div>
+        <div style={{marginTop:8}}><label className="form-label">Suite / Unit (optional)</label><input className="form-input" value={f.address_line2||''} onChange={e=>sv('address_line2',e.target.value)} placeholder="Ste 100"/></div>
+        <div style={{display:'grid',gridTemplateColumns:'2fr 70px 110px',gap:8,marginTop:8}}>
+          <div><label className="form-label">City</label><input className="form-input" value={f.city||''} onChange={e=>sv('city',e.target.value)}/></div>
+          <div><label className="form-label">State</label><input className="form-input" value={f.state||''} maxLength={2} onChange={e=>sv('state',e.target.value.toUpperCase())} placeholder="CA"/></div>
+          <div><label className="form-label">Zip</label><input className="form-input" value={f.zip||''} onChange={e=>sv('zip',e.target.value)}/></div>
+        </div>
       </div>
       <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:6}}>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.nsa_carries_inventory} onChange={e=>sv('nsa_carries_inventory',e.target.checked)}/>NSA carries inventory</label>

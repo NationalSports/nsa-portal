@@ -1,0 +1,47 @@
+name: Schema Drift Guard
+
+# A read-only "loop": once a day (and on demand) it reads the live Supabase
+# migration history and fails if a migration reached prod without a repo file.
+# The job going red IS the alarm. See scripts/check-schema-drift.js.
+
+on:
+  schedule:
+    - cron: '0 13 * * *' # daily ~8am Central
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/migration-baseline.json'
+      - 'scripts/check-schema-drift.js'
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Pull the live migration history as JSON. Read-only: a single SELECT on
+      # supabase_migrations.schema_migrations. SUPABASE_DB_URL is a Postgres
+      # connection string (a read-only role is plenty) stored as a repo secret.
+      - name: Fetch live migrations
+        id: fetch
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::notice::SUPABASE_DB_URL secret not set — skipping drift check. Add it in repo Settings → Secrets to enable the guard."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          psql "$SUPABASE_DB_URL" -At -c \
+            "select coalesce(json_agg(json_build_object('version', version, 'name', name) order by version), '[]') \
+             from supabase_migrations.schema_migrations" \
+            > live-migrations.json
+
+      - name: Check for drift
+        if: steps.fetch.outputs.skip != 'true'
+        run: node scripts/check-schema-drift.js --live live-migrations.json

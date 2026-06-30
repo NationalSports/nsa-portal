@@ -2,18 +2,34 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
-import html2pdf from 'html2pdf.js';
-import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml } from './utils';
+// html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt } from './utils';
 
-const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
+// allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
+// artwork — used by the Topstar digitizing/Vector PO flow where production-ready
+// vector/PDF files are the whole point. Non-image files upload via Cloudinary's
+// "auto" resource type and preview through a rasterized page-1 PNG thumbnail.
+const ImgGallery=({images=[],onUpdate,onError,maxImages=10,allowVector=false})=>{
   const[uploading,setUploading]=useState(false);const[drag,setDrag]=useState(false);
+  const VECTOR_EXT=['ai','eps','svg','pdf'];
+  const _accept=allowVector?'image/*,.ai,.eps,.svg,.pdf,application/pdf,application/postscript':'image/*';
+  const _okFile=f=>{
+    if(f.type&&f.type.startsWith('image/'))return true;
+    if(!allowVector)return false;
+    const ext=(f.name||'').split('.').pop().toLowerCase();
+    return VECTOR_EXT.includes(ext)||f.type==='application/pdf'||f.type==='application/postscript';
+  };
+  // Source to render in a thumbnail tile: real images as-is, vector/PDF rasterized to PNG, else null (icon fallback).
+  // When allowVector is off, behave exactly as before — render the url directly so image-only galleries don't regress.
+  const _thumb=url=>!allowVector?url:(_isImgUrl(url)?url:_cloudinaryPdfThumb(url));
+  const _noun=allowVector?'files':'images';
   const doUpload=async(files)=>{
-    const imgFiles=Array.from(files).filter(f=>f.type.startsWith('image/'));
-    if(imgFiles.length===0){if(onError)onError('Please select image files');return}
-    if((images||[]).length+imgFiles.length>maxImages){if(onError)onError('Max '+maxImages+' images');return}
+    const ok=Array.from(files).filter(_okFile);
+    if(ok.length===0){if(onError)onError(allowVector?'Please select image, PDF, or vector (.ai/.eps/.svg) files':'Please select image files');return}
+    if((images||[]).length+ok.length>maxImages){if(onError)onError('Max '+maxImages+' '+_noun);return}
     setUploading(true);
     const newUrls=[];
-    for(const f of imgFiles){
+    for(const f of ok){
       try{const u=await cloudUpload(f);newUrls.push(u)}catch(e){if(onError)onError('Upload failed: '+e.message)}
     }
     if(newUrls.length>0)onUpdate([...(images||[]),...newUrls]);
@@ -23,23 +39,27 @@ const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
   const moveImg=(from,to)=>{const arr=[...(images||[])];const[item]=arr.splice(from,1);arr.splice(to,0,item);onUpdate(arr)};
   return<div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-      {(images||[]).map((url,i)=><div key={i} style={{width:72,height:72,borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',position:'relative',background:'#f8fafc'}}>
-        <img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
+      {(images||[]).map((url,i)=>{const prev=_thumb(url);const ext=(_urlExt(url)||'file').toUpperCase();return<div key={i} style={{width:72,height:72,borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',position:'relative',background:'#f8fafc'}}>
+        {prev?<img src={prev} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+        <div style={{display:prev?'none':'flex',width:'100%',height:'100%',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:2,color:'#64748b'}}>
+          <span style={{fontSize:18}}>{'📄'}</span>
+          <span style={{fontSize:9,fontWeight:700}}>{ext}</span>
+        </div>
         <div style={{position:'absolute',top:0,right:0,display:'flex',gap:1}}>
           {i>0&&<button style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',cursor:'pointer',fontSize:9,padding:'1px 3px',borderRadius:2}} onClick={()=>moveImg(i,i-1)}>\u25C0</button>}
           <button style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',cursor:'pointer',fontSize:10,padding:'1px 4px',borderRadius:2}} onClick={()=>removeImg(i)}>\u00D7</button>
         </div>
         <div style={{position:'absolute',bottom:0,left:0,background:'rgba(0,0,0,0.5)',color:'white',fontSize:8,padding:'1px 4px'}}>{i===0?'Primary':i+1}</div>
-      </div>)}
+      </div>})}
     </div>
     <div style={{border:drag?'2px dashed #3b82f6':'2px dashed #d1d5db',borderRadius:8,padding:uploading?'8px':'12px 16px',textAlign:'center',
       background:drag?'#eff6ff':'#fafafa',cursor:'pointer',transition:'all 0.15s'}}
       onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
       onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files)}}
-      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}>
+      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept=_accept;inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}>
       {uploading?<span style={{fontSize:11,color:'#3b82f6',fontWeight:600}}>Uploading...</span>
-      :<><div style={{fontSize:11,color:drag?'#2563eb':'#64748b',fontWeight:600}}>{drag?'Drop images here':'Click or drag & drop images'}</div>
-        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(images||[]).length}/{maxImages} images \u00B7 JPG, PNG, WebP</div></>}
+      :<><div style={{fontSize:11,color:drag?'#2563eb':'#64748b',fontWeight:600}}>{drag?'Drop '+_noun+' here':'Click or drag & drop '+_noun}</div>
+        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(images||[]).length}/{maxImages} {_noun} \u00B7 {allowVector?'JPG, PNG, PDF, AI, EPS, SVG':'JPG, PNG, WebP'}</div></>}
     </div>
   </div>};
 
@@ -85,6 +105,43 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   if(!cu)return a;add(cu,'Default');addAlts(cu);
   return a}
 
+// Resolve the ship-to selected on an order/estimate (ship_to_id) into structured fields.
+// Returns {name,text} for a custom free-text address, {name,street,city,state,zip} for an
+// alternate shipping address (id format `${customerId}_alt_${i}` — see getAddrs above),
+// or null when the order ships to the customer's default address.
+function resolveOrderShipTo(o,cu){
+  const id=o?.ship_to_id;
+  if(!id||id==='default')return null;
+  if(id==='custom')return o.ship_to_custom?{name:cu?.name||'',text:String(o.ship_to_custom)}:null;
+  if(!cu)return null;
+  const m=/_alt_(\d+)$/.exec(String(id));
+  if(m&&String(id)===cu.id+'_alt_'+m[1]){
+    const alts=(cu.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));
+    const ab=alts[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||cu.name||'',attention:ab.attention||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// <br/>-joined ship-to block for printed docs; '' when the order uses the customer default.
+function orderShipToSub(o,cu){
+  const sel=resolveOrderShipTo(o,cu);
+  if(!sel)return'';
+  if(sel.text)return sel.text.replace(/\n/g,'<br/>');
+  const attn=sel.attention?'Attn: '+sel.attention:null;
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,sel.street,cityLine].filter(Boolean).join('<br/>');
+}
+
+// Default customer shipping address sub-block for printed docs (includes attention line).
+function custShipAddrSub(cu){
+  if(!cu)return'';
+  const attn=cu.shipping_attention?'Attn: '+cu.shipping_attention:null;
+  const l1=cu.shipping_address_line1||'';const l2=cu.shipping_address_line2||'';
+  const cityLine=[cu.shipping_city,[(cu.shipping_state||''),(cu.shipping_zip||'')].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,l1,l2,cityLine].filter(Boolean).join('<br/>');
+}
+
 
 // SEND ESTIMATE MODAL
 
@@ -113,9 +170,9 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nationalsportsapparel.com/coach?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
+    const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
@@ -126,7 +183,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
+    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+customer.alpha_tag:'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
@@ -161,6 +218,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         document.body.appendChild(container);
         await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
         const _pdfName=(estimate?.id||'document')+(customer?.name?' - '+customer.name:'')+'.pdf';
+        const html2pdf=(await import('html2pdf.js')).default;
         const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_pdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
         document.body.removeChild(container);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
@@ -170,7 +228,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
       const _fromEmail=(repUser?.email&&/@nationalsportsapparel\.com$/i.test(repUser.email))?repUser.email:'noreply@nationalsportsapparel.com';
       const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:_fromEmail,replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
-      if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
+      if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);sendingRef.current=false;return}
       // Send SMS notification if enabled
       if(smsEnabled&&smsPhone){
         const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
@@ -452,7 +510,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):pantoneHex(ink);return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
+            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
               <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <input className="form-input" value={ink} onChange={e=>{const inks=[...(cw.inks||[])];inks[ii]=e.target.value;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
@@ -466,4 +524,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

@@ -18,6 +18,11 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser, syncOrderItems } = require('./_shared');
+
+// Columns copied onto an existing line when re-ingesting. Excludes the (sku,size) match key
+// and the fulfillment columns (line_status/shipped_qty/missing_qty), which must survive.
+const ITEM_CONTENT_KEYS = ['name', 'color', 'qty', 'unit_price', 'player_name', 'image_url'];
 
 // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
 const extractSku = (str) => {
@@ -60,6 +65,10 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
   }
+
+  // Staff-only: ingests orders into webstore tables via service role.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -198,8 +207,6 @@ exports.handler = async (event) => {
             buyer_name: buyerName, subtotal, total,
             ...(shipAddress ? { ship_address: shipAddress, ship_method: 'ship_home' } : {}),
           }).eq('id', orderId);
-          // Replace line items so re-ingest reflects the latest report.
-          await sb.from('webstore_order_items').delete().eq('order_id', orderId);
         } else {
           const { data: createdOrder, error: oErr } = await sb.from('webstore_orders').insert({
             store_id: store.id, status: 'paid', payment_mode: 'paid',
@@ -212,13 +219,14 @@ exports.handler = async (event) => {
           orderId = createdOrder.id; statusToken = createdOrder.status_token;
         }
 
-        const rows = lineItems.map((li) => ({ ...li, order_id: orderId }));
-        const { error: iErr } = await sb.from('webstore_order_items').insert(rows);
-        if (iErr) throw new Error(`Items insert failed (${orderNumber}): ${iErr.message}`);
+        // Merge line items by (sku,size) instead of delete+reinsert, so re-ingesting a report
+        // preserves each line's row id and fulfillment state (shipped_qty, missing_qty,
+        // line_status). See _shared.js syncOrderItems for why the row id must be preserved.
+        await syncOrderItems(sb, orderId, lineItems, ITEM_CONTENT_KEYS);
 
         ordersUpserted++;
-        itemsInserted += rows.length;
-        results.push({ orderNumber, player: playerName, items: rows.length, status_token: statusToken });
+        itemsInserted += lineItems.length;
+        results.push({ orderNumber, player: playerName, items: lineItems.length, status_token: statusToken });
       }
     }
 

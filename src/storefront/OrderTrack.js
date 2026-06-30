@@ -59,25 +59,39 @@ export default function OrderTrack() {
   const [items, setItems] = useState([]);
   const [shipments, setShipments] = useState([]);
   const [status, setStatus] = useState('loading');
+  const [msgs, setMsgs] = useState([]);
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     (async () => {
       if (!token) { setStatus('notfound'); return; }
-      const { data: orders, error } = await supabase.from('webstore_orders').select('*').eq('status_token', token).limit(1);
-      if (error || !orders || !orders[0]) { setStatus('notfound'); return; }
-      const o = orders[0];
-      setOrder(o);
-      const [{ data: sRows }, { data: iRows }, { data: shRows }] = await Promise.all([
-        supabase.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', o.store_id).limit(1),
-        supabase.from('webstore_order_items').select('*').eq('order_id', o.id),
-        supabase.from('webstore_shipments').select('*').eq('order_id', o.id).order('created_at', { ascending: true }),
-      ]);
-      setStore((sRows && sRows[0]) || { name: 'Your Order' });
-      setItems((iRows || []).filter((i) => !i.is_bundle_parent));
-      setShipments(shRows || []);
+      let d = {};
+      try {
+        const resp = await fetch('/.netlify/functions/webstore-checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'track_order', token }) });
+        d = await resp.json().catch(() => ({}));
+        if (!resp.ok || !d.order) { setStatus('notfound'); return; }
+      } catch (e) { setStatus('notfound'); return; }
+      setOrder(d.order);
+      setStore(d.store || { name: 'Your Order' });
+      setItems(d.items || []);
+      setShipments(d.shipments || []);
+      setMsgs(d.messages || []);
       setStatus('ok');
     })();
   }, [token]);
+
+  const sendReply = async () => {
+    const text = reply.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      const resp = await fetch('/.netlify/functions/webstore-checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'post_message', token, text }) });
+      const d = await resp.json().catch(() => ({}));
+      if (resp.ok && d.ok) { setMsgs(d.messages || []); setReply(''); }
+    } catch (e) { /* leave the text so they can retry */ }
+    setSending(false);
+  };
 
   const theme = useMemo(() => ({
     primary: (store && store.primary_color) || '#0b1f3a',
@@ -88,12 +102,18 @@ export default function OrderTrack() {
   if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, opacity: 0.7, marginTop: 8 }}>Check the link in your confirmation email, or contact us at stores@nationalsportsapparel.com.</div></Splash></Shell>;
 
   // Overall progress = the *least* advanced active line (so the order isn't
-  // "complete" until every item is). Cancelled lines are ignored.
-  const active = items.filter((i) => i.line_status !== 'cancelled');
+  // "complete" until every item is). Cancelled lines are ignored, and bundle
+  // PARENT rows are skipped — they have no SKU to receive against so they never
+  // advance past pending and would otherwise pin the whole order at "on order".
+  const active = items.filter((i) => !i.is_bundle_parent && i.line_status !== 'cancelled');
   const reached = active.length ? Math.min(...active.map((i) => stageIndex(i.line_status))) : 0;
   // Partial shipment: some items shipped, but not all.
   const shippedCount = active.filter((i) => stageIndex(i.line_status) >= 4).length;
   const partialShipped = shippedCount > 0 && shippedCount < active.length;
+  // Display rows = bundle parents + standalone items (components nest under parents).
+  const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
+  const childrenOf = (p) => items.filter((i) => !i.is_bundle_parent && (p.bundle_ref ? i.bundle_ref === p.bundle_ref : i.bundle_product_id === p.bundle_product_id));
+  const minStageOf = (lines) => (lines.length ? Math.min(...lines.map((i) => stageIndex(i.line_status))) : 0);
   const hero = partialShipped
     ? { icon: '📦', label: 'Partially shipped', blurb: 'Some items are on the way — the rest will follow' }
     : STAGES[reached];
@@ -157,12 +177,53 @@ export default function OrderTrack() {
         {/* Items */}
         <div style={{ background: '#fff', borderRadius: 16, padding: '8px 22px 18px', marginTop: 16, border: '1px solid #eef1f5' }}>
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: '#64748b', padding: '16px 0 4px' }}>Your items</div>
-          {items.map((i) => {
+          {displayItems.map((i) => {
+            const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
+            const qty = i.qty || 1;
+            if (i.is_bundle_parent) {
+              // Package: one card priced once, with its components nested and its
+              // status driven by the least-advanced component (the parent never moves).
+              const kids = childrenOf(i);
+              return (
+                <div key={i.id} style={{ padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                    <div style={{ position: 'relative', flex: '0 0 56px' }}>
+                      {i.image_url
+                        ? <img src={i.image_url} alt="" width={56} height={56} style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 10, background: '#f4f6f9' }} />
+                        : <div style={{ width: 56, height: 56, borderRadius: 10, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>🎒</div>}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14.5 }}>{i.name || 'Player Pack'}</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Bundle · {kids.length} items</div>
+                    </div>
+                    <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+                      <StatusChip stage={minStageOf(kids)} accent={theme.accent} />
+                      {Number(i.unit_price) > 0 && <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>{money(Number(i.unit_price) * qty)}</div>}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10, paddingLeft: 12, borderLeft: `3px solid ${hexA(theme.accent, 0.25)}` }}>
+                    {kids.map((c) => {
+                      const cattrs = [c.size && `Size ${c.size}`, c.color, c.player_number && `#${c.player_number}`, c.player_name].filter(Boolean);
+                      return (
+                        <div key={c.id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '8px 0' }}>
+                          {c.image_url
+                            ? <img src={c.image_url} alt="" width={40} height={40} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 8, background: '#f4f6f9', flex: '0 0 40px' }} />
+                            : <div style={{ width: 40, height: 40, flex: '0 0 40px', borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17 }}>👕</div>}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: cattrs.length ? 4 : 0 }}>{c.name || c.sku || 'Item'}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{cattrs.map(pill)}</div>
+                          </div>
+                          <StatusChip stage={stageIndex(c.line_status)} accent={theme.accent} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            }
             const idx = stageIndex(i.line_status);
             const missing = Number(i.missing_qty) > 0;
-            const qty = i.qty || 1;
-            const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
-            const attrs = [i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
+            const attrs = [i.variant_label, i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
             return (
               <div key={i.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
                 {/* Image with a quantity badge, like an order line */}
@@ -197,6 +258,28 @@ export default function OrderTrack() {
             </div>
           </div>
         )}
+
+        {/* Messages — two-way thread with the NSA team, attached to this order */}
+        <div style={{ background: '#fff', borderRadius: 16, padding: '18px 22px 20px', marginTop: 16, border: '1px solid #eef1f5' }}>
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: '#64748b', marginBottom: 4 }}>Messages</div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>Need to fix an address, ask a question, or send a note? Message us here — it stays with your order and we’ll reply on this page.</div>
+          {msgs.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              {msgs.map((m) => (
+                <div key={m.id} style={{ display: 'flex', justifyContent: m.from_customer ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
+                  <div style={{ maxWidth: '82%', padding: '9px 13px', borderRadius: 12, fontSize: 14, background: m.from_customer ? theme.primary : '#f1f5f9', color: m.from_customer ? '#fff' : '#0f172a' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.8, marginBottom: 2 }}>{m.from_customer ? 'You' : (m.author || 'NSA Team')}{m.ts ? ' · ' + new Date(m.ts).toLocaleDateString() : ''}</div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <textarea value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type a message…" rows={2} style={{ flex: 1, resize: 'vertical', minHeight: 44, padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, fontFamily: BODY }} />
+            <button onClick={sendReply} disabled={sending || !reply.trim()} style={{ ...btn(theme.accent), border: 'none', cursor: sending || !reply.trim() ? 'default' : 'pointer', opacity: sending || !reply.trim() ? 0.5 : 1 }}>{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>
 
         <div style={{ textAlign: 'center', marginTop: 26, fontSize: 13, color: '#94a3b8' }}>
           Questions? Email <a href="mailto:stores@nationalsportsapparel.com" style={{ color: theme.accent, fontWeight: 600 }}>stores@nationalsportsapparel.com</a>

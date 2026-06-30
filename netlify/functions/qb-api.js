@@ -1,7 +1,9 @@
-// Netlify serverless function — QuickBooks Online API proxy
-// Proxies requests from the frontend to QBO REST API
-// Handles: customers, invoices, bills, inventory adjustments, purchase orders, company info
+// Netlify serverless function — QuickBooks Online API proxy.
+// Staff-only (Supabase JWT). The access token is read from the service-role-only store and
+// refreshed server-side when stale — tokens are never supplied by, or returned to, the client.
 const https = require('https');
+const { verifyUser } = require('./_shared');
+const { getSupabaseAdmin, getStoredTokens, getValidAccessToken } = require('./_qb');
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -50,13 +52,40 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers: corsHeaders(origin), body: JSON.stringify({ error: 'POST only' }) };
   }
 
+  // Staff-only: QBO writes (invoices, payments, POs, inventory) require a signed-in,
+  // active team member's Supabase JWT in the Authorization header.
+  const v = await verifyUser(event);
+  if (!v.ok) {
+    return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
+  }
+
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
+  const { action, sandbox } = body;
 
-  const { action, access_token, realm_id, sandbox } = body;
+  const admin = getSupabaseAdmin();
 
-  if (!access_token || !realm_id) {
-    return { statusCode: 401, headers: corsHeaders(origin), body: JSON.stringify({ error: 'access_token and realm_id required' }) };
+  // ── CONNECTION STATUS ── lightweight, no QBO call (client uses this to render connect state)
+  if (action === 'connection_status') {
+    try {
+      const row = await getStoredTokens(admin);
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: !!row, realm_id: row?.realm_id || null, token_created_at: row?.token_created_at || null }) };
+    } catch (err) {
+      return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Status check failed: ' + err.message }) };
+    }
+  }
+
+  // Every other action needs a valid access token from the store (refreshed server-side if stale).
+  let access_token, realm_id;
+  try {
+    ({ access_token, realm_id } = await getValidAccessToken(admin));
+  } catch (e) {
+    const notConnected = e.code === 'NOT_CONNECTED';
+    return {
+      statusCode: notConnected ? 409 : 401,
+      headers: corsHeaders(origin),
+      body: JSON.stringify({ error: notConnected ? 'QuickBooks not connected' : 'QuickBooks token refresh failed — reconnect required', code: e.code || 'TOKEN_ERROR' }),
+    };
   }
 
   const basePath = `/v3/company/${realm_id}`;

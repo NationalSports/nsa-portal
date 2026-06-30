@@ -1,12 +1,33 @@
 [build]
-  command = "GENERATE_SOURCEMAP=true npm run build"
+  # Clear the CRA/webpack 5 filesystem cache before each build. Netlify restores
+  # node_modules (incl. node_modules/.cache) between builds; a poisoned webpack
+  # cache was serving a STALE compiled App.js — producing byte-identical bundles
+  # that silently dropped newly merged code (e.g. the /onboarding route) even on
+  # a successful fresh deploy. Wiping the compiler cache forces a clean compile.
+  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
   environment = { NODE_VERSION = "18" }
+
+# PUBLIC_URL pins assets to the production domain so the marketing site's /shop/*
+# 200-proxy (which serves the portal's index.html at nationalsportsapparel.com) loads
+# JS/CSS from nsa-portal.netlify.app instead of 404ing on the marketing domain.
+# PRODUCTION ONLY — deploy previews & branch deploys must use relative paths so each
+# preview loads its OWN hashed assets (an absolute production URL points previews at
+# chunks that don't exist there, blanking the page).
+[context.production.environment]
+  PUBLIC_URL = "https://nsa-portal.netlify.app"
 
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
 [[headers]]
   for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+# build-meta.json is the deploy fingerprint that long-lived tabs poll to detect a new
+# build (see src/deployReload.js). It must never be cached or the reload would never fire.
+[[headers]]
+  for = "/build-meta.json"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
 
@@ -19,10 +40,20 @@
 [functions]
   directory = "netlify/functions"
 
+# New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
+# who were invited but haven't finished (capped at 3 reminders, 3 days apart).
+[functions."onboarding-reminder"]
+  schedule = "7 16 * * *"
+
 [functions."vectorizer-proxy"]
   timeout = 26
 
 [functions."pdf-generator"]
+  timeout = 26
+
+# Adidas description backfill submits/collects an Anthropic message batch; the
+# submit step builds a multi-MB request, so give it the max synchronous budget.
+[functions."adidas-desc-backfill"]
   timeout = 26
 
 # S&S Activewear pricing sync — daily at 5:00 AM CT (11:00 UTC)
@@ -32,3 +63,81 @@
 # System Health alert — every 2 hours, emails Steve if orphan jobs detected
 [functions."so-health-alert"]
   schedule = "0 */2 * * *"
+
+# UPS pickup auto-check — daily at 13:00 UTC (~5-6 AM PT). Marks shipments as
+# picked up in Supabase once UPS has scanned the package, so Awaiting Pickup
+# clears itself even when nobody has the portal open.
+[functions."ups-pickup-sync"]
+  schedule = "0 13 * * *"
+
+# Catalog back-in-stock alerts — daily at 14:00 UTC (~6-7 AM PT), after the
+# overnight Cowork inventory sync. Emails coaches whose watched sizes landed.
+[functions."catalog-stock-alert-check"]
+  schedule = "0 14 * * *"
+
+# Webstore close sweep — hourly. Closes stores whose close_at has passed and, for each,
+# creates a rep to-do + emails the rep & assigned CSR a breakdown to process the orders.
+[functions."webstore-close-sweep"]
+  schedule = "0 * * * *"
+
+# Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
+# recap of the prior PT day's orders across their stores (+ any that closed).
+# Reps with no activity get nothing.
+[functions."rep-daily-digest"]
+  schedule = "11 9 * * *"
+
+# S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
+# fires ss-adidas-sync-background (15-min budget), which pulls every adidas
+# style from the S&S API into products + adidas_inventory for /adidas.
+[functions."ss-adidas-sync-cron"]
+  schedule = "0 12 * * *"
+
+# S&S Activewear Under Armour catalog sync — daily at 12:30 UTC (after adidas).
+# Fires ss-ua-sync-background → products + ua_inventory for the Team Catalog.
+[functions."ss-ua-sync-cron"]
+  schedule = "30 12 * * *"
+
+# SanMar Nike catalog sync — daily at 13:30 UTC. Fires sanmar-nike-sync-background
+# → products + nike_inventory for the Team Catalog. Seeds styles from existing
+# Nike SanMar products + the SANMAR_NIKE_STYLES env list.
+[functions."sanmar-nike-sync-cron"]
+  schedule = "30 13 * * *"
+
+# Richardson Sports catalog sync — daily at 14:30 UTC. Pulls the full
+# Richardson stock feed → products + richardson_inventory for the Team Catalog.
+[functions."richardson-sync-cron"]
+  schedule = "30 14 * * *"
+
+# Momentec Brands catalog sync — daily at 15:00 UTC. Pulls the full Momentec
+# HCL Commerce catalog → products + momentec_inventory for the Team Catalog.
+[functions."momentec-sync-cron"]
+  schedule = "0 15 * * *"
+
+# S&S Activewear brands catalog sync — daily at 15:30 UTC. Pulls Port Authority,
+# Sport-Tek, District, Bella+Canvas, Boxercraft, Gildan from S&S → products +
+# ss_inventory for the Team Catalog.
+[functions."ss-brands-sync-cron"]
+  schedule = "30 15 * * *"
+
+# Momentec image verifier — daily at 16:00 UTC, after the Momentec catalog sync
+# (15:00) re-derives image URLs from SKUs without checking they exist. Probes
+# each product image and clears the ~40% that return 403/404 on the CDN, so the
+# Featured Styles "no image" count and the LiveLook imageless-hide stay accurate.
+[functions."momentec-image-verify-cron"]
+  schedule = "0 16 * * *"
+
+# SanMar brands catalog sync — daily at 16:00 UTC. Pulls Port Authority,
+# Sport-Tek, District, Bella+Canvas from SanMar → products + sanmar_inventory.
+# Seed SANMAR_BRAND_STYLES env var with style numbers (e.g. "K500,PC61,DT6000")
+# to populate on the first run.
+[functions."sanmar-brands-sync-cron"]
+  schedule = "0 16 * * *"
+
+# Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
+# safely after the 10:30 EST SI processing cutoff). The cron fires
+# sportslink-sync-background, which mirrors all active SI documents since the portal
+# cutover into the si_documents queue (EDI → approve flow, scanned → manual worklist)
+# and emails the daily digest to accounting. Env: SPORTSLINK_API_KEY,
+# SPORTSLINK_SINCE_DATE (default 2026-04-01), SPORTSLINK_DIGEST_EMAIL.
+[functions."sportslink-sync-cron"]
+  schedule = "30 16 * * *"

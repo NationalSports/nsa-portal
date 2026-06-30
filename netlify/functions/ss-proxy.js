@@ -21,7 +21,13 @@
 //
 // Rate limit: 60 requests per minute (check X-Rate-Limit-Remaining header)
 
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
+  // Staff-only: this proxy injects the company S&S Activewear credentials.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+
   const accountNumber = process.env.SS_ACCOUNT_NUMBER;
   const apiKey = process.env.SS_API_KEY;
   if (!accountNumber || !apiKey) {
@@ -42,6 +48,8 @@ exports.handler = async (event) => {
         'Authorization': `Basic ${auth}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
+        'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
       },
       ...(event.body ? { body: event.body } : {}),
     });
