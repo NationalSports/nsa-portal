@@ -420,7 +420,7 @@ export const SC={
 
 // DATA — sample seeds removed; real data loads from Supabase on startup.
 export const D_C=[];
-export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
+export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:150},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
 // Vendors whose Add-to-Batch pops the "batch ready" prompt (batch PO# + link to Batch POs page) once the queue total reaches the threshold
 export const BATCH_NOTIFY_VENDORS=['momentec','sanmar','sss'];
 export const MACHINES=[
