@@ -5307,17 +5307,17 @@ export default function App(){
   // "NSA 4503 jumped ahead / duplicate PO#" bug. Orphaned counters (vendor no longer queued)
   // are dropped, and any pending assignment at/below the high-water mark is re-minted above it.
   React.useEffect(()=>{
-    const vendorKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key))];
+    const groupKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'')))];
     const parseNo=v=>{const n=parseInt(String(v).replace(/[^0-9]/g,''),10);return isNaN(n)?null:n};
     let hi=4500;// NSA 4501 is the first PO number ever issued
     (submittedBatches||[]).forEach(sb=>{const n=parseNo(sb.po_number);if(n!=null&&n>hi)hi=n;});
     // Keep an existing assignment only if it's unique and strictly above every ordered PO#;
     // re-mint anything missing, duplicated, or at/below the high-water mark. Drop counters for
-    // vendors no longer in the queue.
+    // groups no longer in the queue.
     const next={};const taken=new Set();
-    vendorKeys.forEach(vk=>{const n=parseNo(batchVendorCounters[vk]);if(n!=null&&n>hi&&!taken.has(n)){next[vk]=n;taken.add(n);}});
+    groupKeys.forEach(gk=>{const n=parseNo(batchVendorCounters[gk]);if(n!=null&&n>hi&&!taken.has(n)){next[gk]=n;taken.add(n);}});
     let n=Math.max(hi,(parseNo(batchCounter)||0)-1)+1;
-    vendorKeys.forEach(vk=>{if(next[vk]!=null)return;while(taken.has(n))n++;next[vk]=n;taken.add(n);n++;});
+    groupKeys.forEach(gk=>{if(next[gk]!=null)return;while(taken.has(n))n++;next[gk]=n;taken.add(n);n++;});
     const keys=Object.keys(next);
     if(keys.length!==Object.keys(batchVendorCounters).length||keys.some(k=>batchVendorCounters[k]!==next[k]))setBatchVendorCounters(next);
     const newCounter=Math.max(hi+1,n,...Object.values(next).map(v=>v+1));
@@ -9454,13 +9454,14 @@ export default function App(){
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
   // Returns the batch PO number, or null if the vendor has nothing queued.
-  const orderVendorBatch=({vendorKey:vk,skipSoId=null,apiResult=null})=>{
-    const pos=(batchPOs||[]).filter(bp=>bp.vendor_key===vk);
+  const orderVendorBatch=({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
+    const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
+    const pos=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
     if(pos.length===0)return null;
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    const poNum='NSA '+(batchVendorCounters[vk]??batchCounter);
+    const poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
     // When this batch was submitted through the vendor's API, the order modal hands back the
     // vendor's order id (orderId / orderNumber / transactionId). Stamp it on every promoted
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
@@ -9501,15 +9502,15 @@ export default function App(){
       });
       savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
     });
-    setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
-    setBatchVendorCounters(prev=>{const n={...prev};delete n[vk];return n;});
+    setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
+    setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return poNum;
   };
 
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -9566,7 +9567,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -12378,7 +12379,7 @@ export default function App(){
   };
   function rBatchPOs(){
     const byVendor={};
-    batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
+    batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]}}byVendor[_gk].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
     // Universal PO lookup — searches submitted batches AND all PO lines across every SO
     const q2=batchScan.trim().toLowerCase();
@@ -12652,16 +12653,17 @@ export default function App(){
       </div></div>}
       {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12,alignItems:'start',marginBottom:16}}>
-      {vendorGroups.map(([vk,vg])=>{
+      {vendorGroups.map(([gk,vg])=>{
+        const vk=vg.vendor_key||gk;
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
-        const expanded=!!expandedVendors[vk];
+        const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        return<div key={vk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
-          <div className="card-header" onClick={()=>setExpandedVendors(p=>({[vk]:!p[vk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
+        return<div key={gk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+          <div className="card-header" onClick={()=>setExpandedVendors(p=>({[gk]:!p[gk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
               <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
               <div style={{textAlign:'right',flexShrink:0}}>
@@ -12682,17 +12684,18 @@ export default function App(){
         </div>})}
       </div>
       {/* Expanded vendor detail — opens below the tile grid so the tiles stay on top */}
-      {vendorGroups.filter(([k2])=>!!expandedVendors[k2]).map(([vk,vg])=>{
+      {vendorGroups.filter(([k2])=>!!expandedVendors[k2]).map(([gk,vg])=>{
+        const vk=vg.vendor_key||gk;
         const total=vg.pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
+        const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        return<div key={vk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+        return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fbff'}}>
             <strong style={{fontSize:14,color:'#0f172a'}}>{vg.name} — order detail</strong>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[vk]:false}))}>Collapse ▲</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[gk]:false}))}>Collapse ▲</button>
           </div>
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
@@ -12791,27 +12794,27 @@ export default function App(){
                 <button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
-                  setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
+                  setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>
               </div>
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={()=>{
-                const poNum=orderVendorBatch({vendorKey:vk});
+                const poNum=orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
-            {vk==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r})})}>
               🚀 Submit SanMar Order (API)
             </button>}
-            {vk==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
               🚀 Order via S&S API
             </button>}
-            {vk==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -12865,7 +12868,7 @@ export default function App(){
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
-      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}/>}
+      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vend.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setSanMarPreview(null)}/>}
       {ssOrder&&<SSOrderModal {...ssOrder} onClose={()=>setSSOrder(null)}/>}
       {momentecOrder&&<MomentecOrderModal {...momentecOrder} onClose={()=>setMomentecOrder(null)}/>}
     </>);
