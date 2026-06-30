@@ -1,5 +1,5 @@
 /* eslint-disable */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
@@ -80,6 +80,7 @@ function StoreStyles() {
         .sf-input:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
         .sf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:20px}
         .sf-pdp-media{position:sticky;top:170px}
+        .sf-search-toggle{display:none}
         @media (max-width:860px){
           .sf-hero-grid{grid-template-columns:1fr !important}
           .sf-hero-collage{display:none !important}
@@ -90,6 +91,11 @@ function StoreStyles() {
           .sf-grid{grid-template-columns:1fr 1fr;gap:12px}
           .sf-topstrip-brand{display:none !important}
           .sf-topstrip-inner{justify-content:center !important}
+          /* Collapse the store search to just a magnifying-glass icon inline with the
+             category tabs; tapping it expands a full-width search field on its own row. */
+          .sf-search-toggle{display:inline-flex;align-items:center}
+          .sf-search-wrap{display:none !important}
+          .sf-search-wrap.sf-search-open{display:flex !important;width:100%;min-width:0 !important;margin-left:0 !important}
         }
       `}</style>
     </>
@@ -425,6 +431,13 @@ function Header({ store, theme, cartCount = 0, collapsed = false }) {
 // ── Category sub-nav (categories + search) ───────────────────────────
 function CategoryNav({ theme, categories, cat, onCat, query, setQuery, onSearch }) {
   const tabs = [['all', 'All Gear'], ...categories.map((c) => [c, c])];
+  // On mobile the field collapses to a magnifying-glass toggle that sits inline with the
+  // tabs; tapping it reveals the full-width search input (and focuses it). Desktop always
+  // shows the full field. A live query keeps it open so the input stays put while typing.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const open = searchOpen || !!query;
+  const inputRef = useRef(null);
+  useEffect(() => { if (searchOpen && inputRef.current) inputRef.current.focus(); }, [searchOpen]);
   return (
     <nav style={{ background: theme.paper, borderBottom: `1px solid ${theme.line}` }}>
       <div style={{ maxWidth: 1240, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', minHeight: 52 }}>
@@ -439,9 +452,12 @@ function CategoryNav({ theme, categories, cat, onCat, query, setQuery, onSearch 
             );
           })}
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, background: theme.cream, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '0 12px', height: 38, minWidth: 200 }} className="sf-search-wrap">
+        <button type="button" aria-label="Search the store" className="sf-search-toggle" onClick={() => setSearchOpen((o) => !o)} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', padding: 8, color: theme.subText }}>
           <SearchIcon color={theme.subText} />
-          <input className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
+        </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, background: theme.cream, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '0 12px', height: 38, minWidth: 200 }} className={'sf-search-wrap' + (open ? ' sf-search-open' : '')}>
+          <SearchIcon color={theme.subText} />
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
         </div>
       </div>
     </nav>
@@ -647,19 +663,14 @@ function SkewBtn({ theme, variant = 'primary', onClick, children }) {
   );
 }
 
-// Value strip — four proof points with line icons.
-function ValueStrip({ store, theme }) {
-  const deliver = store.delivery_mode === 'ship_home' ? 'Delivered to your door' : 'Delivered to the club';
-  const items = [['star', 'Official team apparel'], ['zap', 'Custom decoration'], ['box', deliver], ['heart', 'Supports the team']];
+// Section break between the hero and the product/pack content — a clean bordered
+// band with a small skewed accent mark (kept as a deliberate divider; the old
+// four-icon proof-point row was removed at the store owner's request).
+function ValueStrip({ theme }) {
   return (
     <div style={{ background: theme.paper, borderTop: `1px solid ${theme.line}`, borderBottom: `1px solid ${theme.line}` }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '20px 24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
-        {items.map(([icon, label]) => (
-          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 11, justifyContent: 'center' }}>
-            <LineIcon name={icon} color={theme.accentDeep} />
-            <span style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: 0.4, textTransform: 'uppercase', color: theme.ink }}>{label}</span>
-          </div>
-        ))}
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 24px', display: 'flex', justifyContent: 'center' }}>
+        <span aria-hidden style={{ width: 64, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} />
       </div>
     </div>
   );

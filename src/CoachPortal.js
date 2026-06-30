@@ -66,14 +66,19 @@ function cpTeamTheme(customer) {
   return { primary, accent };
 }
 
-function CoachStore({ customer }) {
+function CoachStore({ customer, storeIds }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
   const [loaded, setLoaded] = useState(false);
+  // For an athletic-dept (parent) account, storeIds covers the dept + every sub-team so
+  // the parent sees all its teams' stores; for a single team it's [self, parent]. Falls
+  // back to [self, parent] when no explicit set is passed.
+  const _storeIdKey = (storeIds && storeIds.length ? storeIds : [customer.id, customer.parent_id]).filter(Boolean).join(',');
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const ids = [customer.id, customer.parent_id].filter(Boolean);
+      const ids = _storeIdKey ? _storeIdKey.split(',') : [];
+      if (!ids.length) { setLoaded(true); return; }
       const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
@@ -93,7 +98,7 @@ function CoachStore({ customer }) {
       if (!cancel) { setData(out); setLoaded(true); }
     })();
     return () => { cancel = true; };
-  }, [customer.id, customer.parent_id]);
+  }, [_storeIdKey]);
 
   if (!loaded) return null;
   // The coach sees their own submissions as "pending review"; staff work-in-
@@ -293,6 +298,25 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Logo: use own logo_url, fall back to parent's logo if sub has none set
   const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
   const cpLogo=customer.logo_url||(_parentCust&&_parentCust.logo_url)||null;
+  // ── Team store presence — drives the conditional "Team Store" nav tab. Lightweight
+  // top-level lookup (the full per-store tracking is fetched by <CoachStore/> when the
+  // tab is opened). A store earns the tab when the coach should see it: any live/non-draft
+  // store, or their own submitted draft awaiting review (mirrors CoachStore's render rule).
+  // Parent/athletic-dept accounts track the dept's own store + every sub-team's store;
+  // a single team tracks its own + its parent dept's. This same id set gates the nav tab
+  // and is passed to <CoachStore/> so the tab's visibility always matches what it renders.
+  const cpStoreCustomerIds=(isP?ids:[customer.id,customer.parent_id]).filter(Boolean);
+  const[cpStores,setCpStores]=useState([]);
+  const _cpStoreKey=cpStoreCustomerIds.join(',');
+  useEffect(()=>{let cancel=false;(async()=>{
+    const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
+    if(!sIds.length){if(!cancel)setCpStores([]);return;}
+    const{data}=await supabase.from('webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
+    if(!cancel)setCpStores(data||[]);
+  })();return()=>{cancel=true;};},[_cpStoreKey]);
+  const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
+  const hasStore=cpVisibleStores.length>0;
+  const openStoreCount=cpStores.filter(s=>s.status==='open').length;
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -1389,6 +1413,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
     {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
+    ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
     {key:'shop',label:'Shop',icon:'🛍️'},
@@ -1402,7 +1427,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   // ── NSA nav (design tokens are hoisted to the top of the component) ──
-  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
   const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
@@ -1436,7 +1461,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       <div style={{maxWidth:1240,margin:'0 auto',display:'flex',alignItems:'center',gap:16,padding:'0 24px',height:84}}>
         <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:50,cursor:'pointer',flexShrink:0}} onClick={()=>setPage('home')}/>
         <div className="nsa-desknav" style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-          {_nsaNav.map(([k,lbl])=>{const active=page===k;const badge=k==='orders'?activeSOs.length:k==='estimates'?openEstCount:0;return(
+          {_nsaNav.map(([k,lbl])=>{const active=page===k;const badge=k==='orders'?activeSOs.length:k==='estimates'?openEstCount:k==='store'?openStoreCount:0;return(
             <button key={k} className="nsa-nav nsa-disp" onClick={()=>setPage(k)} style={{color:active?tAccent:tPrimary}}>
               <span>{lbl}</span>
               {badge>0?<span className="nsa-disp" style={{fontWeight:700,fontSize:11,background:k==='estimates'?tAccent:tPrimary,color:'#fff',borderRadius:999,padding:'2px 7px',lineHeight:1}}>{badge}</span>:null}
@@ -1954,6 +1979,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div className="cp-col">
 
         {/* ── SHOP / CATALOGS (NSA redesign — hero + Shop & Order tiles + Catalogs & Stores) ── */}
+        {page==='store'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Team Store Tracking</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Live orders, fundraising and production status for your team store{cpVisibleStores.length>1?'s':''}.</div>
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
+        </div>}
+
         {page==='shop'&&<div>
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
@@ -2011,7 +2042,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
 
           {/* Team Stores — inline (CoachStore renders existing stores) */}
-          <CoachStore customer={customer} />
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} />
 
           {/* Custom & Catalog Gear tile */}
           <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>
