@@ -107,6 +107,36 @@ Start with A; promote to B only if a single submit fans out across POs.
 3. **Stability:** vendor item/size codes must be identical between the order ack and the bill
    (same system, so they should be).
 
+## Phase 0 — findings (verified against the code + a 4,947-doc pull)
+
+**The submit functions exist and each returns an order identifier:** `sanmarSubmitPO` →
+`transactionId` (and we already resolve a per-line `Unique_Key`/partId before submit);
+`ssSubmitOrder` → `{ orderNumber, invoiceNumber }`; `momentecSubmitOrder` → `orderId`. So the
+*capture* side is buildable.
+
+**Cross-system numbering caveat — corrects the optimistic "identical string" line in the TL;DR:**
+we place the order with the *distributor/vendor* (Momentec, SanMar, S&S) in *their* numbering, but
+the Sports Inc bill is keyed in the *brand/SI* numbering (e.g. a Momentec SKU `design.color.size`
+is not the Augusta style the SI bill carries). So the **PO number is the reliable cross-system
+join** — we control it and it round-trips on the bill — **not** the item #. Size still routes
+through normalization on the bill side (the SI feed truncates no matter how we order), now reliable
+via round-1/2 and constrained to the order's real sizes. Net: order-aware capture makes the **PO
+exact and the expected lines/qtys known**; it does not literally bypass size normalization.
+
+**Per-supplier verdict:**
+
+| Supplier | SI bill quality (4,947-doc pull) | Verdict |
+|---|---|---|
+| **SanMar** | 4,113 / 4,137 usable EDI lines; item# + **clean** size + color | ✅ **Solid** — already clean+complete; capture per-line `Unique_Key` for exact PO+line. |
+| **Augusta (Momentec)** | 1,411 / 1,433 usable; item# + size + color, size/color **truncated** | ✅ **Solid in practice** — PO# join exact, truncation handled by round-1/2; capture `orderId` + qtys for reconciliation. |
+| **S&S** | **200 / 200 docs scanned — 0 usable lines** (header-only) | ⚠️ **Blocked on the bill side** — SI bill carries no item/size/qty, and there is **no S&S order/invoice endpoint** today (`ssApiCall` is catalog-only). |
+
+**S&S path to solid:** we already capture `invoiceNumber` at order time, so the options are
+(a) **build an S&S invoice/shipment-detail call** (if S&S's API / PromoStandards exposes it) and pull
+lines from S&S directly, bypassing the scanned SI doc, or (b) wait for **S&S → EDI** on SportsLink
+(the adapter auto-promotes it once real lines arrive). Until then S&S reconciles at document-total
+level only.
+
 ## Phasing
 
 - **Phase A — Capture (no behavior change).** Persist vendor keys at order time. Pure write;
