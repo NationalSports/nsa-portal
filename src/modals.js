@@ -44,7 +44,7 @@ function VendorB2BPanel({vendor}){
   </div></div>;
 }
 
-function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit,vendorPOs,onOpenPO,fmtCreatedAt}){
   const[syncing,setSyncing]=React.useState(false);
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
@@ -138,7 +138,54 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit}){
   </div></div>
   {(vendor.b2b_url||vendor.b2b_username||(vendor.catalog_files||[]).length>0)&&<VendorB2BPanel vendor={vendor}/>}
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
-  <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
+  <VendorPOTracking pos={vendorPOs} onOpenPO={onOpenPO} fmtCreatedAt={fmtCreatedAt}/></div>)}
+
+// ─── PHASE 4: PURCHASE ORDER TRACKING (per vendor) ───
+// Renders the POs that name this vendor — pulled from SO po_lines, decoration POs,
+// submitted batches and standalone inventory POs (aggregated in App.js rVend).
+function VendorPOTracking({pos,onOpenPO,fmtCreatedAt}){
+  const list=Array.isArray(pos)?pos:[];
+  const[stF,setStF]=useState('all');
+  const fmtDate=fmtCreatedAt||(s=>s||'—');
+  const counts={waiting:0,partial:0,received:0,cancelled:0};
+  let openUnits=0,openValue=0;
+  list.forEach(p=>{if(counts[p.status]!=null)counts[p.status]++;if(p.status!=='cancelled'){openUnits+=p.totalOpen||0;}});
+  const active=list.filter(p=>p.status!=='cancelled');
+  active.forEach(p=>{if((p.totalOpen||0)>0&&(p.totalOrd||0)>0)openValue+=(p.poTotal||0)*((p.totalOpen||0)/(p.totalOrd||1))});
+  const fPOs=stF==='all'?list:list.filter(p=>p.status===stF);
+  const stBadge=st=><span className={`badge ${st==='received'?'badge-green':st==='partial'?'badge-amber':st==='cancelled'?'badge-gray':'badge-blue'}`}>{st==='received'?'Received':st==='partial'?'Partial':st==='cancelled'?'Cancelled':'Waiting'}</span>;
+  const tabs=[['all','All',list.length,'#2563eb'],['waiting','Waiting',counts.waiting,'#d97706'],['partial','Partial',counts.partial,'#2563eb'],['received','Received',counts.received,'#059669']];
+  return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+    <h2>Purchase Orders {list.length>0&&<span style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>({list.length})</span>}</h2>
+    {openUnits>0&&<span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',padding:'4px 10px',borderRadius:8}}>{openUnits} unit{openUnits!==1?'s':''} still open{openValue>0?` · ~$${openValue.toLocaleString(undefined,{maximumFractionDigits:0})} incoming`:''}</span>}
+  </div>
+  <div className="card-body" style={{padding:list.length===0?undefined:0}}>
+    {list.length===0?<div className="empty">No purchase orders reference this vendor yet.</div>:<>
+      <div style={{display:'flex',gap:4,padding:'10px 12px',flexWrap:'wrap',borderBottom:'1px solid #e2e8f0'}}>
+        {tabs.map(([id,label,count,color])=><button key={id} className={`btn btn-sm ${stF===id?'btn-primary':'btn-secondary'}`} style={{background:stF===id?color:'',borderColor:stF===id?color:'',fontSize:11}} onClick={()=>setStF(s=>s===id&&id!=='all'?'all':id)}>{label} ({count})</button>)}
+      </div>
+      <div style={{overflow:'auto'}}><table className="data-table">
+        <thead><tr><th>PO #</th><th>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th>Status</th><th>Created</th><th>Expected</th></tr></thead>
+        <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:28}}>No {stF} purchase orders</td></tr>:
+          fPOs.map((po,i)=>{const clickable=!!onOpenPO&&(po.source!=='deco');const go=()=>{if(clickable)onOpenPO(po)};
+          return<tr key={po.po_id+'-'+i} style={{cursor:clickable?'pointer':'default'}} onClick={go}>
+            <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}{po.isInvPO&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.isDeco&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>DECO</span>}{po.dropShip&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>DS</span>}{po.isBooking&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700}} title="Booking PO">📋</span>}</td>
+            <td>{po.customer||'—'}</td>
+            <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id||'—'}</span></td>
+            <td>{po.itemSku&&<span style={{fontFamily:'monospace',fontSize:11,color:'#64748b'}}>{po.itemSku}</span>}{po.itemSku&&po.itemName?' ':''}{po.itemName}</td>
+            <td style={{textAlign:'right',fontWeight:600}}>{po.totalOrd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalRcvd>0?'#059669':'#94a3b8'}}>{po.totalRcvd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
+            <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
+            <td>{stBadge(po.status)}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtDate(po.created_at)}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
+          </tr>})}
+        </tbody>
+      </table></div>
+    </>}
+  </div></div>;
+}
 
 
 // ─── TAXCLOUD SETTINGS COMPONENT ───

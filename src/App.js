@@ -9795,7 +9795,61 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})}/>;
+  function rVend(){if(selV){
+    // ── Phase 4: PO tracking per vendor ── gather every PO that names this vendor,
+    // mirroring the aggregation on the main Purchase Orders page (rPOs) but scoped
+    // to one vendor: SO po_lines, SO-level decoration POs, submitted batches, inv POs.
+    const vName=(selV.name||'').trim().toLowerCase();
+    const vMatch=v=>!!vName&&(v||'').trim().toLowerCase()===vName;
+    const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','tracking_numbers'];
+    const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+    const vPOs=[];
+    sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);const cName=c2?.alpha_tag||c2?.name||'';
+      const soIsBooking=isBookingOrder(so);
+      safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
+        if(!vMatch(po.vendor)&&!vMatch(po.deco_vendor))return;
+        const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!PO_NON.includes(k)&&typeof po[k]==='number').sort(szSort);
+        const rcvd=po.received||{};const cncl=po.cancelled||{};
+        const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
+        const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+        const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+        if(totalOrd<=0)return;
+        const st=po.status==='cancelled'?'cancelled':totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
+        const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);
+        vPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,status:st,so_id:so.id,so,customer:cName,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',poTotal:totalOrd*uc,dropShip:!!po.drop_ship,source:'so',isBooking:soIsBooking});
+      })});
+      (so.deco_pos||[]).forEach(dp=>{
+        if(!vMatch(dp.vendor))return;
+        const totalOrd=safeNum(dp.qty||0);const st=dp.status||'waiting';
+        const actual=safeNum(dp._bill_cost||0);const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
+        const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+        vPOs.push({po_id:dp.po_id,status:st==='billed'?'received':st,so_id:so.id,so,customer:cName,itemSku:skus.join(', '),itemName:'Decoration'+(dp.deco_type?' — '+dp.deco_type.replace(/_/g,' '):''),totalOrd,totalRcvd:st==='received'||st==='billed'?totalOrd:0,totalOpen:st==='received'||st==='billed'?0:totalOrd,created_at:dp.created_at||so.created_at||'',expected_date:dp.expected_date||'',poTotal:actual>0?actual:expected,source:'deco',isDeco:true});
+      });
+    });
+    submittedBatches.forEach(sb=>{
+      if(!vMatch(sb.vendor_name))return;
+      const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
+      const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+      const customers=(sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean);
+      vPOs.push({po_id:sb.po_number,status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),itemSku:'',itemName:`Batch: ${totalOrd} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',poTotal:sb.total_cost||0,source:'batch'});
+    });
+    (invPOs||[]).forEach(ip=>{
+      if(!vMatch(ip.vendor_name))return;
+      const totalOrd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalRcvd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.received||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalOpen=Math.max(0,totalOrd-totalRcvd);
+      const st=ip.status==='received'?'received':totalRcvd>0?'partial':'waiting';
+      const itemCount=(ip.items||[]).length;const firstItem=(ip.items||[])[0];
+      const poTotal=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0)*safeNum(it.nsa_cost||0),0);
+      vPOs.push({po_id:ip.po_number,status:st,so_id:'',so:null,customer:'',itemSku:firstItem?.sku||'',itemName:itemCount>1?`${itemCount} items`:(firstItem?.name||''),totalOrd,totalRcvd,totalOpen,created_at:ip.created_at||'',expected_date:ip.expected_date||'',poTotal,source:'inv',isInvPO:true,isBooking:!!ip.is_booking,invPOId:ip.id});
+    });
+    const seen=new Set();const dV=[];vPOs.forEach(p=>{if(!seen.has(p.po_id)){seen.add(p.po_id);dV.push(p)}});
+    dV.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
+    const openPoPage=(po)=>{if(po.source==='inv'){setInvPOSearch(po.po_id);setInvTab('pos');setPg('inventory')}
+      else if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}
+      else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}};
+    return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})} vendorPOs={dV} onOpenPO={openPoPage} fmtCreatedAt={fmtCreatedAt}/>;
+  }
     const vToks=vendQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const fv=vToks.length?vend.filter(v=>{const hay=((v.name||'')+' '+(v.contact_name||'')+' '+(v.contact_email||'')+' '+(v.contact_phone||'')+' '+(v.rep_name||'')+' '+(v.api_provider||'')+' '+(v.vendor_type||'')+' '+(v.payment_terms||'')+' '+(v.notes||'')).toLowerCase();return vToks.every(t=>hay.includes(t))}):vend;
     const nCols=isA?7:6;
