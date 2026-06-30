@@ -129,13 +129,25 @@ exact and the expected lines/qtys known**; it does not literally bypass size nor
 |---|---|---|
 | **SanMar** | 4,113 / 4,137 usable EDI lines; item# + **clean** size + color | ✅ **Solid** — already clean+complete; capture per-line `Unique_Key` for exact PO+line. |
 | **Augusta (Momentec)** | 1,411 / 1,433 usable; item# + size + color, size/color **truncated** | ✅ **Solid in practice** — PO# join exact, truncation handled by round-1/2; capture `orderId` + qtys for reconciliation. |
-| **S&S** | **200 / 200 docs scanned — 0 usable lines** (header-only) | ⚠️ **Blocked on the bill side** — SI bill carries no item/size/qty, and there is **no S&S order/invoice endpoint** today (`ssApiCall` is catalog-only). |
+| **S&S** | SI bill **scanned/header-only** (200/200, 0 usable) — **but** S&S's own `GET /Orders?lines=true` has clean line data | ✅ **Solvable — bypass Sports Inc.** Pull bills from S&S directly (below); `yourSku` echoes our own SKU → exact match. |
 
-**S&S path to solid:** we already capture `invoiceNumber` at order time, so the options are
-(a) **build an S&S invoice/shipment-detail call** (if S&S's API / PromoStandards exposes it) and pull
-lines from S&S directly, bypassing the scanned SI doc, or (b) wait for **S&S → EDI** on SportsLink
-(the adapter auto-promotes it once real lines arrive). Until then S&S reconciles at document-total
-level only.
+**S&S solution — source the bill from S&S, not Sports Inc (verified against the S&S V2 docs).**
+The `/Invoices` endpoint returns a *PDF* (useless — same problem as the SI scan), but **`GET /Orders`
+returns structured JSON.** It filters by PO #, OrderNumber, InvoiceNumber, or **date range**
+(`invoicestartdate`/`invoiceenddate`), and `?All=True` lists every order on the account from the last
+3 months — so it covers **all** S&S orders, not just API-placed ones. With `?lines=true` each order
+carries exactly what we need:
+
+- **header:** `poNumber`, `invoiceNumber`, `orderDate`, `shipDate`, `invoiceDate`, `shipping` (freight), `total`
+- **lines:** `sku`, **`yourSku`** (our own SKU echoed back → exact match, no normalization), `sizeName`,
+  `colorName`, `qtyOrdered`, `qtyShipped`, `price`
+
+**Plan:** a small daily S&S sync (parallel to `sportslink-sync-background`) → `GET /Orders?All=True&lines=true`
+(or date-filtered) → adapt each order to the parsed-bill shape (`yourSku`→`sku`, `sizeName`→`size`,
+`qtyShipped`→`qty`, `price`→unit cost, `shipping`→`freight`, `invoiceNumber`→dedup key) → the existing
+apply pipeline → Billed tracking. The scanned SI doc stays for AP/QB totals and reconciles to the S&S
+order by `invoiceNumber`. Result: S&S becomes **exact** — no PDF parsing, no EDI wait, and `yourSku`
+makes it arguably the *cleanest* of the three.
 
 ## Phasing
 
