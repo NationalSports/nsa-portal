@@ -5262,17 +5262,29 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('batch_vendor_counters',batchVendorCounters)},[batchVendorCounters]);
-  // Auto-assign a unique PO number to each vendor group when new vendors appear in the queue
+  // Assign each queued vendor group a unique PO number that can't regress or collide.
+  // PO numbers are derived from the high-water mark of every number already used by an
+  // ordered batch (submittedBatches), so a client that boots with a stale/low batch_counter
+  // can never reissue a number that's already taken or slot one *below* the latest PO — the
+  // "NSA 4503 jumped ahead / duplicate PO#" bug. Orphaned counters (vendor no longer queued)
+  // are dropped, and any pending assignment at/below the high-water mark is re-minted above it.
   React.useEffect(()=>{
     const vendorKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key))];
-    const unassigned=vendorKeys.filter(vk=>batchVendorCounters[vk]==null);
-    if(unassigned.length===0)return;
-    let next=batchCounter;
-    const updates={};
-    unassigned.forEach(vk=>{updates[vk]=next++});
-    setBatchVendorCounters(prev=>({...prev,...updates}));
-    setBatchCounter(next);
-  },[batchPOs,batchVendorCounters]);// eslint-disable-line react-hooks/exhaustive-deps
+    const parseNo=v=>{const n=parseInt(String(v).replace(/[^0-9]/g,''),10);return isNaN(n)?null:n};
+    let hi=4500;// NSA 4501 is the first PO number ever issued
+    (submittedBatches||[]).forEach(sb=>{const n=parseNo(sb.po_number);if(n!=null&&n>hi)hi=n;});
+    // Keep an existing assignment only if it's unique and strictly above every ordered PO#;
+    // re-mint anything missing, duplicated, or at/below the high-water mark. Drop counters for
+    // vendors no longer in the queue.
+    const next={};const taken=new Set();
+    vendorKeys.forEach(vk=>{const n=parseNo(batchVendorCounters[vk]);if(n!=null&&n>hi&&!taken.has(n)){next[vk]=n;taken.add(n);}});
+    let n=Math.max(hi,(parseNo(batchCounter)||0)-1)+1;
+    vendorKeys.forEach(vk=>{if(next[vk]!=null)return;while(taken.has(n))n++;next[vk]=n;taken.add(n);n++;});
+    const keys=Object.keys(next);
+    if(keys.length!==Object.keys(batchVendorCounters).length||keys.some(k=>batchVendorCounters[k]!==next[k]))setBatchVendorCounters(next);
+    const newCounter=Math.max(hi+1,n,...Object.values(next).map(v=>v+1));
+    if(newCounter!==batchCounter)setBatchCounter(newCounter);
+  },[batchPOs,batchVendorCounters,submittedBatches]);// eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('est_history',estHistory)},[estHistory]);
