@@ -1533,6 +1533,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const groupIds = groupKey ? cat.filter((c) => (c.variant_group_id || c.id) === groupKey && c.id !== id).map((c) => c.id) : [];
       if (groupIds.length) await supabase.from('webstore_products').update(groupFields).in('id', groupIds);
     }
+    // When takes_number / takes_name changes, push the new value to any bundle items that
+    // snapshot these flags at the time the item was added to the package.
+    const personalizationUpdate = {};
+    if (Object.prototype.hasOwnProperty.call(fields, 'takes_number')) personalizationUpdate.takes_number = fields.takes_number;
+    if (Object.prototype.hasOwnProperty.call(fields, 'takes_name')) personalizationUpdate.takes_name = fields.takes_name;
+    if (Object.keys(personalizationUpdate).length) {
+      await supabase.from('webstore_bundle_items').update(personalizationUpdate).eq('webstore_product_id', id);
+    }
     // When retail_price changes, recalculate the price of any bundles that contain this item.
     if (Object.prototype.hasOwnProperty.call(fields, 'retail_price')) {
       const allBundleItems = detail?.bundleItems || [];
