@@ -22393,10 +22393,14 @@ export default function App(){
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
           const missing=skusMissingMockups(j,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
-          // LOGO-1: every design needs a canonical logo image (preview_url) — the durable, garment-independent
-          // artifact that reuse and the storefront key off — before it can go out for approval.
+          // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
+          // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
+          // source — a web logo or any mockup the design already carries satisfies the visual requirement.
+          // (Mockups are already mandatory via skusMissingMockups above, so designs that get here normally
+          // have one; this gate only blocks a design that has no image of any kind at all.)
+          const _hasArtImage=(a)=>!!(a&&(a.preview_url||a.web_logo_url||safeArr(a.web_logos).length||safeArr(a.mockup_files).length||safeArr(a.sample_art).length||Object.values(safeObj(a.item_mockups)).some(v=>safeArr(v).length>0)));
           const _jobArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!a.preview_url);
+          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!_hasArtImage(a));
           if(_noImg.length){nf('Add a logo image before sending for approval: '+_noImg.map(a=>a.name||'art').join(', '),'error');return}
           if(!_confirmResendIfRejected(j))return;
           // Move to waiting_approval / needs_approval
