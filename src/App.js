@@ -1057,7 +1057,11 @@ const _dbLoad = async (opts={}) => {
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
-    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
+    // so_item_pick_lines / so_item_po_lines MUST be included: a timeout on either loads SOs with empty pick_lines/
+    // po_lines, and if the poll/realtime reload doesn't bail here it overwrites the snapshot with un-hydrated SOs,
+    // diffing every SO as "changed" → a mass background re-save whose stale (childless) payloads trip the per-SO
+    // restore guard and fire one data-loss alert per SO (the 2026-06-30 ~340-email storm).
+    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files')||_lastLoadTimedOut.has('so_item_pick_lines')||_lastLoadTimedOut.has('so_item_po_lines');
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
@@ -4483,6 +4487,14 @@ export default function App(){
           // Protect against mid-save transient state: if local has pick_lines but DB doesn't, preserve them
           if(localPickCount>0&&dbPickCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
+          }
+          // Same protection for po_lines (this guard was missing — a timed-out/mid-save so_item_po_lines read would
+          // drop them from state, then the next save's restore guard re-injected them from the DB and fired a
+          // data-loss alert per SO). Deliberate PO deletions still reconcile via _hydratedPoIds in the save path.
+          const localPoCount=(local.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          if(localPoCount>0&&dbPoCount===0&&m.items?.length){
+            m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
           }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){
