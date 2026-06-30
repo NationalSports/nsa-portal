@@ -7094,7 +7094,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _poSelIdxs=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it._idx);
       const _decoForPo=(()=>{
         if(poDecoInline){const dv=decoVendors.find(v=>v.name===poDecoInline.vendor);
-          const a1=(dv?.address_line1||(vendors.find(v2=>v2.id===dv?.vendor_id)?.address_line1)||'').trim();
+          const a1=(dv?.address_line1||(vendorList.find(v2=>v2.id===dv?.vendor_id)?.address_line1)||'').trim();
           if(a1)return{name:poDecoInline.vendor,addr:a1,id:dv?.id||null}}
         return decoShipForItems(_poSelIdxs);
       })();
@@ -7517,7 +7517,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       })()}
 
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
       {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
       {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>{
         if(apiOrder.isBatch){
