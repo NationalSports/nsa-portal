@@ -24711,6 +24711,9 @@ export default function App(){
     const _canonBillSize=raw=>{
       if(raw==null)return raw;
       let s=String(raw).trim();
+      // Bare waist/numeric size that carries an inch mark: "32\"" → "32" (the number IS the size, not a
+      // trailing inseam to drop). Handled before the inseam strip, which would otherwise null it out.
+      if(/^\d{1,3}\s*["”″]$/.test(s))return s.replace(/["”″]/g,'').trim();
       // Drop a trailing inseam/length spec so apparel sizes line up: adidas bills volleyball shorts as
       // "XS3\""/"S 3\"" (a 3-inch inseam) where the order carries plain "XS"/"S".
       const noInseam=s.replace(/\s*\d+\s*["”″]\s*$/,'').trim();
@@ -24720,6 +24723,13 @@ export default function App(){
       // lines up with a PO's "11½" instead of reading as a phantom 0 ordered.
       const half=s.match(/^(\d{1,2})\s*(?:[-–]|½|1\/2)$/);
       if(half)return half[1]+'.5';
+      // Slash-form size range ("M/L") → the dash form the orders/SIZES list carry ("M-L").
+      if(/^[A-Za-z0-9]{1,3}\/[A-Za-z0-9]{1,3}$/.test(s))s=s.replace('/','-');
+      // adidas appends a fit-code digit to a real size ("2XL7", "3XL9", "LT2") — strip the trailing
+      // digit when it follows a letter so it aligns to the base size the order carries. No standard
+      // apparel size ends letter-then-digit, so this can't clobber a real one (and "3T"/"18M" are
+      // digit-then-letter, untouched).
+      if(/[A-Za-z]\d$/.test(s))s=s.slice(0,-1);
       return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
     };
     // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
@@ -24860,14 +24870,21 @@ export default function App(){
       const updated={...bill,matchedPO:null,matchedPOSource:null};
       if(!bill.po_number)return updated;
       const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
-      const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      // Sports Inc bills often arrive without the "PO "/"DPO " prefix the order carries (the bill says
+      // "3083 OLuSPL" where the PO is "PO 3083 OLuSPL"). Also compare with that prefix stripped from
+      // both sides — still requiring the rest to match exactly, so it recovers those without a looser
+      // numeric collision. Guarded to ≥3 chars so a bare "PO" can't match everything.
+      const stripPO=s=>s.replace(/^d?po/,'');
+      const poStrip=stripPO(poLc);
+      const stripEq=pid=>poStrip.length>=3&&stripPO(pid)===poStrip;
+      const batchMatch=submittedBatches.find(sb=>{if(!sb.po_number)return false;const n=sb.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
-      const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      const invMatch=invPOs.find(p=>{if(!p.po_number)return false;const n=p.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
       // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
       for(const so of sos){for(const dp of (so.deco_pos||[])){
         const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
           updated.matchedPOSource='so_deco_po';return updated;
         }
@@ -24876,7 +24893,7 @@ export default function App(){
       for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
         const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
         const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
           updated.matchedPOSource='so_po';return updated;
         }

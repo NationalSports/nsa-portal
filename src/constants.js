@@ -400,7 +400,8 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD
   // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
   // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
   // an Augusta extra-small would truncate the same way and gets caught by the order/over-bill check.)
-  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA'};
+  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
+  'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
 // Status color/label map
 export const SC={
