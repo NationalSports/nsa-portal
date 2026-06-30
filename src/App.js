@@ -957,7 +957,7 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,stitches:a.stitches??null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
@@ -988,7 +988,7 @@ const _dbLoad = async (opts={}) => {
       const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
       const _carryArtIds=new Set();
       _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
-      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,sample_art:a.sample_art||[],name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,stitches:a.stitches??null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
@@ -1018,7 +1018,7 @@ const _dbLoad = async (opts={}) => {
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_firmHydrated:!_lastLoadTimedOut.has('so_firm_dates'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -1445,9 +1445,9 @@ const _dbSaveEstimateInner = async (est) => {
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false}
+            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr2.message)}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false}
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
         if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
@@ -1834,10 +1834,14 @@ const _dbSaveSOInner = async (so) => {
     // We intentionally do NOT delete jobs just because the in-memory array is empty: syncJobs rebuilds the
     // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
     // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
-    await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
-    // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
+    // Guard the firm-dates rewrite the same way art/jobs are guarded: only delete-then-reinsert when we
+    // actually have firm dates to write, or when this SO's so_firm_dates loaded cleanly (_firmHydrated). A
+    // timed-out load yields a hollow firm_dates=[] — without this guard, the next edit would wipe real DB dates.
+    if(firm_dates?.length||so._firmHydrated!==false){
+      await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
+      // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
+      if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
+    }
     if(!items?.length){
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
       // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
