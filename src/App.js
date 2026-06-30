@@ -1428,6 +1428,18 @@ const _dbSaveEstimateInner = async (est) => {
         if(_dbNotify)_dbNotify(_friendly,'error');
         return false;
       }
+      // Stale via return value (migration 00156): save_estimate now RETURNS {stale:true} instead of raising
+      // STALE_ESTIMATE_WRITE, so an out-of-date tab can't retry a rejected save into a DB CPU storm (a raised
+      // error gets retried with no backoff by old tabs — thousands/sec). Handle identically to the raised-error
+      // path above: do NOT advance _version (keep optimistic concurrency protecting the local copy), clear
+      // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
+      if(_rpcRes.data&&_rpcRes.data.stale===true){
+        console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
+        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);
+        return 'stale';
+      }
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
       if(_rpcRes.data&&typeof _rpcRes.data.version==='number')est._version=_rpcRes.data.version;
     }
