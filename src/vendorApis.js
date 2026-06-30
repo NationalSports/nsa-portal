@@ -150,12 +150,38 @@ const fetchRecentShipments = async () => {
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions, shipToOverride) => {
-  // Resolve and validate the ship-to. shipToOverride (Manual Ship → warehouse/decorator)
-  // takes precedence over the SO-selected address or customer default.
+  // Resolve and validate the ship-to. shipToOverride (Manual Ship → typed address /
+  // warehouse / decorator) takes precedence over the SO-selected address or customer default.
   const shipTo = shipToOverride || ssShipToAddress(so, customer);
   if (!shipTo.street1 || !shipTo.city || !shipTo.state || !shipTo.postalCode) throw new Error('Ship-to address is incomplete (needs street, city, state, zip). Check the address selected on the SO or the customer record.');
-  // Upsert the order in ShipStation (createorder updates by orderKey) — the label prints
-  // the ORDER's ship-to, so an already-pushed order must be refreshed with the resolved address.
+  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
+  const carrierLower = (carrier || 'fedex').toLowerCase();
+  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
+  const dims = dimensions && dimensions.length && dimensions.width && dimensions.height
+    ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
+    : undefined;
+  const shipFrom = { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone };
+
+  // ── Explicit ship-to override → ORDERLESS label (/shipments/createlabel) ──
+  // CRITICAL: /orders/createlabelfororder prints the ORDER's stored recipient and IGNORES
+  // any shipTo we pass — so an order previously pushed with a decorator/customer address
+  // would silently mis-ship a manually-typed address. /shipments/createlabel has no order
+  // and ships to EXACTLY the shipTo given, guaranteeing the parcel goes where it was typed.
+  if (shipToOverride) {
+    const directPayload = {
+      carrierCode: cm.carrierCode, serviceCode: cm.serviceCode, packageCode: 'package',
+      confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+      weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+      shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+      internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` }, testLabel: false
+    };
+    console.log('[ShipStation] Orderless label payload (shipToOverride):', JSON.stringify(directPayload, null, 2));
+    return await shipStationCall('/shipments/createlabel', { method: 'POST', body: JSON.stringify(directPayload) });
+  }
+
+  // ── No override → ship to the order's resolved address (keeps ShipStation order linkage) ──
+  // Upsert the order (createorder updates by orderKey) so the label prints the resolved address.
   let ssOrderId = so._shipstation_order_id;
   try {
     const ssOrder = await pushSOToShipStation(so, customer, shipToOverride);
@@ -165,19 +191,11 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
     console.warn('[ShipStation] Order refresh failed, using existing order:', e.message);
   }
   if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
-  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
-  const carrierLower = (carrier || 'fedex').toLowerCase();
-  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
   const labelPayload = {
     orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' },
-    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
-      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : undefined,
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
-    shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+    weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+    shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
   };
