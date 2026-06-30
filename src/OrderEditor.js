@@ -6900,6 +6900,59 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ($'+expectedCost.toFixed(2)+')');
             }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO for '+decoVendor}</button>
+            {dv&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
+              if(_poCreatingRef.current)return;
+              const effectiveDpoId=autoPoId;
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+              const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
+              const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
+              const itemIdxs=[];const selectedItems=[];let totalQty=0;
+              allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);selectedItems.push(it);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
+              if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+              const unitCost=parseFloat(document.getElementById('dpo-unit-cost')?.value)||0;
+              const expectedCost=Math.round(totalQty*unitCost*100)/100;
+              _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+              // Create Deco PO (same as regular Create button)
+              const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+                po_id:effectiveDpoId,vendor:decoVendor,deco_vendor_id:dv.id,deco_type:decoType,
+                item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
+                notes,drop_ship:true,expected_date:returnDate,
+                status:'waiting',created_at:new Date().toLocaleDateString(),
+                _bill_cost:0,_bill_details:[],tracking_numbers:[]};
+              // Create blanks PO lines on the items (ships to decorator)
+              const blanksPOId='NSA '+(poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+              const blanksPayloadItems=[];let blanksVendorName='';
+              const updatedItems=safeItems(o).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+              selectedItems.forEach(selIt=>{
+                const it=updatedItems[selIt._idx];if(!it)return;
+                const sizes={};Object.entries(safeSizes(selIt)).forEach(([sz,v])=>{if(safeNum(v)>0)sizes[sz]=v});
+                if(!Object.keys(sizes).length)return;
+                const vn=vendorList.find(v=>v.id===selIt.vendor_id)?.name||'';
+                if(!blanksVendorName&&vn)blanksVendorName=vn;
+                const uc=safeNum(selIt.nsa_cost);
+                const poLine={po_id:blanksPOId,vendor:vn||blanksVendorName||'SanMar',status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Outside deco to '+decoVendor,received:{},shipments:[],unit_cost:uc,drop_ship:true};
+                Object.entries(sizes).forEach(([sz,v])=>{poLine[sz]=v});
+                it.po_lines=[...it.po_lines,poLine];
+                blanksPayloadItems.push({sku:selIt.sku,name:selIt.name,color:selIt.color,sizes,unit_cost:uc,
+                  ...(selIt._mt_skus?{_mt_style:selIt._mt_style,_mt_color:selIt._mt_color,_mt_sku:selIt._mt_sku,_mt_skus:selIt._mt_skus}:{})});
+              });
+              // Save both POs together
+              const updated={...o,items:updatedItems,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              setPOCounter(c=>c+2);
+              setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
+              // Open API ordering modal for the blanks vendor
+              const vk=_apiVendorKey(blanksVendorName);
+              if(vk&&blanksPayloadItems.length>0){
+                nf('🎨 '+effectiveDpoId+' + 📦 '+blanksPOId+' created — opening API order...');
+                setApiOrder({vendorKey:vk,poNumber:blanksPOId,vendorName:blanksVendorName,
+                  batchPOs:[{so_id:o.id,items:blanksPayloadItems}],
+                  shipToDecoId:dv.id,
+                  initialDpoNumber:effectiveDpoId.replace(/^DPO\s*/i,'')});
+              } else {
+                nf('🎨 '+effectiveDpoId+' for '+decoVendor+' + 📦 '+blanksPOId+' blanks PO created');
+              }
+            }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
         </div></div>;
       }
