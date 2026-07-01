@@ -12,7 +12,7 @@ import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
 // Lazy so the uniform designer (and its jsPDF/canvas deps) only loads when opened.
-const UniformBuilder = React.lazy(() => import('./uniform/UniformBuilder'));
+const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 
 // The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
