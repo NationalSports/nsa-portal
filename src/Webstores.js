@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
+import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
@@ -979,6 +980,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [showDefaults, setShowDefaults] = useState(false);
   const [soPrompt, setSoPrompt] = useState(null); // { count, shortages[], proceed() } for the Create-SO modal
   const [storeStats, setStoreStats] = useState({});
+  // Applying an item template outside the store-detail view (Templates page):
+  const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
+  const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
+  const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
 
@@ -1449,13 +1454,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // color-picker). plan = [{ products:[{id,sku,retail_price}], price, fundraise, category,
   // kit_name, required }]; each group's picked colors fold into ONE multi-color card (shared
   // variant_group_id = the primary row's id). Colors already in the store are skipped.
-  const applyTemplateColors = useCallback(async (plan) => {
-    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
-    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
-    let base = (detail?.catalog?.length || 0);
+  // Core insert: fold a color-picker plan into an arbitrary store (used by both the in-store
+  // "Add template" flow and the Templates-page "Start a store / Add to a store" flows).
+  // `existingIds` are product_ids already in the store (skipped). `startSort` seeds sort_order.
+  const applyTemplateColorsTo = useCallback(async (storeId, plan, existingIds, startSort = 0) => {
+    if (!storeId || !Array.isArray(plan)) return { added: 0 };
+    const existing = existingIds instanceof Set ? new Set(existingIds) : new Set(existingIds || []);
+    let base = startSort;
     let added = 0;
     const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
-    const mk = (p, grp, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
+    const mk = (p, grp, groupId) => ({ store_id: storeId, kind: 'single', product_id: p.id, sku: p.sku,
       retail_price: (grp.price != null && grp.price !== '') ? Number(grp.price) : (Number(p.retail_price) || 0),
       fundraise_amount: Number(grp.fundraise) || 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [], category: grp.category || null, kit_name: grp.kit_name || null,
@@ -1478,9 +1486,33 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       }
       cols.forEach((p) => existing.add(p.id));
     }
+    return { added };
+  }, [wsSettings, flash]);
+
+  const applyTemplateColors = useCallback(async (plan) => {
+    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
+    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
+    const { added } = await applyTemplateColorsTo(sel.id, plan, existing, detail?.catalog?.length || 0);
     flash(added ? `Added ${added} item${added === 1 ? '' : 's'}` : 'Those colors are already in the store'); loadDetail(sel);
     return { added };
-  }, [sel, detail, wsSettings, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail, applyTemplateColorsTo]);
+
+  // Templates-page flows — a template can START a new store or be ADDED to an existing one.
+  // Both open the built-in garment color selector so the rep picks which colorways (adidas,
+  // SanMar / S&S, Momentec, Richardson, …) of each style to bring in.
+  const beginTplColorFlow = useCallback(async (tpl, store) => {
+    const { data } = await supabase.from('webstore_products').select('product_id').eq('store_id', store.id);
+    const existingPids = new Set((data || []).map((r) => r.product_id).filter(Boolean));
+    setTplColorFlow({ tpl, storeId: store.id, existingPids, store, startSort: (data || []).length });
+  }, []);
+  const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
+  const finishTplColorFlow = useCallback(async (plan) => {
+    const flow = tplColorFlow; if (!flow) return;
+    const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
+    setTplColorFlow(null);
+    flash(added ? `Added ${added} item${added === 1 ? '' : 's'} to ${flow.store?.name || 'the store'}` : 'Those colors are already in the store');
+    if (flow.store) openStore(flow.store);
+  }, [tplColorFlow, applyTemplateColorsTo, flash, openStore]);
 
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
@@ -2333,10 +2365,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
       {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
 
+      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
+      {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
+
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
-          onCancel={() => setEditing(null)}
-          onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
+          onCancel={() => { setPendingStartTpl(null); setEditing(null); }}
+          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
@@ -2349,7 +2384,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
       )}
     </>
   );
@@ -2551,7 +2586,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3020,6 +3055,10 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
       {/* ══════════ TEMPLATES VIEW ══════════ */}
       {view === 'templates' && (
         <>
+          <TemplateManager REPS={REPS} cu={cu} onStartStore={onStartStoreFromTemplate} onAddToStore={onAddTemplateToStore} />
+
+          <div style={{ borderTop: '1px solid #E5E9F0', margin: '38px 0 26px' }} />
+          <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
           <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
             {/* Blank store card */}
@@ -6105,7 +6144,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
         (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
         const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
         const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: s.name, image: s.image, meta: s.meta, colors, picked };
+        return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
       });
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
@@ -6113,6 +6152,14 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   }, [tpl]);
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
+  // Whether an ITEM (style) is being brought in at all — i.e. at least one not-already-in-store
+  // color is picked. The item checkbox toggles the whole style on (its saved colors) or off.
+  const itemIn = (r) => [...r.picked].some((id) => !existingPids.has(id));
+  const itemAvail = (r) => r.colors.some((c) => !existingPids.has(c.id));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const itemsAvailable = rows.filter(itemAvail).length;
+  const itemsIncluded = rows.filter(itemIn).length;
   const totalPicked = rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
   const confirm = async () => {
     setBusy(true);
@@ -6124,21 +6171,30 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Pick colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Choose the colors of each item to add. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors. No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
-        <div style={{ padding: 16, maxHeight: '64vh', overflowY: 'auto' }}>
+        {!loading && rows.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>Bringing in {itemsIncluded} of {itemsAvailable} item{itemsAvailable === 1 ? '' : 's'}</span>
+            <span style={{ marginLeft: 'auto' }} />
+            <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </div>
+        )}
+        <div style={{ padding: 16, maxHeight: '60vh', overflowY: 'auto' }}>
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading colors…</div>
             : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>None of this template's items resolve to live products.</div>
-            : rows.map((r, ri) => (
-              <div key={r.name} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            : rows.map((r, ri) => { const included = itemIn(r); const avail = itemAvail(r); return (
+              <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0 }}>
+                  <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
                   {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{[...r.picked].filter((id) => !existingPids.has(id)).length} of {r.colors.length} colors</div></div>
-                  <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All</button>
-                  <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+                  {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
+                  {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
                     <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
                       <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
@@ -6147,9 +6203,9 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
                       {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
                     </button>
                   ); })}
-                </div>
+                </div>}
               </div>
-            ))}
+            ); })}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !totalPicked} onClick={confirm}>{busy ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'}`}</button>
@@ -6171,7 +6227,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form' | 'edit'
   const [editingTpl, setEditingTpl] = useState(null);
   const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
-  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' });
+  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
   const [saving, setSaving] = useState(false);
   const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
 
@@ -6187,22 +6243,16 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
 
   const captureItems = () => (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
-  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'store', sourceCat: '', section: '' })); setView('form'); };
-  // Save just one section/category of the current store as a bolt-on section template.
-  const startSection = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'section', sourceCat: '', section: '' })); setView('form'); };
+  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '' })); setView('form'); };
   const del = async (id) => { await supabase.from('store_templates').delete().eq('id', id); load(); };
-  // Section templates can be limited to one captured category; full-store templates keep all.
-  const pendingCats = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
-  const sectionItems = (meta.kind === 'section' && meta.sourceCat) ? pendingItems.filter((i) => (i.category || '').trim() === meta.sourceCat) : pendingItems;
+  // Sections the captured items already carry (a template can span one or many).
+  const pendingSections = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
   const saveTemplate = async () => {
-    const isSection = meta.kind === 'section';
-    const secName = isSection ? (meta.section || meta.sourceCat || '').trim() : null;
-    const itemsToSave = sectionItems;
-    if (!meta.name.trim() || !itemsToSave.length || (isSection && !secName)) return;
+    if (!meta.name.trim() || !pendingItems.length) return;
     setSaving(true);
-    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: itemsToSave, kind: isSection ? 'section' : 'store', section: secName, created_by: myEmail || null });
+    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: pendingItems, kind: 'store', section: null, created_by: myEmail || null });
     setSaving(false);
-    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' }); load(); }
+    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' }); load(); }
   };
 
   const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
@@ -6228,29 +6278,15 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
           {view === 'form' && (
             <div>
-              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{sectionItems.length} item{sectionItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                {[['store', 'Full store', 'Bolt every item onto a store'], ['section', 'Section', 'A bolt-on section, e.g. Football Cleats']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
-                  <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
-                    <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
-                  </button>
-                ); })}
-              </div>
-              {meta.kind === 'section' && (
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
-                  <Row label="Limit to section (optional)"><select className="form-input" value={meta.sourceCat} onChange={(e) => setMeta((m) => ({ ...m, sourceCat: e.target.value, section: m.section || e.target.value }))}><option value="">All captured items</option>{pendingCats.map((c) => <option key={c} value={c}>{c}</option>)}</select></Row>
-                  <Row label="Section name (lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
-                </div>
-              )}
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{pendingItems.length} item{pendingItems.length === 1 ? '' : 's'} captured{pendingSections.length ? ` across ${pendingSections.length} section${pendingSections.length === 1 ? '' : 's'}` : ''}. Name it so reps can find it.</div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={meta.kind === 'section' ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
+                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
                 <Row label="Sport"><input className="form-input" list="tpl-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tpl-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
                 <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
                 <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
               </div>
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!meta.name.trim() || !sectionItems.length || (meta.kind === 'section' && !(meta.section || meta.sourceCat).trim()) || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
+                <button className="btn btn-primary" disabled={!meta.name.trim() || !pendingItems.length || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
                 <button className="btn btn-secondary" onClick={() => setView('gallery')}>Cancel</button>
               </div>
             </div>
@@ -6261,8 +6297,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
               {isCurator && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', alignSelf: 'center' }}>Curator:</span>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save full store as template</button>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startSection}>＋ Save a section as template</button>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save this store as a template</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => setView('ai')}>✨ Draft with AI</button>
                 </div>
               )}
@@ -6285,14 +6320,13 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                          {t.kind === 'section' ? chip('Section', '#ecfdf5', '#047857') : chip('Full store', '#eff6ff', '#1d4ed8')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{t.kind === 'section' && t.section ? ` · → ${t.section}` : ''}</div>
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>{t.kind === 'section' ? 'Add section →' : 'Add to store →'}</button>
+                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
                           {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
                           {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
@@ -6307,6 +6341,363 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
       </div>
     </div>
     </>
+  );
+}
+
+// Who "owns" a store template — a rep (matched by created_by email) or the shared
+// "General" pool (curators/admins/legacy). Drives the Templates-page owner filter.
+function templateOwner(tpl, REPS = []) {
+  const email = String(tpl?.created_by || '').trim().toLowerCase();
+  if (email) {
+    const rep = (REPS || []).find((r) => r.role === 'rep' && String(r.email || '').trim().toLowerCase() === email);
+    if (rep) return { scope: 'rep', id: rep.id, name: rep.name };
+  }
+  return { scope: 'general', id: 'general', name: 'General' };
+}
+
+// Build a store template from scratch — search the master catalog, add items with a
+// price / section / kit, then name & save it to `store_templates`. Saved templates show
+// up in every store's "Add template" button, so any of them can be bolted onto an
+// existing store. Also used to edit an existing template (pass `template`).
+function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
+  const editing = !!template;
+  const [items, setItems] = useState(() => (editing && Array.isArray(template.items) ? template.items : []).map((it) => ({
+    sku: it.sku, name: it.name || it.sku, image: it.image || null,
+    category: it.category || null, price: it.price != null ? it.price : null,
+    fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required,
+  })));
+  const [meta, setMeta] = useState({
+    name: template?.name || '', sport: template?.sport || '', brand_focus: template?.brand_focus || 'Mixed',
+    gender: template?.gender || 'Unisex', note: template?.note || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  // Fold newly-picked products into the item list, de-duped by SKU (re-adding a SKU
+  // just refreshes its setup). Decorations don't carry into templates, so they're ignored.
+  const addProducts = useCallback((products, _decos, setup = {}) => {
+    setItems((prev) => {
+      const bySku = new Map(prev.map((it) => [String(it.sku || '').trim().toUpperCase(), it]));
+      (products || []).forEach((p) => {
+        const key = String(p.sku || '').trim().toUpperCase();
+        if (!key) return;
+        bySku.set(key, {
+          sku: p.sku, name: p.name || p.sku, image: p.image_front_url || null,
+          category: (setup.category || '').trim() || null,
+          price: (setup.price !== '' && setup.price != null) ? Number(setup.price) : (p.retail_price != null ? p.retail_price : null),
+          fundraise: Number(setup.fundraise) || 0,
+          kit: (setup.kit_name || '').trim() || null,
+          required: !!setup.required,
+        });
+      });
+      return [...bySku.values()];
+    });
+  }, []);
+  const patchItem = (sku, patch) => setItems((prev) => prev.map((it) => it.sku === sku ? { ...it, ...patch } : it));
+  const removeItem = (sku) => setItems((prev) => prev.filter((it) => it.sku !== sku));
+
+  // Editing an existing template: its saved items are SKU-only, so resolve product
+  // names / images once on open so the list shows real garments, not bare SKUs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const need = items.filter((it) => !it.image && it.sku);
+      if (!need.length) return;
+      const skus = [...new Set(need.map((it) => it.sku))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('sku,name,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      if (cancelled) return;
+      setItems((prev) => prev.map((it) => { if (it.image) return it; const p = bySku.get(String(it.sku || '').trim().toUpperCase()); return p ? { ...it, name: p.name || it.name, image: p.image_front_url || null } : it; }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
+
+  const sections = [...new Set(items.map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canSave = meta.name.trim() && items.length;
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    const payload = {
+      name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null,
+      gender: meta.gender || null, note: meta.note || null, kind: 'store', section: null,
+      items: items.map((it) => ({ sku: it.sku, category: it.category || null, price: it.price, fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required })),
+    };
+    let error;
+    if (editing) {
+      ({ error } = await supabase.from('store_templates').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', template.id));
+    } else {
+      ({ error } = await supabase.from('store_templates').insert({ ...payload, created_by: myEmail || null }));
+    }
+    setSaving(false);
+    if (error) { alert('Could not save template: ' + error.message); return; }
+    onSaved && onSaved();
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '32px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#f7f8fa', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', background: '#fff', borderRadius: '14px 14px 0 0' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{editing ? 'Edit template' : 'Create a template'}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          {/* Lead: name the template, then jump straight into the catalog finder */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
+            <div style={{ fontSize: 12.5, color: '#6A7180', marginTop: 2 }}>Search the catalog below and add the items this template should include. Give each item a <b>section</b> — a template can have one section or many. Sport / brand / gender are at the bottom.</div>
+          </div>
+
+          {/* Captured items */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>Items in this template <span style={{ color: '#94a3b8', fontWeight: 600 }}>({items.length})</span></div>
+              {items.length > 0 && <button type="button" onClick={() => setItems([])} style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear all</button>}
+            </div>
+            {items.length === 0 ? (
+              <div style={{ color: '#9AA1AC', fontSize: 13, padding: '14px 4px' }}>No items yet — search the catalog below and add products to build the template.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {items.map((it) => (
+                  <div key={it.sku} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px' }}>
+                    <div style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{it.image ? <img src={it.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(it.sku || '').slice(0, 8)}</span>}</div>
+                    <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{it.sku}</div>
+                    </div>
+                    <input className="form-input" value={it.category || ''} onChange={(e) => patchItem(it.sku, { category: e.target.value })} placeholder="Section" style={{ width: 130, fontSize: 12.5, padding: '5px 8px' }} />
+                    <label style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>$<input className="form-input" type="number" step="0.01" value={it.price ?? ''} onChange={(e) => patchItem(it.sku, { price: e.target.value === '' ? null : Number(e.target.value) })} placeholder="list" style={{ width: 78, fontSize: 12.5, padding: '5px 8px' }} /></label>
+                    <label style={{ fontSize: 11.5, color: '#475569', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}><input type="checkbox" checked={!!it.required} onChange={(e) => patchItem(it.sku, { required: e.target.checked })} />Req</label>
+                    <button type="button" onClick={() => removeItem(it.sku)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Catalog search / picker — the main way to add items */}
+          <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" initialInStock={false} standardCategories={[...new Set(items.map((it) => it.category).filter(Boolean))]} />
+
+          {/* Who it's for */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, margin: '14px 0' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Details</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>{sections.length ? `${sections.length} section${sections.length === 1 ? '' : 's'}: ${sections.join(', ')}` : 'Tip: give items a section so they group when added to a store.'}</div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Row label="Sport"><input className="form-input" list="tplb-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tplb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+              <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+              <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 4, position: 'sticky', bottom: 0, background: '#f7f8fa', padding: '12px 0 4px' }}>
+            <button className="btn btn-primary" disabled={!canSave || saving} onClick={save}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Save template'}</button>
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            {!canSave && <span style={{ fontSize: 12, color: '#94a3b8', alignSelf: 'center' }}>{!meta.name.trim() ? 'Name the template' : 'Add at least one item'}</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only detail view for one template — resolves its saved SKUs to live products so you
+// can see every item (image, name, section, price, fundraising, mandatory) in one place.
+function TemplateDetail({ template, owner, canEdit, onClose, onEdit, onDelete, onStartStore, onAddToStore }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const sections = [...new Set((Array.isArray(template?.items) ? template.items : []).map((it) => (it.category || '').trim()).filter(Boolean))];
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const items = Array.isArray(template?.items) ? template.items : [];
+      const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,brand,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      const built = items.map((it) => ({ ...it, product: bySku.get(String(it.sku || '').trim().toUpperCase()) || null }));
+      if (!cancelled) { setRows(built); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [template]);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+  const missing = rows.filter((r) => !r.product).length;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1050, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{template.name}</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+              {owner && (owner.scope === 'rep' ? chip(owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9'))}
+              {template.sport && chip(template.sport, '#eff6ff', '#1d4ed8')}
+              {template.brand_focus && chip(template.brand_focus)}
+              {template.gender && chip(template.gender)}
+              {sections.map((s) => chip('§ ' + s, '#ecfdf5', '#047857'))}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '12px 16px', maxHeight: '62vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 10 }}>{rows.length} item{rows.length === 1 ? '' : 's'} in this template.{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> {missing} no longer in the catalog.</span>}</div>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading items…</div>
+            : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>This template has no items.</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {rows.map((r, i) => {
+                  const price = (r.price != null && r.price !== '') ? r.price : (r.product ? r.product.retail_price : null);
+                  return (
+                    <div key={(r.sku || '') + i} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px', opacity: r.product ? 1 : 0.6 }}>
+                      <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.product?.image_front_url ? <img src={r.product.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(r.sku || '').slice(0, 8)}</span>}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.product?.name || r.sku}{!r.product && <span style={{ color: '#b45309', fontWeight: 700, fontSize: 11 }}> · not found</span>}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{r.sku}{r.product?.brand ? ` · ${r.product.brand}` : ''}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        {r.category && chip(r.category)}
+                        {r.kit && chip('Kit: ' + r.kit, '#eff6ff', '#1d4ed8')}
+                        {r.required && chip('Mandatory', '#fef2f2', '#b91c1c')}
+                        {Number(r.fundraise) > 0 && chip('+' + money(r.fundraise) + ' fund', '#ecfdf5', '#047857')}
+                        <span style={{ fontSize: 13, fontWeight: 800, color: '#191919', minWidth: 54, textAlign: 'right' }}>{price != null ? money(price) : '—'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          {onAddToStore && <button className="btn btn-primary" onClick={() => onAddToStore(template)}>Add to a store →</button>}
+          {onStartStore && <button className="btn btn-secondary" onClick={() => onStartStore(template)}>Start a store</button>}
+          <span style={{ flex: '1 1 8px' }} />
+          {canEdit && <button className="btn btn-secondary" onClick={onEdit}>Edit</button>}
+          {canEdit && <button className="btn btn-secondary" onClick={onDelete} style={{ color: '#b91c1c' }}>Delete</button>}
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Templates page manager — lists the saved `store_templates` (the item sets that get bolted
+// onto stores via "Add template"), lets a curator create/edit/delete them, and filters by
+// owner: the shared "General" pool vs each rep's own templates.
+function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [ownerFilter, setOwnerFilter] = useState('all'); // 'all' | 'general' | rep id
+  const [builder, setBuilder] = useState(null);           // null | 'new' | template object (edit)
+  const [viewing, setViewing] = useState(null);           // template being inspected (detail view)
+  // Identity from the logged-in team member (reliable), with the auth email as a fallback.
+  const myEmail = (cu?.email || '').toLowerCase();
+  const isAdmin = cu?.role === 'admin' || FAV_CURATORS.includes(myEmail);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from('store_templates').select('*').order('name');
+    setTemplates(data || []); setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const withOwner = templates.map((t) => ({ ...t, _owner: templateOwner(t, REPS) }));
+  // Reps that actually have templates — drives the owner filter chips.
+  const repChips = REPS.filter((r) => r.role === 'rep' && withOwner.some((t) => t._owner.scope === 'rep' && t._owner.id === r.id));
+  const hasGeneral = withOwner.some((t) => t._owner.scope === 'general');
+  const shown = withOwner.filter((t) => ownerFilter === 'all' || (ownerFilter === 'general' ? t._owner.scope === 'general' : t._owner.id === ownerFilter));
+  const del = async (id) => { if (!window.confirm('Delete this template?')) return; await supabase.from('store_templates').delete().eq('id', id); load(); };
+  const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
+  const sectionsOf = (t) => [...new Set(itemsOf(t).map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canEdit = (t) => isAdmin || (myEmail && String(t.created_by || '').toLowerCase() === myEmail);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+
+  return (
+    <div style={{ marginBottom: 34 }}>
+      {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={cu?.email || ''} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
+      {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} onStartStore={onStartStore ? (t) => { setViewing(null); onStartStore(t); } : null} onAddToStore={onAddToStore ? (t) => { setViewing(null); onAddToStore(t); } : null} />}
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Item Templates</div>
+      <div style={{ marginBottom: 16, fontSize: 15, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Build a reusable set of items from the catalog, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
+
+      {(hasGeneral || repChips.length > 0) && (
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#8A93A8', textTransform: 'uppercase', letterSpacing: '.04em', marginRight: 2 }}>Owner</span>
+          <FilterBtn on={ownerFilter === 'all'} onClick={() => setOwnerFilter('all')}>All</FilterBtn>
+          {hasGeneral && <FilterBtn on={ownerFilter === 'general'} onClick={() => setOwnerFilter('general')}>General</FilterBtn>}
+          {repChips.map((r) => <FilterBtn key={r.id} on={ownerFilter === r.id} onClick={() => setOwnerFilter(r.id)}>{r.name}</FilterBtn>)}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
+            {/* Build a Template — the primary action: opens the catalog picker */}
+            <button onClick={() => setBuilder('new')} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 12, padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 168, gap: 10, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 18, color: '#192853', letterSpacing: '.5px' }}>Build a Template</div>
+              <div style={{ fontSize: 12.5 }}>Pick items from the catalog</div>
+            </button>
+            {loading ? <div style={{ gridColumn: '1/-1', color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
+              : shown.length === 0 ? <div style={{ gridColumn: '1/-1', color: '#8A93A8', fontSize: 13.5, padding: '18px 4px' }}>{templates.length === 0 ? 'No item templates yet — click “Build a Template” to create your first one.' : 'No templates for this owner.'}</div>
+              : shown.map((t) => (
+              <div key={t.id} onClick={() => setViewing(t)} title="View items" style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {t._owner.scope === 'rep' ? chip(t._owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9')}
+                  {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
+                  {t.brand_focus && chip(t.brand_focus)}
+                </div>
+                <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{sectionsOf(t).length ? ` · ${sectionsOf(t).length} section${sectionsOf(t).length === 1 ? '' : 's'}` : ''}</div>
+                <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {onAddToStore && <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); onAddToStore(t); }} style={{ flex: 1 }}>Add to store</button>}
+                    {onStartStore && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onStartStore(t); }} style={{ flex: 1 }}>Start store</button>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setViewing(t); }} style={{ flex: 1 }}>View items</button>
+                    {canEdit(t) && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setBuilder(t); }}>Edit</button>}
+                    {canEdit(t) && <button title="Delete template" onClick={(e) => { e.stopPropagation(); del(t.id); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                  </div>
+                </div>
+              </div>
+            ))}
+      </div>
+    </div>
+  );
+}
+
+// Pick an existing store to bolt a template onto (used by the Templates-page "Add to a
+// store" action). Lists live (non-template) stores, searchable by store or club name.
+function StorePickerModal({ stores = [], custName = () => '', title = 'Pick a store', onPick, onClose }) {
+  const [q, setQ] = useState('');
+  const ql = q.trim().toLowerCase();
+  const list = stores
+    .filter((s) => !ql || String(s.name || '').toLowerCase().includes(ql) || String(custName(s.customer_id) || '').toLowerCase().includes(ql))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+    .slice(0, 300);
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1040, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 560, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{title}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stores by name or club…" style={{ width: '100%', marginBottom: 12 }} />
+          <div style={{ maxHeight: '52vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {list.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>No stores match.</div>
+              : list.map((s) => (
+                <button key={s.id} type="button" onClick={() => onPick(s)} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #eef1f5', borderRadius: 10, padding: '9px 12px', background: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{custName(s.customer_id)}{s.status ? ` · ${s.status}` : ''}{s.slug ? ` · /shop/${s.slug}` : ''}</div>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1d4ed8' }}>Add →</span>
+                </button>
+              ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -6773,7 +7164,93 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {} }) {
+// Live vendor-catalog lookup. Searches SanMar/District, S&S, Richardson and Momentec APIs
+// for any style (even ones not in the local catalog), then imports the picked colorways into
+// `products` so they can be dropped into a store. Returns the imported product rows.
+function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
+  const [q, setQ] = useState(initialQuery || '');
+  const [loading, setLoading] = useState(false);
+  const [styles, setStyles] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [ran, setRan] = useState(false);
+  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
+  const [importing, setImporting] = useState(false);
+  // Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
+  // a valid id (or null). Map api_provider → id.
+  const [vendorMap, setVendorMap] = useState(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2 || vendorMap == null) { setStyles([]); setRan(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try { const { results, errors } = await searchVendorCatalogs(query, { vendorMap }); if (!cancelled) { setStyles(results); setErrors(errors || {}); } }
+      catch (e) { if (!cancelled) { setStyles([]); setErrors({ Search: String(e?.message || e) }); } }
+      finally { if (!cancelled) { setLoading(false); setRan(true); } }
+    }, 550);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, vendorMap]);
+  const SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
+  const keyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
+  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = keyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  const add = async () => {
+    if (!selected.size) return;
+    setImporting(true);
+    const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
+    const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
+    setImporting(false);
+    if (error) { alert('Could not import from vendor: ' + error.message); return; }
+    onAdd((data && data.length ? data : rows));
+    onClose();
+  };
+  const errList = Object.entries(errors || {});
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 800, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Search live vendor catalogs</div><div style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec. Picked items are imported so they can go into a {destLabel}.</div></div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Style number or name — e.g. DM130, PC61, 112, C2 Tee" style={{ width: '100%', marginBottom: 12 }} />
+          {errList.length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {errList.map(([v]) => v).join(', ')}.</div>}
+          <div style={{ maxHeight: '54vh', overflowY: 'auto' }}>
+            {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Searching vendor catalogs…</div>
+              : q.trim().length < 2 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Type a style number or name to search.</div>
+              : styles.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>{ran ? 'No vendor styles matched. Try the exact style number (e.g. DM130).' : ''}</div>
+              : styles.map((s) => (
+                <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
+                    <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{SRC[s.source] || s.source}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {s.colors.map((c) => { const on = selected.has(keyOf(s, c)); return (
+                      <button key={c.colorName || c.sku} type="button" onClick={() => toggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+                        <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
+                        <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
+                        <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+                        {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                      </button>
+                    ); })}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={importing || !selected.size} onClick={add}>{importing ? 'Importing…' : `Add ${selected.size} to ${destLabel}`}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <span style={{ fontSize: 11.5, color: '#9AA1AC', marginLeft: 'auto' }}>Imported at ~50% margin — reprice after.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -6783,7 +7260,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(300);
-  const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
+  const [inStockOnly, setInStockOnly] = useState(initialInStock); // school stores default to fulfillable; templates don't
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
@@ -6791,6 +7268,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const toggleColorFam = (f) => setColorSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [vendorOpen, setVendorOpen] = useState(false);
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -6855,30 +7333,50 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      // Hide retired products (archived) so the store builder can't add what the catalog
-      // live-look already hides, while still including legacy rows whose is_active is null.
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
-        .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
-      if (favOnly) {
-        // Favorites view — load every colorway of each starred STYLE (across all categories)
-        // so the rep's + team's picks always show, regardless of color/stock filters.
-        if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
-        query = query.in('name', favNames);
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-      } else {
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-        // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
-        // category like Tees doesn't bury the school's colors past the row limit.
-        // School colors only narrow when BROWSING; a typed search overrides them so a
-        // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
-        if (colorOnly && colorWords.length && q.trim().length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      const typed = q.trim();
+      let rows = null;
+      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
+      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
+      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
+      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      if (!favOnly && typed.length >= 2) {
+        try {
+          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          if (error) throw error;
+          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
+          // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
+          // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
+          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
+          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
+          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+        } catch (e) { rows = null; /* fall through to the table query */ }
       }
-      const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
-      const rows = data || [];
+      if (rows == null) {
+        // Hide retired products (archived) so the store builder can't add what the catalog
+        // live-look already hides, while still including legacy rows whose is_active is null.
+        let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+          .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
+        if (favOnly) {
+          // Favorites view — load every colorway of each starred STYLE (across all categories)
+          // so the rep's + team's picks always show, regardless of color/stock filters.
+          if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+          query = query.in('name', favNames);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+        } else {
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+          // category like Tees doesn't bury the school's colors past the row limit.
+          // School colors only narrow when BROWSING; a typed search overrides them so a
+          // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
+          if (colorOnly && colorWords.length && typed.length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+        }
+        const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
+        rows = data || [];
+      }
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
@@ -6951,6 +7449,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
+      {vendorOpen && <VendorSearchModal initialQuery={q} destLabel={destLabel} onClose={() => setVendorOpen(false)} onAdd={(rows) => { if (onPickMany && rows && rows.length) onPickMany(rows, [], {}); }} />}
       <CatalogKitStyles />
       <KitScope style={{ padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -6961,8 +7460,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search by name or SKU — or pick a category below to browse…" aria-label="Search products" />
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12, alignItems: 'center' }}>
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
+          <button type="button" onClick={() => setVendorOpen(true)} title="Look up any style from SanMar, S&S, Richardson or Momentec — even if it's not in the catalog yet" style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#3730a3', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 999, padding: '5px 12px', cursor: 'pointer' }}>🔎 Search vendor catalogs</button>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
@@ -7027,7 +7527,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       {selProducts.length > 0 && (
         <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
+          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to {destLabel} →</button>
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
           <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
         </div>
@@ -7036,12 +7536,12 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <div onClick={() => setBulkOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the store</div>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the {destLabel}</div>
               <button onClick={() => setBulkOpen(false)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
             </div>
             <div style={{ padding: 16 }}>
               <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '2px solid #e5e8ec' }}>
-                {[['setup', '1 · Item setup'], ['art', '2 · Art & logo']].map(([k, lbl]) => { const on = bulkTab === k; return (
+                {(destLabel === 'template' ? [['setup', 'Item setup']] : [['setup', '1 · Item setup'], ['art', '2 · Art & logo']]).map(([k, lbl]) => { const on = bulkTab === k; return (
                   <button key={k} type="button" onClick={() => setBulkTab(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
                 ); })}
               </div>
@@ -7108,10 +7608,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to store →`}</button>
-                {bulkTab === 'setup'
+                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to ${destLabel} →`}</button>
+                {destLabel !== 'template' && (bulkTab === 'setup'
                   ? <button className="btn btn-secondary" onClick={() => setBulkTab('art')}>Next: Art &amp; logo →</button>
-                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>}
+                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>)}
                 <button className="btn btn-secondary" onClick={() => setBulkOpen(false)}>Cancel</button>
               </div>
             </div>
