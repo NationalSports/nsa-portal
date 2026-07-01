@@ -2383,7 +2383,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
       )}
     </>
   );
@@ -2585,7 +2585,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3054,7 +3054,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
       {/* ══════════ TEMPLATES VIEW ══════════ */}
       {view === 'templates' && (
         <>
-          <TemplateManager REPS={REPS} onStartStore={onStartStoreFromTemplate} onAddToStore={onAddTemplateToStore} />
+          <TemplateManager REPS={REPS} cu={cu} onStartStore={onStartStoreFromTemplate} onAddToStore={onAddTemplateToStore} />
 
           <div style={{ borderTop: '1px solid #E5E9F0', margin: '38px 0 26px' }} />
           <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
@@ -6143,7 +6143,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
         (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
         const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
         const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: s.name, image: s.image, meta: s.meta, colors, picked };
+        return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
       });
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
@@ -6151,6 +6151,14 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   }, [tpl]);
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
+  // Whether an ITEM (style) is being brought in at all — i.e. at least one not-already-in-store
+  // color is picked. The item checkbox toggles the whole style on (its saved colors) or off.
+  const itemIn = (r) => [...r.picked].some((id) => !existingPids.has(id));
+  const itemAvail = (r) => r.colors.some((c) => !existingPids.has(c.id));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const itemsAvailable = rows.filter(itemAvail).length;
+  const itemsIncluded = rows.filter(itemIn).length;
   const totalPicked = rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
   const confirm = async () => {
     setBusy(true);
@@ -6162,21 +6170,30 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Pick colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Choose the colors of each item to add. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors. No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
-        <div style={{ padding: 16, maxHeight: '64vh', overflowY: 'auto' }}>
+        {!loading && rows.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>Bringing in {itemsIncluded} of {itemsAvailable} item{itemsAvailable === 1 ? '' : 's'}</span>
+            <span style={{ marginLeft: 'auto' }} />
+            <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </div>
+        )}
+        <div style={{ padding: 16, maxHeight: '60vh', overflowY: 'auto' }}>
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading colors…</div>
             : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>None of this template's items resolve to live products.</div>
-            : rows.map((r, ri) => (
-              <div key={r.name} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            : rows.map((r, ri) => { const included = itemIn(r); const avail = itemAvail(r); return (
+              <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0 }}>
+                  <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
                   {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{[...r.picked].filter((id) => !existingPids.has(id)).length} of {r.colors.length} colors</div></div>
-                  <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All</button>
-                  <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+                  {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
+                  {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
                     <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
                       <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
@@ -6185,9 +6202,9 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
                       {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
                     </button>
                   ); })}
-                </div>
+                </div>}
               </div>
-            ))}
+            ); })}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !totalPicked} onClick={confirm}>{busy ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'}`}</button>
@@ -6377,6 +6394,24 @@ function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
   const patchItem = (sku, patch) => setItems((prev) => prev.map((it) => it.sku === sku ? { ...it, ...patch } : it));
   const removeItem = (sku) => setItems((prev) => prev.filter((it) => it.sku !== sku));
 
+  // Editing an existing template: its saved items are SKU-only, so resolve product
+  // names / images once on open so the list shows real garments, not bare SKUs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const need = items.filter((it) => !it.image && it.sku);
+      if (!need.length) return;
+      const skus = [...new Set(need.map((it) => it.sku))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('sku,name,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      if (cancelled) return;
+      setItems((prev) => prev.map((it) => { if (it.image) return it; const p = bySku.get(String(it.sku || '').trim().toUpperCase()); return p ? { ...it, name: p.name || it.name, image: p.image_front_url || null } : it; }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
+
   const sections = [...new Set(items.map((it) => (it.category || '').trim()).filter(Boolean))];
   const canSave = meta.name.trim() && items.length;
   const save = async () => {
@@ -6547,21 +6582,22 @@ function TemplateDetail({ template, owner, canEdit, onClose, onEdit, onDelete, o
 // Templates page manager — lists the saved `store_templates` (the item sets that get bolted
 // onto stores via "Add template"), lets a curator create/edit/delete them, and filters by
 // owner: the shared "General" pool vs each rep's own templates.
-function TemplateManager({ REPS = [], onStartStore, onAddToStore }) {
+function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [myEmail, setMyEmail] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('all'); // 'all' | 'general' | rep id
   const [builder, setBuilder] = useState(null);           // null | 'new' | template object (edit)
   const [viewing, setViewing] = useState(null);           // template being inspected (detail view)
-  const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
+  // Identity from the logged-in team member (reliable), with the auth email as a fallback.
+  const myEmail = (cu?.email || '').toLowerCase();
+  const isAdmin = cu?.role === 'admin' || FAV_CURATORS.includes(myEmail);
 
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await supabase.from('store_templates').select('*').order('name');
     setTemplates(data || []); setLoading(false);
   }, []);
-  useEffect(() => { (async () => { try { const { data } = await supabase.auth.getUser(); setMyEmail(data?.user?.email || ''); } catch (e) { /* */ } })(); load(); }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   const withOwner = templates.map((t) => ({ ...t, _owner: templateOwner(t, REPS) }));
   // Reps that actually have templates — drives the owner filter chips.
@@ -6571,12 +6607,12 @@ function TemplateManager({ REPS = [], onStartStore, onAddToStore }) {
   const del = async (id) => { if (!window.confirm('Delete this template?')) return; await supabase.from('store_templates').delete().eq('id', id); load(); };
   const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
   const sectionsOf = (t) => [...new Set(itemsOf(t).map((it) => (it.category || '').trim()).filter(Boolean))];
-  const canEdit = (t) => isCurator || (myEmail && String(t.created_by || '').toLowerCase() === myEmail.toLowerCase());
+  const canEdit = (t) => isAdmin || (myEmail && String(t.created_by || '').toLowerCase() === myEmail);
   const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
 
   return (
     <div style={{ marginBottom: 34 }}>
-      {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={myEmail} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
+      {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={cu?.email || ''} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
       {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} onStartStore={onStartStore ? (t) => { setViewing(null); onStartStore(t); } : null} onAddToStore={onAddToStore ? (t) => { setViewing(null); onAddToStore(t); } : null} />}
       <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Item Templates</div>
       <div style={{ marginBottom: 16, fontSize: 15, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Build a reusable set of items from the catalog, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
