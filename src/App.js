@@ -23208,6 +23208,18 @@ export default function App(){
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
   const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
   const[siQueueLoading,setSiQueueLoading]=useState(false);
+  const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
+  // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
+  // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
+  // or the DB is down, the badge just stays hidden — it never blocks the screen.
+  useEffect(()=>{
+    if(!supabase||billView!=='import')return;
+    let cancelled=false;
+    supabase.from('ss_documents').select('order_number',{count:'exact',head:true}).eq('status','new')
+      .then(({count})=>{if(!cancelled)setSsNewCount(count||0)})
+      .catch(()=>{if(!cancelled)setSsNewCount(0)});
+    return ()=>{cancelled=true};
+  },[billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
@@ -24654,6 +24666,15 @@ export default function App(){
       });
       const extraNote=empty?' — '+empty+' order(s) with no shipped lines skipped':'';
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
+      _markSsReviewed();// staff have now seen these → clear the "new" badge from the daily cron
+    };
+    // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
+    // review, so the Import & Review badge clears. Best-effort: the dedup (_docAlreadyApplied)
+    // still prevents any double-bill on push, so a failed status write can't cause harm.
+    const _markSsReviewed=async()=>{
+      setSsNewCount(0);
+      if(!supabase)return;
+      try{await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new')}catch(e){/* badge cleared locally; DB retried on next open */}
     };
 
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
@@ -26763,8 +26784,8 @@ export default function App(){
           <div className="card" style={{gridColumn:'1 / -1',borderColor:'#0891b2',background:'#ecfeff'}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
               </div>
               <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
                 onClick={()=>pullFromSS()}>
