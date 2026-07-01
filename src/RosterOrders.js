@@ -426,6 +426,58 @@ function KitItemsBar({ session, catalog, onChange, readOnly }) {
   );
 }
 
+// ─── Typeahead cell — fast keyboard entry for the roster grid ─────────────────
+// A plain text input (not a dropdown) backed by a <datalist> for suggestions, so
+// a coach can type a value and Tab straight to the next cell — no clicking to
+// open a menu. Whatever is typed must match one of `options` (case-insensitive)
+// to be accepted; an unmatched value reverts to the last committed value and
+// briefly flashes red. Typing nothing and tabbing away clears the cell.
+let _typeaheadSeq = 0;
+function TypeaheadInput({ value, options, onCommit, placeholder, width, center = true, title }) {
+  const [listId] = useState(() => `ta-${++_typeaheadSeq}`);
+  const [text, setText] = useState(value || '');
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => { setText(value || ''); }, [value]);
+
+  const commit = () => {
+    const raw = text.trim();
+    if (!raw) { setInvalid(false); if (raw !== (value || '')) onCommit(''); return; }
+    const match = options.find(o => o.toLowerCase() === raw.toLowerCase());
+    if (match) {
+      setText(match);
+      setInvalid(false);
+      if (match !== value) onCommit(match);
+    } else {
+      setText(value || '');
+      setInvalid(true);
+      setTimeout(() => setInvalid(false), 900);
+    }
+  };
+
+  return (
+    <>
+      <input
+        list={listId}
+        value={text}
+        placeholder={placeholder}
+        title={title}
+        onChange={e => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+        style={{
+          width, textAlign: center ? 'center' : 'left', fontSize: 13.5, padding: '5px 4px',
+          border: invalid ? '1px solid #dc2626' : '1px solid #e2e8f0', borderRadius: 6,
+          background: invalid ? '#fef2f2' : (text ? '#fff' : '#f8fafc'), outline: 'none',
+          transition: 'border-color .15s, background .15s',
+        }}
+      />
+      <datalist id={listId}>
+        {options.map(o => <option key={o} value={o} />)}
+      </datalist>
+    </>
+  );
+}
+
 // ─── Roster Table Editor ──────────────────────────────────────────────────────
 function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   const [players, setPlayers] = useState([]);
@@ -463,7 +515,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
           const smap = {};
           (sz || []).forEach(r => {
             if (!smap[r.player_id]) smap[r.player_id] = {};
-            smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
+            smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group };
           });
           setSizes(smap);
         }
@@ -473,19 +525,20 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
     return () => { cancelled = true; };
   }, [team?.id]);
 
-  // Persist a player's size and/or qty override for one kit item. Pass only the
-  // field that changed; the other is read from current state so the two controls
-  // (size select/checkbox + qty stepper) can update independently.
+  // Persist a player's size, qty, and/or size-group override for one kit item.
+  // Pass only the field(s) that changed; the rest are read from current state so
+  // the three controls (group select, size select/checkbox, qty stepper) can
+  // update independently.
   const saveCell = useCallback(async (playerId, kitSlot, patch) => {
     let nextCell;
     setSizes(prev => {
-      const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null };
+      const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null, group: null };
       nextCell = { ...cur, ...patch };
       return { ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: nextCell } };
     });
     // nextCell is set synchronously by the updater above before this line runs.
     await supabase.from('roster_player_sizes').upsert(
-      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
+      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, size_group: nextCell.group, updated_at: new Date().toISOString() },
       { onConflict: 'player_id,kit_slot' }
     );
   }, []);
@@ -556,33 +609,48 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
     );
   };
 
+  // Which size groups actually have a SKU linked for this item — a group only
+  // shows as a choice if there's a real product behind it.
+  const linkedGroups = (ki) => ['YM', 'WM', 'AM'].filter(g =>
+    g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
+
   const sizeCell = (player, ki) => {
-    const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null };
+    const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null, group: null };
     const val = cell.size || '-';
-    const cat = player.category || 'AM';
+    const groups = linkedGroups(ki);
+    const defaultGroup = player.category || 'AM';
+    // Explicit per-cell override wins; otherwise fall back to the player's roster
+    // category (today's behavior) as long as that group is actually linked here.
+    const group = cell.group || (groups.includes(defaultGroup) ? defaultGroup : (groups[0] || 'AM'));
     const productId =
-      cat === 'YM' && ki.product_youth_id ? ki.product_youth_id :
-      cat === 'WM' && ki.product_womens_id ? ki.product_womens_id :
+      group === 'YM' && ki.product_youth_id ? ki.product_youth_id :
+      group === 'WM' && ki.product_womens_id ? ki.product_womens_id :
       ki.product_id;
     const stock = productId ? getStock(productId, val) : null;
-    const sizeList = ki.sock ? SZ_SOCKS : cat === 'YM' ? SZ_YOUTH : SZ_ADULT;
+    const sizeList = ki.sock ? SZ_SOCKS : group === 'YM' ? SZ_YOUTH : SZ_ADULT;
     const checked = val === 'OSFA';
+    const showGroupPicker = groups.length > 1;
+    // Youth and Adult/Women's sizes don't share values, so a size chosen under
+    // one group is meaningless under another — reset it when the group changes.
+    const changeGroup = (newGroup) => saveCell(player.id, ki.slot, { group: newGroup, size: '-' });
+
     return (
       <td key={ki.slot} style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap',
         background: ki.gk_only ? '#f0f9ff' : 'transparent' }}>
         {editable ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {showGroupPicker && (
+                <TypeaheadInput value={group} options={groups} width={40}
+                  title="Size group for this item — type YM, WM, or AM"
+                  onCommit={v => changeGroup(v || groups[0])} />
+              )}
               {ki.no_size ? (
                 <input type="checkbox" checked={checked} onChange={e => saveCell(player.id, ki.slot, { size: e.target.checked ? 'OSFA' : '-' })}
                   style={{ width: 20, height: 20, cursor: 'pointer' }} />
               ) : (
-                <select value={val} onChange={e => saveCell(player.id, ki.slot, { size: e.target.value })}
-                  style={{ fontSize: 13.5, padding: '5px 4px', border: '1px solid #e2e8f0', borderRadius: 6,
-                    background: val === '-' ? '#f8fafc' : '#fff', cursor: 'pointer', minWidth: 64 }}>
-                  <option value="-">—</option>
-                  {sizeList.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+                <TypeaheadInput value={val === '-' ? '' : val} options={sizeList} placeholder="size" width={72}
+                  onCommit={v => saveCell(player.id, ki.slot, { size: v || '-' })} />
               )}
               {stock && val !== '-' && productId && (
                 <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
@@ -594,6 +662,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
           </div>
         ) : (
           <div>
+            {showGroupPicker && <span style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', marginRight: 3 }}>{group[0]}</span>}
             <span style={{ fontWeight: val !== '-' ? 600 : 400, color: val === '-' ? '#94a3b8' : '#0b1220', fontSize: 13.5 }}>
               {ki.no_size ? (checked ? '✓' : '—') : val}
             </span>
@@ -663,13 +732,8 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                   </td>
                   <td style={{ padding: '10px 8px', textAlign: 'center' }}>
                     {editable ? (
-                      <select value={player.category || ''} onChange={e => { updatePlayer(player.id, 'category', e.target.value || null); savePlayer(player.id, 'category', e.target.value || null); }}
-                        style={{ fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', padding: '4px 4px', cursor: 'pointer' }}>
-                        <option value="">AM</option>
-                        <option value="YM">YM</option>
-                        <option value="WM">WM</option>
-                        <option value="AM">AM</option>
-                      </select>
+                      <TypeaheadInput value={player.category || 'AM'} options={['YM', 'WM', 'AM']} width={46}
+                        onCommit={v => { const val = v || 'AM'; updatePlayer(player.id, 'category', val); savePlayer(player.id, 'category', val); }} />
                     ) : (
                       <span style={{ fontSize: 13, color: '#64748b' }}>{player.category || 'AM'}</span>
                     )}
@@ -706,13 +770,8 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                     style={{ width: 40, textAlign: 'center', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
                 <td style={{ padding: '10px 8px', textAlign: 'center' }}>
-                  <select value={addRow.category} onChange={e => setAddRow(r => ({ ...r, category: e.target.value }))}
-                    style={{ fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', padding: '4px 4px', cursor: 'pointer' }}>
-                    <option value="">AM</option>
-                    <option value="YM">YM</option>
-                    <option value="WM">WM</option>
-                    <option value="AM">AM</option>
-                  </select>
+                  <TypeaheadInput value={addRow.category || 'AM'} options={['YM', 'WM', 'AM']} width={46}
+                    onCommit={v => setAddRow(r => ({ ...r, category: v || 'AM' }))} />
                 </td>
                 {kitItems.map(ki => <td key={ki.slot}></td>)}
                 <td style={{ padding: '10px 6px' }}>
@@ -769,7 +828,7 @@ function RosterTotals({ session, teams, kitTemplate }) {
       const smap = {};
       (sz || []).forEach(r => {
         if (!smap[r.player_id]) smap[r.player_id] = {};
-        smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
+        smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group };
       });
       setAllPlayers(playerList);
       setAllSizes(smap);
@@ -778,20 +837,26 @@ function RosterTotals({ session, teams, kitTemplate }) {
     return () => { cancelled = true; };
   }, [teams, session?.id]);
 
-  // Aggregate: for each kit slot, split by player category (YM/WM/AM) then size.
-  // Each bucket holds { player, qty } — qty is the player's override if set, else
-  // the item's default qty — so "units needed" and "players needing this" can
-  // both be read back out (units may exceed player count when qty > 1).
+  // Aggregate: for each kit slot, split by size group (YM/WM/AM) then size. A
+  // player's group is normally their roster category, but a specific item/player
+  // cell may override it (e.g. a big kid in a Youth jersey but Adult shorts), so
+  // the override wins when present. Each bucket holds { player, qty } — qty is
+  // the player's override if set, else the item's default qty — so "units
+  // needed" and "players needing this" can both be read back out (units may
+  // exceed player count when qty > 1).
   const totals = useMemo(() => {
     const result = {};
     kitItems.forEach(ki => {
       const byCat = {};
+      const groups = ['YM', 'WM', 'AM'].filter(g =>
+        g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
       allPlayers.forEach(p => {
         if (ki.gk_only && !p.is_gk) return;
         const cell = (allSizes[p.id] || {})[ki.slot];
         const sz = cell?.size;
         if (!sz || sz === '-') return;
-        const cat = p.category || 'AM';
+        const defaultCat = p.category || 'AM';
+        const cat = cell.group || (groups.includes(defaultCat) ? defaultCat : (groups[0] || 'AM'));
         if (!byCat[cat]) byCat[cat] = {};
         if (!byCat[cat][sz]) byCat[cat][sz] = [];
         byCat[cat][sz].push({ player: p, qty: cell.qty ?? (ki.qty || 1) });
@@ -1092,7 +1157,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
         ? await supabase.from('roster_player_sizes').select('*').in('player_id', playerList.map(p => p.id))
         : { data: [] };
       const sizeMap = {};
-      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty }; });
+      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group }; });
 
       // Fetch the real product records for every linked SKU (pricing/sizes).
       const pidSet = new Set();
@@ -1115,7 +1180,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
           const cell = (sizeMap[p.id] || {})[ki.slot];
           const sz = cell?.size;
           if (!sz || sz === '-') return;
-          const cat = p.category || 'AM';
+          const cat = cell.group || p.category || 'AM';
           const pid = resolvePid(cat) || '';
           const key = pid || ('__' + ki.slot);
           const bp = byProduct[key] || (byProduct[key] = { pid, sizes: {}, names: {}, numbers: {} });
