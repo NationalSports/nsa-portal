@@ -141,6 +141,7 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
               ['coach_ai_builder', '✨ Build with AI', "Show the team-store builder in this team's coach portal."],
               ['coach_livelook', '🏷️ Live Look', 'Let coaches shop the live-inventory catalog from the portal.'],
               ['coach_build_orders', '🧾 Build orders', 'Let coaches build & submit orders to their rep.'],
+              ['coach_roster', '📋 Roster orders', 'Let coaches fill season kit rosters (sizes, names, numbers) in the portal.'],
             ].map(([field, label, desc]) => {
               const on = !!(customer && customer[field]);
               return (
