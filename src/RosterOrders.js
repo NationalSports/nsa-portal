@@ -10,6 +10,22 @@ const SZ_SOCKS = ['3XS','2XS','XS','Youth Sleeves','Small','Medium','Large'];
 const STATUS_LABELS = { draft:'Draft', open:'Open', submitted:'Submitted', processing:'Processing', fulfilled:'Fulfilled' };
 const STATUS_COLORS = { draft:'#94a3b8', open:'#2563eb', submitted:'#7c3aed', processing:'#d97706', fulfilled:'#15803d' };
 
+// Which size groups actually have a SKU linked for a kit item — a group is
+// only a real choice if there's a product behind it.
+const linkedGroups = (ki) => ['YM', 'WM', 'AM'].filter(g =>
+  g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
+
+// Which group a given size string belongs to. Youth sizes (YXS/YS/YM/YL/YXL)
+// never collide with the Adult/Women's scale (2XS…3XL/OSFA), so the size a
+// coach TYPES already says Youth-or-not — no separate control needed. The
+// player's own roster category only breaks the rare Adult-vs-Women's tie,
+// since those two share the identical size scale.
+const resolveSizeGroup = (sz, player, groups) => {
+  if (SZ_YOUTH.includes(sz)) return 'YM';
+  if (groups.includes('WM') && (player.category || 'AM') === 'WM') return 'WM';
+  return 'AM';
+};
+
 // ─── Inventory hook (product_inventory + inventory_unified) ───────────────────
 function useKitInventory(items) {
   const [inv, setInv] = useState({});
@@ -543,7 +559,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
           const smap = {};
           (sz || []).forEach(r => {
             if (!smap[r.player_id]) smap[r.player_id] = {};
-            smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group };
+            smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
           });
           setSizes(smap);
         }
@@ -553,20 +569,19 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
     return () => { cancelled = true; };
   }, [team?.id]);
 
-  // Persist a player's size, qty, and/or size-group override for one kit item.
-  // Pass only the field(s) that changed; the rest are read from current state so
-  // the three controls (group select, size select/checkbox, qty stepper) can
-  // update independently.
+  // Persist a player's size and/or qty for one kit item. Pass only the field
+  // that changed; the other is read from current state so the size box and the
+  // qty box can update independently.
   const saveCell = useCallback(async (playerId, kitSlot, patch) => {
     let nextCell;
     setSizes(prev => {
-      const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null, group: null };
+      const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null };
       nextCell = { ...cur, ...patch };
       return { ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: nextCell } };
     });
     // nextCell is set synchronously by the updater above before this line runs.
     await supabase.from('roster_player_sizes').upsert(
-      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, size_group: nextCell.group, updated_at: new Date().toISOString() },
+      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
       { onConflict: 'player_id,kit_slot' }
     );
   }, []);
@@ -619,31 +634,8 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
         fontSize: 14.5, outline: 'none', textAlign: opts.center ? 'center' : 'left' }} />
   );
 
-  // Small "×N" stepper for overriding how many units of this item the player
-  // gets (defaults to the catalog's per-item qty). Only shown once a size/
-  // checkbox is set — no point picking a quantity for "nothing selected".
-  const qtyStepper = (player, ki, cell) => {
-    const effectiveQty = cell.qty ?? (ki.qty || 1);
-    const setQty = (n) => saveCell(player.id, ki.slot, { qty: Math.min(9, Math.max(1, n)) });
-    return (
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 7, padding: '1px 2px' }}
-        title="How many of this item this player needs">
-        <button type="button" onClick={() => setQty(effectiveQty - 1)} disabled={effectiveQty <= 1}
-          style={{ width: 20, height: 20, border: 'none', background: 'none', cursor: effectiveQty <= 1 ? 'default' : 'pointer', color: effectiveQty <= 1 ? '#cbd5e1' : '#475569', fontSize: 14, fontWeight: 700, lineHeight: 1 }}>−</button>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#0b1220', minWidth: 14, textAlign: 'center' }}>{effectiveQty}</span>
-        <button type="button" onClick={() => setQty(effectiveQty + 1)} disabled={effectiveQty >= 9}
-          style={{ width: 20, height: 20, border: 'none', background: 'none', cursor: effectiveQty >= 9 ? 'default' : 'pointer', color: effectiveQty >= 9 ? '#cbd5e1' : '#475569', fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</button>
-      </div>
-    );
-  };
-
-  // Which size groups actually have a SKU linked for this item — a group only
-  // shows as a choice if there's a real product behind it.
-  const linkedGroups = (ki) => ['YM', 'WM', 'AM'].filter(g =>
-    g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
-
-  // Quick per-item, per-size totals for THIS team — reuses the same {size,qty,
-  // group} state already loaded for the grid above, so no extra query. The full
+  // Quick per-item, per-size totals for THIS team — reuses the same {size,qty}
+  // state already loaded for the grid above, so no extra query. The full
   // cross-team buy-sheet still lives in the session's separate Totals view.
   const teamTotals = useMemo(() => {
     const result = {};
@@ -655,8 +647,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
         const cell = (sizes[p.id] || {})[ki.slot];
         const sz = cell?.size;
         if (!sz || sz === '-') return;
-        const defaultCat = p.category || 'AM';
-        const cat = cell.group || (groups.includes(defaultCat) ? defaultCat : (groups[0] || 'AM'));
+        const cat = resolveSizeGroup(sz, p, groups);
         if (!byCat[cat]) byCat[cat] = {};
         if (!byCat[cat][sz]) byCat[cat][sz] = [];
         byCat[cat][sz].push({ player: p, qty: cell.qty ?? (ki.qty || 1) });
@@ -668,59 +659,60 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   }, [kitItems, players, sizes]);
 
   const sizeCell = (player, ki) => {
-    const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null, group: null };
+    const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null };
     const val = cell.size || '-';
     const groups = linkedGroups(ki);
-    const defaultGroup = player.category || 'AM';
-    // Explicit per-cell override wins; otherwise fall back to the player's roster
-    // category (today's behavior) as long as that group is actually linked here.
-    const group = cell.group || (groups.includes(defaultGroup) ? defaultGroup : (groups[0] || 'AM'));
+    // One combined list — Youth and Adult/Women's sizes never share text, so
+    // typing a size is enough to say which group it belongs to (no separate
+    // picker needed). Falls back to the full Adult scale for an item that
+    // isn't linked to any SKU yet.
+    const sizeList = ki.sock ? SZ_SOCKS : [
+      ...(groups.includes('YM') ? SZ_YOUTH : []),
+      ...(groups.includes('WM') || groups.includes('AM') || !groups.length ? SZ_ADULT : []),
+    ];
+    const group = resolveSizeGroup(val, player, groups);
     const productId =
       group === 'YM' && ki.product_youth_id ? ki.product_youth_id :
       group === 'WM' && ki.product_womens_id ? ki.product_womens_id :
       ki.product_id;
     const stock = productId ? getStock(productId, val) : null;
-    const sizeList = ki.sock ? SZ_SOCKS : group === 'YM' ? SZ_YOUTH : SZ_ADULT;
     const checked = val === 'OSFA';
-    const showGroupPicker = groups.length > 1;
-    // Youth and Adult/Women's sizes don't share values, so a size chosen under
-    // one group is meaningless under another — reset it when the group changes.
-    const changeGroup = (newGroup) => saveCell(player.id, ki.slot, { group: newGroup, size: '-' });
+    const effectiveQty = cell.qty ?? (ki.qty || 1);
+    // Only show a quantity control when this item's default is already more
+    // than one (shorts, socks, etc.) — a plain number box, not a stepper, so a
+    // coach can type "1" to cut a specific player down from the team default.
+    const showQty = (ki.qty || 1) > 1 && val !== '-';
 
     return (
       <td key={ki.slot} style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap',
         background: ki.gk_only ? '#f0f9ff' : 'transparent' }}>
         {editable ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              {showGroupPicker && (
-                <TypeaheadInput value={group} options={groups} width={40}
-                  title="Size group for this item — type YM, WM, or AM"
-                  onCommit={v => changeGroup(v || groups[0])} />
-              )}
-              {ki.no_size ? (
-                <input type="checkbox" checked={checked} onChange={e => saveCell(player.id, ki.slot, { size: e.target.checked ? 'OSFA' : '-' })}
-                  style={{ width: 20, height: 20, cursor: 'pointer' }} />
-              ) : (
-                <TypeaheadInput value={val === '-' ? '' : val} options={sizeList} placeholder="size" width={72}
-                  onCommit={v => saveCell(player.id, ki.slot, { size: v || '-' })} />
-              )}
-              {stock && val !== '-' && productId && (
-                <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-                  background: _dotColor(stock.avail, stock.incoming),
-                  verticalAlign: 'middle' }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
-              )}
-            </div>
-            {val !== '-' && qtyStepper(player, ki, cell)}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+            {ki.no_size ? (
+              <input type="checkbox" checked={checked} onChange={e => saveCell(player.id, ki.slot, { size: e.target.checked ? 'OSFA' : '-' })}
+                style={{ width: 20, height: 20, cursor: 'pointer' }} />
+            ) : (
+              <TypeaheadInput value={val === '-' ? '' : val} options={sizeList} placeholder="size" width={72}
+                onCommit={v => saveCell(player.id, ki.slot, { size: v || '-' })} />
+            )}
+            {showQty && (
+              <input type="number" min={1} max={9} value={effectiveQty}
+                title="How many of this item this player needs"
+                onChange={e => saveCell(player.id, ki.slot, { qty: Math.min(9, Math.max(1, parseInt(e.target.value) || 1)) })}
+                style={{ width: 34, textAlign: 'center', fontSize: 12.5, padding: '5px 2px', border: '1px solid #e2e8f0', borderRadius: 6, background: '#f8fafc', outline: 'none' }} />
+            )}
+            {stock && val !== '-' && productId && (
+              <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
+                background: _dotColor(stock.avail, stock.incoming) }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
+            )}
           </div>
         ) : (
           <div>
-            {showGroupPicker && <span style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', marginRight: 3 }}>{group[0]}</span>}
             <span style={{ fontWeight: val !== '-' ? 600 : 400, color: val === '-' ? '#94a3b8' : '#0b1220', fontSize: 13.5 }}>
               {ki.no_size ? (checked ? '✓' : '—') : val}
             </span>
-            {val !== '-' && (cell.qty ?? (ki.qty || 1)) > 1 && (
-              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>×{cell.qty ?? (ki.qty || 1)}</span>
+            {val !== '-' && effectiveQty > 1 && (
+              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>×{effectiveQty}</span>
             )}
           </div>
         )}
@@ -919,7 +911,7 @@ function RosterTotals({ session, teams, kitTemplate }) {
       const smap = {};
       (sz || []).forEach(r => {
         if (!smap[r.player_id]) smap[r.player_id] = {};
-        smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group };
+        smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
       });
       setAllPlayers(playerList);
       setAllSizes(smap);
@@ -928,26 +920,24 @@ function RosterTotals({ session, teams, kitTemplate }) {
     return () => { cancelled = true; };
   }, [teams, session?.id]);
 
-  // Aggregate: for each kit slot, split by size group (YM/WM/AM) then size. A
-  // player's group is normally their roster category, but a specific item/player
-  // cell may override it (e.g. a big kid in a Youth jersey but Adult shorts), so
-  // the override wins when present. Each bucket holds { player, qty } — qty is
-  // the player's override if set, else the item's default qty — so "units
-  // needed" and "players needing this" can both be read back out (units may
-  // exceed player count when qty > 1).
+  // Aggregate: for each kit slot, split by size group (YM/WM/AM) then size —
+  // the group is derived from the size string itself (Youth sizes are lexically
+  // distinct from Adult/Women's) plus the player's category to break the rare
+  // Adult-vs-Women's tie. Each bucket holds { player, qty } — qty is the
+  // player's override if set, else the item's default qty — so "units needed"
+  // and "players needing this" can both be read back out (units may exceed
+  // player count when qty > 1).
   const totals = useMemo(() => {
     const result = {};
     kitItems.forEach(ki => {
       const byCat = {};
-      const groups = ['YM', 'WM', 'AM'].filter(g =>
-        g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
+      const groups = linkedGroups(ki);
       allPlayers.forEach(p => {
         if (ki.gk_only && !p.is_gk) return;
         const cell = (allSizes[p.id] || {})[ki.slot];
         const sz = cell?.size;
         if (!sz || sz === '-') return;
-        const defaultCat = p.category || 'AM';
-        const cat = cell.group || (groups.includes(defaultCat) ? defaultCat : (groups[0] || 'AM'));
+        const cat = resolveSizeGroup(sz, p, groups);
         if (!byCat[cat]) byCat[cat] = {};
         if (!byCat[cat][sz]) byCat[cat][sz] = [];
         byCat[cat][sz].push({ player: p, qty: cell.qty ?? (ki.qty || 1) });
@@ -1248,7 +1238,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
         ? await supabase.from('roster_player_sizes').select('*').in('player_id', playerList.map(p => p.id))
         : { data: [] };
       const sizeMap = {};
-      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty, group: r.size_group }; });
+      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty }; });
 
       // Fetch the real product records for every linked SKU (pricing/sizes).
       const pidSet = new Set();
@@ -1261,6 +1251,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
 
       const seedItems = [];
       kitItems.forEach(ki => {
+        const groups = linkedGroups(ki);
         const resolvePid = (cat) => cat === 'YM' ? (ki.product_youth_id || ki.product_id)
           : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
         const skuFor = (pid) => pid === ki.product_youth_id ? ki.sku_youth
@@ -1271,7 +1262,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
           const cell = (sizeMap[p.id] || {})[ki.slot];
           const sz = cell?.size;
           if (!sz || sz === '-') return;
-          const cat = cell.group || p.category || 'AM';
+          const cat = resolveSizeGroup(sz, p, groups);
           const pid = resolvePid(cat) || '';
           const key = pid || ('__' + ki.slot);
           const bp = byProduct[key] || (byProduct[key] = { pid, sizes: {}, names: {}, numbers: {} });
@@ -1936,12 +1927,11 @@ export function RosterOrdersCoach({ customer }) {
           <button onClick={() => { setOpenTeam(null); }} style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>← All teams</button>
         </div>
         <div style={{ padding: 16 }}>
-          <InstructionsCard storageKey="nsa_roster_tip_grid" title="Filling out your roster"
+          <InstructionsCard storageKey="nsa_roster_tip_grid_v2" title="Filling out your roster"
             steps={[
               'Add each player at the bottom of the table — name, number, and category (Youth/Women’s/Adult).',
-              'Type a size into each item box and press Tab — suggestions pop up as you type, and Tab jumps to the next box.',
-              'A second small box appears next to an item if it comes in more than one size type — change it if a player needs a different cut than their category (e.g. a Youth jersey with Adult shorts).',
-              'Use the − / + under a size to change how many of that item this player needs (e.g. extra shorts).',
+              'Type a size into each item box and press Tab — suggestions pop up as you type, and Tab jumps to the next box. Any size for that item works, not just your player’s category — e.g. type an Adult size even if they’re Youth.',
+              'A small number box appears next to items that come with more than one per player (like shorts) — change it if a specific player needs more or fewer.',
               'Lock the roster once it’s ready — locked rosters can’t be edited until unlocked.',
             ]} />
           <TeamRosterEditor team={openTeam} kitTemplate={kitFor(session)} readOnly={false} />
