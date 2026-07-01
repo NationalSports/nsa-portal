@@ -13038,7 +13038,7 @@ export default function App(){
 
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
-  const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
+  const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'},{id:'store',label:'Store Funds',icon:'🏫'}];
   const[invF,setInvF]=useState({search:'',status:'open',group:'customer',aging:'all',rep:_initRepF});
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
@@ -14110,6 +14110,54 @@ export default function App(){
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
       const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
+
+    // ── OMG store settlement proposals ─────────────────────────────────
+    // OMG orders are paid from the store's collected deposit (not a coach),
+    // so once a store's two reports are entered & agree and its SO has been
+    // invoiced, the NET REMIT (collected − OMG & CC fees) should settle that
+    // invoice. We only PROPOSE the match here and let accounting confirm each
+    // with one click — nothing is ever auto-posted. The net-remit formula
+    // mirrors the SO-note math in createOmgSO (the _omg_* fields live on both
+    // the store and the SO). Idempotent: a store drops off once its invoice
+    // carries a payment with our 'OMG <sale code>' ref.
+    const _r2=n=>Math.round((+n||0)*100)/100;
+    const omgSettlements=(omgStores||[]).map(s=>{
+      if(!s||!s.id)return null;
+      const grand=+s._omg_grand_total||0, acct=+s._omg_acct_collected||0;
+      const omgFees=+s._omg_omg_fees||0, ccFees=+s._omg_cc_fees||0;
+      // Both reports must be entered — otherwise the funds aren't known yet.
+      if(!(grand>0)||!(acct>0))return null;
+      const name=s.store_name||s.id;
+      if(Math.abs(acct-grand)>=1)return{key:s.id,store:s,name,status:'blocked',reason:'Dollar & Accounting reports disagree',so:null,inv:null,netRemit:null};
+      const netRemit=_r2((acct||grand)-omgFees-ccFees);
+      const so=(sos||[]).find(x=>x.omg_store_id===s.id);
+      // No SO / not invoiced yet are normal mid-pipeline states, not settlement
+      // exceptions — leave those to the 4-week "Apply OMG funds" reminder and
+      // keep this queue focused on stores actually ready (or stuck) at payment.
+      if(!so)return null;
+      const ref='OMG '+(s._omg_sale_code||so.id);
+      const soInvs=enrichedInvs.filter(i=>i.so_id===so.id);
+      // Already settled from store funds (or otherwise dedup'd by ref) → done.
+      if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null;
+      const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
+      if(!openInvs.length)return null; // not invoiced yet, or fully paid another way
+      if(openInvs.length>1)return{key:s.id,store:s,name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,netRemit,ref};
+      const inv=openInvs[0];
+      const delta=_r2(netRemit-inv._bal);
+      const status=Math.abs(delta)<=1?'matched':'mismatch';
+      return{key:s.id,store:s,name,status,reason:status==='mismatch'?('Net remit is '+(delta>0?'+$':'−$')+Math.abs(delta).toFixed(2)+' vs invoice balance'):'',so,inv,netRemit,delta,ref};
+    }).filter(Boolean);
+    const omgMatched=omgSettlements.filter(p=>p.status==='matched');
+    const omgMismatch=omgSettlements.filter(p=>p.status==='mismatch');
+    const omgBlocked=omgSettlements.filter(p=>p.status==='blocked');
+    // Pre-fill the existing payment modal with the store funds; the modal's
+    // "Record $X" button is accounting's one-click confirm. Amount defaults to
+    // what actually came in (net remit); it's editable there for exceptions.
+    const proposeOmgSettlement=(p)=>{
+      if(!p||!p.inv)return;
+      setPayModal({inv:{...p.inv,_bal:p.inv._bal},amount:_r2(p.netRemit),method:'store',ref:p.ref});
+    };
+    const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
     // Treat status='paid' as fully paid; anything else leaves total as balance.
     // Derive due_date from invoice_date + customer payment terms so aging buckets,
@@ -14227,6 +14275,39 @@ export default function App(){
             </div>)}
         </div>
       </div></div>
+
+      {/* OMG store settlements — apply collected store deposit funds to invoices */}
+      {omgSettlements.length>0&&<div className="card" style={{marginBottom:12,border:'1px solid #c7d2fe'}}><div className="card-body" style={{padding:'12px 16px'}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#4338ca',marginBottom:2,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+          🏫 OMG STORE SETTLEMENTS
+          {omgMatched.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534',padding:'1px 7px',borderRadius:10}}>{omgMatched.length} ready</span>}
+          {omgMismatch.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',padding:'1px 7px',borderRadius:10}}>{omgMismatch.length} needs review</span>}
+          {omgBlocked.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#f1f5f9',color:'#64748b',padding:'1px 7px',borderRadius:10}}>{omgBlocked.length} blocked</span>}
+        </div>
+        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>OMG orders are paid from the store's collected deposit (not the coach). Confirm each match to apply the net remit — collected minus OMG &amp; card fees — to its invoice.</div>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
+          <th style={{padding:'4px 8px'}}>STORE</th><th style={{padding:'4px 8px'}}>SO</th><th style={{padding:'4px 8px'}}>INVOICE</th>
+          <th style={{padding:'4px 8px',textAlign:'right'}}>NET REMIT</th><th style={{padding:'4px 8px',textAlign:'right'}}>INVOICE BAL</th>
+          <th style={{padding:'4px 8px'}}></th></tr></thead><tbody>
+          {[...omgMatched,...omgMismatch,...omgBlocked].map(p=>{
+            const clr=p.status==='matched'?'#166534':p.status==='mismatch'?'#b45309':'#64748b';
+            const bg=p.status==='matched'?'#f0fdf4':p.status==='mismatch'?'#fffbeb':'#f8fafc';
+            const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+            return<tr key={p.key} style={{background:bg,borderTop:'1px solid #e2e8f0'}}>
+              <td style={{padding:'6px 8px',fontWeight:600}}>{p.name}</td>
+              <td style={{padding:'6px 8px'}}>{p.so?<span style={{color:'#7c3aed',cursor:'pointer',textDecoration:'underline'}} onClick={()=>_openSO(p.so)}>{p.so.id}</span>:'—'}</td>
+              <td style={{padding:'6px 8px'}}>{p.inv?p.inv.id:'—'}</td>
+              <td style={{padding:'6px 8px',textAlign:'right'}}>{p.netRemit!=null?$(p.netRemit):'—'}</td>
+              <td style={{padding:'6px 8px',textAlign:'right'}}>{p.inv?$(p.inv._bal):'—'}</td>
+              <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
+                {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeOmgSettlement(p)}>
+                  {p.status==='matched'?'Confirm & Apply':'Review & Apply'}</button>}
+                {p.status==='mismatch'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>⚠ {p.reason}</span>}
+                {p.status==='blocked'&&<span style={{fontSize:11,color:clr}}>{p.reason}</span>}
+              </td></tr>;
+          })}
+        </tbody></table>
+      </div></div>}
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
