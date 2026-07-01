@@ -87,6 +87,13 @@
 [functions."followup-sweep"]
   schedule = "0 * * * *"
 
+# Roster reminder sweep — daily at 16:20 UTC. Nudges roster players who were
+# emailed their store link but never opened it after 5 days (and haven't
+# ordered), then stamps reminder_sent_at so it fires once. See
+# netlify/functions/roster-reminder-sweep.js.
+[functions."roster-reminder-sweep"]
+  schedule = "20 16 * * *"
+
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.
