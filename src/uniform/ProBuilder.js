@@ -54,6 +54,18 @@ const FONTS = [
   { id: 'varsity', label: 'Varsity', font: 'squada', preview: 'normal' },
   { id: 'outline', label: 'Outline', font: 'anton', preview: 'normal', hollow: true },
 ];
+// Logo slots — each projects onto the jersey from a view; sleeve logos land on
+// the sleeve panel (the 3D viewer raycasts the whole model, so a logo attaches
+// to whatever surface it's over). Defaults pre-place each slot sensibly.
+const LOGO_SLOTS = [
+  { key: 'chest', label: 'Chest', view: 'front', x: 0.5, y: 0.42, scale: 1 },
+  { key: 'leftSleeve', label: 'L Sleeve', view: 'front', x: 0.17, y: 0.33, scale: 0.5 },
+  { key: 'rightSleeve', label: 'R Sleeve', view: 'front', x: 0.83, y: 0.33, scale: 0.5 },
+  { key: 'back', label: 'Back', view: 'back', x: 0.5, y: 0.16, scale: 0.7 },
+];
+const SLOT_BY_KEY = LOGO_SLOTS.reduce((m, s) => { m[s.key] = s; return m; }, {});
+const emptyLogos = () => LOGO_SLOTS.reduce((m, s) => { m[s.key] = { src: null, x: s.x, y: s.y, scale: s.scale, rot: 0, aspect: 1 }; return m; }, {});
+
 const SIZES = ['YS', 'YM', 'YL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
 const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
 const UNIT_PRICE = 80;
@@ -68,7 +80,7 @@ const DEFAULT_CONFIG = {
   secondary: '#FFFFFF', // stripes / secondary
   trim: '#192853',      // collar + sleeves/cuffs
   pattern: 'boldstripe',
-  logoSrc: null, logoX: 0.5, logoY: 0.4, logoScale: 1, logoRot: 0, logoAspect: 1,
+  logos: emptyLogos(),
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
 };
@@ -85,12 +97,15 @@ function specFromConfig(cfg) {
   const outlineWidth = fontDef.hollow ? 8 : 5;
   const num = (cfg.playerNumber || '').toString();
   const logos = { front: [], back: [] };
-  if (cfg.logoSrc) {
-    logos.front = [{
-      id: 'team-logo', src: cfg.logoSrc,
-      x: cfg.logoX, y: cfg.logoY, w: 0.22 * (cfg.logoScale || 1),
-      aspect: cfg.logoAspect || 1, rotation: cfg.logoRot || 0, opacity: 1,
-    }];
+  const cfgLogos = cfg.logos || {};
+  for (const slot of LOGO_SLOTS) {
+    const L = cfgLogos[slot.key];
+    if (!L || !L.src) continue;
+    const item = {
+      id: 'logo-' + slot.key, src: L.src, x: L.x, y: L.y, w: 0.22 * (L.scale || 1),
+      aspect: L.aspect || 1, rotation: L.rot || 0, opacity: 1, slot: slot.key,
+    };
+    (slot.view === 'back' ? logos.back : logos.front).push(item);
   }
   return ds.normalizeSpec({
     garmentId: 'octa_jersey', fabric: 'sublimated',
@@ -220,10 +235,15 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // ── logo upload + placement pad ──
+  // ── logo slots + placement pad ──
   const padRef = useRef(null);
   const draggingRef = useRef(false);
-  const [padBg, setPadBg] = useState(null);
+  const [logoSlot, setLogoSlot] = useState('chest');
+  const [proofs, setProofs] = useState({ front: null, back: null });
+  const slotDef = SLOT_BY_KEY[logoSlot] || LOGO_SLOTS[0];
+  const activeLogo = (config.logos && config.logos[logoSlot]) || {};
+  const setLogo = (patch) => setConfig((c) => ({ ...c, logos: { ...c.logos, [logoSlot]: { ...c.logos[logoSlot], ...patch } } }));
+  const logoCount = LOGO_SLOTS.filter((s) => config.logos && config.logos[s.key] && config.logos[s.key].src).length;
 
   const onLogoFile = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -232,30 +252,33 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     reader.onload = (ev) => {
       const src = ev.target.result;
       const img = new Image();
-      img.onload = () => set({ logoSrc: src, logoAspect: (img.naturalWidth / img.naturalHeight) || 1, logoX: 0.5, logoY: 0.4, logoScale: 1, logoRot: 0 });
-      img.onerror = () => set({ logoSrc: src, logoAspect: 1 });
+      img.onload = () => setLogo({ src, aspect: (img.naturalWidth / img.naturalHeight) || 1, x: slotDef.x, y: slotDef.y, scale: slotDef.scale, rot: 0 });
+      img.onerror = () => setLogo({ src, aspect: 1 });
       img.src = src;
     };
     reader.readAsDataURL(file);
   };
 
-  // Pad background = the jersey front proof WITHOUT the logo (the draggable box
-  // shows the logo on top). Depends only on colors/pattern, so dragging the
-  // logo doesn't re-render it.
+  // Pad backgrounds = front/back proofs WITHOUT logos (the draggable box shows
+  // the logo on top). Depend only on the design, not logo position, so dragging
+  // doesn't re-render them.
   useEffect(() => {
-    if (step !== 'jersey' || !config.logoSrc) { setPadBg(null); return; }
+    if (step !== 'jersey') return;
     let alive = true;
-    renderToDataURL(specFromConfig({ ...config, logoSrc: null }), { view: 'front' })
-      .then((d) => { if (alive) setPadBg(d); }).catch(() => {});
+    const bare = { ...config, logos: emptyLogos() };
+    Promise.all([
+      renderToDataURL(specFromConfig(bare), { view: 'front' }),
+      renderToDataURL(specFromConfig(bare), { view: 'back' }),
+    ]).then(([front, back]) => { if (alive) setProofs({ front, back }); }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line
-  }, [step, config.logoSrc, config.primary, config.secondary, config.trim, config.pattern]);
+  }, [step, config.primary, config.secondary, config.trim, config.pattern, config.playerNumber, config.playerName, config.numberColor, config.font]);
 
   const padPoint = (e) => {
     const rect = padRef.current.getBoundingClientRect();
     const x = Math.min(0.92, Math.max(0.08, (e.clientX - rect.left) / rect.width));
     const y = Math.min(0.92, Math.max(0.08, (e.clientY - rect.top) / rect.height));
-    set({ logoX: x, logoY: y });
+    setLogo({ x, y });
   };
   const onPadDown = (e) => { draggingRef.current = true; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {} padPoint(e); };
   const onPadMove = (e) => { if (draggingRef.current) padPoint(e); };
@@ -377,35 +400,49 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <div style={{ paddingBottom: 22, marginBottom: 22, borderBottom: '1px solid ' + C.light }}>
                     <Pills options={PATTERNS} active={config.pattern} onPick={(p) => set({ pattern: p })} />
                   </div>
-                  <div style={railLabel}>Team Logo</div>
-                  {config.logoSrc ? (
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
+                    {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
+                  </div>
+                  {/* slot selector */}
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+                    {LOGO_SLOTS.map((s) => {
+                      const on = s.key === logoSlot; const has = config.logos && config.logos[s.key] && config.logos[s.key].src;
+                      return (
+                        <button key={s.key} onClick={() => setLogoSlot(s.key)} style={{ position: 'relative', fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer' }}>
+                          {s.label}{has && <span style={{ position: 'absolute', top: -4, right: -4, width: 9, height: 9, borderRadius: '50%', background: C.red, border: '1.5px solid #fff' }} />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {activeLogo.src ? (
                     <div>
                       <div ref={padRef} onPointerDown={onPadDown} onPointerMove={onPadMove} onPointerUp={onPadUp} onPointerLeave={onPadUp}
-                        style={{ position: 'relative', width: '100%', aspectRatio: '760 / 940', background: (padBg ? `#fff url(${padBg}) center/contain no-repeat` : C.offWhite), border: '1px solid ' + C.mid, borderRadius: 8, overflow: 'hidden', touchAction: 'none', cursor: 'grab' }}>
-                        <img src={config.logoSrc} alt="logo" draggable={false} style={{ position: 'absolute', left: (config.logoX * 100) + '%', top: (config.logoY * 100) + '%', width: (22 * (config.logoScale || 1)) + '%', transform: `translate(-50%,-50%) rotate(${config.logoRot || 0}deg)`, pointerEvents: 'none', userSelect: 'none' }} />
-                        <div style={{ position: 'absolute', bottom: 6, left: 0, right: 0, textAlign: 'center', fontFamily: F_BODY, fontSize: 11, color: C.textLight, textShadow: '0 1px 2px #fff' }}>drag to reposition</div>
+                        style={{ position: 'relative', width: '100%', aspectRatio: '760 / 940', background: (proofs[slotDef.view] ? `#fff url(${proofs[slotDef.view]}) center/contain no-repeat` : C.offWhite), border: '1px solid ' + C.mid, borderRadius: 8, overflow: 'hidden', touchAction: 'none', cursor: 'grab' }}>
+                        <img src={activeLogo.src} alt="logo" draggable={false} style={{ position: 'absolute', left: ((activeLogo.x || 0.5) * 100) + '%', top: ((activeLogo.y || 0.4) * 100) + '%', width: (22 * (activeLogo.scale || 1)) + '%', transform: `translate(-50%,-50%) rotate(${activeLogo.rot || 0}deg)`, pointerEvents: 'none', userSelect: 'none' }} />
+                        <div style={{ position: 'absolute', bottom: 6, left: 0, right: 0, textAlign: 'center', fontFamily: F_BODY, fontSize: 11, color: C.textLight, textShadow: '0 1px 2px #fff' }}>drag to reposition · {slotDef.label} ({slotDef.view})</div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14 }}>
                         <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Size</span>
-                        <input type="range" min="0.4" max="1.8" step="0.05" value={config.logoScale} onChange={(e) => set({ logoScale: parseFloat(e.target.value) })} style={{ flex: 1 }} />
+                        <input type="range" min="0.3" max="1.8" step="0.05" value={activeLogo.scale || 1} onChange={(e) => setLogo({ scale: parseFloat(e.target.value) })} style={{ flex: 1 }} />
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                         <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Rotate</span>
-                        <input type="range" min="-180" max="180" step="1" value={config.logoRot} onChange={(e) => set({ logoRot: parseInt(e.target.value, 10) })} style={{ flex: 1 }} />
-                        <button onClick={() => set({ logoRot: 0 })} title="Reset rotation" style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '3px 7px', cursor: 'pointer' }}>0°</button>
+                        <input type="range" min="-180" max="180" step="1" value={activeLogo.rot || 0} onChange={(e) => setLogo({ rot: parseInt(e.target.value, 10) })} style={{ flex: 1 }} />
+                        <button onClick={() => setLogo({ rot: 0 })} title="Reset rotation" style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '3px 7px', cursor: 'pointer' }}>0°</button>
                       </div>
                       <div style={{ display: 'flex', gap: 14, marginTop: 12 }}>
                         <label style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy, cursor: 'pointer' }}>
                           Replace<input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                         </label>
-                        <button onClick={() => set({ logoSrc: null })} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove Logo</button>
+                        <button onClick={() => setLogo({ src: null })} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove</button>
                       </div>
-                      <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag the logo to place it; it appears live on the 3D jersey and the production proof.</div>
+                      <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to place the {slotDef.label.toLowerCase()} logo; it appears live on the 3D jersey and the proof.</div>
                     </div>
                   ) : (
                     <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%', height: 150, border: '2px dashed ' + C.mid, borderRadius: 8, cursor: 'pointer', color: C.textLight, fontFamily: F_BODY, fontSize: 13, textAlign: 'center', padding: 16, boxSizing: 'border-box' }}>
                       <span style={{ fontSize: 24 }}>⬆︎</span>
-                      <span>Click to upload a logo</span>
+                      <span>Upload a logo for the <strong style={{ color: C.navy }}>{slotDef.label}</strong></span>
                       <input ref={logoInputRef} type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                     </label>
                   )}
@@ -535,7 +572,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 { label: 'Collar Binding', value: nameForHex(config.trim), sw: config.trim },
                 { label: 'Number Fill', value: nameForHex(config.numberColor), sw: config.numberColor },
                 { label: 'Number & Name Font', value: (FONTS.find((f) => f.id === config.font) || {}).label || 'Block' },
-                { label: 'Decoration', value: config.logoSrc ? 'Left Chest Logo' : 'None' },
+                { label: 'Logos', value: (LOGO_SLOTS.filter((s) => config.logos && config.logos[s.key] && config.logos[s.key].src).map((s) => s.label).join(', ')) || 'None' },
                 { label: 'Fabric', value: 'Sublimated Poly' },
               ].map((r) => (
                 <div key={r.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderBottom: '1px solid ' + C.light }}>

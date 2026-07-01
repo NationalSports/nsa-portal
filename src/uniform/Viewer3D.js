@@ -167,10 +167,14 @@ function updateDecals(st, rawSpec) {
     const wy = (0.5 - logo.y) * size.y;
     const origin = new THREE.Vector3(wx, wy, front ? size.z * 3 : -size.z * 3);
     raycaster.set(origin, dir);
-    const hits = raycaster.intersectObject(body, true);
+    // Raycast the whole model so a logo attaches to whatever panel it's over
+    // (chest/back → body, sleeve logos → the sleeve mesh).
+    const target = st.modelRoot || body;
+    const hits = raycaster.intersectObject(target, true);
     if (!hits.length) return;
     const hit = hits[0];
-    const normal = hit.face.normal.clone().transformDirection(body.matrixWorld).normalize();
+    const surface = hit.object && hit.object.isMesh ? hit.object : body;
+    const normal = hit.face.normal.clone().transformDirection(surface.matrixWorld).normalize();
     const helper = new THREE.Object3D();
     helper.position.copy(hit.point);
     helper.lookAt(hit.point.clone().add(normal));
@@ -179,7 +183,7 @@ function updateDecals(st, rawSpec) {
     const decalH = decalW / aspect;
     const dsize = new THREE.Vector3(decalW, decalH, Math.max(size.x, size.y, size.z) * 0.6);
     let geo;
-    try { geo = new DecalGeometry(body, hit.point, helper.rotation, dsize); } catch (e) { return; }
+    try { geo = new DecalGeometry(surface, hit.point, helper.rotation, dsize); } catch (e) { return; }
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
     const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -10, roughness: 0.75, metalness: 0.0, side: THREE.FrontSide });
     const mesh = new THREE.Mesh(geo, mat);
@@ -275,6 +279,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
       scene.add(rootObj);
       scene.updateMatrixWorld(true);
       st.bodyMesh = (st.meshes.find((m) => m.zone === 'body') || st.meshes[0] || {}).mesh || null;
+      st.modelRoot = rootObj;
       st.modelSize = size.clone();
       try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) { /* keep default */ }
       setStatus('ready');
