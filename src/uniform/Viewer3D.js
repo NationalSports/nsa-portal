@@ -14,7 +14,10 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 import { makePatternTile } from './patterns';
+import { fontShorthand } from './fonts';
+import { getTemplate } from './templates';
 import * as ds from './designSpec';
 
 const PUB = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL) ? process.env.PUBLIC_URL : '';
@@ -75,6 +78,81 @@ function applyDesign(st, rawSpec) {
   }
 }
 
+// Render a text element to a transparent canvas for use as a decal texture.
+function decalTextCanvas(el) {
+  const val = (el.value || '').trim();
+  if (!val) return null;
+  const S = 220;
+  const meas = document.createElement('canvas').getContext('2d');
+  meas.font = fontShorthand(el.font, S);
+  const tw = Math.ceil(meas.measureText(val).width);
+  const pad = Math.ceil(S * 0.4);
+  const c = document.createElement('canvas');
+  c.width = Math.max(8, tw + pad * 2); c.height = Math.ceil(S * 1.5);
+  const x = c.getContext('2d');
+  x.font = fontShorthand(el.font, S);
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round';
+  const fill = ds.toHex(el.fill, '#ffffff');
+  let outline = el.outline === 'auto' ? ds.contrastInk(fill) : el.outline;
+  if (outline && outline !== 'none' && el.outlineWidth > 0) {
+    x.strokeStyle = ds.toHex(outline, '#111827');
+    x.lineWidth = el.outlineWidth * (S / 24);
+    x.strokeText(val, c.width / 2, c.height / 2);
+  }
+  x.fillStyle = fill; x.fillText(val, c.width / 2, c.height / 2);
+  return c;
+}
+
+// Project number/name onto the garment surface as decals (they wrap the fabric
+// and rotate with the model). Rebuilt whenever the spec changes.
+function updateDecals(st, rawSpec) {
+  const spec = ds.normalizeSpec(rawSpec);
+  for (const d of st.decals) { st.scene.remove(d); d.geometry.dispose(); if (d.material.map) d.material.map.dispose(); d.material.dispose(); }
+  st.decals = [];
+  const body = st.bodyMesh;
+  if (!body || !st.modelSize) return;
+  const size = st.modelSize;
+  const tpl = getTemplate(spec.garmentId);
+  const raycaster = new THREE.Raycaster();
+
+  const placeOne = (el, role, view) => {
+    if (!el || !(el.value || '').trim()) return;
+    const canvas = decalTextCanvas(el); if (!canvas) return;
+    const vw = tpl.views[view] || {};
+    const anchor = (vw.anchors && vw.anchors[role]) || { x: 0.5, y: 0.5, size: 160 };
+    const viewH = vw.h || 940;
+    const xFrac = Number.isFinite(el.x) ? el.x : anchor.x;
+    const yFrac = Number.isFinite(el.y) ? el.y : anchor.y;
+    const front = view === 'front';
+    const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
+    const wx = (front ? (xFrac - 0.5) : (0.5 - xFrac)) * size.x;
+    const wy = (0.5 - yFrac) * size.y;
+    const origin = new THREE.Vector3(wx, wy, front ? size.z * 3 : -size.z * 3);
+    raycaster.set(origin, dir);
+    const hits = raycaster.intersectObject(body, true);
+    if (!hits.length) return;
+    const hit = hits[0];
+    const normal = hit.face.normal.clone().transformDirection(body.matrixWorld).normalize();
+    const helper = new THREE.Object3D();
+    helper.position.copy(hit.point);
+    helper.lookAt(hit.point.clone().add(normal));
+    const decalH = anchor.size * (size.y / viewH) * (el.size || 1) * 1.05;
+    const decalW = decalH * (canvas.width / canvas.height);
+    const dsize = new THREE.Vector3(decalW, decalH, Math.max(size.x, size.y, size.z) * 0.5);
+    let geo;
+    try { geo = new DecalGeometry(body, hit.point, helper.rotation, dsize); } catch (e) { return; }
+    const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+    const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -8, roughness: 0.7, metalness: 0.0, side: THREE.FrontSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    st.scene.add(mesh); st.decals.push(mesh);
+  };
+
+  placeOne(spec.text.front.number, 'number', 'front');
+  placeOne(spec.text.front.name, 'name', 'front');
+  placeOne(spec.text.back.number, 'number', 'back');
+  placeOne(spec.text.back.name, 'name', 'back');
+}
+
 export default function Viewer3D({ spec, modelUrl, autoRotate }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
@@ -108,8 +186,13 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
 
     const key = new THREE.DirectionalLight(0xffffff, 1.15); key.position.set(1.5, 2.5, 2.5); scene.add(key);
     const fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(-2, 0.5, 1); scene.add(fill);
+    // Rear light + even hemisphere fill so the BACK of the garment reads its true
+    // colorway (orbit moves the camera, not the model, so front-only lights leave
+    // the back in shadow — whites go gray, blues muddy).
+    const back = new THREE.DirectionalLight(0xffffff, 0.7); back.position.set(-1, 1.5, -2.5); scene.add(back);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xbfc4cc, 0.55); scene.add(hemi);
 
-    const st = { renderer, scene, camera, controls, pmrem, meshes: [], raf: 0, mounted: true };
+    const st = { renderer, scene, camera, controls, pmrem, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
     stateRef.current = st;
 
     const draco = new DRACOLoader().setDecoderPath(PUB + '/draco/');
@@ -140,7 +223,10 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
         }
       });
       scene.add(rootObj);
-      try { applyDesign(st, spec); } catch (e) { /* keep default */ }
+      scene.updateMatrixWorld(true);
+      st.bodyMesh = (st.meshes.find((m) => m.zone === 'body') || st.meshes[0] || {}).mesh || null;
+      st.modelSize = size.clone();
+      try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) { /* keep default */ }
       setStatus('ready');
       draco.dispose();
     }, undefined, () => { setStatus('error'); });
@@ -168,6 +254,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
       if (ro) ro.disconnect();
       cancelAnimationFrame(st.raf);
       controls.dispose();
+      st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
       st.meshes.forEach(({ mesh }) => { if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); });
       pmrem.dispose();
       renderer.dispose();
@@ -182,7 +269,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
   // re-color on spec change
   useEffect(() => {
     const st = stateRef.current;
-    if (st && st.meshes && st.meshes.length) { try { applyDesign(st, spec); } catch (e) {} }
+    if (st && st.meshes && st.meshes.length) { try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) {} }
   }, [spec]);
 
   return (
