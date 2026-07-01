@@ -88,7 +88,7 @@ const DEFAULT_KIT = [
   { slot: 'socks', label: 'Socks', color: '', qty: 2, product_id: '', product_youth_id: '', product_womens_id: '', sock: true },
   { slot: 'jacket', label: 'Jacket', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
   { slot: 'pants', label: 'Pants', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
-  { slot: 'backpack', label: 'Backpack', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
+  { slot: 'backpack', label: 'Backpack', color: '', optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '', no_size: true },
   { slot: 'keeper_jersey', label: 'Keeper Jersey', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
   { slot: 'keeper_shorts', label: 'Keeper Shorts', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '' },
   { slot: 'keeper_socks', label: 'Keeper Socks', color: '', gk_only: true, optional: true, qty: 1, product_id: '', product_youth_id: '', product_womens_id: '', sock: true },
@@ -257,18 +257,24 @@ function KitItemRow({ ki, idx, patchItem, removeItem }) {
           )}
         </div>
       </td>
-      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }} title="Default quantity per player — coaches can override this for individual players">
         <input type="number" min={1} max={9} value={ki.qty || 1} onChange={e => patchItem(idx, { qty: parseInt(e.target.value) || 1 })}
-          style={{ width: 34, textAlign: 'center', border: 'none', fontSize: 12, outline: 'none' }} />
+          style={{ width: 40, textAlign: 'center', border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 12.5, padding: '3px 2px', outline: 'none' }} />
       </td>
-      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+      <td style={{ padding: '8px 6px' }}>
+        <select value={ki.no_size ? 'no_size' : ki.sock ? 'sock' : 'standard'}
+          onChange={e => patchItem(idx, e.target.value === 'no_size' ? { no_size: true, sock: false } : e.target.value === 'sock' ? { no_size: false, sock: true } : { no_size: false, sock: false })}
+          style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '4px 5px', outline: 'none', cursor: 'pointer', background: '#fff' }}>
+          <option value="standard">Standard sizes</option>
+          <option value="sock">Socks</option>
+          <option value="no_size">No sizes (checkbox)</option>
+        </select>
+      </td>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }} title="Gets a player number / name printed">
         <input type="checkbox" checked={!!ki.takes_number} onChange={e => patchItem(idx, { takes_number: e.target.checked })} />
       </td>
-      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
+      <td style={{ padding: '8px 6px', textAlign: 'center' }} title="Goalkeeper-only item">
         <input type="checkbox" checked={!!ki.gk_only} onChange={e => patchItem(idx, { gk_only: e.target.checked })} />
-      </td>
-      <td style={{ padding: '8px 6px', textAlign: 'center' }}>
-        <input type="checkbox" checked={!!ki.sock} onChange={e => patchItem(idx, { sock: e.target.checked })} />
       </td>
       <td style={{ padding: '8px 6px', textAlign: 'center' }}>
         <button type="button" onClick={() => removeItem(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 15 }}>×</button>
@@ -284,10 +290,10 @@ function KitItemsTableEditor({ items, setItems }) {
 
   return (
     <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflowX: 'auto', marginBottom: 20 }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 820 }}>
         <thead>
           <tr style={{ background: '#f8fafc' }}>
-            {['Item', 'Slot key', 'Color', 'Price', 'Products / SKU', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+            {['Item', 'Slot key', 'Color', 'Price', 'Products / SKU', 'Qty/player', 'Sizing', '#?', 'GK', ''].map(h => (
               <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
@@ -457,7 +463,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
           const smap = {};
           (sz || []).forEach(r => {
             if (!smap[r.player_id]) smap[r.player_id] = {};
-            smap[r.player_id][r.kit_slot] = r.size;
+            smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
           });
           setSizes(smap);
         }
@@ -467,10 +473,19 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
     return () => { cancelled = true; };
   }, [team?.id]);
 
-  const saveSize = useCallback(async (playerId, kitSlot, size) => {
-    setSizes(prev => ({ ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: size } }));
+  // Persist a player's size and/or qty override for one kit item. Pass only the
+  // field that changed; the other is read from current state so the two controls
+  // (size select/checkbox + qty stepper) can update independently.
+  const saveCell = useCallback(async (playerId, kitSlot, patch) => {
+    let nextCell;
+    setSizes(prev => {
+      const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null };
+      nextCell = { ...cur, ...patch };
+      return { ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: nextCell } };
+    });
+    // nextCell is set synchronously by the updater above before this line runs.
     await supabase.from('roster_player_sizes').upsert(
-      { player_id: playerId, kit_slot: kitSlot, size, updated_at: new Date().toISOString() },
+      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
       { onConflict: 'player_id,kit_slot' }
     );
   }, []);
@@ -520,11 +535,30 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
       onChange={e => updatePlayer(playerId, field, e.target.value)}
       onBlur={e => savePlayer(playerId, field, e.target.value)}
       style={{ width: opts.width || '100%', border: 'none', background: 'transparent',
-        fontSize: 12.5, outline: 'none', textAlign: opts.center ? 'center' : 'left' }} />
+        fontSize: 14.5, outline: 'none', textAlign: opts.center ? 'center' : 'left' }} />
   );
 
+  // Small "×N" stepper for overriding how many units of this item the player
+  // gets (defaults to the catalog's per-item qty). Only shown once a size/
+  // checkbox is set — no point picking a quantity for "nothing selected".
+  const qtyStepper = (player, ki, cell) => {
+    const effectiveQty = cell.qty ?? (ki.qty || 1);
+    const setQty = (n) => saveCell(player.id, ki.slot, { qty: Math.min(9, Math.max(1, n)) });
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 7, padding: '1px 2px' }}
+        title="How many of this item this player needs">
+        <button type="button" onClick={() => setQty(effectiveQty - 1)} disabled={effectiveQty <= 1}
+          style={{ width: 20, height: 20, border: 'none', background: 'none', cursor: effectiveQty <= 1 ? 'default' : 'pointer', color: effectiveQty <= 1 ? '#cbd5e1' : '#475569', fontSize: 14, fontWeight: 700, lineHeight: 1 }}>−</button>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#0b1220', minWidth: 14, textAlign: 'center' }}>{effectiveQty}</span>
+        <button type="button" onClick={() => setQty(effectiveQty + 1)} disabled={effectiveQty >= 9}
+          style={{ width: 20, height: 20, border: 'none', background: 'none', cursor: effectiveQty >= 9 ? 'default' : 'pointer', color: effectiveQty >= 9 ? '#cbd5e1' : '#475569', fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</button>
+      </div>
+    );
+  };
+
   const sizeCell = (player, ki) => {
-    const val = (sizes[player.id] || {})[ki.slot] || '-';
+    const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null };
+    const val = cell.size || '-';
     const cat = player.category || 'AM';
     const productId =
       cat === 'YM' && ki.product_youth_id ? ki.product_youth_id :
@@ -532,25 +566,41 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
       ki.product_id;
     const stock = productId ? getStock(productId, val) : null;
     const sizeList = ki.sock ? SZ_SOCKS : cat === 'YM' ? SZ_YOUTH : SZ_ADULT;
+    const checked = val === 'OSFA';
     return (
-      <td key={ki.slot} style={{ padding: '4px 5px', textAlign: 'center', whiteSpace: 'nowrap',
+      <td key={ki.slot} style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap',
         background: ki.gk_only ? '#f0f9ff' : 'transparent' }}>
         {editable ? (
-          <>
-            <select value={val} onChange={e => saveSize(player.id, ki.slot, e.target.value)}
-              style={{ fontSize: 12, padding: '2px 2px', border: '1px solid #e2e8f0', borderRadius: 5,
-                background: val === '-' ? '#f8fafc' : '#fff', cursor: 'pointer', maxWidth: 76 }}>
-              <option value="-">—</option>
-              {sizeList.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            {stock && val !== '-' && productId && (
-              <span style={{ width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
-                marginLeft: 3, background: _dotColor(stock.avail, stock.incoming),
-                verticalAlign: 'middle' }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
-            )}
-          </>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              {ki.no_size ? (
+                <input type="checkbox" checked={checked} onChange={e => saveCell(player.id, ki.slot, { size: e.target.checked ? 'OSFA' : '-' })}
+                  style={{ width: 20, height: 20, cursor: 'pointer' }} />
+              ) : (
+                <select value={val} onChange={e => saveCell(player.id, ki.slot, { size: e.target.value })}
+                  style={{ fontSize: 13.5, padding: '5px 4px', border: '1px solid #e2e8f0', borderRadius: 6,
+                    background: val === '-' ? '#f8fafc' : '#fff', cursor: 'pointer', minWidth: 64 }}>
+                  <option value="-">—</option>
+                  {sizeList.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              )}
+              {stock && val !== '-' && productId && (
+                <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
+                  background: _dotColor(stock.avail, stock.incoming),
+                  verticalAlign: 'middle' }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
+              )}
+            </div>
+            {val !== '-' && qtyStepper(player, ki, cell)}
+          </div>
         ) : (
-          <span style={{ fontWeight: val !== '-' ? 600 : 400, color: val === '-' ? '#94a3b8' : '#0b1220' }}>{val}</span>
+          <div>
+            <span style={{ fontWeight: val !== '-' ? 600 : 400, color: val === '-' ? '#94a3b8' : '#0b1220', fontSize: 13.5 }}>
+              {ki.no_size ? (checked ? '✓' : '—') : val}
+            </span>
+            {val !== '-' && (cell.qty ?? (ki.qty || 1)) > 1 && (
+              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>×{cell.qty ?? (ki.qty || 1)}</span>
+            )}
+          </div>
         )}
       </td>
     );
@@ -575,23 +625,23 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
       </div>
 
       <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 10 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
             <tr style={{ background: '#0b1220', color: '#fff' }}>
-              <th style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, minWidth: 80 }}>First</th>
-              <th style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 700, minWidth: 80 }}>Last</th>
-              <th style={{ padding: '8px 6px', textAlign: 'center', fontSize: 11, fontWeight: 700, minWidth: 36 }}>#</th>
-              <th style={{ padding: '8px 5px', textAlign: 'center', fontSize: 11, fontWeight: 700, minWidth: 46 }} title="Youth / Women's / Adult">Cat</th>
+              <th style={{ padding: '12px 14px', textAlign: 'left', fontSize: 12.5, fontWeight: 700, minWidth: 100 }}>First</th>
+              <th style={{ padding: '12px 14px', textAlign: 'left', fontSize: 12.5, fontWeight: 700, minWidth: 100 }}>Last</th>
+              <th style={{ padding: '12px 10px', textAlign: 'center', fontSize: 12.5, fontWeight: 700, minWidth: 46 }}>#</th>
+              <th style={{ padding: '12px 8px', textAlign: 'center', fontSize: 12.5, fontWeight: 700, minWidth: 58 }} title="Youth / Women's / Adult">Cat</th>
               {mainItems.map(ki => (
-                <th key={ki.slot} style={{ padding: '8px 6px', textAlign: 'center', fontSize: 10, fontWeight: 700, minWidth: 72, lineHeight: 1.2, maxWidth: 90 }}>
+                <th key={ki.slot} style={{ padding: '12px 10px', textAlign: 'center', fontSize: 11.5, fontWeight: 700, minWidth: 92, lineHeight: 1.3, maxWidth: 110 }}>
                   {ki.label}
-                  {ki.takes_number && <div style={{ fontWeight: 400, fontSize: 9, opacity: 0.7 }}>w/ #</div>}
+                  {ki.takes_number && <div style={{ fontWeight: 400, fontSize: 10, opacity: 0.7 }}>w/ #</div>}
                 </th>
               ))}
               {hasGK && gkItems.map(ki => (
-                <th key={ki.slot} style={{ padding: '8px 6px', textAlign: 'center', fontSize: 10, fontWeight: 700, minWidth: 72, background: '#1e3a5f' }}>{ki.label}</th>
+                <th key={ki.slot} style={{ padding: '12px 10px', textAlign: 'center', fontSize: 11.5, fontWeight: 700, minWidth: 92, background: '#1e3a5f' }}>{ki.label}</th>
               ))}
-              {editable && <th style={{ width: 32 }}></th>}
+              {editable && <th style={{ width: 40 }}></th>}
             </tr>
           </thead>
           <tbody>
@@ -599,42 +649,42 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
               const rowBg = player.is_loaner ? '#fefce8' : player.is_gk ? '#f0f9ff' : idx % 2 === 0 ? '#fff' : '#fafafa';
               return (
                 <tr key={player.id} style={{ borderTop: '1px solid #f1f5f9', background: rowBg }}>
-                  <td style={{ padding: '5px 10px' }}>
+                  <td style={{ padding: '10px 14px' }}>
                     {editable ? cellInput(player.id, 'first_name', player.first_name, { placeholder: 'First' })
                       : <span>{player.first_name || '—'}</span>}
                   </td>
-                  <td style={{ padding: '5px 10px' }}>
+                  <td style={{ padding: '10px 14px' }}>
                     {editable ? cellInput(player.id, 'last_name', player.last_name, { placeholder: 'Last' })
                       : <span>{player.last_name || '—'}</span>}
                   </td>
-                  <td style={{ padding: '5px 6px', textAlign: 'center' }}>
-                    {editable ? cellInput(player.id, 'jersey_number', player.jersey_number, { placeholder: '#', width: 36, center: true })
+                  <td style={{ padding: '10px 8px', textAlign: 'center' }}>
+                    {editable ? cellInput(player.id, 'jersey_number', player.jersey_number, { placeholder: '#', width: 40, center: true })
                       : <span style={{ fontWeight: 700 }}>{player.jersey_number || '—'}</span>}
                   </td>
-                  <td style={{ padding: '5px 5px', textAlign: 'center' }}>
+                  <td style={{ padding: '10px 8px', textAlign: 'center' }}>
                     {editable ? (
                       <select value={player.category || ''} onChange={e => { updatePlayer(player.id, 'category', e.target.value || null); savePlayer(player.id, 'category', e.target.value || null); }}
-                        style={{ fontSize: 11, border: '1px solid #e2e8f0', borderRadius: 4, background: '#fff', padding: '1px 2px', cursor: 'pointer' }}>
+                        style={{ fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', padding: '4px 4px', cursor: 'pointer' }}>
                         <option value="">AM</option>
                         <option value="YM">YM</option>
                         <option value="WM">WM</option>
                         <option value="AM">AM</option>
                       </select>
                     ) : (
-                      <span style={{ fontSize: 11, color: '#64748b' }}>{player.category || 'AM'}</span>
+                      <span style={{ fontSize: 13, color: '#64748b' }}>{player.category || 'AM'}</span>
                     )}
                   </td>
                   {mainItems.map(ki => sizeCell(player, ki))}
                   {hasGK && gkItems.map(ki => {
                     if (!player.is_gk) return (
-                      <td key={ki.slot} style={{ background: '#f0f9ff', padding: '5px 6px', textAlign: 'center', color: '#94a3b8', fontSize: 11 }}>—</td>
+                      <td key={ki.slot} style={{ background: '#f0f9ff', padding: '10px 8px', textAlign: 'center', color: '#94a3b8', fontSize: 12.5 }}>—</td>
                     );
                     return sizeCell(player, ki);
                   })}
                   {editable && (
-                    <td style={{ padding: '4px 4px', textAlign: 'center' }}>
+                    <td style={{ padding: '10px 6px', textAlign: 'center' }}>
                       <button onClick={() => deletePlayer(player.id)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 16, lineHeight: 1, padding: '0 2px' }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', fontSize: 18, lineHeight: 1, padding: '2px 4px' }}
                         title="Remove player">×</button>
                     </td>
                   )}
@@ -643,21 +693,21 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
             })}
             {editable && (
               <tr style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc' }}>
-                <td style={{ padding: '5px 10px' }}>
+                <td style={{ padding: '10px 14px' }}>
                   <input value={addRow.first_name} placeholder="First" onChange={e => setAddRow(r => ({ ...r, first_name: e.target.value }))}
-                    style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 12.5, outline: 'none' }} />
+                    style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
-                <td style={{ padding: '5px 10px' }}>
+                <td style={{ padding: '10px 14px' }}>
                   <input value={addRow.last_name} placeholder="Last" onChange={e => setAddRow(r => ({ ...r, last_name: e.target.value }))}
-                    style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 12.5, outline: 'none' }} />
+                    style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
-                <td style={{ padding: '5px 6px', textAlign: 'center' }}>
+                <td style={{ padding: '10px 8px', textAlign: 'center' }}>
                   <input value={addRow.jersey_number} placeholder="#" onChange={e => setAddRow(r => ({ ...r, jersey_number: e.target.value }))}
-                    style={{ width: 36, textAlign: 'center', border: 'none', background: 'transparent', fontSize: 12.5, outline: 'none' }} />
+                    style={{ width: 40, textAlign: 'center', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
-                <td style={{ padding: '5px 5px', textAlign: 'center' }}>
+                <td style={{ padding: '10px 8px', textAlign: 'center' }}>
                   <select value={addRow.category} onChange={e => setAddRow(r => ({ ...r, category: e.target.value }))}
-                    style={{ fontSize: 11, border: 'none', background: 'transparent', cursor: 'pointer' }}>
+                    style={{ fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', padding: '4px 4px', cursor: 'pointer' }}>
                     <option value="">AM</option>
                     <option value="YM">YM</option>
                     <option value="WM">WM</option>
@@ -665,11 +715,11 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                   </select>
                 </td>
                 {kitItems.map(ki => <td key={ki.slot}></td>)}
-                <td style={{ padding: '4px 6px' }}>
+                <td style={{ padding: '10px 6px' }}>
                   <button onClick={addPlayer} disabled={addingRow || (!addRow.first_name.trim() && !addRow.last_name.trim())}
-                    style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff',
-                      fontSize: 12, cursor: 'pointer', fontWeight: 700, color: '#0b1220' }}>
-                    {addingRow ? '…' : '+'}
+                    style={{ padding: '6px 12px', borderRadius: 7, border: '1px solid #e2e8f0', background: '#fff',
+                      fontSize: 13, cursor: 'pointer', fontWeight: 700, color: '#0b1220' }}>
+                    {addingRow ? '…' : '+ Add'}
                   </button>
                 </td>
               </tr>
@@ -719,7 +769,7 @@ function RosterTotals({ session, teams, kitTemplate }) {
       const smap = {};
       (sz || []).forEach(r => {
         if (!smap[r.player_id]) smap[r.player_id] = {};
-        smap[r.player_id][r.kit_slot] = r.size;
+        smap[r.player_id][r.kit_slot] = { size: r.size, qty: r.qty };
       });
       setAllPlayers(playerList);
       setAllSizes(smap);
@@ -728,38 +778,43 @@ function RosterTotals({ session, teams, kitTemplate }) {
     return () => { cancelled = true; };
   }, [teams, session?.id]);
 
-  // Aggregate: for each kit slot, split by player category (YM/WM/AM) then size
+  // Aggregate: for each kit slot, split by player category (YM/WM/AM) then size.
+  // Each bucket holds { player, qty } — qty is the player's override if set, else
+  // the item's default qty — so "units needed" and "players needing this" can
+  // both be read back out (units may exceed player count when qty > 1).
   const totals = useMemo(() => {
     const result = {};
     kitItems.forEach(ki => {
       const byCat = {};
       allPlayers.forEach(p => {
         if (ki.gk_only && !p.is_gk) return;
-        const sz = (allSizes[p.id] || {})[ki.slot];
+        const cell = (allSizes[p.id] || {})[ki.slot];
+        const sz = cell?.size;
         if (!sz || sz === '-') return;
         const cat = p.category || 'AM';
         if (!byCat[cat]) byCat[cat] = {};
         if (!byCat[cat][sz]) byCat[cat][sz] = [];
-        byCat[cat][sz].push(p);
+        byCat[cat][sz].push({ player: p, qty: cell.qty ?? (ki.qty || 1) });
       });
       result[ki.slot] = byCat;
     });
     return result;
   }, [kitItems, allPlayers, allSizes]);
 
-  // Units per item (respecting qty-per-player) and the estimated order value from
-  // any per-item prices set in the catalog. Items with no price contribute 0.
+  // Units per item (sum of each player's qty — their override, or the item's
+  // default) and the estimated order value from any per-item prices set in the
+  // catalog. Items with no price contribute 0.
   const unitsFor = (ki) => {
     const byCat = totals[ki.slot] || {};
     return ['YM', 'WM', 'AM'].reduce((sum, cat) =>
-      sum + Object.values(byCat[cat] || {}).reduce((a, ps) => a + ps.length * (ki.qty || 1), 0), 0);
+      sum + Object.values(byCat[cat] || {}).reduce((a, pqs) => a + pqs.reduce((s, pq) => s + pq.qty, 0), 0), 0);
   };
   const orderValue = useMemo(() => kitItems.reduce((sum, ki) => sum + unitsFor(ki) * (Number(ki.price) || 0), 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [kitItems, totals]);
 
   const exportCSV = () => {
-    const rows = [['Item', 'Color', 'Category', 'Size', 'Count', 'Unit $', 'Line $', 'Players', 'Available', 'Incoming', 'ETA']];
+    const rows = [['Item', 'Color', 'Category', 'Size', 'Players', 'Units', 'Unit $', 'Line $', 'Player names', 'Available', 'Incoming', 'ETA']];
     kitItems.forEach(ki => {
       const byCat = totals[ki.slot] || {};
       const price = Number(ki.price) || 0;
@@ -769,12 +824,13 @@ function RosterTotals({ session, teams, kitTemplate }) {
                           cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
         const sizeKeys = [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]);
         sizeKeys.forEach(sz => {
-          const ps = bySz[sz] || [];
-          if (!ps.length) return;
-          const need = ps.length * (ki.qty || 1);
+          const pqs = bySz[sz] || [];
+          if (!pqs.length) return;
+          const need = pqs.reduce((s, pq) => s + pq.qty, 0);
           const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
-          const playerStr = ps.map(p => `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${p.first_name || ''} ${p.last_name || ''}`.trim()).join('; ');
-          rows.push([ki.label, ki.color || '', cat, sz, ps.length, price ? price.toFixed(2) : '', price ? (need * price).toFixed(2) : '', playerStr, stock.avail, stock.incoming, stock.eta || '']);
+          const playerStr = pqs.map(({ player: p }) => `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${p.first_name || ''} ${p.last_name || ''}`.trim()).join('; ');
+          const sizeLabel = ki.no_size ? 'Included' : sz;
+          rows.push([ki.label, ki.color || '', cat, sizeLabel, pqs.length, need, price ? price.toFixed(2) : '', price ? (need * price).toFixed(2) : '', playerStr, stock.avail, stock.incoming, stock.eta || '']);
         });
       });
     });
@@ -830,7 +886,7 @@ function RosterTotals({ session, teams, kitTemplate }) {
         if (!activeCats.length) return null;
         const totalUnits = activeCats.reduce((sum, cat) => {
           const bySz = byCat[cat] || {};
-          return sum + Object.values(bySz).reduce((a, ps) => a + ps.length * (ki.qty || 1), 0);
+          return sum + Object.values(bySz).reduce((a, pqs) => a + pqs.reduce((s, pq) => s + pq.qty, 0), 0);
         }, 0);
 
         return (
@@ -871,8 +927,9 @@ function RosterTotals({ session, teams, kitTemplate }) {
                     </thead>
                     <tbody>
                       {sizeKeys.map((sz, szIdx) => {
-                        const ps = bySz[sz] || [];
-                        const need = ps.length * (ki.qty || 1);
+                        const pqs = bySz[sz] || [];
+                        const need = pqs.reduce((s, pq) => s + pq.qty, 0);
+                        const sizeLabel = ki.no_size ? 'Included' : sz;
                         const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
                         const { avail, incoming, eta } = stock;
                         const statusColor = !productId ? '#94a3b8' :
@@ -888,17 +945,17 @@ function RosterTotals({ session, teams, kitTemplate }) {
                         return (
                           <React.Fragment key={sz}>
                             <tr style={{ borderTop: szIdx > 0 ? '1px solid #f1f5f9' : 'none', background: szIdx % 2 === 0 ? '#fff' : '#fafafa' }}>
-                              <td style={{ padding: '7px 14px', fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{sz}</td>
+                              <td style={{ padding: '7px 14px', fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{sizeLabel}</td>
                               <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#0b1220' }}>{need}</td>
                               <td style={{ padding: '7px 10px' }}>
                                 <button onClick={() => setExpanded(e => ({ ...e, [expandKey]: !isExpanded }))}
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11.5, color: '#3b82f6', padding: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
                                   <span style={{ transform: isExpanded ? 'rotate(90deg)' : 'none', display: 'inline-block', transition: 'transform .15s', fontSize: 9 }}>▶</span>
-                                  {ps.slice(0, 3).map(p => {
+                                  {pqs.slice(0, 3).map(({ player: p, qty }) => {
                                     const num = p.jersey_number ? `#${p.jersey_number} ` : '';
                                     const name = [p.first_name, p.last_name].filter(Boolean).join(' ');
-                                    return num + name;
-                                  }).join(', ')}{ps.length > 3 ? ` + ${ps.length - 3} more` : ''}
+                                    return num + name + (qty > 1 ? ` (×${qty})` : '');
+                                  }).join(', ')}{pqs.length > 3 ? ` + ${pqs.length - 3} more` : ''}
                                 </button>
                               </td>
                               <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, color: avail >= need ? '#15803d' : avail > 0 ? '#b45309' : '#94a3b8', fontSize: 13 }}>
@@ -915,13 +972,14 @@ function RosterTotals({ session, teams, kitTemplate }) {
                               <tr style={{ background: '#f0f9ff', borderTop: '1px solid #e0f2fe' }}>
                                 <td colSpan={6} style={{ padding: '8px 20px 10px' }}>
                                   <div style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                                    {ps.length} player{ps.length !== 1 ? 's' : ''} needing {sz} {ki.label}
+                                    {pqs.length} player{pqs.length !== 1 ? 's' : ''} needing {sizeLabel} {ki.label} ({need} unit{need !== 1 ? 's' : ''})
                                   </div>
                                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
-                                    {ps.map(p => (
+                                    {pqs.map(({ player: p, qty }) => (
                                       <span key={p.id} style={{ fontSize: 12, color: '#0b1220' }}>
                                         {p.jersey_number ? <b>#{p.jersey_number}</b> : null}
                                         {p.jersey_number ? ' ' : ''}{[p.first_name, p.last_name].filter(Boolean).join(' ') || '—'}
+                                        {qty > 1 && <b style={{ color: '#b45309' }}> ×{qty}</b>}
                                         <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 4 }}>({teamMap[p.team_id] || 'Unknown team'})</span>
                                       </span>
                                     ))}
@@ -1034,7 +1092,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
         ? await supabase.from('roster_player_sizes').select('*').in('player_id', playerList.map(p => p.id))
         : { data: [] };
       const sizeMap = {};
-      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = r.size; });
+      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty }; });
 
       // Fetch the real product records for every linked SKU (pricing/sizes).
       const pidSet = new Set();
@@ -1054,13 +1112,14 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
         const byProduct = {}; // pid|slot -> { pid, sizes, names, numbers }
         playerList.forEach(p => {
           if (ki.gk_only && !p.is_gk) return;
-          const sz = (sizeMap[p.id] || {})[ki.slot];
+          const cell = (sizeMap[p.id] || {})[ki.slot];
+          const sz = cell?.size;
           if (!sz || sz === '-') return;
           const cat = p.category || 'AM';
           const pid = resolvePid(cat) || '';
           const key = pid || ('__' + ki.slot);
           const bp = byProduct[key] || (byProduct[key] = { pid, sizes: {}, names: {}, numbers: {} });
-          bp.sizes[sz] = (bp.sizes[sz] || 0) + (ki.qty || 1);
+          bp.sizes[sz] = (bp.sizes[sz] || 0) + (cell.qty ?? (ki.qty || 1));
           if (ki.takes_number) {
             const nm = `${p.first_name || ''} ${p.last_name || ''}`.trim();
             (bp.names[sz] = bp.names[sz] || []).push(nm);
