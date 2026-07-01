@@ -1845,7 +1845,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const cs=Array.isArray(it.available_sizes)?it.available_sizes:[];
       const blank=(cs.length===0||(cs.length===1&&normSzName(cs[0])==='OSFA'))&&!(Number(it.nsa_cost)>0)&&!(Number(it.unit_sell)>0);
       if(blank){
-        const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+        const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(Boolean).sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?999:ia)-(ib<0?999:ib)});
         if(apiSizes.length)next.available_sizes=apiSizes;
         const cost=color.customerPrice||color.piecePrice||0;
         if(cost>0){
