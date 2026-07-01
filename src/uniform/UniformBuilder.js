@@ -546,6 +546,7 @@ export default function UniformBuilder({ onExit }) {
           <input ref={fileRef} type="file" accept="image/svg+xml,.svg" style={{ display: 'none' }} onChange={(e) => { onUploadSvg(e.target.files[0]); e.target.value = ''; }} />
           <button style={{ ...btn(false), width: '100%', marginTop: 8, fontSize: 12 }} onClick={() => fileRef.current && fileRef.current.click()}>⭱ Upload SVG Template</button>
           <button style={{ ...btn(false), width: '100%', marginTop: 6, fontSize: 12, borderColor: NSA.red, color: NSA.red }} onClick={() => setShowPhotoreal(true)}>✦ Photoreal (Beta)</button>
+          {tpl.credit && <div style={{ fontSize: 10, color: NSA.textMuted, marginTop: 8, lineHeight: 1.4 }}>{tpl.credit}</div>}
 
           <div style={{ ...railLabel, marginTop: 20 }}>Fabric</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

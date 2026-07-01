@@ -14,9 +14,14 @@
 // Custom uploaded SVGs are converted into this same shape at import time (see
 // parseUploadedSvg below), so a coach's own template is a first-class citizen.
 
+import { RASTER_ZONE_MAP } from './raster';
+
 // Shared helper: a seam is just a path we stroke lightly; grouping keeps the
 // template literals readable.
 const seam = (d, opts = {}) => ({ d, ...opts });
+
+// Public-asset URL helper (CRA serves /public at the site root).
+const PUB = (p) => (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL ? process.env.PUBLIC_URL : '') + p;
 
 // ── Crew / soccer-style jersey ──────────────────────────────────────────────
 // Athletic jersey with a real cut: shallow V-neck, curved cap sleeves, a torso
@@ -176,6 +181,25 @@ const TEMPLATES = {
   hoodie: {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
+  },
+  // Built-in photoreal jersey: a neutral 3D render + zone mask (front/back) shipped
+  // in /public/uniform, so the Photoreal path works out-of-the-box with no import.
+  // Colors/patterns/logos tint through the base's real folds and shadows.
+  octa_jersey: {
+    id: 'octa_jersey', name: 'Photoreal Jersey', category: 'Photoreal', type: 'raster',
+    credit: '3D model “Octa Asa 6” by Sebastian Zayas — CC BY',
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.5, size: 150 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.48, size: 190 }, name: { x: 0.5, y: 0.27, size: 70 } },
+      },
+    },
   },
 };
 
