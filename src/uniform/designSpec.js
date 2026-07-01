@@ -97,6 +97,7 @@ function contrastInk(hex) { return isDark(hex) ? '#ffffff' : '#111827'; }
 const PATTERNS = [
   { id: 'solid', label: 'Solid' },
   { id: 'stripes', label: 'Stripes' },
+  { id: 'boldstripe', label: 'Bold Stripes' },
   { id: 'pinstripe', label: 'Pinstripe' },
   { id: 'chevron', label: 'Chevron' },
   { id: 'fade', label: 'Fade' },

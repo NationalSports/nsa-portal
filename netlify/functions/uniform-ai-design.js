@@ -18,7 +18,7 @@ const MODEL = process.env.UNIFORM_AI_MODEL || 'claude-haiku-4-5';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
 // Vocabularies the model must stay inside. Kept in sync with src/uniform/*.
-const PATTERNS = ['solid', 'stripes', 'pinstripe', 'chevron', 'fade', 'dots', 'camo', 'digicamo', 'carbon', 'hex'];
+const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'camo', 'digicamo', 'carbon', 'hex'];
 const FABRICS = ['matte', 'mesh', 'heather', 'sublimated', 'gloss'];
 const FONTS = ['anton', 'bebas', 'saira', 'oswald', 'graduate', 'squada', 'rye', 'pirata', 'pacifico', 'baloo'];
 

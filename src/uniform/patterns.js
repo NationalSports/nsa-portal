@@ -35,6 +35,7 @@ export function makePatternTile(pattern, a, b) {
   b = b || '#ffffff';
   switch (pattern) {
     case 'stripes': return stripes(a, b, 24, 12);
+    case 'boldstripe': return stripes(a, b, 120, 60);
     case 'pinstripe': return stripes(a, b, 20, 3);
     case 'chevron': return chevron(a, b);
     case 'dots': return dots(a, b);

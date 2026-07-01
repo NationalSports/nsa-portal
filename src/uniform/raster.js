@@ -74,16 +74,39 @@ function computeZoneAlpha(maskImg, zones, w, h, tol = 60) {
   return { zoneAlpha, maskData: md };
 }
 
+// Brighten the base so flat fabric maps to ~white and only folds/shadows stay
+// dark. Without this the mid-gray render multiplies every color darker (white
+// reads as gray). Returns a canvas usable as a drawImage source.
+function normalizeBase(img, w, h) {
+  const c = newCanvas(w, h);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0, w, h);
+  const id = x.getImageData(0, 0, w, h);
+  const d = id.data;
+  let sum = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] > 200) { sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114; n++; }
+  }
+  const mean = n ? sum / n : 180;
+  const factor = Math.min(1.9, 236 / Math.max(mean, 1));
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] > 0) { d[i] = Math.min(255, d[i] * factor); d[i + 1] = Math.min(255, d[i + 1] * factor); d[i + 2] = Math.min(255, d[i + 2] * factor); }
+  }
+  x.putImageData(id, 0, 0);
+  return c;
+}
+
 // Load + precompute everything for a raster view, cached on the view object so we
 // only pay the pixel scan once. Returns the assets bundle renderUniform needs.
 export async function preloadRasterAssets(view) {
   if (view._assets) return view._assets;
-  const base = typeof view.base === 'string' ? await loadImage(view.base) : view.base;
+  const baseImg = typeof view.base === 'string' ? await loadImage(view.base) : view.base;
   const mask = typeof view.mask === 'string' ? await loadImage(view.mask) : view.mask;
-  if (!base || !mask) return null;
-  const w = view.w || base.naturalWidth || base.width;
-  const h = view.h || base.naturalHeight || base.height;
+  if (!baseImg || !mask) return null;
+  const w = view.w || baseImg.naturalWidth || baseImg.width;
+  const h = view.h || baseImg.naturalHeight || baseImg.height;
   const { zoneAlpha, maskData } = computeZoneAlpha(mask, view.zones, w, h);
+  const base = normalizeBase(baseImg, w, h);
   view._assets = { base, w, h, zoneAlpha, maskData };
   return view._assets;
 }
