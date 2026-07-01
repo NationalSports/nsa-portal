@@ -526,8 +526,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 
-function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');const[avail,setAvail]=useState([]);const[showSzPicker,setShowSzPicker]=useState(false);
-  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
+function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');const[avail,setAvail]=useState([]);const[showSzPicker,setShowSzPicker]=useState(false);const[rawInput,setRawInput]=useState({});
+  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false);setRawInput({})}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
   // Ball run (3/4/5, …) checked before numeric — ball sizes are all-digits like the waist run.
@@ -551,8 +551,8 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
           <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:2}}>{cur}</div>
           <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>current</div>
           <input style={{width:52,textAlign:'center',border:'2px solid '+(delta>0?'#22c55e':delta<0?'#ef4444':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,color:delta>0?'#166534':delta<0?'#dc2626':'#0f172a',background:delta>0?'#f0fdf4':delta<0?'#fef2f2':'white'}}
-            value={delta===0?'':((delta>0?'+':'')+delta)} placeholder="±0"
-            onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw)}}/>
+            value={rawInput[sz]!==undefined?rawInput[sz]:(delta===0?'':((delta>0?'+':'')+delta))} placeholder="±0"
+            onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');setRawInput(x=>({...x,[sz]:raw}));if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw);setRawInput(x=>{const n={...x};delete n[sz];return n})}}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>= <strong style={{color:delta!==0?'#1e40af':'#94a3b8'}}>{newVal}</strong></div>
         </div>})}
         <div style={{position:'relative',alignSelf:'center'}}>
