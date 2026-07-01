@@ -790,7 +790,9 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
   if (brand !== 'Adidas') return null;
   if (loading) return <div style={{fontSize:10,color:'#059669',marginTop:4}}>Loading Adidas B2B stock...</div>;
   if (!ai || Object.keys(ai.sizes || {}).length === 0) return <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>No Adidas B2B data — run inventory sync</div>;
-  const b2bTotal = Object.values(ai.sizes).reduce((a, s) => a + (s.qty || 0), 0);
+  // Sum only recognized sizes so the feed's duplicate internal size codes (e.g. 700/710/720 that
+  // mirror ball sizes 3/4/5) don't double-count the B2B total.
+  const b2bTotal = Object.entries(ai.sizes).reduce((a, [sz, s]) => a + (SZ_ORD.includes(sz) ? (s.qty || 0) : 0), 0);
   const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
   const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
   return (<div style={{marginTop:6}}>
@@ -10005,11 +10007,23 @@ export default function App(){
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
+    const _av=ep.available_sizes||[];
     const _isFootwear=(ep.category||'').toLowerCase()==='footwear';
-    const _displaySz=SZ_ORD.filter(sz=>(!_isFootwear&&_coreSz.includes(sz))||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
-    // Append any declared custom size not in SZ_ORD that carries stock (e.g. equipment/ball sizes
-    // or one-off labels typed into Available Sizes) so weird sizes aren't silently hidden here.
-    (ep.available_sizes||[]).forEach(sz=>{if(!_displaySz.includes(sz)&&(ep._inv?.[sz]||0)>0)_displaySz.push(sz)});
+    // Standard letter-sized apparel shows the full core grid (even empty sizes). Footwear shows its
+    // declared sizes that carry stock. Ball / numeric / OSFA / custom runs show their own declared
+    // sizes so the real scale (e.g. a ball's 3/4/5) is visible instead of an apparel grid.
+    const _isApparel=!_isFootwear&&(_av.length===0||_av.some(s=>_coreSz.includes(s)));
+    let _displaySz;
+    if(_isApparel){
+      _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||(_av.includes(sz)&&(ep._inv?.[sz]||0)>0));
+    }else if(_isFootwear){
+      _displaySz=SZ_ORD.filter(sz=>_av.includes(sz)&&(ep._inv?.[sz]||0)>0);
+    }else{
+      _displaySz=[..._av].filter((s,i,a)=>a.indexOf(s)===i).sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?999:ia)-(ib<0?999:ib)});
+    }
+    // Surface any size that actually carries stock but isn't already shown (custom labels, or
+    // footwear/ball sizes with stock outside the declared run) so inventory is never hidden.
+    Object.keys(ep._inv||{}).forEach(sz=>{if((ep._inv?.[sz]||0)>0&&!_displaySz.includes(sz))_displaySz.push(sz)});
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
