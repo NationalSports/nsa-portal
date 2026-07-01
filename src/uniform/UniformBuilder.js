@@ -304,10 +304,27 @@ const AI_EXAMPLES = [
   'Blackout uniform, charcoal digital camo, neon green number',
 ];
 
+// Demo starter design: the Argentina/Messi kit on the photoreal jersey, so the
+// builder opens on a finished-looking example. Reset/garment-swap clears it.
+const MESSI_PRESET = ds.normalizeSpec({
+  garmentId: 'octa_jersey', fabric: 'sublimated',
+  zones: {
+    body: { color: '#7cb0e0', color2: '#ffffff', pattern: 'boldstripe' },
+    sleeveL: { color: '#7cb0e0', pattern: 'solid' },
+    sleeveR: { color: '#7cb0e0', pattern: 'solid' },
+    collar: { color: '#0b1b39', pattern: 'solid' },
+  },
+  text: {
+    front: { number: { value: '10', font: 'anton', fill: '#0b1b39', outline: '#ffffff', outlineWidth: 5, size: 0.95 }, name: { value: '', font: 'saira' } },
+    back: { number: { value: '10', font: 'anton', fill: '#0b1b39', outline: '#ffffff', outlineWidth: 6, size: 1.3 }, name: { value: 'MESSI', font: 'saira', fill: '#0b1b39', outline: '#ffffff', size: 0.7 } },
+  },
+  meta: { teamName: 'Argentina' },
+});
+
 export default function UniformBuilder({ onExit }) {
-  // Open on the photoreal jersey — it reads as a real garment, unlike the flat
-  // vector templates (which stay available in the garment picker).
-  const [spec, setSpec] = useState(() => ds.makeDefaultSpec('octa_jersey'));
+  // Open on the Messi/Argentina demo design so the first view is a finished-
+  // looking kit on the photoreal jersey (vector templates stay in the picker).
+  const [spec, setSpec] = useState(() => JSON.parse(JSON.stringify(MESSI_PRESET)));
   const [view, setView] = useState('front');
   const [selectedZone, setSelectedZone] = useState('body');
   const [selectedLogoId, setSelectedLogoId] = useState(null);
