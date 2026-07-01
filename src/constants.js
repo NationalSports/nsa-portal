@@ -389,11 +389,18 @@ export const NUMERIC_DEFAULT_SIZES=['28','30','32','34','36','38','40'];
 export const BALL_SIZES=['1','2','3','4','5','6','7'];
 // Default run for a new ball / equipment product (soccer-ball sizing)
 export const BALL_DEFAULT_SIZES=['3','4','5'];
+// Infant / toddler sizes (Rabbit Skins, Precious Cargo, etc.) as returned by the SanMar / S&S
+// live-search APIs. Both padded ("06M") and unpadded ("6M") month forms plus common ranges are
+// listed so whichever token a vendor sends orders correctly. Appended to the END of SZ_ORD (never
+// prepended — App.js relies on SZ_ORD.slice(0,6) being the youth block); an infant product only
+// carries infant sizes, so their relative order within the run is what matters.
+export const INFANT_SIZES=['NB','0-3M','3M','03M','3-6M','6M','06M','6-9M','9M','09M','6-12M','9-12M','12M','12-18M','18M','18-24M','24M','2T','3T','4T','5T','6T'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','4XLT','5XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
   '1','2','3','4',
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
-  '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
+  '28','30','32','34','36','38','40','42','44','46','48','50','52','54',
+  ...INFANT_SIZES];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
   'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
