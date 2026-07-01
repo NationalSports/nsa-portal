@@ -382,8 +382,16 @@ export const FOOTWEAR_DEFAULT_SIZES=['7','7.5','8','8.5','9','9.5','10','10.5','
 export const NUMERIC_SIZES=['26','28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 // Default waist run for new numeric products
 export const NUMERIC_DEFAULT_SIZES=['28','30','32','34','36','38','40'];
+// Ball / small-numeric sizes for equipment that isn't apparel/footwear/waist — soccer balls
+// (3/4/5), basketballs (5/6/7), volleyballs (5), and similar small numeric runs. Note that
+// 5/6/7 already exist in the footwear block of SZ_ORD; the low numbers 1–4 are added there too
+// (right before '4.5') so a full ball run sorts 3,4,5 and passes every SZ_ORD.filter/includes site.
+export const BALL_SIZES=['1','2','3','4','5','6','7'];
+// Default run for a new ball / equipment product (soccer-ball sizing)
+export const BALL_DEFAULT_SIZES=['3','4','5'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','4XLT','5XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
+  '1','2','3','4',
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',

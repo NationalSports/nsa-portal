@@ -17,7 +17,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
@@ -4696,6 +4696,42 @@ export default function App(){
     fetchAdidasInventoryBulk(adidasSkus).then(data=>{if(data)setAdidasInvBulk(data)}).catch(e=>console.warn('[Adidas B2B] Bulk fetch error:',e));
     fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync fetch error:',e));
   },[prod]);
+  // Auto-apply accurate vendor sizes from the scrape. Once the synced B2B feed
+  // (inventory_unified, already loaded into adidasInvBulk) is available, any Adidas
+  // item still on an empty/generic size default gets its real size run applied — e.g.
+  // a soccer ball defaulted to S–2XL becomes 3/4/5. Only recognized sizes are kept, so
+  // the feed's internal size codes (700/710/720 duplicating 3/4/5, cm codes, _na, …) are
+  // dropped; items whose feed yields no recognizable sizes, and items a rep has already
+  // sized to something non-generic, are left untouched. Persisted via the products
+  // diff-save effect above (available_sizes is part of _prodDiffCmp). Runs once/session.
+  const _adidasSizeReconciled=useRef(false);
+  React.useEffect(()=>{
+    if(_adidasSizeReconciled.current)return;
+    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    if(!prod||!prod.length)return;
+    const bulkSkus=Object.keys(adidasInvBulk);
+    if(!bulkSkus.length)return;// wait for the B2B feed to load
+    _adidasSizeReconciled.current=true;
+    const byUp={};bulkSkus.forEach(sku=>{byUp[String(sku).toUpperCase()]=adidasInvBulk[sku]});
+    const GENERIC='S,M,L,XL,2XL';
+    const changes={};
+    prod.forEach(p=>{
+      if((p.brand||'')!=='Adidas'||!p.sku)return;
+      const cur=p.available_sizes||[];
+      if(cur.length!==0&&cur.join(',')!==GENERIC)return;// respect deliberate (non-default) sizing
+      const ai=byUp[String(p.sku).toUpperCase()];
+      if(!ai||!ai.sizes)return;
+      const cleaned=SZ_ORD.filter(s=>ai.sizes[s]!==undefined);// keep recognized sizes only, in SZ_ORD order
+      if(!cleaned.length)return;// feed had only unrecognized codes → leave as-is
+      if(cleaned.join(',')===cur.join(','))return;// no change
+      changes[p.id]=cleaned;
+    });
+    const ids=Object.keys(changes);
+    if(!ids.length)return;
+    setProd(prev=>prev.map(x=>changes[x.id]?{...x,available_sizes:changes[x.id]}:x));
+    console.log('[Adidas size sync] applied vendor sizes to '+ids.length+' Adidas product(s) from the B2B feed');
+    nf('Applied vendor sizes to '+ids.length+' Adidas item'+(ids.length>1?'s':'')+' from the stock feed');
+  },[adidasInvBulk,prod]);// eslint-disable-line
 
   // ─── Adidas B2B CSV Upload Handler ───
   const handleAdidasCSVUpload=async(file)=>{
@@ -9971,6 +10007,9 @@ export default function App(){
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
     const _isFootwear=(ep.category||'').toLowerCase()==='footwear';
     const _displaySz=SZ_ORD.filter(sz=>(!_isFootwear&&_coreSz.includes(sz))||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
+    // Append any declared custom size not in SZ_ORD that carries stock (e.g. equipment/ball sizes
+    // or one-off labels typed into Available Sizes) so weird sizes aren't silently hidden here.
+    (ep.available_sizes||[]).forEach(sz=>{if(!_displaySz.includes(sz)&&(ep._inv?.[sz]||0)>0)_displaySz.push(sz)});
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -10039,16 +10078,21 @@ export default function App(){
                 <div><label className="form-label">📍 Bin / Location</label><input className="form-input" list="nsa-bins" placeholder="e.g. A-12" value={ep.bin||''} onChange={e=>setEp(x=>({...x,bin:e.target.value}))}/><datalist id="nsa-bins">{BINS.map(b=><option key={b} value={b}/>)}</datalist></div>
                 <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
-                {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';const isNum=!isFw&&curAvail.length>0&&curAvail.every(s=>/^\d+$/.test(s));const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':(isNum?'numeric':'apparel'));
+                {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';
+                  // Ball run (3/4/5, 5/6/7, …) checked before numeric: ball sizes are all-digits and
+                  // would otherwise read as the waist "Numeric" mode.
+                  const isBall=!isFw&&curAvail.length>0&&curAvail.every(s=>BALL_SIZES.includes(s));
+                  const isNum=!isFw&&!isBall&&curAvail.length>0&&curAvail.every(s=>/^\d+$/.test(s));const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':(isBall?'ball':(isNum?'numeric':'apparel')));
                   const switchMode=(mode)=>{
                     if(mode==='footwear')setEp(x=>({...x,category:'Footwear',available_sizes:[...FOOTWEAR_DEFAULT_SIZES]}));
                     else if(mode==='osfa')setEp(x=>({...x,available_sizes:['OSFA']}));
+                    else if(mode==='ball')setEp(x=>({...x,available_sizes:[...BALL_DEFAULT_SIZES]}));
                     else if(mode==='numeric'){const cat=(ep.category||'').toLowerCase()==='footwear'?'Shorts':(ep.category||'Shorts');setEp(x=>({...x,category:cat,available_sizes:[...NUMERIC_DEFAULT_SIZES]}))}
                     else{const cat=(ep.category||'').toLowerCase()==='footwear'?'Tees':(ep.category||'Tees');setEp(x=>({...x,category:cat,available_sizes:['S','M','L','XL','2XL']}))}
                   };
                   return<div style={{gridColumn:'1/3'}}><label className="form-label">Size Mode</label>
                     <div style={{display:'flex',gap:6}}>
-                      {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'numeric',l:'📐 Numeric'}].map(m=>
+                      {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'numeric',l:'📐 Numeric'},{k:'ball',l:'⚽ Ball'}].map(m=>
                         <button key={m.k} type="button" onClick={()=>switchMode(m.k)} style={{flex:1,padding:'6px 8px',fontSize:12,fontWeight:700,borderRadius:6,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
                     </div>
                   </div>;

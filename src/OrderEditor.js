@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
@@ -2054,6 +2054,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=auCostMult(it.brand,true);uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
     }else if(mode==='osfa'){uI(i,'available_sizes',['OSFA']);uI(i,'is_footwear',false);
       if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=auCostMult(it.brand,false);uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
+    }else if(mode==='ball'){uI(i,'available_sizes',[...BALL_DEFAULT_SIZES]);uI(i,'is_footwear',false);
+      if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=auCostMult(it.brand,false);uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
     }else{uI(i,'available_sizes',['S','M','L','XL','2XL']);uI(i,'is_footwear',false);
       if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=auCostMult(it.brand,false);uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
     }
@@ -3480,8 +3482,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const pMg=pRev-pCost;
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
       const defaultSzList=item.is_footwear?FOOTWEAR_DEFAULT_SIZES:['S','M','L','XL','2XL'];
-      const sizePool=item.is_footwear?FOOTWEAR_SIZES:APPAREL_SIZES;
-      const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+      // Ball / equipment run (all declared sizes are ball sizes) → offer the ball pool in the +Size picker.
+      const isBallItem=!item.is_footwear&&(item.available_sizes||[]).length>0&&(item.available_sizes||[]).every(s=>BALL_SIZES.includes(s));
+      const sizePool=item.is_footwear?FOOTWEAR_SIZES:(isBallItem?BALL_SIZES:APPAREL_SIZES);
+      // Keep any size the item actually declares — including custom/ball labels not in SZ_ORD — rather
+      // than dropping it. Known sizes order by SZ_ORD; unknown/custom labels sort to the end.
+      const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s)).sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?999:ia)-(ib<0?999:ib)});
       const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
@@ -3586,12 +3592,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {showItemMenu===idx&&itemMenuPos&&createPortal(<>
                 <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:1039}} onClick={()=>{setShowItemMenu(null);setItemMenuPos(null)}}/>
                 <div style={{position:'fixed',...(itemMenuPos.top!=null?{top:itemMenuPos.top}:{bottom:itemMenuPos.bottom}),right:itemMenuPos.right,maxHeight:itemMenuPos.maxH,overflowY:'auto',background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:1040,minWidth:200,padding:4}}>
-                  {(()=>{const curAvail=item.available_sizes||[];const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
+                  {(()=>{const curAvail=item.available_sizes||[];const _isBall=!item.is_footwear&&curAvail.length>0&&curAvail.every(s=>BALL_SIZES.includes(s));const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':(_isBall?'ball':'apparel'));
                     const switchMode=(mode)=>{setSizeMode(idx,mode);setShowItemMenu(null)};
                     return<>
                       <div style={{padding:'4px 10px 2px',fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>Size mode</div>
                       <div style={{display:'flex',gap:3,padding:'2px 6px 6px'}}>
-                        {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'}].map(m=><button key={m.k} onClick={()=>switchMode(m.k)} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
+                        {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'ball',l:'⚽ Ball'}].map(m=><button key={m.k} onClick={()=>switchMode(m.k)} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
                       </div>
                       <div style={{height:1,background:'#e2e8f0',margin:'2px 0 4px'}}/>
                     </>})()}
@@ -3684,10 +3690,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:9,fontWeight:700,color:'#64748b'}}>Click multiple, then Done</span>
                   <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setShowSzPicker(null)}>Done</button>
                 </div>
-                {(()=>{const curMode=item.is_footwear?'footwear':((item.available_sizes||[]).join(',')==='OSFA'?'osfa':'apparel');return<>
+                {(()=>{const _isBall=!item.is_footwear&&(item.available_sizes||[]).length>0&&(item.available_sizes||[]).every(s=>BALL_SIZES.includes(s));const curMode=item.is_footwear?'footwear':((item.available_sizes||[]).join(',')==='OSFA'?'osfa':(_isBall?'ball':'apparel'));return<>
                   <div style={{width:'100%',fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>Size type</div>
                   <div style={{width:'100%',display:'flex',gap:3,marginBottom:4}}>
-                    {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'}].map(m=><button key={m.k} onClick={()=>{if(m.k!==curMode)setSizeMode(idx,m.k)}} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
+                    {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'ball',l:'⚽ Ball'}].map(m=><button key={m.k} onClick={()=>{if(m.k!==curMode)setSizeMode(idx,m.k)}} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
                   </div>
                   <div style={{width:'100%',borderTop:'1px solid #e2e8f0',marginBottom:3}}/>
                 </>})()}
@@ -6751,7 +6757,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // are ordered against a single 'QTY' line so they aren't silently left off the PO.
       const QTY_SZ='QTY';
       const openSizesFor=it=>{
-        const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+        const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});
         if(szList.length>0)return szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,v-picked-po)]}).filter(([,v])=>v>0);
         const est=safeNum(it.est_qty);
         if(est>0){const picked=safePicks(it).reduce((a,pk)=>a+(pk[QTY_SZ]||0),0);const po=poCommitted(it.po_lines,QTY_SZ);return[[QTY_SZ,Math.max(0,est-picked-po)]].filter(([,v])=>v>0)}
@@ -7056,7 +7062,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // line keeps its own PO + receiving record (quantities are split back on submit). Key on
       // SKU+color; Momentec carries a design-specific order SKU (_mt_style/_mt_color) the vendor
       // treats as distinct, so those never merge even when the base SKU/color match.
-      const _SZ_ORDER=['XS','S','M','L','XL','2XL','3XL','4XL'];
+      const _SZ_ORDER=SZ_ORD;// full size ordering (apparel + footwear + ball/numeric) so PO size cells run smallest→largest
       const _openMapOf=osz=>{const m={};osz.forEach(([sz,v])=>{m[sz]=v});return m};
       const _grpKeyOf=it=>[it.sku||'',it.color||'',it._mt_style||'',it._mt_color||''].join('|');
       const _grpMap=new Map();
