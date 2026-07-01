@@ -5824,7 +5824,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const fuAt=_auto?new Date(Date.now()+((_fu.firstDays||3)*86400000)).toISOString():(fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null);
       const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||'',messageId:_msgId||null};
       const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry],
-        follow_up_auto:!!_auto,follow_up_interval_days:_auto?(_fu.intervalDays||0):null,follow_up_message:_auto?(_fu.message||''):null,follow_up_to:_auto?(_toEmails||''):null,follow_up_max:_auto?(_fu.max||4):null,follow_up_count:0,follow_up_last_sent_at:null};
+        // Automation columns only exist on estimates — SOs don't get them (sales_orders has no such columns).
+        ...(isE?{follow_up_auto:!!_auto,follow_up_interval_days:_auto?(_fu.intervalDays||0):null,follow_up_message:_auto?(_fu.message||''):null,follow_up_to:_auto?(_toEmails||''):null,follow_up_max:_auto?(_fu.max||4):null,follow_up_count:0,follow_up_last_sent_at:null}:{})};
       if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
       else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
@@ -6716,8 +6717,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Update invoice email status with follow-up and history
             const invNow=new Date().toLocaleString();
             // Automated follow-ups (server sweep) take priority; else fall back to the manual reminder.
+            // Base the first follow-up on the ACTUAL initial-send time — for a future-dated invoice the
+            // email goes out on invSendAt, so counting from now could fire a follow-up before it.
             const _invAuto=invFollowUp&&invFollowUp.auto;
-            const invFuAt=_invAuto?new Date(Date.now()+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null);
+            const _invFuBase=_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now();
+            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null);
             const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null,...(_scheduleFuture?{scheduled_for:invSendAt,scheduled_id:res.scheduledId}:{})};
             const _invAutoCols=_invAuto?{follow_up_auto:true,follow_up_interval_days:invFollowUp.intervalDays||0,follow_up_message:invFollowUp.message||'',follow_up_to:toEmail,follow_up_max:invFollowUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist],..._invAutoCols}:i));

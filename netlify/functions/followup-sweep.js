@@ -109,6 +109,20 @@ exports.handler = async () => {
     results.stopped++;
   };
 
+  // Send failed (bad recipient, transient Brevo outage). Back off a few hours instead of
+  // hammering every hourly sweep, and count the attempt toward the cap so a permanently
+  // rejected recipient can't retry forever — it stops after follow_up_max total attempts.
+  // A brief outage costs at most one slot (the 3h backoff usually clears before the next try).
+  const FAIL_BACKOFF_MS = 3 * 3600000;
+  const backoff = async (table, row) => {
+    const count = (row.follow_up_count || 0) + 1;
+    const max = row.follow_up_max || DEFAULT_MAX;
+    const upd = count >= max
+      ? { follow_up_count: count, follow_up_at: null, follow_up_auto: false }
+      : { follow_up_count: count, follow_up_at: new Date(Date.now() + FAIL_BACKOFF_MS).toISOString() };
+    await admin.from(table).update(upd).eq('id', row.id);
+  };
+
   const FU_COLS = 'follow_up_at, follow_up_auto, follow_up_interval_days, follow_up_message, follow_up_to, follow_up_count, follow_up_max, follow_up_last_sent_at, sent_history';
 
   // ── Estimates ─────────────────────────────────────────────────────────────
@@ -130,7 +144,7 @@ exports.handler = async () => {
       const msg = r.follow_up_message || defaultMessage('estimate', r.memo, link);
       const out = await sendEmail({ toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate'), replyTo: reps[r.created_by] });
       if (out.ok) { results.estimate++; await finalize('estimates', r, true, histEntry('estimate', to, r, out.messageId)); }
-      else { results.errors++; }
+      else { results.errors++; await backoff('estimates', r); }
     }
   } catch (e) { results.errors++; console.error('[followup-sweep] estimates', e.message); }
 
@@ -153,7 +167,7 @@ exports.handler = async () => {
       const msg = r.follow_up_message || defaultMessage('invoice', r.id, link);
       const out = await sendEmail({ toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice'), replyTo: reps[r.created_by] });
       if (out.ok) { results.invoice++; await finalize('invoices', r, true, histEntry('invoice', to, r, out.messageId)); }
-      else { results.errors++; }
+      else { results.errors++; await backoff('invoices', r); }
     }
   } catch (e) { results.errors++; console.error('[followup-sweep] invoices', e.message); }
 
@@ -184,7 +198,7 @@ exports.handler = async () => {
       const msg = r.follow_up_message || defaultMessage('art', r.art_name, link);
       const out = await sendEmail({ toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork'), replyTo: reps[so.created_by] });
       if (out.ok) { results.art++; await finalize('so_jobs', r, true, histEntry('art', to, r, out.messageId)); }
-      else { results.errors++; }
+      else { results.errors++; await backoff('so_jobs', r); }
     }
   } catch (e) { results.errors++; console.error('[followup-sweep] so_jobs', e.message); }
 
