@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1585,6 +1585,56 @@ describe('Ready-for-decoration transition (jobsNowReadyForDeco)', () => {
   test('handles null/undefined job lists', () => {
     expect(jobsNowReadyForDeco(null, null)).toEqual([]);
     expect(jobsNowReadyForDeco(undefined, [nextJob()])).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Items-received timestamp (jobReceivedAt)
+// ═══════════════════════════════════════════════
+describe('Items-received timestamp (jobReceivedAt)', () => {
+  const job = { id: 'JOB-1', items: [{ item_idx: 0 }] };
+
+  test('uses the pulled pick timestamp, not updated_at', () => {
+    const items = [{ pick_lines: [{ status: 'pulled', pulled_at: '3/2/2026, 8:10:00 AM', S: 5 }] }];
+    expect(jobReceivedAt(job, items)).toBe('3/2/2026, 8:10:00 AM');
+  });
+
+  test('ignores picks that are still open (not pulled)', () => {
+    const items = [{ pick_lines: [{ status: 'pick', pulled_at: '3/2/2026, 8:10:00 AM' }] }];
+    expect(jobReceivedAt(job, items)).toBeNull();
+  });
+
+  test('uses a received PO shipment date', () => {
+    const items = [{ po_lines: [{ status: 'received', received: { S: 10 }, shipments: [{ date: '3/5/2026', S: 10 }] }] }];
+    expect(jobReceivedAt(job, items)).toBe('3/5/2026');
+  });
+
+  test('ignores shipment dates on a PO with nothing received yet', () => {
+    const items = [{ po_lines: [{ status: 'ordered', received: {}, shipments: [{ date: '3/5/2026' }] }] }];
+    expect(jobReceivedAt(job, items)).toBeNull();
+  });
+
+  test('picks the latest across picks and PO receipts', () => {
+    const items = [{
+      pick_lines: [{ status: 'pulled', pulled_at: '3/1/2026, 9:00:00 AM', S: 3 }],
+      po_lines: [{ status: 'received', received: { M: 4 }, shipments: [{ date: '3/9/2026', M: 4 }] }],
+    }];
+    expect(jobReceivedAt(job, items)).toBe('3/9/2026');
+  });
+
+  test('only counts the job\'s own items', () => {
+    const twoItemJob = { id: 'JOB-1', items: [{ item_idx: 1 }] };
+    const items = [
+      { pick_lines: [{ status: 'pulled', pulled_at: '3/1/2026, 9:00:00 AM' }] }, // idx 0 — not this job's
+      { pick_lines: [{ status: 'pulled', pulled_at: '3/8/2026, 2:00:00 PM' }] }, // idx 1 — this job's
+    ];
+    expect(jobReceivedAt(twoItemJob, items)).toBe('3/8/2026, 2:00:00 PM');
+  });
+
+  test('returns null for legacy data with no timestamps', () => {
+    expect(jobReceivedAt(job, [{ pick_lines: [{ status: 'pulled', S: 5 }] }])).toBeNull();
+    expect(jobReceivedAt(job, [])).toBeNull();
+    expect(jobReceivedAt(null, [])).toBeNull();
   });
 });
 

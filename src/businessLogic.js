@@ -486,6 +486,35 @@ const jobsNowReadyForDeco = (prevJobs, nextJobs) => safeArr(nextJobs).filter(j =
   return !!prev && prev.item_status !== 'items_received';
 });
 
+// ── When did a job's items actually arrive? ──
+// items_received_at was never persisted, so the dashboard's "All items received" notifications
+// and to-dos fell back to updated_at — which tracks the LAST edit of the SO/job (inventory syncs,
+// memo tweaks, status changes), making long-received jobs read "Yesterday". Derive the real moment
+// instead from the receipts that fulfilled the job: the latest pulled pick (pulled_at) and the
+// latest PO shipment receipt (shipment.date) across the job's items. Mirrors how the "IF pulled"
+// feed already timestamps itself off pulled_at. Returns the raw timestamp string (whatever format
+// it was stored in — parseable by new Date()) or null when nothing is timestamped (legacy data),
+// leaving the caller to pick its own fallback. Self-healing: works for existing + new jobs, no migration.
+const jobReceivedAt = (j, items) => {
+  if (!j) return null;
+  let latest = -Infinity, raw = null;
+  const bump = (d) => { if (!d) return; const t = new Date(d).getTime(); if (!isNaN(t) && t > latest) { latest = t; raw = d; } };
+  const idxs = new Set((j.items || []).map(gi => gi.item_idx));
+  safeArr(items).forEach((it, ii) => {
+    if (!idxs.has(ii)) return;
+    safePicks(it).forEach(pk => { if (pk.status === 'pulled') bump(pk.pulled_at); });
+    safePOs(it).forEach(po => {
+      const rcvd = po.received || {};
+      // Only count a PO's shipment dates once it has actually received units — an ordered-but-not-yet-
+      // received PO carries no receipt, so its (absent) shipments shouldn't stamp a receive time.
+      if (Object.keys(rcvd).some(sz => safeNum(rcvd[sz]) > 0)) {
+        safeArr(po.shipments).forEach(s => bump(s && s.date));
+      }
+    });
+  });
+  return raw;
+};
+
 // ── Linking jobs that share a decoration ("run together") ──
 // Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
 // deco type, the same way art is de-duped across orders elsewhere). Used to auto-detect jobs
@@ -891,7 +920,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
