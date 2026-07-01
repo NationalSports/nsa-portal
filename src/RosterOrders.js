@@ -77,6 +77,34 @@ function useKitInventory(items) {
 const _dotColor = (avail, incoming) =>
   avail > 0 ? '#15803d' : incoming > 0 ? '#b45309' : '#dc2626';
 
+// ─── Dismissible step-by-step instructions ─────────────────────────────────────
+// A small "how this works" card a coach can dismiss for good (per browser, via
+// localStorage) once they've read it — reappears for a fresh device/coach.
+function InstructionsCard({ storageKey, title, steps }) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(storageKey) !== '1'; } catch { return true; }
+  });
+  if (!open) return null;
+  const dismiss = () => {
+    try { localStorage.setItem(storageKey, '1'); } catch { /* noop */ }
+    setOpen(false);
+  };
+  return (
+    <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 12, padding: '12px 16px', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <span style={{ fontSize: 16 }}>💡</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 12.5, color: '#1e3a5f', marginBottom: 6 }}>{title}</div>
+          <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: '#334155', lineHeight: 1.7 }}>
+            {steps.map((s, i) => <li key={i}>{s}</li>)}
+          </ol>
+        </div>
+        <button onClick={dismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#93c5fd', fontSize: 18, lineHeight: 1, padding: 0, flexShrink: 0 }} title="Dismiss">×</button>
+      </div>
+    </div>
+  );
+}
+
 // Default Encinitas-style kit — used to seed a brand-new item catalog so staff
 // have a starting point to attach product IDs to.
 const DEFAULT_KIT = [
@@ -614,6 +642,31 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   const linkedGroups = (ki) => ['YM', 'WM', 'AM'].filter(g =>
     g === 'YM' ? !!ki.product_youth_id : g === 'WM' ? !!ki.product_womens_id : !!ki.product_id);
 
+  // Quick per-item, per-size totals for THIS team — reuses the same {size,qty,
+  // group} state already loaded for the grid above, so no extra query. The full
+  // cross-team buy-sheet still lives in the session's separate Totals view.
+  const teamTotals = useMemo(() => {
+    const result = {};
+    kitItems.forEach(ki => {
+      const byCat = {};
+      const groups = linkedGroups(ki);
+      players.forEach(p => {
+        if (ki.gk_only && !p.is_gk) return;
+        const cell = (sizes[p.id] || {})[ki.slot];
+        const sz = cell?.size;
+        if (!sz || sz === '-') return;
+        const defaultCat = p.category || 'AM';
+        const cat = cell.group || (groups.includes(defaultCat) ? defaultCat : (groups[0] || 'AM'));
+        if (!byCat[cat]) byCat[cat] = {};
+        if (!byCat[cat][sz]) byCat[cat][sz] = [];
+        byCat[cat][sz].push({ player: p, qty: cell.qty ?? (ki.qty || 1) });
+      });
+      result[ki.slot] = byCat;
+    });
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kitItems, players, sizes]);
+
   const sizeCell = (player, ki) => {
     const cell = (sizes[player.id] || {})[ki.slot] || { size: '-', qty: null, group: null };
     const val = cell.size || '-';
@@ -793,6 +846,44 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
         {!editable && isLocked && <span style={{ color: '#15803d', marginLeft: 6 }}>· Roster locked</span>}
         {!editable && !isLocked && readOnly && <span style={{ color: '#94a3b8', marginLeft: 6 }}>· Read-only</span>}
       </div>
+
+      {/* Quick totals — every size entered so far on this team, summed live as
+          the grid above is filled in. The full cross-team buy-sheet with
+          availability/incoming/ETA lives in the session's separate Totals view. */}
+      {players.length > 0 && kitItems.some(ki => Object.values(teamTotals[ki.slot] || {}).some(bySz => Object.keys(bySz).length)) && (
+        <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ background: '#f8fafc', padding: '10px 14px', fontWeight: 800, fontSize: 12.5, color: '#0b1220', borderBottom: '1px solid #e2e8f0' }}>
+            📊 {team.name}'s totals so far
+          </div>
+          <div style={{ padding: 14 }}>
+            {kitItems.map(ki => {
+              const byCat = teamTotals[ki.slot] || {};
+              const cats = ['YM', 'WM', 'AM'].filter(cat => Object.keys(byCat[cat] || {}).length);
+              if (!cats.length) return null;
+              return (
+                <div key={ki.slot} style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: 12.5, color: '#0b1220', minWidth: 120 }}>
+                    {ki.label}{ki.color ? ` (${ki.color})` : ''}
+                  </span>
+                  {cats.flatMap(cat => Object.entries(byCat[cat]).map(([sz, pqs]) => {
+                    const need = pqs.reduce((s, pq) => s + pq.qty, 0);
+                    const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
+                      : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+                    const stock = productId ? getStock(productId, sz) : null;
+                    const label = ki.no_size ? 'Incl.' : sz;
+                    return (
+                      <span key={cat + sz} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#f1f5f9', borderRadius: 999, padding: '4px 11px', fontSize: 12 }}>
+                        {stock && <span style={{ width: 7, height: 7, borderRadius: '50%', background: _dotColor(stock.avail, stock.incoming) }} />}
+                        <b>{label}</b> × {need}
+                      </span>
+                    );
+                  }))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1845,6 +1936,14 @@ export function RosterOrdersCoach({ customer }) {
           <button onClick={() => { setOpenTeam(null); }} style={{ marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>← All teams</button>
         </div>
         <div style={{ padding: 16 }}>
+          <InstructionsCard storageKey="nsa_roster_tip_grid" title="Filling out your roster"
+            steps={[
+              'Add each player at the bottom of the table — name, number, and category (Youth/Women’s/Adult).',
+              'Type a size into each item box and press Tab — suggestions pop up as you type, and Tab jumps to the next box.',
+              'A second small box appears next to an item if it comes in more than one size type — change it if a player needs a different cut than their category (e.g. a Youth jersey with Adult shorts).',
+              'Use the − / + under a size to change how many of that item this player needs (e.g. extra shorts).',
+              'Lock the roster once it’s ready — locked rosters can’t be edited until unlocked.',
+            ]} />
           <TeamRosterEditor team={openTeam} kitTemplate={kitFor(session)} readOnly={false} />
           {/* Invite another coach to this team */}
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>
@@ -1896,6 +1995,14 @@ export function RosterOrdersCoach({ customer }) {
           + New order
         </button>
       </div>
+
+      <InstructionsCard storageKey="nsa_roster_tip_sessions" title="How this works"
+        steps={[
+          'Create a season order (e.g. "Younger Girls 2026") — or open one that already exists below.',
+          'Add each of your teams to that order.',
+          'Click a team to add its players and pick sizes for each item.',
+          'Once every team is filled in, submit the order to your rep from inside it.',
+        ]} />
 
       {newSession.open && (
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 12, background: '#f8fafc' }}>
