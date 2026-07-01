@@ -1499,15 +1499,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sell=rQ(cost*(o.default_markup||1.65));
     // Try to match a catalog product for this SKU to get its full available_sizes
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes.
-    // For Richardson, trust the feed's size tokens verbatim (e.g. "Y", "XS-SM", "SM-MD", "LG-XL").
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
-    // SanMar provides availableSizes as comma-separated string
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    // For non-RS items keep the legacy default; for Richardson use only what the feed gives us.
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
-    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    // Build available sizes from what the vendor feed actually offers. Trust every provider's size
+    // tokens verbatim — like Richardson always has — so infant/toddler and other non-standard runs
+    // (e.g. Rabbit Skins NB/06M/12M/18M/24M from SanMar / S&S) come through intact instead of being
+    // dropped by an SZ_ORD filter and back-filled with S–2XL.
+    const apiSizes=color.sizes.map(s=>s.sizeName).filter(Boolean);
+    const catSizes=(catMatch?.available_sizes||[]);
+    // SanMar provides availableSizes as a comma-separated string.
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
+    // Only fall back to the standard adult run when the feed gave us no sizes at all.
+    const _feedSizes=[...new Set([...apiSizes,...catSizes,...smSizes])];
+    const STD_SIZES=(isRS||_feedSizes.length)?[]:['S','M','L','XL','2XL'];
+    let availSizes=[..._feedSizes,...STD_SIZES];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     color.sizes.forEach(s=>{
@@ -1698,11 +1701,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
-    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    const apiSizes=color.sizes.map(s=>s.sizeName).filter(Boolean);
+    const catSizes=(catMatch?.available_sizes||[]);
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
+    const _feedSizes=[...new Set([...apiSizes,...catSizes,...smSizes])];
+    const STD_SIZES=(isRS||_feedSizes.length)?[]:['S','M','L','XL','2XL'];
+    let availSizes=[..._feedSizes,...STD_SIZES];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
@@ -1779,11 +1783,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
-    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
-    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    const apiSizes=color.sizes.map(s=>s.sizeName).filter(Boolean);
+    const catSizes=(catMatch?.available_sizes||[]);
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
+    const _feedSizes=[...new Set([...apiSizes,...catSizes,...smSizes])];
+    const STD_SIZES=(isRS||_feedSizes.length)?[]:['S','M','L','XL','2XL'];
+    let availSizes=[..._feedSizes,...STD_SIZES];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
@@ -1840,7 +1845,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const cs=Array.isArray(it.available_sizes)?it.available_sizes:[];
       const blank=(cs.length===0||(cs.length===1&&normSzName(cs[0])==='OSFA'))&&!(Number(it.nsa_cost)>0)&&!(Number(it.unit_sell)>0);
       if(blank){
-        const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+        const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(Boolean).sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?999:ia)-(ib<0?999:ib)});
         if(apiSizes.length)next.available_sizes=apiSizes;
         const cost=color.customerPrice||color.piecePrice||0;
         if(cost>0){
