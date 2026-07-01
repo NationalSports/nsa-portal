@@ -275,7 +275,7 @@ import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
-import { mapSsOrderToBill } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -25090,10 +25090,15 @@ export default function App(){
         return;
       }
       const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let idx=0;
+      let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
         let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
         // No shipped lines (backordered / not yet shipped) → nothing to bill; leave it.
         if(!parsed.has_usable_lines){empty++;return}
+        // Resolve S&S per-size part numbers to our SO's style line (by color+size) and pre-build
+        // _lineMappings, so the bill applies cleanly through _applyBillByMappings even with a vendor
+        // SKU + $0 freight. Bails silently on any ambiguity → the line stays unmatched for the wizard.
+        if(parsed.matchedPO){try{const r=_ssResolveLineMappings(parsed,_ssCands||(_ssCands=_buildMatchCandidates()));if(r){parsed.items=r.items;parsed._lineMappings=r._lineMappings}}catch(e){/* leave for manual match */}}
         const dn=(parsed.doc_number||'').trim().toLowerCase();
         // Two-key dedup, same as the SportsLink pull: an order applied before S&S assigned its
         // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
@@ -25537,6 +25542,37 @@ export default function App(){
         else{const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});if(partial.length>0)candidates=partial}
       }
       return{item:candidates[0],idx:candidates[0]._idx,ambiguous:candidates.length>1};
+    };
+
+    // For an auto-matched S&S bill, resolve each line to the matched SO/batch's real item line
+    // (S&S lines carry S&S's per-size part number, not our style) and pre-build the wizard-shaped
+    // _lineMappings — so applyBillToSO routes through _applyBillByMappings, which bills the mapped
+    // item directly and applies even at $0 freight (the default so_po path needs freight to run).
+    // All-or-nothing: if any usable line can't be resolved unambiguously, returns null so the bill
+    // falls back to the manual match wizard rather than a silent partial apply. On success it also
+    // rewrites each line's SKU to our style for the review display (vendor SKU kept on _vendor_sku).
+    const _ssResolveLineMappings=(parsed,cands)=>{
+      const src=parsed&&parsed.matchedPOSource;
+      if(src!=='so_po'&&src!=='batch')return null;
+      cands=cands||_buildMatchCandidates();
+      let target=null;
+      if(src==='so_po'){const soId=parsed.matchedPO&&(parsed.matchedPO.so_id||parsed.matchedPO.so?.id);target=cands.find(c=>c.kind==='so'&&(c.id===soId||c.raw?.id===soId));}
+      else{const bId=parsed.matchedPO&&(parsed.matchedPO.id||parsed.matchedPO.po_number);target=cands.find(c=>c.kind==='batch'&&c.id===bId);}
+      if(!target||!(target.items&&target.items.length))return null;
+      const resolved=resolveSsBillLines(parsed.items||[],target.items,{canonSize:_canonBillSize});
+      const usable=(parsed.items||[]).map((li,i)=>({li,i})).filter(x=>x.li&&x.li.qty>0&&x.li.sku);
+      if(!usable.length)return null;
+      if(usable.some(x=>!resolved[x.i]||!resolved[x.i].cand))return null;// any unresolved usable line → hand to the wizard
+      const mappings=[];
+      const items=(parsed.items||[]).map((li,i)=>{
+        const r=resolved[i];
+        if(!r||!r.cand)return li;
+        const it=r.cand;
+        const billCost=safeNum(li.extension||0)||safeNum(li.unit_price||0)*safeNum(li.qty||0);
+        mappings.push({bill_idx:i,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(li.qty||0),unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100});
+        return{...li,_vendor_sku:li.sku,sku:it.sku,_ss_match:r.via};
+      });
+      return{items,_lineMappings:mappings};
     };
 
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
