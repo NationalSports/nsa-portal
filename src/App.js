@@ -268,6 +268,7 @@ const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
 const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
+const UniformBuilder = lazyRetry(() => import('./uniform/UniformBuilder'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -3822,6 +3823,8 @@ export default function App(){
   if(_path==='/auth/reset')return<AuthSetupPage mode="reset"/>;
   // /onboarding is the invite-only new-hire packet — token-gated, no portal login.
   if(_path==='/onboarding')return<React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><OnboardingWizard/></React.Suspense>;
+  // /uniform-builder is the standalone custom-uniform designer (demo route, no portal login).
+  if(_path==='/uniform-builder')return<React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder/></React.Suspense>;
 
   const[pg,setPg]=useState(()=>_pgFromUrl()||'dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
