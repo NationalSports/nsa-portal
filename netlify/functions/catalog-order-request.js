@@ -21,6 +21,9 @@ exports.handler = async (event) => {
     const team_name = String(body.team_name || '').trim().slice(0, 160);
     const notes = String(body.notes || '').trim().slice(0, 2000);
     const brand = String(body.brand || 'adidas').trim().slice(0, 40);
+    // The coach's name for this order (the saved-order title) — becomes the
+    // estimate memo when the rep builds it from this request.
+    const order_name = String(body.order_name || '').trim().slice(0, 160);
     // Signed-in coach accounts send their linked portal customer — the rep
     // inbox then skips email matching entirely.
     const customer_id = body.customer_id ? String(body.customer_id).trim().slice(0, 64) : null;
@@ -30,6 +33,14 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Name and a valid email are required' }) };
     }
     const DECOS = ['Screen print', 'Embroidery', 'Heat press'];
+    // Decoration is multi-select now: the cart sends a comma-joined list (e.g.
+    // "Screen print, Embroidery"). Keep only known methods in canonical order,
+    // and carry the coach's free-text in decoration_note.
+    const cleanDeco = (d) => {
+      const picked = String(d || '').split(',').map((s) => s.trim());
+      const keep = DECOS.filter((m) => picked.includes(m));
+      return keep.length ? keep.join(', ') : null;
+    };
     const lines = rawLines
       .map((l) => ({
         sku: String(l.sku || '').slice(0, 40),
@@ -39,7 +50,8 @@ exports.handler = async (event) => {
         qty: Math.max(1, Math.min(9999, parseInt(l.qty) || 0)),
         price: Math.max(0, Number(l.price) || 0),
         inbound: l.inbound ? String(l.inbound).slice(0, 12) : null,
-        decoration: DECOS.includes(l.decoration) ? l.decoration : null,
+        decoration: cleanDeco(l.decoration),
+        decoration_note: String(l.decoration_note || '').trim().slice(0, 500) || null,
       }))
       .filter((l) => l.sku && l.size);
     if (!lines.length) {
@@ -62,12 +74,38 @@ exports.handler = async (event) => {
     // 1. Store the structured request (the portal can turn this into an estimate)
     const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
     const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const sbHeaders = { apikey: sbKey, Authorization: `Bearer ${sbKey}` };
+    // Resolve the coach's team and its assigned rep up front. The storefront only
+    // forwards customer_id for a live signed-in session, so a guest cart or a
+    // lapsed sign-in arrives blank — but the coach's email is in coach_accounts,
+    // which is the reliable link. With the team known we route the alert to the
+    // one rep who owns the account instead of the shared catalog inbox.
+    let resolvedCustomerId = customer_id;
+    let repEmail = null;
+    if (sbUrl && sbKey) {
+      try {
+        if (!resolvedCustomerId && coach_email) {
+          const r = await fetch(`${sbUrl}/rest/v1/coach_accounts?select=customer_id&status=eq.active&email=ilike.${encodeURIComponent(coach_email)}&limit=1`, { headers: sbHeaders });
+          if (r.ok) { const rows = await r.json(); if (rows && rows[0] && rows[0].customer_id) resolvedCustomerId = rows[0].customer_id; }
+        }
+        if (resolvedCustomerId) {
+          const rc = await fetch(`${sbUrl}/rest/v1/customers?select=primary_rep_id&id=eq.${encodeURIComponent(resolvedCustomerId)}&limit=1`, { headers: sbHeaders });
+          const crows = rc.ok ? await rc.json() : [];
+          const repId = crows && crows[0] ? crows[0].primary_rep_id : null;
+          if (repId) {
+            const rt = await fetch(`${sbUrl}/rest/v1/team_members?select=email,is_active&id=eq.${encodeURIComponent(repId)}&limit=1`, { headers: sbHeaders });
+            const trows = rt.ok ? await rt.json() : [];
+            if (trows && trows[0] && trows[0].email && trows[0].is_active !== false) repEmail = trows[0].email;
+          }
+        }
+      } catch (e) { console.error('[catalog-order-request] customer/rep resolution failed:', e.message); }
+    }
     let requestId = null;
     if (sbUrl && sbKey) {
       const resp = await fetch(`${sbUrl}/rest/v1/catalog_order_requests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: sbKey, Authorization: `Bearer ${sbKey}`, Prefer: 'return=representation' },
-        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, customer_id, lines }),
+        body: JSON.stringify({ brand, coach_name, coach_email, coach_phone: coach_phone || null, team_name: team_name || null, notes: notes || null, order_name: order_name || null, customer_id: resolvedCustomerId, lines }),
       });
       if (resp.ok) {
         const rows = await resp.json();
@@ -93,7 +131,7 @@ exports.handler = async (event) => {
     const groups = [];
     const groupIdx = {};
     lines.forEach((l) => {
-      if (groupIdx[l.sku] == null) { groupIdx[l.sku] = groups.length; groups.push({ sku: l.sku, name: l.name, color: l.color, decoration: l.decoration, lines: [] }); }
+      if (groupIdx[l.sku] == null) { groupIdx[l.sku] = groups.length; groups.push({ sku: l.sku, name: l.name, color: l.color, decoration: l.decoration, decoration_note: l.decoration_note, lines: [] }); }
       groups[groupIdx[l.sku]].lines.push(l);
     });
     groups.forEach((g) => g.lines.sort((a, b) => sizeRank(a.size) - sizeRank(b.size) || String(a.size).localeCompare(String(b.size))));
@@ -104,7 +142,7 @@ exports.handler = async (event) => {
       return `
       <tr>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;font-family:monospace;vertical-align:top">${esc(g.sku)}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;vertical-align:top">${esc(g.name)}${g.decoration ? `<div style="font-size:11px;color:#2563eb;font-weight:600">+ ${esc(g.decoration)}</div>` : ''}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;vertical-align:top">${esc(g.name)}${g.decoration ? `<div style="font-size:11px;color:#2563eb;font-weight:600">+ ${esc(g.decoration)}</div>` : ''}${g.decoration_note ? `<div style="font-size:11px;color:#475569;margin-top:1px">${esc(g.decoration_note)}</div>` : ''}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;vertical-align:top">${esc(g.color)}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5">${sizeRun}</td>
         <td style="padding:6px 10px;border-bottom:1px solid #eef1f5;text-align:center;font-weight:700;vertical-align:top">${qty}</td>
@@ -133,6 +171,7 @@ exports.handler = async (event) => {
             <tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Email</td><td style="padding:5px 10px"><a href="mailto:${esc(coach_email)}">${esc(coach_email)}</a></td></tr>
             ${coach_phone ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Phone</td><td style="padding:5px 10px">${esc(coach_phone)}</td></tr>` : ''}
             ${team_name ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Team / Org</td><td style="padding:5px 10px">${esc(team_name)}</td></tr>` : ''}
+            ${order_name ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Order name</td><td style="padding:5px 10px;font-weight:600">${esc(order_name)}</td></tr>` : ''}
             ${notes ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Notes</td><td style="padding:5px 10px">${esc(notes)}</td></tr>` : ''}
             ${requestId ? `<tr><td style="padding:5px 10px;background:#f8fafc;font-weight:600;color:#64748b">Request ID</td><td style="padding:5px 10px;font-family:monospace;font-size:12px">${esc(requestId)}</td></tr>` : ''}
           </table>
@@ -154,8 +193,8 @@ exports.handler = async (event) => {
         </div>
       </div>`;
 
-    const csv = ['sku,item,color,size,qty,retail_price,inbound,decoration']
-      .concat(lines.map((l) => [l.sku, l.name, l.color, l.size, l.qty, l.price || '', l.inbound || '', l.decoration || ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
+    const csv = ['sku,item,color,size,qty,retail_price,inbound,decoration,decoration_notes']
+      .concat(lines.map((l) => [l.sku, l.name, l.color, l.size, l.qty, l.price || '', l.inbound || '', l.decoration || '', l.decoration_note || ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
       .join('\n');
 
     const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -163,7 +202,9 @@ exports.handler = async (event) => {
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
       body: JSON.stringify({
         sender: { name: 'NSA Catalog', email: 'noreply@nationalsportsapparel.com' },
-        to: [{ email: REP_EMAIL }],
+        // Route to the account's assigned rep when we resolved one; otherwise the
+        // shared catalog inbox so an unmatched request still reaches someone.
+        to: [{ email: repEmail || REP_EMAIL }],
         replyTo: { email: coach_email, name: coach_name },
         subject: `Order request: ${coach_name}${team_name ? ' (' + team_name + ')' : ''} — ${lines.length} line${lines.length === 1 ? '' : 's'}, ${totalUnits} units`,
         htmlContent,

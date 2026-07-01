@@ -189,7 +189,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const dismissTodo=onDismissTodo||(()=>{});
   const myAssignedTodos=useMemo(()=>(assignedTodos||[]).filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id)).sort((a,b)=>(a.priority||9)-(b.priority||9)),[assignedTodos,cu.id]);
   const myComputedTodos=useMemo(()=>(computedTodos||[]).filter(t=>!t.isNotification&&!_dismissed.includes(t.dismissKey)).slice(0,15),[computedTodos,_dismissed]);
-  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id,_dismissKey:t.dismissKey,_date:t.date})),...myAssignedTodos].sort((a,b)=>{const da=(a._date||a.created_at)?new Date(a._date||a.created_at).getTime():0;const db=(b._date||b.created_at)?new Date(b._date||b.created_at).getTime():0;return db-da}),[myComputedTodos,myAssignedTodos]);
+  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id,_deliverKey:t.deliverKey,_units:t.units,_dismissKey:t.dismissKey,_date:t.date})),...myAssignedTodos].sort((a,b)=>{const da=(a._date||a.created_at)?new Date(a._date||a.created_at).getTime():0;const db=(b._date||b.created_at)?new Date(b._date||b.created_at).getTime():0;return db-da}),[myComputedTodos,myAssignedTodos]);
+  // Rep-delivery: record a "Pick up & deliver" to-do as delivered (mirrors desktop + warehouse so.delivered[dkey]).
+  const _repDeliver=(t)=>{
+    const so=sos.find(s=>s.id===t.so_id);if(!so||!t._deliverKey)return;
+    const c=cust.find(x=>x.id===so.customer_id);
+    if((so.delivered||{})[t._deliverKey]){nf&&nf('Already marked delivered');return}
+    if(!window.confirm('Mark '+so.id+(c?.name?' — '+c.name:'')+' delivered? This clears it from your delivery list.'))return;
+    const ts=new Date().toISOString();
+    onSaveSO&&onSaveSO({...so,delivered:{...(so.delivered||{}),[t._deliverKey]:{at:ts,by:cu?.id||'sales'}},updated_at:ts});
+    nf&&nf('✅ '+so.id+(c?.name?' — '+c.name:'')+' marked delivered');
+  };
 
   // ─── SEARCH ───
   const searchResults=useMemo(()=>{
@@ -478,7 +488,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12,marginBottom:12}}>
           {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
             return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
-          {cc.alpha_tag&&<button onClick={()=>window.open(window.location.origin+'/?portal='+cc.alpha_tag,'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
+          {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag,'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
           {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
         </div>
         {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
@@ -1107,7 +1117,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{t.title}</div>
               {t.description&&<div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{t.description}</div>}
               <div style={{display:'flex',gap:8,marginTop:4,fontSize:11,color:'#94a3b8',alignItems:'center',flexWrap:'wrap'}}>
-                {t._computed?<span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t._type==='art'?'#fef3c7':'#eff6ff',color:t._type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t._action}</span>
+                {t._computed?(t._type==='rep_delivery'&&t._deliverKey?<button onClick={e=>{e.stopPropagation();_repDeliver(t)}} style={{fontSize:10,padding:'4px 10px',borderRadius:6,background:'#166534',color:'white',border:'none',fontWeight:700,cursor:'pointer'}}>🚚 {t._action}</button>:<span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t._type==='art'?'#fef3c7':'#eff6ff',color:t._type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t._action}</span>)
                   :<span>{isAssignedToMe?'Assigned to you':'Created by you'}</span>}
                 {_dateLabel&&<span>· {_dateLabel}</span>}
                 {t.so_id&&<span>· {t.so_id}</span>}
@@ -1525,9 +1535,15 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     let poList=pos.filter(p=>!p.dropShip);// drop-ship POs never arrive — keep them out of the warehouse list
     if(whPoFilter==='open')poList=poList.filter(p=>p.status!=='received');
     if(whQ.length>=2){const s=whQ.toLowerCase();poList=poList.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
-    // Group the filtered POs by batch number (NSA ####) so a whole batch can be checked in from one card.
-    const _bGroups={};poList.forEach(p=>{if(!p.batchPoNumber)return;const g=_bGroups[p.batchPoNumber]||(_bGroups[p.batchPoNumber]={batchNo:p.batchPoNumber,vendor:p.vendor||'',poKeys:[],totOpen:0,totRcv:0,totOrd:0});if(!g.vendor&&p.vendor)g.vendor=p.vendor;g.poKeys.push(p.key);g.totOpen+=p.totOpen;g.totRcv+=p.totRcv;g.totOrd+=p.totOrd});
-    const batchList=Object.values(_bGroups).filter(g=>g.poKeys.length>1);
+    // Group by batch number using all non-drop-ship POs (including received ones) so a batch
+    // card stays visible when the "open" filter hides some already-received POs in the batch.
+    // Apply the same search filter but skip the open/received filter so the full batch context
+    // is preserved. Only show the batch card if at least one PO is still open (in poList).
+    let _posForBatch=pos.filter(p=>!p.dropShip);
+    if(whQ.length>=2){const s=whQ.toLowerCase();_posForBatch=_posForBatch.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
+    const _openPoKeys=new Set(poList.map(p=>p.key));
+    const _bGroups={};_posForBatch.forEach(p=>{if(!p.batchPoNumber)return;const g=_bGroups[p.batchPoNumber]||(_bGroups[p.batchPoNumber]={batchNo:p.batchPoNumber,vendor:p.vendor||'',poKeys:[],totOpen:0,totRcv:0,totOrd:0});if(!g.vendor&&p.vendor)g.vendor=p.vendor;g.poKeys.push(p.key);g.totOpen+=p.totOpen;g.totRcv+=p.totRcv;g.totOrd+=p.totOrd});
+    const batchList=Object.values(_bGroups).filter(g=>g.poKeys.length>1&&g.poKeys.some(k=>_openPoKeys.has(k)));
     return<div className="mp-page">
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
@@ -2020,7 +2036,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(!sendEstModal)return null;
     const est=sendEstModal;
     const cc=custObj(est.customer_id);
-    const estUrl=window.location.origin+'/?estimate='+est.id;
+    const estUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag:'';
     const copyLink=()=>{navigator.clipboard.writeText(estUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendEstModal(null)}).catch(()=>{window.prompt('Copy this link:',estUrl);setSendEstModal(null)})};
     const emailEst=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
@@ -2052,7 +2068,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const cc=custObj(inv.customer_id);
     const bal=(+inv.total||0)-(+inv.amount_paid||0);
     // Coaches portal shows the customer's open invoices + Pay Now; fall back to a plain summary if no portal tag.
-    const portalUrl=cc?.alpha_tag?window.location.origin+'/?portal='+cc.alpha_tag:'';
+    const portalUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cc.alpha_tag:'';
     const copyLink=()=>{if(!portalUrl)return;navigator.clipboard.writeText(portalUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendInvModal(null)}).catch(()=>{window.prompt('Copy this link:',portalUrl);setSendInvModal(null)})};
     const emailInv=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];

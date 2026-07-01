@@ -13,26 +13,41 @@ async function sendOrderConfirmation(sb, order) {
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
-  const { data: items } = await sb.from('webstore_order_items').select('sku,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id,product_id').eq('order_id', order.id);
+  const { data: items } = await sb.from('webstore_order_items').select('sku,name,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id,product_id,image_url').eq('order_id', order.id);
   // product_id -> image (catalog override, else the product's own image).
   const imgByPid = {};
-  const { data: cat } = await sb.from('webstore_products').select('product_id,image_url').eq('store_id', order.store_id);
-  (cat || []).forEach((c) => { if (c.product_id && c.image_url) imgByPid[c.product_id] = c.image_url; });
+  const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
+  (cat || []).forEach((c) => { if (c.image_url) { if (c.product_id) imgByPid[c.product_id] = c.image_url; imgByPid['wp:' + c.id] = c.image_url; } });
   const pids = [...new Set((items || []).map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
   if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
   const lines = (items || []).filter((i) => !i.bundle_product_id || i.is_bundle_parent).map((i) => {
     const det = [i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ');
-    const im = imgByPid[i.product_id];
+    const im = i.image_url || imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null);
+    const label = i.name || i.sku || (i.is_bundle_parent ? 'Player Pack' : 'Item');
+    // For a package, list the included pieces with their sizes/numbers so the buyer
+    // can verify their selections straight from the email (components are $0 lines
+    // hidden from the totals, matched to this parent by bundle_ref).
+    const kids = i.is_bundle_parent
+      ? (items || []).filter((c) => !c.is_bundle_parent && (i.bundle_ref ? c.bundle_ref === i.bundle_ref : c.bundle_product_id === i.bundle_product_id))
+      : [];
+    const subList = kids.length
+      ? `<div style="font-size:12px;color:#64748b;margin-top:4px">${kids.map((c) => {
+          const cd = [c.size && 'Size ' + c.size, c.player_number && '#' + c.player_number, c.player_name].filter(Boolean).join(' · ');
+          return `&bull; ${c.name || c.sku || 'Item'}${cd ? ' &mdash; ' + cd : ''}`;
+        }).join('<br>')}</div>`
+      : '';
     const imgCell = im
       ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${im}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
       : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
-    return `<tr>${imgCell}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.sku || 'Item'}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
+    return `<tr>${imgCell}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${label}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}${subList}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
   }).join('');
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
   const accent = store.accent_color || '#e11d2a';
   const shipping = Number(order.shipping_fee) || 0;
+  const processing = Number(order.processing_fee) || 0;
   const discount = Number(order.discount_amt) || 0;
+  const tax = Number(order.tax) || 0;
   const a = order.ship_address || null;
   const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div></div>` : '';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
@@ -51,7 +66,9 @@ async function sendOrderConfirmation(sb, order) {
       <p style="margin:0 0 14px">Thanks, ${order.buyer_name || ''}! ${paid ? "We've received your payment." : 'Your order is in — the team will be invoiced for it.'}</p>
       <table style="width:100%;border-collapse:collapse;font-size:14px">${lines}
         ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+        ${processing > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Processing fee</td><td style="padding:8px 0;text-align:right">${money(processing)}</td></tr>` : ''}
         ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
+        ${tax > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Sales tax</td><td style="padding:8px 0;text-align:right">${money(tax)}</td></tr>` : ''}
         <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>
       </table>
       ${addrBlock}

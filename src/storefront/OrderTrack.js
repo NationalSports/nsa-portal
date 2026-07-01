@@ -74,7 +74,7 @@ export default function OrderTrack() {
       } catch (e) { setStatus('notfound'); return; }
       setOrder(d.order);
       setStore(d.store || { name: 'Your Order' });
-      setItems((d.items || []).filter((i) => !i.is_bundle_parent));
+      setItems(d.items || []);
       setShipments(d.shipments || []);
       setMsgs(d.messages || []);
       setStatus('ok');
@@ -102,12 +102,18 @@ export default function OrderTrack() {
   if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, opacity: 0.7, marginTop: 8 }}>Check the link in your confirmation email, or contact us at stores@nationalsportsapparel.com.</div></Splash></Shell>;
 
   // Overall progress = the *least* advanced active line (so the order isn't
-  // "complete" until every item is). Cancelled lines are ignored.
-  const active = items.filter((i) => i.line_status !== 'cancelled');
+  // "complete" until every item is). Cancelled lines are ignored, and bundle
+  // PARENT rows are skipped — they have no SKU to receive against so they never
+  // advance past pending and would otherwise pin the whole order at "on order".
+  const active = items.filter((i) => !i.is_bundle_parent && i.line_status !== 'cancelled');
   const reached = active.length ? Math.min(...active.map((i) => stageIndex(i.line_status))) : 0;
   // Partial shipment: some items shipped, but not all.
   const shippedCount = active.filter((i) => stageIndex(i.line_status) >= 4).length;
   const partialShipped = shippedCount > 0 && shippedCount < active.length;
+  // Display rows = bundle parents + standalone items (components nest under parents).
+  const displayItems = items.filter((i) => !i.bundle_product_id || i.is_bundle_parent);
+  const childrenOf = (p) => items.filter((i) => !i.is_bundle_parent && (p.bundle_ref ? i.bundle_ref === p.bundle_ref : i.bundle_product_id === p.bundle_product_id));
+  const minStageOf = (lines) => (lines.length ? Math.min(...lines.map((i) => stageIndex(i.line_status))) : 0);
   const hero = partialShipped
     ? { icon: '📦', label: 'Partially shipped', blurb: 'Some items are on the way — the rest will follow' }
     : STAGES[reached];
@@ -171,12 +177,53 @@ export default function OrderTrack() {
         {/* Items */}
         <div style={{ background: '#fff', borderRadius: 16, padding: '8px 22px 18px', marginTop: 16, border: '1px solid #eef1f5' }}>
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: '#64748b', padding: '16px 0 4px' }}>Your items</div>
-          {items.map((i) => {
+          {displayItems.map((i) => {
+            const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
+            const qty = i.qty || 1;
+            if (i.is_bundle_parent) {
+              // Package: one card priced once, with its components nested and its
+              // status driven by the least-advanced component (the parent never moves).
+              const kids = childrenOf(i);
+              return (
+                <div key={i.id} style={{ padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                    <div style={{ position: 'relative', flex: '0 0 56px' }}>
+                      {i.image_url
+                        ? <img src={i.image_url} alt="" width={56} height={56} style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 10, background: '#f4f6f9' }} />
+                        : <div style={{ width: 56, height: 56, borderRadius: 10, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>🎒</div>}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14.5 }}>{i.name || 'Player Pack'}</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Bundle · {kids.length} items</div>
+                    </div>
+                    <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+                      <StatusChip stage={minStageOf(kids)} accent={theme.accent} />
+                      {Number(i.unit_price) > 0 && <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>{money(Number(i.unit_price) * qty)}</div>}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10, paddingLeft: 12, borderLeft: `3px solid ${hexA(theme.accent, 0.25)}` }}>
+                    {kids.map((c) => {
+                      const cattrs = [c.size && `Size ${c.size}`, c.color, c.player_number && `#${c.player_number}`, c.player_name].filter(Boolean);
+                      return (
+                        <div key={c.id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '8px 0' }}>
+                          {c.image_url
+                            ? <img src={c.image_url} alt="" width={40} height={40} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 8, background: '#f4f6f9', flex: '0 0 40px' }} />
+                            : <div style={{ width: 40, height: 40, flex: '0 0 40px', borderRadius: 8, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17 }}>👕</div>}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: cattrs.length ? 4 : 0 }}>{c.name || c.sku || 'Item'}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{cattrs.map(pill)}</div>
+                          </div>
+                          <StatusChip stage={stageIndex(c.line_status)} accent={theme.accent} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            }
             const idx = stageIndex(i.line_status);
             const missing = Number(i.missing_qty) > 0;
-            const qty = i.qty || 1;
-            const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
-            const attrs = [i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
+            const attrs = [i.variant_label, i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
             return (
               <div key={i.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
                 {/* Image with a quantity badge, like an order line */}

@@ -9,13 +9,32 @@ import { DEFAULT_REPS } from './constants';
 
 // The full portal (App.js, ~2.6MB) is code-split out so a visitor who isn't
 // logged in gets the login screen instantly without downloading it. App loads
-// only once a session exists (see MainApp below). Retry once on a transient
-// chunk-load failure; the ErrorBoundary's "Clear Cache & Hard Reload" is the
-// final fallback for a hard failure (e.g. a stale deploy).
+// only once a session exists (see MainApp below).
+//
+// On a ChunkLoadError (stale main.js referencing old chunk hashes after a
+// Netlify deploy) we reload the page once to pick up the fresh index.html and
+// new chunk manifest — the same strategy App.js's lazyRetry uses for its own
+// inner lazy components. Without this, the App chunk itself has no reload guard,
+// so a stale-deploy race surfaces as the top-level "Runtime Error" screen.
+const _appChunkReloadKey = 'app_chunk_reload_at';
+const _isChunkErr = (err) => {
+  if (!err) return false;
+  const msg = err.message || '';
+  return err.name === 'ChunkLoadError'
+    || /Loading chunk [\w-]+ failed/i.test(msg)
+    || /failed to fetch dynamically imported module/i.test(msg);
+};
 const App = React.lazy(() =>
-  import('./App').catch(
-    () => new Promise((res, rej) => setTimeout(() => import('./App').then(res, rej), 500))
-  )
+  import('./App').catch((err) => {
+    const last = Number(sessionStorage.getItem(_appChunkReloadKey) || 0);
+    if (_isChunkErr(err) && Date.now() - last > 10000) {
+      sessionStorage.setItem(_appChunkReloadKey, String(Date.now()));
+      window.location.reload();
+      return new Promise(() => {}); // never resolves; page is reloading
+    }
+    // Already reloaded recently or non-chunk error — retry once after 500ms.
+    return new Promise((res, rej) => setTimeout(() => import('./App').then(res, rej), 500));
+  })
 );
 
 // Public club storefront lives at /shop/<slug>. Shoppers should never load the
@@ -46,6 +65,12 @@ const isTeamStores = _path === '/team-stores' || _path === '/team-stores/';
 // App short-circuits these to its own landing page BEFORE any login gate, so
 // they must load App directly rather than the pre-auth gate below.
 const isAuthFlow = _path === '/auth/setup' || _path === '/auth/reset';
+// /onboarding is the invite-only new-hire packet. App short-circuits this to the
+// token-gated OnboardingWizard BEFORE any login gate, so — like the auth flows —
+// it must load App directly. Without this it falls through to MainApp →
+// LoginGate, which is exactly what a logged-out new hire (and the /welcome
+// iframe) was hitting.
+const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
 // site at /coach. It's login-free: App short-circuits to the read-only
 // CoachPortal for this param (data via anon RLS), so like the auth flows it must
@@ -170,7 +195,7 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow || isCoachPortal
+        : isAuthFlow || isCoachPortal || isOnboarding
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>

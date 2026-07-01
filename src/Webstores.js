@@ -2,11 +2,12 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
+import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap, foldScale, foldedQty, foldedSoon } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -48,6 +49,43 @@ function printPayout(store, t) {
       ${t.fundPending > 0.005 ? `<tr><td>Pending (unpaid / team-tab orders)</td><td class="r" style="color:#94a3b8">${money(t.fundPending)}</td></tr>` : ''}
       <tr class="tot"><td>Amount owed to club</td><td class="r">${money(t.fundPaid)}</td></tr>
     </table>
+  </body></html>`);
+}
+
+// Printable accounting statement — the full money flow for a store: what was
+// collected (sales, discounts, fundraising, shipping, tax), how it was paid
+// (card vs team tab), and the costs booked against it (processing, postage).
+function printAccounting(store, a, m) {
+  const date = new Date().toLocaleDateString();
+  const row = (label, amt, sign, cls) => `<tr class="${cls || ''}"><td>${label}</td><td class="r">${sign === '−' ? '−' : ''}${money(Math.abs(amt))}</td></tr>`;
+  printHtml(`<!doctype html><html><head><title>Accounting — ${store ? store.name : 'Webstore'}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1e293b;max-width:640px;margin:40px auto;padding:0 24px}
+    h1{font-size:20px;margin:0 0 4px}.sub{color:#64748b;font-size:13px;margin-bottom:24px}
+    table{width:100%;border-collapse:collapse}td{padding:9px 0;border-bottom:1px solid #eef1f5;font-size:14px}
+    td.r{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+    tr.memo td{color:#94a3b8;font-weight:400;border-bottom:none;padding:3px 0 3px 18px;font-size:13px}
+    tr.sub-tot td{border-top:2px solid #1e293b;font-weight:900;font-size:16px;padding-top:12px}
+    tr.net td{border-top:2px solid #166534;color:#166534;font-weight:900;font-size:18px;padding-top:14px}
+    .foot{color:#94a3b8;font-size:11px;margin-top:18px;line-height:1.5}
+  </style></head><body>
+    <h1>${NSA.name} — Webstore Accounting</h1>
+    <div class="sub">${store ? store.name : ''} · ${m.orders} live orders · ${date}</div>
+    <table>
+      ${row('Product sales (retail before discounts)', a.grossSales, '+')}
+      ${row('Coupon discounts', a.discounts, '−')}
+      ${a.fundraiseAll > 0.005 ? row('Club fundraising', a.fundraiseAll, '+') : ''}
+      ${row('Shipping charged', a.shipCharged, '+')}
+      ${a.processing > 0.005 ? row('Processing fees', a.processing, '+') : ''}
+      ${row('Sales tax collected', a.taxColl, '+')}
+      ${row('Gross collected', a.grossColl, '', 'sub-tot')}
+      <tr class="memo"><td>card payments</td><td class="r">${money(m.cardColl)}</td></tr>
+      <tr class="memo"><td>team tab (billed on club invoice)</td><td class="r">${money(m.tabColl)}</td></tr>
+      ${a.refunds > 0.005 ? row('Refunds issued', a.refunds, '−') + row('Net collected', a.netColl, '', 'sub-tot') : ''}
+      ${row('Card processing fees', a.ccFees, '−')}
+      ${row('Shipping label cost', a.labelCost, '−')}
+      ${row('Net after fees', a.netAfterFees, '', 'net')}
+    </table>
+    <div class="foot">Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
   </body></html>`);
 }
 
@@ -141,7 +179,7 @@ function buildPackingLists(store, label, groups) {
 // lands on the latest orders — the fair, defensible call when we can't cover
 // everyone. Products with no stock record are made-to-order (decorated/custom)
 // and treated as available, matching the batch flow's own inventory check.
-function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set()) {
   const keyOf = (pid, size) => pid + '|' + (size || 'OS');
   // Earliest orders claim stock first.
   const sorted = [...lines].sort((a, b) => {
@@ -161,7 +199,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
     const st = stockByPid[pid];
     const wh = Number((st?.size_stock || {})[size]) || 0;
     const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
-    const tracked = !!st;
+    const tracked = !!st && !madeToOrder.has(pid);
     if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
     if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
     const row = itemAgg[k];
@@ -181,7 +219,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById) {
 
   const rows = Object.values(itemAgg);
   const shortRows = rows.filter((r) => r.filled < r.needed).sort((a, b) => (b.needed - b.filled) - (a.needed - a.filled));
-  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const okRows = rows.filter((r) => r.filled >= r.needed).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const shortOrders = Object.values(orderShort).sort((a, b) => (a.order.created_at || '') < (b.order.created_at || '') ? -1 : 1);
   const ordersTotal = Object.keys(orderById).length;
   const availUnits = totalUnits - shortUnits;
@@ -303,7 +341,14 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
 // Aggregate store demand vs stock per product+size, split into what we can fill
 // from our own shelves, what we'd buy from the vendor (Adidas), and what nobody
 // has (true backorder). The basis for the stock report + its CSV.
-function aggStock(lines, stockByPid) {
+// Product ids the rep marked made-to-order (Inventory tracking → off). Treated
+// exactly like products with no stock record: never stock-checked, so they don't
+// show as shortfalls in the batch SO modal or the stock / availability reports.
+function madeToOrderPids(catalog) {
+  return new Set((catalog || []).filter((c) => c.product_id && c.track_inventory === false).map((c) => c.product_id));
+}
+
+function aggStock(lines, stockByPid, madeToOrder = new Set()) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
@@ -313,7 +358,7 @@ function aggStock(lines, stockByPid) {
       name: (st && st.name) || i.name || i.sku || pid, sku: i.sku || '', size, need: 0,
       ours: Number(((st && st.size_stock) || {})[size]) || 0,
       vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0,
-      tracked: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
+      tracked: !!st && !madeToOrder.has(pid), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
     };
     agg[k].need += need;
   });
@@ -328,12 +373,12 @@ function aggStock(lines, stockByPid) {
 // ─── Store-close stock / shortage report ─────────────────────────────
 // "What can we fill from stock, what do we need to order from Adidas, and what
 // is nobody able to supply (backorder)." Vendor-split, not the combined view.
-function buildStockReport(store, label, lines, stockByPid) {
-  const rows = aggStock(lines, stockByPid);
+function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set()) {
+  const rows = aggStock(lines, stockByPid, madeToOrder);
   const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
   const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
     .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
-  const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || a.size.localeCompare(b.size));
+  const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const untracked = rows.filter((r) => !r.tracked);
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendor}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
@@ -423,15 +468,19 @@ function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image
         onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) upload(f); }}
         style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 12, borderRadius: 12, cursor: 'pointer', border: '1.5px dashed ' + (over ? '#191919' : '#d7dbe2'), background: over ? '#f5f5ff' : '#fafbfc', transition: 'border-color .12s, background .12s' }}>
-        <div style={{ width: 60, height: 60, borderRadius: 10, background: '#fff', border: '1px solid #eef0f3', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 700, textTransform: 'uppercase' }}>none</span>}
+        {/* Thumbnail with the Remove control as a corner ×, so it never overlaps the image
+            even when the uploader is squeezed into a narrow column. */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <div style={{ width: 60, height: 60, borderRadius: 10, background: '#fff', border: '1px solid #eef0f3', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1', fontWeight: 700, textTransform: 'uppercase' }}>none</span>}
+          </div>
+          {value && <button type="button" title="Remove image" onClick={(e) => { e.stopPropagation(); onChange(null); }} style={{ position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%', border: '1px solid #e2e8f0', background: '#fff', color: '#b91c1c', fontSize: 12, fontWeight: 800, lineHeight: '16px', textAlign: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)', padding: 0 }}>×</button>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>{busy ? 'Uploading…' : over ? 'Drop the image' : value ? 'Replace image' : 'Drag an image here, or click to browse'}</div>
           {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>Using stock photo — drop one to override.</div>}
           {err && <div style={{ fontSize: 11.5, color: '#b91c1c', marginTop: 3 }}>{err}</div>}
         </div>
-        {value && <button type="button" onClick={(e) => { e.stopPropagation(); onChange(null); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '5px 10px', fontSize: 12, fontWeight: 700, color: '#b91c1c', cursor: 'pointer' }}>Remove</button>}
         <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) upload(f); e.target.value = ''; }} />
       </div>
     </div>
@@ -519,79 +568,395 @@ const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
 const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
 
-// Polished launch email: shop link + scannable QR + key info + the coach's portal.
+// Launch email written for families (coach receives + forwards). Branded with team colors.
 function launchEmailHtml(store, portalUrl) {
   const url = _storefrontUrl(store);
   const primary = _hex(store.primary_color, '#0b1f3a');
   const accent = _hex(store.accent_color, '#e11d2a');
   const lead = store.org_type === 'club' ? 'Director' : 'Coach';
-  const rows = [];
-  if (_fmtDate(store.close_at)) rows.push(['Order by', _fmtDate(store.close_at)]); else rows.push(['Ordering', 'Open now']);
-  if (_fmtDate(store.open_at)) rows.push(['Opened', _fmtDate(store.open_at)]);
-  rows.push(['Delivery', _deliveryLabel(store)]);
-  rows.push(['Production', 'About 4–5 weeks after the store closes']);
-  const infoRows = rows.map(([k, v]) => `<tr><td style="padding:6px 0;color:#64748b;font-size:13px;width:120px">${_esc(k)}</td><td style="padding:6px 0;color:#0f172a;font-size:13px;font-weight:600">${_esc(v)}</td></tr>`).join('');
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const dk = (hex, a) => { try { const n = parseInt(hex.slice(1), 16); return '#' + [(n>>16)&255,(n>>8)&255,n&255].map((c)=>Math.round(c*(1-a)).toString(16).padStart(2,'0')).join(''); } catch(e){return hex;} };
+  const primaryDark = dk(primary, 0.34);
+  const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256';
+  const steps = [
+    { n:1, title:'Visit the store', body:'Tap the button above or scan the QR code to open your team\'s store.' },
+    { n:2, title:'Pick sizes & gear', body:'Browse all items, choose sizes for your player, and add to your cart.' },
+    { n:3, title:'Check out', body:`Place your order${closeDate ? ' before ' + closeDate : ''}. Everything is delivered together to the team.` },
+  ];
   return `
-  <div style="max-width:600px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;color:#0f172a;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden">
-    <div style="background:${primary};padding:26px 24px;color:#fff">
-      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:44px;margin-bottom:10px;border-radius:8px;background:#fff;padding:4px"/><br/>` : ''}
-      <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;opacity:.85;font-weight:700">Official Team Store</div>
-      <div style="font-size:24px;font-weight:800;margin-top:4px">${_esc(store.name)}</div>
+  <div style="font-family:Arial,Helvetica,sans-serif;background:#f0f0f0;padding:0">
+  <div style="max-width:600px;margin:0 auto;background:#fff;overflow:hidden;border-radius:6px;box-shadow:0 4px 24px rgba(0,0,0,.12)">
+    <div style="background:${ink};padding:11px 24px;text-align:center;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.8);font-weight:700">
+      <span style="color:${accent}">&#9733;</span> Official Team Store &middot; Powered by National Sports Apparel
     </div>
-    <div style="padding:24px">
-      <p style="font-size:15px;line-height:1.6;margin:0 0 14px">Hi ${_esc(store.director_name || lead)},</p>
-      <p style="font-size:15px;line-height:1.6;margin:0 0 18px">Your team store is <b>live</b>. Everything in it is pre-approved, so families can order with confidence — just share the link or the code below.</p>
-      <div style="text-align:center;margin:8px 0 18px"><a href="${url}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:13px 30px;border-radius:10px;font-weight:800;font-size:15px">Shop the store →</a></div>
-      <div style="text-align:center;margin:0 0 18px">
-        <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="180" height="180" style="border:1px solid #e2e8f0;border-radius:12px"/>
-        <div style="font-size:12px;color:#64748b;margin-top:6px">Scan to shop — or share this image with your families.</div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:4px">${_esc(url)}</div>
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});padding:34px 24px 28px;text-align:center">
+      ${store.logo_url ? `<div style="margin-bottom:14px"><img src="${_esc(store.logo_url)}" alt="" style="height:56px;border-radius:10px;background:#fff;padding:6px"/></div>` : ''}
+      <div style="font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent};font-weight:700">${_esc(store.name)}</div>
+      <h1 style="font-size:40px;font-weight:900;line-height:1;text-transform:uppercase;color:#fff;margin:12px 0 0">The Team Store Is <span style="color:${accent}">Now Open</span></h1>
+      <p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.88);margin:18px auto 0;max-width:420px">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; just place your order before the store closes.</p>
+      <a href="${url}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${ink};border-collapse:collapse">
+      <tr>
+        <td style="padding:14px 12px;text-align:center;border-right:1px solid rgba(255,255,255,.12)">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Order By</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">${closeDate || 'Open Now'}</div>
+        </td>
+        <td style="padding:14px 12px;text-align:center;border-right:1px solid rgba(255,255,255,.12)">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Delivery</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">${_esc(delivLabel)}</div>
+        </td>
+        <td style="padding:14px 12px;text-align:center">
+          <div style="font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:${accent};font-weight:700">Minimums</div>
+          <div style="font-size:17px;text-transform:uppercase;color:#fff;font-weight:800;margin-top:3px">None</div>
+        </td>
+      </tr>
+    </table>
+    <div style="padding:26px 24px 8px;text-align:center">
+      <div style="font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${ink};margin-bottom:12px">Scan to shop</div>
+      <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
+      <div style="font-size:11px;color:${sub};margin-top:8px">${_esc(url)}</div>
+    </div>
+    <div style="padding:14px 24px 18px">
+      <div style="background:${cream};border:1px solid #E7DFD0;border-radius:6px;padding:18px 20px">
+        <h3 style="font-size:14px;font-weight:800;text-transform:uppercase;margin:0 0 14px;color:${ink};text-align:center;letter-spacing:.5px">How To Order</h3>
+        ${steps.map((st)=>`<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:11px"><div style="flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:24px;font-weight:800;font-size:12px">${st.n}</div><div><div style="font-size:13px;font-weight:700;text-transform:uppercase;color:${ink};letter-spacing:.3px">${st.title}</div><div style="font-size:12.5px;line-height:1.5;color:${sub};margin-top:1px">${st.body}</div></div></div>`).join('')}
       </div>
-      <table style="width:100%;border-collapse:collapse;border-top:1px solid #eef2f7;border-bottom:1px solid #eef2f7;margin:6px 0 16px">${infoRows}</table>
-      ${portalUrl ? `<p style="font-size:13px;line-height:1.6;color:#475569;margin:0 0 6px">Want to follow orders as they come in? Here's your private tracking portal:</p><p style="margin:0 0 16px"><a href="${_esc(portalUrl)}" style="color:#2563eb;font-size:13px">Open your ${_esc(lead.toLowerCase())} portal →</a></p>` : ''}
-      <p style="font-size:13px;color:#94a3b8;line-height:1.6;margin:14px 0 0">Thanks for building with National Sports Apparel.</p>
     </div>
+    <div style="padding:4px 24px 20px;text-align:center">
+      <p style="font-size:13px;line-height:1.6;color:${sub};margin:0">Questions about sizing or your order? Your NSA team rep is here to help &mdash;<br/><a href="mailto:hello@nationalsportsapparel.com" style="color:${primary};font-weight:600;text-decoration:none">hello@nationalsportsapparel.com</a></p>
+    </div>
+    ${portalUrl ? `<div style="padding:0 24px 14px;text-align:center"><p style="font-size:11px;color:#94a3b8;margin:0">${lead}: <a href="${_esc(portalUrl)}" style="color:#2563eb;font-size:11px">Track orders in your ${lead.toLowerCase()} portal &rarr;</a></p></div>` : ''}
+    <div style="background:${ink};padding:20px 24px;text-align:center">
+      <div style="font-size:15px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#fff">National Sports Apparel</div>
+      <div style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:rgba(255,255,255,.5);margin-top:4px">California&rsquo;s Largest Independent Team Dealer &middot; Since 2009</div>
+      <div style="font-size:10px;color:rgba(255,255,255,.35);margin-top:12px">2238 N Glassell St Ste E, Orange, CA 92865</div>
+    </div>
+  </div>
   </div>`;
 }
 
-// A print-ready flyer (own window) with a big QR and team colors.
-function flyerHtml(store) {
+// 2-page print-ready flyer with team colors, items, QR, and key dates.
+function flyerHtml(store, items = []) {
   const url = _storefrontUrl(store);
   const primary = _hex(store.primary_color, '#0b1f3a');
   const accent = _hex(store.accent_color, '#e11d2a');
-  const close = _fmtDate(store.close_at);
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(store.name)} — Flyer</title>
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const dk = (hex, a) => { try { const n = parseInt(hex.slice(1), 16); return '#' + [(n>>16)&255,(n>>8)&255,n&255].map((c)=>Math.round(c*(1-a)).toString(16).padStart(2,'0')).join(''); } catch(e){return hex;} };
+  const primaryDark = dk(primary, 0.34);
+  const accentDeep = dk(accent, 0.24);
+  const ink = '#16223F'; const cream = '#FAF6EF'; const sub = '#6B6256'; const line = '#E7DFD0';
+  // The Player Pack (bundle) gets a highlighted feature band at the top; everything
+  // else flows into the product grid below. Inactive items (active===false) are bundle
+  // components — they're represented by the package band, so keep them out of the grid.
+  const pkg = (items || []).find((i) => i.active !== false && (i.kind === 'bundle' || i.is_bundle_parent) && Number(i.retail_price) > 0);
+  // The pack's component photos (all items in the bundle); fall back to a single image.
+  const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
+    ? pkg._componentImages.slice(0, 4)
+    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items || []).filter((i) => i.active === false && i.image_front_url).map((i) => i.image_front_url).slice(0, 4)));
+  const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
+  // Image fills the whole card; the price floats as a pill badge (team accent color)
+  // over the bottom-left corner so the product photo gets the maximum area.
+  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:contain;padding:8px"/>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  // Render an item array as rows of 4.
+  const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
+  // Highlighted Player Pack band (only when the store has a bundle).
+  const pkgBand = pkg ? `
+    <div style="margin:16px 40px 0">
+      <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
+        ${pkgImgs.length ? `<div style="flex:0 0 130px;background:#fff;display:grid;grid-template-columns:repeat(${pkgImgs.length === 1 ? 1 : 2},1fr);gap:3px;padding:6px;align-content:center">${pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;height:${pkgImgs.length <= 2 ? 104 : 52}px"><img src="${_esc(u)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`).join('')}</div>` : ''}
+        <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
+          <div>
+            <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
+            <div style="font-weight:800;font-size:30px;text-transform:uppercase;line-height:1.02;margin-top:3px">${_esc(pkg.name || pkg.display_name || 'Player Pack')}</div>
+            <div style="font-size:13px;color:rgba(255,255,255,.82);margin-top:6px;font-family:Arial,sans-serif">Everything your player needs in one bundle &mdash; add it to the cart in one click.</div>
+          </div>
+          <div style="text-align:center;flex-shrink:0">
+            <div style="font-weight:800;font-size:42px;color:#fff;line-height:1">$${Math.round(Number(pkg.retail_price))}</div>
+            <div style="font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.72)">Complete Pack</div>
+          </div>
+        </div>
+      </div>
+    </div>` : '';
+  const p1Items = visItems.slice(0, 12);
+  const p2Items = visItems.slice(12);
+  return `<!doctype html><html><head>
+  <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&display=swap" rel="stylesheet">
+  <title>${_esc(store.name)} — Team Store Flyer</title>
   <style>
-    *{box-sizing:border-box} html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
-    .page{width:8.5in;min-height:11in;margin:0 auto;display:flex;flex-direction:column}
-    .hero{background:${primary};color:#fff;padding:64px 56px 48px;text-align:center}
-    .eyebrow{font-size:16px;letter-spacing:5px;text-transform:uppercase;font-weight:800;opacity:.85}
-    .title{font-size:52px;font-weight:900;line-height:1.05;margin:14px 0 0;text-transform:uppercase}
-    .body{flex:1;padding:48px 56px;text-align:center;color:#0f172a}
-    .scan{font-size:30px;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:${accent}}
-    .qr{margin:22px auto;border:6px solid ${primary};border-radius:18px;display:inline-block;line-height:0}
-    .url{font-size:20px;font-weight:700;margin-top:10px;word-break:break-all}
-    .meta{font-size:18px;color:#475569;margin-top:24px;line-height:1.6}
-    .foot{background:${accent};color:#fff;text-align:center;padding:18px;font-weight:800;letter-spacing:1px;text-transform:uppercase}
-    .btn{margin:18px;text-align:center} @media print{.btn{display:none}}
-    @page{size:letter;margin:0}
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;font-family:'Barlow Condensed',Arial,sans-serif;background:#5b5b5b}
+    .no-print{text-align:center;padding:12px;background:#444}
+    .page{width:816px;min-height:1056px;margin:0 auto 28px;background:#fff;position:relative;overflow:hidden;box-shadow:0 12px 50px rgba(0,0,0,.35)}
+    @media print{html,body{background:#fff}.no-print{display:none!important}.page{box-shadow:none;margin:0;page-break-after:always;width:100%}}
+    @page{size:letter portrait;margin:0}
   </style></head><body>
-  <div class="btn"><button onclick="window.print()" style="padding:10px 22px;font-size:15px;font-weight:800;border:none;border-radius:8px;background:${primary};color:#fff;cursor:pointer">Print flyer</button></div>
-  <div class="page">
-    <div class="hero">
-      ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:96px;margin-bottom:18px;background:#fff;border-radius:14px;padding:8px"/><br/>` : ''}
-      <div class="eyebrow">Official Team Store</div>
-      <div class="title">${_esc(store.name)}</div>
-    </div>
-    <div class="body">
-      <div class="scan">Scan to shop</div>
-      <div class="qr"><img src="${_qrImg(url, 520)}" alt="QR code" width="320" height="320"/></div>
-      <div class="url">${_esc(url)}</div>
-      <div class="meta">All gear is coach-approved.${close ? `<br/><b>Order by ${_esc(close)}.</b>` : ''}<br/>${_deliveryLabel(store)} about 4–5 weeks after the store closes.</div>
-    </div>
-    <div class="foot">National Sports Apparel</div>
+  <div class="no-print">
+    <button onclick="window.print()" style="padding:9px 20px;font-size:13.5px;font-weight:800;border:none;border-radius:7px;background:${primary};color:#fff;cursor:pointer;margin-right:8px">Print / Save as PDF</button>
+    <span style="color:#aaa;font-size:12px">Browser Print → Save as PDF</span>
   </div>
+  <!-- PAGE 1 -->
+  <div class="page">
+    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
+      <span><span style="color:${accent}">&#9733;</span> Official Team Store</span>
+      <span style="color:rgba(255,255,255,.62)">Powered by National Sports Apparel</span>
+    </div>
+    <div style="background:linear-gradient(135deg,${primary},${primaryDark});overflow:hidden;padding:14px 40px 12px;position:relative">
+      <div style="position:absolute;inset:0;background:repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.045) 26px,rgba(255,255,255,.045) 52px)"></div>
+      <div style="position:relative;display:flex;align-items:center;gap:16px;margin-bottom:9px">
+        ${store.logo_url ? `<img src="${_esc(store.logo_url)}" alt="" style="height:42px;background:#fff;border-radius:8px;padding:4px;flex-shrink:0"/>` : ''}
+        <div>
+          <div style="font-weight:700;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent}">${_esc(store.name)}</div>
+          ${closeDate ? `<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.6)">Order by ${_esc(closeDate)}</div>` : ''}
+        </div>
+      </div>
+      <h1 style="position:relative;font-weight:800;font-size:40px;line-height:.92;text-transform:uppercase;color:#fff;margin:0">The Team Store Is <em style="font-style:italic;color:${accent}">Now Open</em></h1>
+      <p style="position:relative;font-size:12.5px;line-height:1.4;color:rgba(255,255,255,.85);max-width:560px;margin:7px 0 0;font-family:Arial,sans-serif">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; place your order before the store closes.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);background:${ink}">
+      <div style="padding:9px 40px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Order By</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${closeDate || 'Open Now'}</div></div>
+      <div style="padding:9px 24px;border-right:1px solid rgba(255,255,255,.12)"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Delivery</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">${_esc(delivLabel)}</div></div>
+      <div style="padding:9px 24px"><div style="font-weight:700;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:${accent}">Minimums</div><div style="font-weight:800;font-size:20px;text-transform:uppercase;color:#fff;line-height:1.1">None</div></div>
+    </div>
+    ${pkgBand}
+    ${p1Items.length > 0 ? `
+    <div style="padding:18px 40px 104px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <h2 style="font-weight:800;font-size:26px;text-transform:uppercase;margin:0;color:${ink};white-space:nowrap">What&rsquo;s In The Store</h2>
+        <div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div>
+      </div>
+      ${grid(p1Items, pkg ? 142 : 156)}
+    </div>` : (pkg ? '' : `
+    <div style="padding:22px 40px 120px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
+      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team ~4–5 weeks after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
+    </div>`)}
+    <div style="position:absolute;bottom:0;left:0;right:0">
+      <div style="background:${cream};border-top:1px solid ${line};padding:9px 40px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700;font-size:9.5px;letter-spacing:1.8px;text-transform:uppercase;color:${accentDeep}">Shop The Store</div>
+          <div style="font-weight:800;font-size:15px;text-transform:uppercase;color:${ink}">${_esc(url)}</div>
+          <div style="font-size:11px;color:${sub};margin-top:1px">Questions? hello@nationalsportsapparel.com</div>
+        </div>
+        <div style="text-align:center;flex-shrink:0">
+          <img src="${_qrImg(url, 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
+          <div style="font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:3px">Scan To Shop</div>
+        </div>
+      </div>
+      <div style="background:${ink};padding:6px 40px;display:flex;justify-content:space-between;font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
+        <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
+        <span>Authorized Dealer &middot; Adidas &middot; Under Armour &middot; Rawlings</span>
+      </div>
+    </div>
+  </div>
+  ${p2Items.length > 0 ? `<!-- PAGE 2 -->
+  <div class="page">
+    <div style="background:${ink};color:rgba(255,255,255,.85);padding:9px 40px;display:flex;justify-content:space-between;align-items:center;font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase">
+      <span><span style="color:${accent}">&#9733;</span> ${_esc(store.name)}</span>
+      <span style="color:rgba(255,255,255,.62)">Page 2 &middot; More Gear</span>
+    </div>
+    <div style="padding:22px 40px 80px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">Also Available</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
+      ${grid(p2Items.slice(0, 16), 150)}
+    </div>
+    <div style="position:absolute;bottom:0;left:0;right:0;background:${ink};padding:9px 40px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:rgba(255,255,255,.5)">
+      <span>National Sports Apparel &middot; Orange, CA &middot; Since 2009</span>
+      <span>${_esc(url)}</span>
+    </div>
+  </div>` : ''}
   </body></html>`;
+}
+
+// Generate a branded PDF flyer (jsPDF, client-side) for email attachment or download.
+async function generateFlyerPdfBase64(store, items = []) {
+  const { jsPDF } = await import('jspdf');
+  const url = _storefrontUrl(store);
+  const primary = _hex(store.primary_color, '#0b1f3a');
+  const accent = _hex(store.accent_color, '#e11d2a');
+  const closeDate = _fmtDate(store.close_at);
+  const delivLabel = _deliveryLabel(store);
+  const hexRgb = (hex) => { const h = (_hex(hex,'#000000')).replace('#',''); return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)]; };
+  const [pr,pg,pb] = hexRgb(primary);
+  const [ar,ag,ab] = hexRgb(accent);
+  const INK = [22,34,63];
+  const doc = new jsPDF({ unit:'pt', format:'letter', orientation:'portrait' });
+  const W = 612, H = 792;
+  let y = 0;
+  // Top strip
+  doc.setFillColor(...INK); doc.rect(0,0,W,24,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab);
+  doc.text('★ OFFICIAL TEAM STORE', 20, 16);
+  doc.setFont('helvetica','normal'); doc.setTextColor(190,190,190);
+  doc.text('POWERED BY NATIONAL SPORTS APPAREL', W-20, 16, {align:'right'});
+  y = 24;
+  // Hero band
+  doc.setFillColor(pr,pg,pb); doc.rect(0,y,W,148,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(ar,ag,ab);
+  doc.text(store.name.toUpperCase(), W/2, y+22, {align:'center'});
+  doc.setFontSize(30); doc.setTextColor(255,255,255);
+  doc.text('THE TEAM STORE IS', W/2, y+60, {align:'center'});
+  doc.setFontSize(42); doc.setTextColor(ar,ag,ab);
+  doc.text('NOW OPEN', W/2, y+104, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(230,230,230);
+  doc.text("Order your player's official, custom-decorated gear. Ships to the team.", W/2, y+128, {align:'center'});
+  y += 148;
+  // Stats strip
+  doc.setFillColor(...INK); doc.rect(0,y,W,44,'F');
+  [['ORDER BY',closeDate||'Open Now'],['DELIVERY',delivLabel],['MINIMUMS','None']].forEach(([lbl,val],i)=>{
+    const cx = W/6 + (W/3)*i;
+    doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(ar,ag,ab); doc.text(lbl,cx,y+14,{align:'center'});
+    doc.setFontSize(13); doc.setTextColor(255,255,255); doc.text(val.toUpperCase(),cx,y+31,{align:'center'});
+  });
+  doc.setDrawColor(80,90,110); doc.setLineWidth(0.4);
+  doc.line(W/3,y+6,W/3,y+40); doc.line(2*W/3,y+6,2*W/3,y+40);
+  y += 44;
+  // Items — the Player Pack (bundle) gets a highlighted band; the rest fill the grid.
+  // Inactive items (active===false) are bundle components, surfaced via the band only.
+  const pkg = (items||[]).find((i)=>i.active!==false && (i.kind==='bundle' || i.is_bundle_parent) && Number(i.retail_price)>0);
+  const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
+    ? pkg._componentImages.slice(0, 4)
+    : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items||[]).filter((i)=>i.active===false && i.image_front_url).map((i)=>i.image_front_url).slice(0, 4)));
+  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle').slice(0,8);
+  // Pre-load product images (best-effort, CORS permitting), including the package images.
+  const imgCache = {};
+  await Promise.all([...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].map(async (item) => {
+    if (!item.image_front_url) return;
+    try {
+      const resp = await fetch(item.image_front_url);
+      const blob = await resp.blob();
+      imgCache[item.image_front_url] = await new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); });
+    } catch(_) {}
+  }));
+  const addImg = (b64, x, iy, w, h) => { try { const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x,iy,w,h,'','FAST'); return true; } catch(_) { return false; } };
+  // Player Pack highlight band
+  if (pkg) {
+    y += 14;
+    const bh = 88;
+    doc.setFillColor(pr,pg,pb); doc.setDrawColor(ar,ag,ab); doc.setLineWidth(1.5); doc.roundedRect(40,y,W-80,bh,6,6,'FD');
+    let tx = 54;
+    if (pkgImgs.length) {
+      const bx=48, by=y+8, bw=72, bhh=bh-16;
+      doc.setFillColor(255,255,255); doc.roundedRect(bx,by,bw,bhh,4,4,'F');
+      if (pkgImgs.length === 1) { const b=imgCache[pkgImgs[0]]; if (b) addImg(b, bx+4, by+4, bw-8, bhh-8); }
+      else { const cols=2, rows=Math.ceil(pkgImgs.length/2), cw=(bw-6)/cols, ch=(bhh-6)/rows; pkgImgs.forEach((u,k)=>{ const b=imgCache[u]; if(!b) return; const cx=bx+3+(k%2)*cw, cy=by+3+Math.floor(k/2)*ch; addImg(b, cx+1, cy+1, cw-2, ch-2); }); }
+      tx = 132;
+    }
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(ar,ag,ab); doc.text('REQUIRED FOR EVERY PLAYER', tx, y+20);
+    doc.setFontSize(20); doc.setTextColor(255,255,255);
+    const pn=doc.splitTextToSize((pkg.name || pkg.display_name || 'Player Pack').toUpperCase(), W-80-tx-110); doc.text(pn[0], tx, y+42);
+    if (pn[1]) { doc.setFontSize(14); doc.text(pn[1], tx, y+58); }
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(225,228,235); doc.text('Everything your player needs in one bundle.', tx, y+72);
+    doc.setFont('helvetica','bold'); doc.setFontSize(30); doc.setTextColor(255,255,255); doc.text('$'+Math.round(Number(pkg.retail_price)), W-52, y+44, {align:'right'});
+    doc.setFontSize(7.5); doc.setTextColor(ar,ag,ab); doc.text('COMPLETE PACK', W-52, y+58, {align:'right'});
+    y += bh;
+  }
+  if (visItems.length > 0) {
+    y += 16;
+    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(...INK);
+    doc.text("WHAT'S IN THE STORE", 40, y);
+    doc.setFillColor(ar,ag,ab); doc.rect(doc.getTextWidth("WHAT'S IN THE STORE")+50,y-5,W-doc.getTextWidth("WHAT'S IN THE STORE")-70,3,'F');
+    y += 12;
+    // Image fills the card; price floats as a pill over the bottom-left corner.
+    const GAP=8, colW=(W-80-GAP*3)/4, cardH=pkg?100:128;
+    visItems.forEach((item,idx)=>{
+      const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
+      doc.setFillColor(255,255,255); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.roundedRect(x,iy,colW,cardH,4,4,'FD');
+      const b64=imgCache[item.image_front_url];
+      if(!(b64 && addImg(b64,x+5,iy+5,colW-10,cardH-10))){ doc.setFillColor(235,231,224); doc.rect(x+5,iy+5,colW-10,cardH-10,'F'); }
+      if(item.retail_price){
+        const lbl='$'+Math.round(Number(item.retail_price));
+        doc.setFont('helvetica','bold'); doc.setFontSize(11); const tw=doc.getTextWidth(lbl);
+        doc.setFillColor(ar,ag,ab); doc.roundedRect(x+6, iy+cardH-21, tw+12, 16, 8, 8, 'F');
+        doc.setTextColor(255,255,255); doc.text(lbl, x+6+(tw+12)/2, iy+cardH-10, {align:'center'});
+      }
+    });
+    y += Math.ceil(visItems.length/4)*(cardH+GAP)+14;
+  } else if (!pkg) {
+    // Fallback: How To Order steps (mirrors the HTML flyer)
+    y += 20;
+    doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...INK);
+    doc.text('HOW TO ORDER', 40, y);
+    doc.setFillColor(ar,ag,ab); doc.rect(40+doc.getTextWidth('HOW TO ORDER')+12,y-5,W-40-doc.getTextWidth('HOW TO ORDER')-52,3,'F');
+    y += 22;
+    const closeDate2 = _fmtDate(store.close_at);
+    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. Gear ships to the team ~4–5 weeks after close.`]].forEach(([num,title,body])=>{
+      doc.setFillColor(pr,pg,pb); doc.circle(54,y+6,9,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(255,255,255); doc.text(num,54,y+10,{align:'center'});
+      doc.setTextColor(...INK); doc.setFontSize(13); doc.text(title.toUpperCase(),70,y+10);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
+      const bl=doc.splitTextToSize(body,W-120); doc.text(bl,70,y+22);
+      y += 52;
+    });
+    y += 10;
+  }
+  // QR
+  y = Math.max(y, H-250);
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...INK);
+  doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
+  y += 10;
+  try {
+    const qrResp = await fetch(_qrImg(url, 200));
+    const qrBlob = await qrResp.blob();
+    const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
+    doc.addImage(qrB64,'PNG',W/2-70,y,140,140);
+  } catch(_){ /* skip if network fails */ }
+  y += 150;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
+  doc.text(url, W/2, y, {align:'center'});
+  // Footer
+  doc.setFillColor(...INK); doc.rect(0,H-50,W,50,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(255,255,255);
+  doc.text('NATIONAL SPORTS APPAREL', W/2, H-29, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,160,160);
+  doc.text("California's Largest Independent Team Dealer  ·  Since 2009", W/2, H-13, {align:'center'});
+  return doc.output('datauristring').split(',')[1];
+}
+
+// Load a store's catalog shaped for the flyer/PDF: resolves each item's display
+// name and front image (store mockup → master product photo), and KEEPS inactive
+// items (bundle components) so the flyer can surface the package's hero image.
+// webstore_products has no image_front_url column — it's image_url here.
+async function loadFlyerItems(store) {
+  const { data: cat } = await supabase.from('webstore_products')
+    .select('id,display_name,retail_price,image_url,product_id,kind,is_bundle_parent,active')
+    .eq('store_id', store.id).order('sort_order');
+  const rows = cat || [];
+  const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+  const meta = {};
+  if (pids.length) {
+    const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
+    (pr || []).forEach((p) => { meta[p.id] = p; });
+  }
+  const items = rows.map((r) => ({
+    ...r,
+    name: r.display_name || (r.product_id && meta[r.product_id]?.name) || 'Item',
+    image_front_url: r.image_url || (r.product_id && meta[r.product_id]?.image_front_url) || null,
+  }));
+  // Attach each package's component images so the flyer can show the full pack.
+  const bundleIds = items.filter((i) => i.kind === 'bundle' || i.is_bundle_parent).map((i) => i.id);
+  if (bundleIds.length) {
+    const { data: bis } = await supabase.from('webstore_bundle_items').select('bundle_id,webstore_product_id,sort_order').in('bundle_id', bundleIds);
+    attachBundleImages(items, bis || []);
+  }
+  return items;
+}
+
+// Attach a `_componentImages` array (the pack's member photos) to each bundle parent,
+// resolved from the catalog by the bundle_items join. De-duped, in pack order.
+function attachBundleImages(items, bundleItems) {
+  const byId = {}; items.forEach((i) => { byId[i.id] = i; });
+  const imgOf = (it) => (it && (it.image_url || it.image_front_url)) || '';
+  items.forEach((p) => {
+    if (p.kind !== 'bundle' && !p.is_bundle_parent) return;
+    const comps = (bundleItems || []).filter((bi) => bi.bundle_id === p.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const imgs = [];
+    comps.forEach((bi) => { const u = imgOf(byId[bi.webstore_product_id]); if (u && !imgs.includes(u)) imgs.push(u); });
+    if (imgs.length) p._componentImages = imgs;
+  });
+  return items;
 }
 
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
@@ -613,6 +978,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
+  const [soPrompt, setSoPrompt] = useState(null); // { count, shortages[], proceed() } for the Create-SO modal
+  const [storeStats, setStoreStats] = useState({});
+  // Applying an item template outside the store-detail view (Templates page):
+  const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
+  const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
+  const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
 
@@ -623,23 +994,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const coachPortalUrl = useCallback((store) => {
     const c = cust.find((x) => x.id === store?.customer_id);
     const tag = c?.alpha_tag || c?.name || '';
-    return tag ? `${window.location.origin}/?portal=${encodeURIComponent(tag)}` : '';
+    return tag ? `${PUBLIC_SITE}/coach?portal=${encodeURIComponent(tag)}` : '';
   }, [cust]);
 
-  // Send the polished launch email (shop link + QR + key info + tracking portal).
-  const emailDirector = useCallback(async (store) => {
-    const to = (store.director_email || store.coach_contact_email || '').trim();
-    if (!to) { flash('Add a coach/director email in the store’s Settings first'); return; }
-    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
+  // Send the family-facing launch email with PDF flyer attached.
+  // emailOverride lets the EmailStoreLinkModal specify a different recipient.
+  const emailDirector = useCallback(async (store, emailOverride) => {
+    const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
+    if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
+    flash('Generating flyer PDF…');
+    const items = await loadFlyerItems(store);
+    let attachment;
+    try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
+    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
     if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Launch email sent to ' + to);
+    else flash('Store link emailed to ' + to + (attachment ? ' with PDF flyer' : ''));
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
-  const openFlyer = useCallback((store) => {
+  const openFlyer = useCallback((store, items = []) => {
     const w = window.open('', '_blank');
     if (!w) { flash('Allow pop-ups to open the flyer.'); return; }
-    w.document.write(flyerHtml(store)); w.document.close();
+    w.document.write(flyerHtml(store, items)); w.document.close();
   }, [flash]);
 
   const loadStores = useCallback(async () => {
@@ -649,10 +1025,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
       setStores([]);
     } else {
-      // Hide OMG pop-up shadow stores — they're created by the OMG ingest to track
-      // those orders on the webstore rails and are managed on the OMG Stores page,
-      // not here. (Filtered client-side to avoid PostgREST's null-vs-neq gotcha.)
       setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
+      // Fetch per-store aggregate stats. Exclude abandoned card carts
+      // (pending_payment — created before Stripe confirms) and cancelled orders,
+      // which would otherwise inflate every store's Gross Sales and order count.
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt');
+      const stats = {};
+      (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
+        if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0 };
+        stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+        stats[o.store_id].orders += 1;
+      });
+      setStoreStats(stats);
     }
     setLoading(false);
   }, []);
@@ -690,13 +1074,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
     const costByPid = {};
+    const imgFrontByPid = {};
     const imgBackByPid = {};
+    const invSrcByPid = {}; // product_id -> inventory_source ('manual' = custom / not stock-tracked)
     if (pidList.length) {
-      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost,image_back_url').in('id', pidList);
+      const { data: costRows } = await supabase.from('products').select('id,nsa_cost,is_clearance,clearance_cost,image_front_url,image_back_url,inventory_source').in('id', pidList);
       for (const cp of costRows || []) {
         const cc = (cp.is_clearance && cp.clearance_cost != null) ? Number(cp.clearance_cost) : Number(cp.nsa_cost);
         costByPid[cp.id] = Number.isFinite(cc) ? cc : null;
+        if (cp.image_front_url) imgFrontByPid[cp.id] = cp.image_front_url;
         if (cp.image_back_url) imgBackByPid[cp.id] = cp.image_back_url;
+        invSrcByPid[cp.id] = cp.inventory_source || null;
       }
     }
     const catIds = new Set(catalog.map((c) => c.id));
@@ -706,6 +1094,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // The storefront snapshot doesn't carry back images — fall back to the master product's
     // image_back_url so the editor's Back tab (and mockups) show it without a manual upload.
     catalog.forEach((c) => { const back = c.product_id && imgBackByPid[c.product_id]; if (!back) return; const s = stockByWp[c.id]; if (s) { if (!s.image_back_url) s.image_back_url = back; } else { stockByWp[c.id] = { image_back_url: back }; } });
+    // Same for front image — if the store item has no custom mockup, use the master product photo.
+    catalog.forEach((c) => { if (!c.image_front_url && c.product_id && imgFrontByPid[c.product_id]) c.image_front_url = imgFrontByPid[c.product_id]; });
     // Customer art LIBRARY — the SAME sources as the customer's Artwork tab: the team's
     // + parent org's saved art_files, PLUS every art file off their sales orders &
     // estimates (assembled in memory — that's where most file-backed art lives, which is
@@ -743,6 +1133,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setDetail({
       catalog,
       costByPid,
+      invSrcByPid,
       bundleItems: (bundleRes.data || []).filter((b) => catIds.has(b.bundle_id)),
       stockByWp,
       orders,
@@ -792,8 +1183,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
-      flash('Launched — coach emailed the store link + QR.');
+      const items = await loadFlyerItems(store);
+      let attachment;
+      try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
+      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
+      flash('Launched — family flyer emailed' + (attachment ? ' with PDF attachment' : '') + '.');
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
@@ -847,7 +1241,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (status === 'open' && opts.emailCoach && coachEmail) notifyCoachPublished({ ...data, coach_contact_email: coachEmail });
     // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
-    else flash(status === 'open' ? 'Store launched — it’s live' : `Store ${status}`);
+    else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
@@ -954,6 +1348,41 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash(`Added ${rows.length} color${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Add a fit/gender variant (Adult/Women's/Youth) as an option ON one card. Like
+  // colors each fit is its own SKU/row sharing variant_group_id, but it carries a
+  // variant_label and the storefront shows all fits' sizes at once (no picker) on
+  // the primary's shared image. fitItems = [{ product, label }].
+  const addFitsToItem = useCallback(async (primary, fitItems) => {
+    if (!primary?.id || !Array.isArray(fitItems) || !fitItems.length) return;
+    const groupId = primary.variant_group_id || primary.id;
+    const base = (detail?.catalog?.length || 0);
+    const rows = fitItems.map((f, i) => ({
+      store_id: sel.id, kind: 'single', product_id: f.product.id, sku: f.product.sku,
+      retail_price: Number(primary.retail_price) || 0,
+      fundraise_amount: Number(primary.fundraise_amount) || 0,
+      image_url: null, variant_label: (f.label || '').trim() || null,
+      takes_number: !!primary.takes_number, takes_name: !!primary.takes_name,
+      name_upcharge: Number(primary.name_upcharge) || 0,
+      transfer_codes: primary.transfer_codes || [],
+      num_transfer_sets: primary.takes_number ? (primary.num_transfer_sets || []) : [],
+      decorations: primary.decorations || [],
+      category: primary.category || null, kit_name: primary.kit_name || null,
+      required: !!primary.required, options: Array.isArray(primary.options) ? primary.options : [],
+      active: true, sort_order: base + i, variant_group_id: groupId,
+    }));
+    const ops = [supabase.from('webstore_products').insert(rows)];
+    // The primary is now part of a fit group — give it a label too (default it to
+    // Adult so the storefront's stacked rows all read cleanly) and the group id.
+    const primaryPatch = {};
+    if (!primary.variant_group_id) primaryPatch.variant_group_id = groupId;
+    if (!primary.variant_label) primaryPatch.variant_label = 'Adult';
+    if (Object.keys(primaryPatch).length) ops.push(supabase.from('webstore_products').update(primaryPatch).eq('id', primary.id));
+    const results = await Promise.all(ops);
+    const e = results.find((r) => r.error);
+    if (e?.error) { flash('Error: ' + e.error.message); return; }
+    flash(`Added ${rows.length} fit${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+  }, [sel, detail, flash, loadDetail]);
+
   // Explicit "copy to a new item": clone a row as its own standalone card
   // (variant_group_id cleared) for when a separate card really is wanted.
   const copyToNewItem = useCallback(async (row) => {
@@ -1017,7 +1446,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       seen.add(product.id);
       return { product, price: (it.price != null && it.price !== '') ? it.price : product.retail_price, fundraise: it.fundraise || 0, category: sectionCat || it.category || null, kit_name: it.kit || null, required: !!it.required };
     }).filter(Boolean);
-    if (!rows.length) { flash('All of this template’s items are already in the store'); return { added: 0 }; }
+    if (!rows.length) { flash("All of this template's items are already in the store"); return { added: 0 }; }
     return addManyFromList(rows);
   }, [detail, flash, addManyFromList]);
 
@@ -1025,13 +1454,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // color-picker). plan = [{ products:[{id,sku,retail_price}], price, fundraise, category,
   // kit_name, required }]; each group's picked colors fold into ONE multi-color card (shared
   // variant_group_id = the primary row's id). Colors already in the store are skipped.
-  const applyTemplateColors = useCallback(async (plan) => {
-    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
-    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
-    let base = (detail?.catalog?.length || 0);
+  // Core insert: fold a color-picker plan into an arbitrary store (used by both the in-store
+  // "Add template" flow and the Templates-page "Start a store / Add to a store" flows).
+  // `existingIds` are product_ids already in the store (skipped). `startSort` seeds sort_order.
+  const applyTemplateColorsTo = useCallback(async (storeId, plan, existingIds, startSort = 0) => {
+    if (!storeId || !Array.isArray(plan)) return { added: 0 };
+    const existing = existingIds instanceof Set ? new Set(existingIds) : new Set(existingIds || []);
+    let base = startSort;
     let added = 0;
     const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
-    const mk = (p, grp, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
+    const mk = (p, grp, groupId) => ({ store_id: storeId, kind: 'single', product_id: p.id, sku: p.sku,
       retail_price: (grp.price != null && grp.price !== '') ? Number(grp.price) : (Number(p.retail_price) || 0),
       fundraise_amount: Number(grp.fundraise) || 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [], category: grp.category || null, kit_name: grp.kit_name || null,
@@ -1054,14 +1486,64 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       }
       cols.forEach((p) => existing.add(p.id));
     }
+    return { added };
+  }, [wsSettings, flash]);
+
+  const applyTemplateColors = useCallback(async (plan) => {
+    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
+    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
+    const { added } = await applyTemplateColorsTo(sel.id, plan, existing, detail?.catalog?.length || 0);
     flash(added ? `Added ${added} item${added === 1 ? '' : 's'}` : 'Those colors are already in the store'); loadDetail(sel);
     return { added };
-  }, [sel, detail, wsSettings, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail, applyTemplateColorsTo]);
+
+  // Templates-page flows — a template can START a new store or be ADDED to an existing one.
+  // Both open the built-in garment color selector so the rep picks which colorways (adidas,
+  // SanMar / S&S, Momentec, Richardson, …) of each style to bring in.
+  const beginTplColorFlow = useCallback(async (tpl, store) => {
+    const { data } = await supabase.from('webstore_products').select('product_id').eq('store_id', store.id);
+    const existingPids = new Set((data || []).map((r) => r.product_id).filter(Boolean));
+    setTplColorFlow({ tpl, storeId: store.id, existingPids, store, startSort: (data || []).length });
+  }, []);
+  const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
+  const finishTplColorFlow = useCallback(async (plan) => {
+    const flow = tplColorFlow; if (!flow) return;
+    const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
+    setTplColorFlow(null);
+    flash(added ? `Added ${added} item${added === 1 ? '' : 's'} to ${flow.store?.name || 'the store'}` : 'Those colors are already in the store');
+    if (flow.store) openStore(flow.store);
+  }, [tplColorFlow, applyTemplateColorsTo, flash, openStore]);
 
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
     flash(url ? 'Image updated' : 'Image removed'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Edit the item's base cost. Cost lives on the catalog product (products.nsa_cost) and
+  // drives the margin readout, so this updates it wherever the product is used — fine for
+  // the custom/manual items reps create here. Reloads so costByPid (and margins) refresh.
+  const updateProductCost = useCallback(async (productId, cost) => {
+    if (!productId) return;
+    const v = (cost === '' || cost == null) ? null : Number(cost);
+    if (v != null && !Number.isFinite(v)) { flash('Enter a valid cost'); return; }
+    const { error } = await supabase.from('products').update({ nsa_cost: v }).eq('id', productId);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Cost updated'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Edit the catalog product's vendor (who a PO is cut to) and/or SKU. SKU also syncs onto
+  // this product's webstore rows so stock & vendor lookups (matched by sku) stay aligned.
+  const updateProductMeta = useCallback(async (productId, fields) => {
+    if (!productId || !fields) return;
+    const clean = {};
+    if (fields.vendor_id !== undefined) clean.vendor_id = fields.vendor_id || null;
+    if (fields.sku !== undefined) clean.sku = (fields.sku || '').trim().toUpperCase() || null;
+    if (!Object.keys(clean).length) return;
+    const { error } = await supabase.from('products').update(clean).eq('id', productId);
+    if (error) { flash('Error: ' + error.message); return; }
+    if (fields.sku !== undefined && clean.sku) await supabase.from('webstore_products').update({ sku: clean.sku }).eq('product_id', productId);
+    flash('Product updated'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
   const updateCatalogItem = useCallback(async (id, fields) => {
@@ -1070,15 +1552,68 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
-    if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) {
+    // Decorations and the inventory-tracking choice are card-level: fan them out to every
+    // color row in the group so all colorways behave the same on the storefront.
+    const groupFields = {};
+    if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
+    if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
+    if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
+    if (Object.keys(groupFields).length) {
       const cat = detail?.catalog || [];
       const me = cat.find((c) => c.id === id);
       const groupKey = me ? (me.variant_group_id || me.id) : null;
       const groupIds = groupKey ? cat.filter((c) => (c.variant_group_id || c.id) === groupKey && c.id !== id).map((c) => c.id) : [];
-      if (groupIds.length) await supabase.from('webstore_products').update({ decorations: fields.decorations }).in('id', groupIds);
+      if (groupIds.length) await supabase.from('webstore_products').update(groupFields).in('id', groupIds);
+    }
+    // When takes_number / takes_name changes, push the new value to any bundle items that
+    // snapshot these flags at the time the item was added to the package.
+    const personalizationUpdate = {};
+    if (Object.prototype.hasOwnProperty.call(fields, 'takes_number')) personalizationUpdate.takes_number = fields.takes_number;
+    if (Object.prototype.hasOwnProperty.call(fields, 'takes_name')) personalizationUpdate.takes_name = fields.takes_name;
+    if (Object.keys(personalizationUpdate).length) {
+      await supabase.from('webstore_bundle_items').update(personalizationUpdate).eq('webstore_product_id', id);
+    }
+    // When retail_price changes, recalculate the price of any bundles that contain this item.
+    if (Object.prototype.hasOwnProperty.call(fields, 'retail_price')) {
+      const allBundleItems = detail?.bundleItems || [];
+      const cat = detail?.catalog || [];
+      const affectedBundleIds = [...new Set(
+        allBundleItems.filter((bi) => bi.webstore_product_id === id).map((bi) => bi.bundle_id)
+      )];
+      for (const bundleId of affectedBundleIds) {
+        const comps = allBundleItems.filter((bi) => bi.bundle_id === bundleId);
+        let total = 0;
+        for (const comp of comps) {
+          if (comp.webstore_product_id === id) {
+            total += Number(fields.retail_price) || 0;
+          } else {
+            const compItem = cat.find((c) => c.id === comp.webstore_product_id);
+            total += compItem ? (Number(compItem.retail_price) || 0) : 0;
+          }
+        }
+        await supabase.from('webstore_products').update({ retail_price: total }).eq('id', bundleId);
+      }
     }
     flash('Item updated'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
+
+  // Bulk-edit catalog items. Accepts rows of { id, fields }; identical patches are
+  // collapsed into one update so price/category/availability changes hit in a few
+  // queries, while a per-item patch (e.g. % fundraising) still works. One reload.
+  const bulkUpdateItems = useCallback(async (rows) => {
+    const list = (rows || []).filter((r) => r && r.id && r.fields);
+    if (!list.length) return 0;
+    const groups = new Map();
+    for (const r of list) { const k = JSON.stringify(r.fields); if (!groups.has(k)) groups.set(k, { fields: r.fields, ids: [] }); groups.get(k).ids.push(r.id); }
+    let n = 0;
+    for (const { fields, ids } of groups.values()) {
+      const { error } = await supabase.from('webstore_products').update(fields).in('id', ids);
+      if (error) { flash('Bulk update failed: ' + error.message); loadDetail(sel); return n; }
+      n += ids.length;
+    }
+    flash(`Updated ${n} item${n === 1 ? '' : 's'}`); loadDetail(sel);
+    return n;
+  }, [sel, flash, loadDetail]);
 
   // Reprice every single (with a known cost) to a target margin: price = trueCost / (1 - m),
   // where trueCost = garment cost + ~$5 decoration when the item is decorated. One reload.
@@ -1319,14 +1854,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (it._removed) await supabase.from('webstore_order_items').delete().eq('id', it.id);
       else await supabase.from('webstore_order_items').update({ size: it.size || null, qty: Number(it.qty) || 1 }).eq('id', it.id);
     }
-    const remaining = edited.filter((i) => !i._removed);
-    const subtotal = remaining.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
-    const fundraise = remaining.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
-    const total = Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    // Recompute over ALL of the order's items, not just the edited (component) rows.
+    // A bundle's price lives on its parent row (components are $0) and the parent is
+    // never in the editable set — summing only `edited` would drop every package's
+    // value and zero out the order's revenue and the club's fundraising payout.
+    const editById = {}; edited.forEach((e) => { editById[e.id] = e; });
+    const effective = (detail?.orderItems || []).filter((i) => i.order_id === order.id).map((i) => {
+      const e = editById[i.id];
+      if (!e) return i;                 // parents / untouched rows keep their stored price
+      if (e._removed) return null;
+      return { ...i, size: e.size, qty: Number(e.qty) || 1 };
+    }).filter(Boolean);
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
+    const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
+    const total = round2(Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0));
     const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   // Refund: Stripe for card orders, recorded credit for team-tab orders.
   // Guarded against double-processing: an in-flight latch blocks double-clicks, and the
@@ -1363,16 +1909,35 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
-  const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
-    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
+  const createBundle = useCallback(async ({ name, price, fundraise, image_url, components, category }) => {
+    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, category: category || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
-      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
+      const rows = components.map((c, i) => ({ bundle_id: bundle.id, webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
       const { error: e2 } = await supabase.from('webstore_bundle_items').insert(rows);
       if (e2) { flash('Bundle created but items failed: ' + e2.message); loadDetail(sel); return; }
     }
     flash('Package created'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
+
+  const addBundleItem = useCallback(async (bundleId, item) => {
+    const existing = (detail?.bundleItems || []).filter((b) => b.bundle_id === bundleId);
+    const row = { bundle_id: bundleId, webstore_product_id: item.webstore_product_id || item.id || null, product_id: item.product_id, sku: item.sku, qty: item.qty || 1, size_required: item.size_required !== false, takes_number: !!item.takes_number, takes_name: !!item.takes_name, name_upcharge: Number(item.name_upcharge) || 0, transfer_code: null, num_transfer_size: null, num_transfer_color: null, sort_order: existing.length };
+    const { error } = await supabase.from('webstore_bundle_items').insert(row);
+    if (error) { flash('Failed to add item: ' + error.message); return; }
+    flash('Item added to package'); loadDetail(sel);
+  }, [sel, detail, flash, loadDetail]);
+
+  const removeBundleItem = useCallback(async (bundleItemId) => {
+    const { error } = await supabase.from('webstore_bundle_items').delete().eq('id', bundleItemId);
+    if (error) { flash('Failed to remove item: ' + error.message); return; }
+    flash('Item removed from package'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const reorderBundleItems = useCallback(async (bundleId, orderedIds) => {
+    await Promise.all(orderedIds.map((id, i) => supabase.from('webstore_bundle_items').update({ sort_order: i }).eq('id', id)));
+    loadDetail(sel);
+  }, [sel, loadDetail]);
 
   // Gather this store's unbatched orders + their stock picture (shared by the
   // availability report and the batch flow's inventory check).
@@ -1381,7 +1946,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const openIds = new Set(open.map((o) => o.id));
     const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
     const stockByPid = {};
-    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     return { open, openIds, lines, stockByPid, orderById };
   }, [detail]);
@@ -1391,7 +1956,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel || !detail) return;
     const { open, lines, stockByPid, orderById } = gatherBatch();
     if (!open.length) { flash('No unbatched orders to report'); return; }
-    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById);
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog));
   }, [sel, detail, gatherBatch, flash]);
 
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
@@ -1401,7 +1966,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const ids = new Set(valid.map((o) => o.id));
     const lines = (detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent);
     const stockByPid = {};
-    (detail?.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
     return { valid, lines, stockByPid, orderById, roster: detail?.roster || [] };
   }, [detail]);
@@ -1420,7 +1985,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!sel || !detail) return;
     const { valid, lines, stockByPid } = gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid);
+    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog));
   }, [sel, detail, gatherAll, flash]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
@@ -1436,7 +2001,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
-      const rows = aggStock(lines, stockByPid)
+      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog))
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
         .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
@@ -1459,35 +2024,82 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
     const stockByPid = {};
-    (detail.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
+    // produced to demand, so they're never a stock shortfall — same as products with
+    // no stock record (which the `if (!st) return` below already skips).
+    const mto = madeToOrderPids(detail.catalog);
     const demand = {};
     lines.forEach((i) => { if (!i.product_id) return; const k = i.product_id + '|' + (i.size || 'OS'); demand[k] = (demand[k] || 0) + (i.qty || 1); });
     const shortages = [];
     Object.entries(demand).forEach(([k, q]) => {
-      const [pid, size] = k.split('|'); const st = stockByPid[pid]; if (!st) return;
+      const [pid, size] = k.split('|'); if (mto.has(pid)) return; const st = stockByPid[pid]; if (!st) return;
       const wh = Number((st.size_stock || {})[size]) || 0;
       const ven = Number((st.vendor_size_stock || {})[size]) || 0;
       const avail = wh + ven;
-      if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
+      if (q > avail) shortages.push({ pid, size, sku: st.sku || '', label: `${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}` });
     });
-    const head = `Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`;
-    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Use "Availability report" to see who's affected.\n\nCreate the Sales Order anyway?` : head;
-    if (!window.confirm(msg)) return;
-
+    // Everything from here on runs once the user confirms in the modal below.
+    // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
+    const proceed = async (inlineOverrides = {}) => {
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
     (detail.bundleItems || []).forEach((b) => { if (b.product_id) { const e = personalize[b.product_id] || { num: false, name: false }; personalize[b.product_id] = { num: e.num || !!b.takes_number, name: e.name || !!b.takes_name }; } });
 
+    // SO sell price = what the buyer actually paid, NOT catalog retail. The webstore
+    // charges a flat price per line (retail + size upcharge + fundraise + name upcharge),
+    // stored as unit_price + unit_fundraise; numbers are free. We carry that collected
+    // revenue onto each garment's unit_sell and suppress the name/number deco sells
+    // (their COST still counts) so the SO total reconciles to SUM(order subtotal+fundraise).
+    // Bundle components are stored at $0 with the whole package price on the parent row
+    // (excluded from production), so we allocate the parent's price across its components
+    // weighted by each component's catalog retail (a jersey absorbs more than socks).
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const retailByPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
+    const allItems = (detail.orderItems || []).filter((i) => openIds.has(i.order_id));
+    // Group each order's bundle parent(s) + components by order_id + bundle_product_id.
+    // NOTE: older orders' PARENT rows have bundle_ref = null (it was added later), so we
+    // cannot match parent→component by bundle_ref — doing so dropped the entire package
+    // value for those orders. bundle_product_id is always present on both, so group on
+    // that; summing parent values per group also handles the same bundle ordered twice.
+    const allocById = {}; // component order_item id -> allocated package $
+    const bundleGroups = {};
+    allItems.forEach((i) => {
+      if (!i.bundle_product_id) return;
+      const k = i.order_id + '|' + i.bundle_product_id;
+      if (!bundleGroups[k]) bundleGroups[k] = { parentVal: 0, kids: [] };
+      if (i.is_bundle_parent) bundleGroups[k].parentVal += (Number(i.unit_price) || 0) + (Number(i.unit_fundraise) || 0);
+      else bundleGroups[k].kids.push(i);
+    });
+    Object.values(bundleGroups).forEach((g) => {
+      if (!g.kids.length || g.parentVal <= 0) return;
+      const weights = g.kids.map((c) => retailByPid[c.product_id] || 0);
+      const wsum = weights.reduce((a, b) => a + b, 0);
+      g.kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(g.parentVal * weights[idx] / wsum) : r2(g.parentVal / g.kids.length); });
+    });
+    const collectedForLine = (i) => allocById[i.id] != null
+      ? allocById[i.id]
+      : r2(((Number(i.unit_price) || 0) + (Number(i.unit_fundraise) || 0)) * (i.qty || 1));
+
     // Aggregate by product + size; build parallel number/name rosters per size
     // (one entry per garment unit) so they attach as real deco lines.
+    // size_skus overrides: if a size maps to a different vendor SKU, it becomes its
+    // own SO line (same art/deco, same price, but a different item number to source).
+    const sizeSkusByCatPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
     const byProduct = {};
     lines.forEach((i) => {
-      const pid = i.product_id || i.sku || 'unknown';
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {} };
-      const g = byProduct[pid]; const sz = i.size || 'OS'; const q = i.qty || 1;
+      const basePid = i.product_id || i.sku || 'unknown';
+      const sz = i.size || 'OS';
+      const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
+      const pid = basePid + '§' + effectiveSku;
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[pid]; const q = i.qty || 1;
       const pdef = personalize[i.product_id] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
+      g.collected = r2(g.collected + collectedForLine(i));
       for (let u = 0; u < q; u++) {
         if (pdef.num) (g.numbers[sz] = g.numbers[sz] || []).push(i.player_number ? String(i.player_number) : '');
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
@@ -1499,6 +2111,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
+    // Coupon discounts are order-level; the SO bills garments only (shipping/tax stay
+    // at the webstore level). Scale every line's sell by the batch's net/gross ratio so
+    // the SO total reconciles to what was actually collected after discounts. The
+    // garment share of each order's discount is capped at its garment subtotal (the rest
+    // came off shipping). With no coupons in the batch the ratio is 1 — no change.
+    const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
+    const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
+    const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
     // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
@@ -1532,7 +2152,33 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
     const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, rec); };
+    // Garment mockups — attach each ordered product's store photo to the SO art,
+    // keyed by sku|color (mirrors the OMG store→SO `item_mockups` mapping in
+    // App.js), so the Art Dashboard / production sees the garment proof, not just
+    // the bare logo. The order line captured the storefront image at purchase;
+    // fall back to the catalog product photo.
+    const catImgByPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.image_url && !catImgByPid[c.product_id]) catImgByPid[c.product_id] = c.image_url; });
+    // SKU/color resolved from the product — the webstore order LINE's sku is null for
+    // singles, so keying mockups off i.sku silently dropped every garment (the SO line
+    // then showed "No mockup uploaded"). Key by the SO line's sku|color AND the bare sku
+    // so the SO's mockup lookup (m[sku|color] → m[sku]) always resolves regardless of how
+    // the line's stored color string compares to the master product color.
+    const skuByPid = {}; const colorByPid = {};
+    Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
+    (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
+    const itemMockups = {};
+    lines.forEach((i) => {
+      const rsku = i.sku || skuByPid[i.product_id] || '';
+      if (!rsku) return;
+      const img = i.image_url || catImgByPid[i.product_id] || '';
+      if (!img) return;
+      const color = i.color || colorByPid[i.product_id] || '';
+      [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
+    });
+    // Every art file carries the per-garment mockups (production filters by the
+    // job's SKUs, same as OMG). Merge so library art keeps its own mockups too.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}), ...itemMockups } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
@@ -1540,8 +2186,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
-      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: g.numbers });
-      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_each: 6, cost_each: 3, names: g.names });
+      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers });
+      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
       (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
@@ -1556,7 +2202,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', web_url: decoUrlForColor(d, info.color) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        // Pin the screen-print colorway whose garment_color matches this line's garment,
+        // so production gets the right inks instead of an unset CW. Each art color_way
+        // carries a garment_color (e.g. "Navy"); match it to the SO line's color, with a
+        // contains-fallback, and use the only colorway when there's just one.
+        let cwId = null;
+        if (lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
+          const gc = colorKeyOf(info.color);
+          const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
+          const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
+          cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
+        }
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
@@ -1566,22 +2223,43 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
       });
+      // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
+      // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
+      // collected. Deco sells are suppressed above so the garment line carries it all.
+      const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
+      const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
-        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
+        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.`;
+    const discNote = totalDiscount > 0 ? `\nCoupon discounts applied: −$${totalDiscount.toFixed(2)} (spread across line prices).` : '';
+    // Payment split — production runs as ONE order, but card orders are already
+    // collected via Stripe; only the team-tab total should be invoiced to the club.
+    const cardOrders = open.filter((o) => o.payment_mode === 'paid');
+    const tabOrders = open.filter((o) => o.payment_mode !== 'paid');
+    const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+    const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
+    const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
+    const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
     const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
-    const { error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]);
+    // Idempotent link: only claim orders still unbatched, so a concurrent batch
+    // (two staff at once) can't steal another SO's orders. Returns the rows we won.
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]).is('so_id', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
+    else if ((linked || []).length < openIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${openIds.size} (some were just batched elsewhere)`);
     else flash(`Created ${soId} · linked ${open.length} orders`);
     loadDetail(sel);
+    }; // end proceed
+
+    // Open the styled confirm modal; it calls proceed() on Create.
+    setSoPrompt({ count: open.length, shortages, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -1638,6 +2316,38 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [detail, sel, loadDetail]);
 
+  // Move an entire category section before another category section.
+  const moveCatSection = useCallback(async (fromCat, toCat) => {
+    if (fromCat === toCat) return;
+    const list = [...(detail?.catalog || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const fromItems = list.filter((x) => (x.category || '') === fromCat);
+    const rest = list.filter((x) => (x.category || '') !== fromCat);
+    const insertBefore = rest.findIndex((x) => (x.category || '') === toCat);
+    const insertIdx = insertBefore < 0 ? rest.length : insertBefore;
+    const reordered = [...rest.slice(0, insertIdx), ...fromItems, ...rest.slice(insertIdx)];
+    for (let i = 0; i < reordered.length; i++) {
+      if ((reordered[i].sort_order || 0) !== i) {
+        await supabase.from('webstore_products').update({ sort_order: i }).eq('id', reordered[i].id);
+      }
+    }
+    loadDetail(sel);
+  }, [detail, sel, loadDetail]);
+
+  // Reorder the color rows within one card (the filmstrip drag). Keeps the group's existing
+  // band of sort_order values but reassigns them to match the new left-to-right order, so the
+  // card stays put relative to other cards while the leftmost color becomes the primary (its
+  // image leads the catalog row and the storefront card / default color).
+  const reorderColorRows = useCallback(async (orderedIds) => {
+    const cat = detail?.catalog || [];
+    const rows = orderedIds.map((id) => cat.find((c) => c.id === id)).filter(Boolean);
+    if (rows.length < 2) return;
+    const slots = rows.map((r) => r.sort_order || 0).sort((a, b) => a - b);
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i].sort_order || 0) !== slots[i]) await supabase.from('webstore_products').update({ sort_order: slots[i] }).eq('id', rows[i].id);
+    }
+    loadDetail(sel);
+  }, [detail, sel, loadDetail]);
+
   // ── render gates ─────────────────────────────────────────────────────
   if (needsMigration) return <MigrationNotice onRetry={loadStores} />;
   if (loading) return <div style={{ padding: 40, color: '#64748b', fontSize: 14 }}>Loading webstores…</div>;
@@ -1653,26 +2363,159 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
+      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
+
+      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
+      {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
-          onCancel={() => setEditing(null)}
-          onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
+          onCancel={() => { setPendingStartTpl(null); setEditing(null); }}
+          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddColors={addColorsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onUpdateItem={updateCatalogItem}
+          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} onFlyer={() => openFlyer(sel)} />
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
       )}
     </>
+  );
+}
+
+// Searchable product picker for substitute SKUs in the SO confirm modal.
+// Queries products as the rep types; fetches live stock from webstore_storefront_products
+// for that size so they can see what's actually available before picking.
+// Uses position:fixed for the dropdown so it escapes the modal's overflow:hidden.
+function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
+  const [q, setQ] = useState(value || '');
+  const [results, setResults] = useState([]);
+  const [resultStock, setResultStock] = useState({});
+  const [open, setOpen] = useState(false);
+  const [dropPos, setDropPos] = useState(null);
+  const wrapRef = useRef(null);
+  const timer = useRef(null);
+  const search = (text) => {
+    setQ(text);
+    onChange(text);
+    if (timer.current) clearTimeout(timer.current);
+    if (!text.trim()) { setResults([]); setOpen(false); return; }
+    timer.current = setTimeout(async () => {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color').or(`sku.ilike.%${text}%,name.ilike.%${text}%`).limit(8);
+      const rows = data || [];
+      setResults(rows);
+      // Fetch size stock for found products from this store's storefront view.
+      if (rows.length && storeId) {
+        const pids = rows.map((p) => p.id);
+        const { data: sr } = await supabase.from('webstore_storefront_products').select('product_id,size_stock,vendor_size_stock').eq('store_id', storeId).in('product_id', pids);
+        const fresh = {};
+        (sr || []).forEach((r) => { fresh[r.product_id] = r; });
+        setResultStock(fresh);
+      }
+      if (wrapRef.current) {
+        const r = wrapRef.current.getBoundingClientRect();
+        setDropPos({ top: r.bottom + 4, left: r.left });
+      }
+      setOpen(true);
+    }, 250);
+  };
+  const openAgain = () => { if (results.length) { if (wrapRef.current) { const r = wrapRef.current.getBoundingClientRect(); setDropPos({ top: r.bottom + 4, left: r.left }); } setOpen(true); } };
+  const select = (p) => { setQ(p.sku); onChange(p.sku); setOpen(false); };
+  return (
+    <div ref={wrapRef} style={{ flex: '0 0 auto' }}>
+      <input className="form-input" value={q} onChange={(e) => search(e.target.value)}
+        onFocus={openAgain}
+        onBlur={() => setTimeout(() => setOpen(false), 180)}
+        placeholder="Search SKU or name…"
+        style={{ fontSize: 12, padding: '4px 8px', width: 220, fontFamily: 'monospace' }} />
+      {open && results.length > 0 && dropPos && (
+        <div style={{ position: 'fixed', top: dropPos.top, left: dropPos.left, zIndex: 9999, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.22)', minWidth: 360, maxHeight: 280, overflowY: 'auto' }}>
+          {results.map((p, i) => {
+            const st = resultStock[p.id] || stockByPid[p.id];
+            const wh = st ? (Number((st.size_stock || {})[size]) || 0) : null;
+            const ven = st ? (Number((st.vendor_size_stock || {})[size]) || 0) : null;
+            const inStock = wh !== null ? wh + ven : null;
+            return (
+              <div key={p.id} onMouseDown={() => select(p)}
+                style={{ padding: '9px 13px', cursor: 'pointer', borderTop: i ? '1px solid #f1f5f9' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f8fafc'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 12, color: '#1e293b' }}>{p.sku}</span>
+                  {p.brand && <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 6 }}>{p.brand}</span>}
+                  <div style={{ fontSize: 12, color: '#475569', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}{p.color ? ` · ${p.color}` : ''}</div>
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0, color: inStock === null ? '#94a3b8' : inStock > 0 ? '#15803d' : '#dc2626' }}>
+                  {inStock === null ? 'stock N/A' : inStock > 0 ? `${size}: ${inStock} avail` : `${size}: out of stock`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Styled confirm for "Create Sales Order" — replaces the native window.confirm,
+// shows the order count and any inventory shortfalls before the batch runs.
+// Shortfall rows have a product search so the rep can pick a substitute SKU
+// with live stock verification without leaving the modal.
+function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {}, storeId }) {
+  const [busy, setBusy] = useState(false);
+  // keyed by "pid|size" → altSku string
+  const [overrideSkus, setOverrideSkus] = useState({});
+  const setOverride = (pid, size, val) => setOverrideSkus((prev) => {
+    const k = pid + '|' + size; const n = { ...prev };
+    const v = val.trim().toUpperCase(); if (v) n[k] = v; else delete n[k]; return n;
+  });
+  const go = async () => { setBusy(true); try { await onConfirm(overrideSkus); } finally { setBusy(false); } };
+  return (
+    <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 560, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
+        <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
+          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
+        </div>
+        <div style={{ padding: '20px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
+          {shortages.length ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
+                <span style={{ fontSize: 16 }}>⚠️</span> Inventory shortfalls for this batch
+              </div>
+              <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, overflow: 'hidden' }}>
+                {shortages.map((s, i) => (
+                  <div key={i} style={{ borderTop: i ? '1px solid #fde68a' : 'none', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.4, marginBottom: 6 }}>
+                      {s.label}
+                      {s.sku && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 12, color: '#92400e', background: '#fef3c7', borderRadius: 4, padding: '1px 5px' }}>{s.sku}</span>}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', fontWeight: 600 }}>Sub for {s.size}:</span>
+                      <SkuSearchInput size={s.size} value={overrideSkus[s.pid + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid, s.size, v)} stockByPid={stockByPid} storeId={storeId} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
+            </>
+          ) : (
+            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
+          <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" onClick={go} disabled={busy}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1740,64 +2583,527 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
   );
 }
 
-function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults }) {
+const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
+const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
+
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore }) {
+  const [view, setView] = useState('stores');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [repFilter, setRepFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [sortKey, setSortKey] = useState('status');
+  const [sortDir, setSortDir] = useState('asc');
+  const [copiedId, setCopiedId] = useState(null);
+
   const templates = stores.filter((s) => s.is_template);
+  const nonTemplates = stores.filter((s) => !s.is_template);
+
+  const money = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
+  const initials = (name) => (name || '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const fmt = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const fmtYear = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
+
+  const repColorMap = useMemo(() => {
+    const m = {};
+    REPS.forEach((r, i) => { m[r.id] = REP_PALETTE[i % REP_PALETTE.length]; });
+    return m;
+  }, [REPS]);
+
+  const storeStatus = (s) => {
+    if (s.status === 'closed') return 'Closed';
+    if (s.status === 'draft') return 'Draft';
+    if (!s.open_at && !s.close_at) return s.status === 'open' ? 'Open' : 'Draft';
+    const now = Date.now();
+    const openTs = s.open_at ? new Date(s.open_at).getTime() : null;
+    const closeTs = s.close_at ? new Date(s.close_at).getTime() : null;
+    if (openTs && openTs > now) return 'Scheduled';
+    if (closeTs) {
+      const diff = (closeTs - now) / 86400000;
+      if (diff <= 3 && diff > 0) return 'Closing soon';
+    }
+    if (s.status === 'open') return 'Open';
+    return 'Closed';
+  };
+
+  const daysLeft = (s) => {
+    if (!s.close_at) return null;
+    return Math.ceil((new Date(s.close_at).getTime() - Date.now()) / 86400000);
+  };
+
+  const statusStyle = (st) => {
+    const map = {
+      Open: ['#E3F4EA', '#1B7F4B'],
+      'Closing soon': ['#F6E4E5', '#962C32'],
+      Scheduled: ['#E4ECF8', '#2A6FDB'],
+      Draft: ['#FBEFD6', '#9A6B12'],
+      Closed: ['#EAEDF3', '#5A6075'],
+    };
+    const [bg, fg] = map[st] || ['#EAEDF3', '#5A6075'];
+    return { display: 'inline-block', background: bg, color: fg, fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 700, fontSize: 11.5, padding: '3px 9px', borderRadius: 4, transform: 'skewX(-4deg)', whiteSpace: 'nowrap' };
+  };
+
+  const setSort = (key) => {
+    setSortKey((prev) => {
+      if (prev === key) { setSortDir((d) => d === 'asc' ? 'desc' : 'asc'); return key; }
+      setSortDir(['revenue', 'orders'].includes(key) ? 'desc' : 'asc');
+      return key;
+    });
+  };
+
+  const sortArrow = (key) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
+  const matchesFilter = (s) => {
+    const st = storeStatus(s);
+    if (statusFilter !== 'all' && st !== statusFilter) return false;
+    if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+    }
+    return true;
+  };
+
+  let filtered = nonTemplates.filter(matchesFilter);
+  filtered = [...filtered].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    let av, bv;
+    switch (sortKey) {
+      case 'store': av = a.name; bv = b.name; break;
+      case 'status': av = STATUS_RANK[storeStatus(a)]; bv = STATUS_RANK[storeStatus(b)]; break;
+      case 'rep': av = repName(a.rep_id); bv = repName(b.rep_id); break;
+      case 'revenue': av = (storeStats[a.id] || {}).revenue || 0; bv = (storeStats[b.id] || {}).revenue || 0; break;
+      case 'orders': av = (storeStats[a.id] || {}).orders || 0; bv = (storeStats[b.id] || {}).orders || 0; break;
+      case 'window': av = daysLeft(a) == null ? 9999 : daysLeft(a); bv = daysLeft(b) == null ? 9999 : daysLeft(b); break;
+      default: av = STATUS_RANK[storeStatus(a)]; bv = STATUS_RANK[storeStatus(b)];
+    }
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return ((av || 0) - (bv || 0)) * dir;
+  });
+
+  // Summary stats
+  const allStats = nonTemplates;
+  const openCount = allStats.filter((s) => { const st = storeStatus(s); return st === 'Open' || st === 'Closing soon'; }).length;
+  const draftCount = allStats.filter((s) => storeStatus(s) === 'Draft').length;
+  const closedCount = allStats.filter((s) => storeStatus(s) === 'Closed').length;
+  const totalRev = Object.values(storeStats).reduce((a, s) => a + (s.revenue || 0), 0);
+  const totalOrders = Object.values(storeStats).reduce((a, s) => a + (s.orders || 0), 0);
+
+  const summaryStats = [
+    { label: 'Total Stores', value: allStats.length, sub: openCount + ' currently live', bar: '#192853' },
+    { label: 'Open', value: openCount, sub: 'Accepting orders', bar: '#1B7F4B' },
+    { label: 'Drafts', value: draftCount, sub: 'Awaiting launch', bar: '#E0A92B' },
+    { label: 'Closed', value: closedCount, sub: 'This season', bar: '#5A6075' },
+    { label: 'Gross Sales', value: moneyK(totalRev), sub: totalOrders + ' orders', bar: '#962C32' },
+    { label: 'Total Orders', value: totalOrders.toLocaleString(), sub: 'Across all stores', bar: '#2A6FDB' },
+  ];
+
+  // Status chip counts (against rep+search filtered, ignoring status filter)
+  const repSearchSet = nonTemplates.filter((s) => {
+    if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+  const statusCounts = { all: repSearchSet.length, Open: 0, 'Closing soon': 0, Scheduled: 0, Draft: 0, Closed: 0 };
+  repSearchSet.forEach((s) => { const st = storeStatus(s); if (statusCounts[st] !== undefined) statusCounts[st]++; });
+
+  // Reporting: rep stats
+  const repStatsMap = {};
+  nonTemplates.forEach((s) => {
+    const rid = s.rep_id;
+    if (!repStatsMap[rid]) repStatsMap[rid] = { revenue: 0, orders: 0, count: 0 };
+    repStatsMap[rid].revenue += (storeStats[s.id] || {}).revenue || 0;
+    repStatsMap[rid].orders += (storeStats[s.id] || {}).orders || 0;
+    repStatsMap[rid].count++;
+  });
+  const repLeaderboard = REPS.filter((r) => repStatsMap[r.id]).map((r) => ({
+    id: r.id, name: r.name, color: repColorMap[r.id] || '#5A6075',
+    revenue: repStatsMap[r.id].revenue, orders: repStatsMap[r.id].orders, count: repStatsMap[r.id].count,
+  })).sort((a, b) => b.revenue - a.revenue);
+  const maxRepRev = Math.max(1, ...repLeaderboard.map((r) => r.revenue));
+
+  const BCN = { fontFamily: "'Barlow Condensed',sans-serif" };
+  const CHIP_BASE = { ...BCN, textTransform: 'uppercase', letterSpacing: '.7px', fontWeight: 700, fontSize: 13, padding: '7px 13px', borderRadius: 7, cursor: 'pointer', border: 'none', display: 'inline-flex', gap: 7, alignItems: 'center', transform: 'skewX(-4deg)', transition: 'all .12s' };
+  const chipStyle = (active) => ({ ...CHIP_BASE, background: active ? '#192853' : '#fff', color: active ? '#fff' : '#5A6075', border: active ? '1.5px solid #192853' : '1.5px solid #E2E6EE' });
+  const repChipStyle = (active) => ({ fontFamily: "'Source Sans 3',sans-serif", fontWeight: 600, fontSize: 13, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', border: active ? '1.5px solid #192853' : '1.5px solid #E2E6EE', background: active ? '#192853' : '#fff', color: active ? '#fff' : '#5A6075', transition: 'all .12s' });
+  const TAB = { ...BCN, textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 700, fontSize: 14, padding: '8px 18px', borderRadius: 6, cursor: 'pointer', border: 'none', transition: 'all .15s' };
+  const tabStyle = (key) => ({ ...TAB, background: view === key ? '#192853' : 'transparent', color: view === key ? '#fff' : '#5A6075', boxShadow: view === key ? '0 3px 10px rgba(25,40,83,.22)' : 'none' });
+  const TH = { ...BCN, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, fontSize: 12, color: '#5A6075', padding: '12px', userSelect: 'none' };
+  const TD = { padding: '13px 12px', verticalAlign: 'middle' };
+
+  const storeWindowText = (s) => {
+    const st = storeStatus(s);
+    if (st === 'Draft') return { main: 'Not scheduled', sub: 'Draft', subColor: '#8A93A8' };
+    if (st === 'Scheduled') return { main: fmt(s.open_at), sub: '→ ' + fmt(s.close_at), subColor: '#2A6FDB' };
+    if (st === 'Closed') return { main: (fmt(s.open_at) || '?') + ' – ' + (fmt(s.close_at) || '?'), sub: 'Closed', subColor: '#8A93A8' };
+    const dl = daysLeft(s);
+    return {
+      main: s.close_at ? 'Closes ' + fmt(s.close_at) : 'No close date',
+      sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
+      subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
+    };
+  };
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>{stores.length} store{stores.length === 1 ? '' : 's'}{templates.length > 0 ? ` · ${templates.length} template${templates.length === 1 ? '' : 's'}` : ''}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {onNewFromTemplate && templates.length > 0 && (
-            <select className="form-input" style={{ maxWidth: 230, fontSize: 13 }} value="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t) onNewFromTemplate(t); e.target.value = ''; }}>
-              <option value="">+ New from template…</option>
-              {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          )}
-          {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Store defaults</button>}
+      {/* Page heading + tabs */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 22 }}>
+        <div>
+          <div style={{ ...BCN, fontWeight: 700, fontSize: 13, letterSpacing: 2, textTransform: 'uppercase', color: '#962C32', marginBottom: 4 }}>Sales — Team Stores</div>
+          <h1 style={{ ...BCN, fontWeight: 800, fontSize: 36, letterSpacing: '.5px', textTransform: 'uppercase', color: '#192853', margin: 0, lineHeight: 1 }}>
+            {view === 'stores' ? 'Club Webstores' : view === 'reporting' ? 'Store Reporting' : 'Store Templates'}
+          </h1>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 5, background: '#fff', border: '1px solid #E2E6EE', borderRadius: 9, padding: 5, boxShadow: '0 2px 12px rgba(0,0,0,.04)' }}>
+            {['stores', 'reporting', 'templates'].map((k) => (
+              <button key={k} style={tabStyle(k)} onClick={() => setView(k)}>{k.charAt(0).toUpperCase() + k.slice(1)}</button>
+            ))}
+          </div>
+          {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
           <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
         </div>
       </div>
-      {stores.length === 0 ? (
-        <div className="card"><div className="card-body" style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-          No webstores yet. Click <b>+ New Store</b> to create the first one.
-        </div></div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {stores.map((s) => {
-            const fmt = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
-            const window_ = fmt(s.open_at) || fmt(s.close_at) ? `${fmt(s.open_at) || 'now'} → ${fmt(s.close_at) || 'open'}` : 'No close date';
-            const pay = s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only';
-            const deliver = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
-            const coachReview = s.created_via === 'coach' && s.status === 'draft';
-            return (
-              <div key={s.id} className="card" style={{ cursor: 'pointer', width: '100%', borderLeft: coachReview ? '3px solid #f59e0b' : undefined }} onClick={() => onOpen(s)}>
-                <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-                  <div style={{ minWidth: 220, flex: '1 1 240px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 17, fontWeight: 800, color: '#1e293b' }}>{s.name}</span>
-                      <StatusBadge status={s.status} />
-                      {s.is_template && <Chip label="Template" tone="blue" />}
-                      {s.created_via === 'coach' && <Chip label={coachReview ? '★ Coach submission — review' : 'Coach-built'} tone="amber" />}
+
+      {/* ══════════ STORES VIEW ══════════ */}
+      {view === 'stores' && (
+        <>
+          {/* Summary stats strip */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14, marginBottom: 22 }}>
+            {summaryStats.map((st) => (
+              <div key={st.label} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 8, padding: '16px 18px', boxShadow: '0 2px 12px rgba(0,0,0,.04)', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: st.bar }} />
+                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>{st.label}</div>
+                <div style={{ ...BCN, fontWeight: 800, fontSize: 28, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{st.value}</div>
+                <div style={{ fontSize: 11.5, color: '#8A93A8', marginTop: 1 }}>{st.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Toolbar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              {[['all', 'All'], ['Open', 'Open'], ['Closing soon', 'Closing Soon'], ['Scheduled', 'Scheduled'], ['Draft', 'Draft'], ['Closed', 'Closed']].map(([key, label]) => (
+                <button key={key} style={chipStyle(statusFilter === key)} onClick={() => setStatusFilter(key)}>
+                  {label}<span style={{ opacity: .65, fontFamily: "'Source Sans 3',sans-serif", fontWeight: 600 }}>{statusCounts[key] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ height: 24, width: 1, background: '#D1D5DE' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>Rep</span>
+              <select className="form-select" value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={{ fontSize: 13, padding: '6px 10px', minWidth: 140 }}>
+                <option value="all">All reps</option>
+                {REPS.filter((r) => nonTemplates.some((s) => s.rep_id === r.id)).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
+            </div>
+          </div>
+
+          {/* Table */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 900 }}>
+              <thead>
+                <tr style={{ background: '#FAFBFD', borderBottom: '1.5px solid #EEF1F6' }}>
+                  <th style={{ ...TH, width: 34, padding: '12px 8px' }}></th>
+                  <th onClick={() => setSort('store')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Store{sortArrow('store')}</th>
+                  <th onClick={() => setSort('status')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Status{sortArrow('status')}</th>
+                  <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
+                  <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
+                  <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
+                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Sale Window{sortArrow('window')}</th>
+                  <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
+                  <th style={{ ...TH, width: 28 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((s) => {
+                  const st = storeStatus(s);
+                  const ss = storeStats[s.id] || { revenue: 0, orders: 0 };
+                  const rn = repName(s.rep_id);
+                  const rc = repColorMap[s.rep_id] || '#5A6075';
+                  const isExp = !!expanded[s.id];
+                  const wt = storeWindowText(s);
+                  const coachReview = s.created_via === 'coach' && s.status === 'draft';
+                  return (
+                    <React.Fragment key={s.id}>
+                      <tr
+                        onClick={() => setExpanded((p) => ({ ...p, [s.id]: !p[s.id] }))}
+                        style={{ cursor: 'pointer', borderBottom: isExp ? 'none' : '1px solid #EEF1F6', background: isExp ? '#FAFBFD' : '#fff', transition: 'background .1s' }}
+                        onMouseEnter={(e) => { if (!isExp) e.currentTarget.style.background = '#FAFBFD'; }}
+                        onMouseLeave={(e) => { if (!isExp) e.currentTarget.style.background = '#fff'; }}
+                      >
+                        <td style={{ ...TD, textAlign: 'center', color: '#8A93A8', padding: '13px 8px' }}>
+                          <span style={{ display: 'inline-block', transition: 'transform .15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 11 }}>▶</span>
+                        </td>
+                        <td style={TD}>
+                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {s.name}
+                            {coachReview && <span style={{ fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
+                          </div>
+                          <div style={{ color: '#8A93A8', fontSize: 12.5 }}>{custName(s.customer_id)}</div>
+                        </td>
+                        <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
+                        <td style={TD}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ width: 26, height: 26, borderRadius: '50%', background: rc, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{initials(rn)}</div>
+                            <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{rn}</span>
+                          </div>
+                        </td>
+                        <td style={{ ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#192853' }}>{ss.revenue ? money(ss.revenue) : <span style={{ color: '#D1D5DE' }}>—</span>}</td>
+                        <td style={{ ...TD, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#2A2F3E' }}>{ss.orders || <span style={{ color: '#D1D5DE' }}>—</span>}</td>
+                        <td style={TD}>
+                          <div style={{ fontWeight: 600, color: '#2A2F3E' }}>{wt.main}</div>
+                          <div style={{ fontSize: 12, color: wt.subColor, fontWeight: 600 }}>{wt.sub}</div>
+                        </td>
+                        <td style={{ ...TD, padding: '13px 16px 13px 12px' }}>
+                          <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#8A93A8', wordBreak: 'break-all' }}>/shop/{s.slug}</div>
+                        </td>
+                        <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                            {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            <button
+                              title="Copy store link"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const url = 'https://nationalsportsapparel.com/shop/' + s.slug;
+                                navigator.clipboard.writeText(url).catch(() => {});
+                                setCopiedId(s.id);
+                                setTimeout(() => setCopiedId((cur) => cur === s.id ? null : cur), 1800);
+                              }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: copiedId === s.id ? '#dcfce7' : '#f1f5f9', color: copiedId === s.id ? '#15803d' : '#64748b', border: `1px solid ${copiedId === s.id ? '#bbf7d0' : '#e2e8f0'}`, borderRadius: 7, padding: '7px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all .15s' }}
+                            >
+                              {copiedId === s.id
+                                ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied</>
+                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</>
+                              }
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onOpen(s); }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                            >
+                              Store
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExp && (
+                        <tr style={{ borderBottom: '1px solid #EEF1F6' }}>
+                          <td colSpan={9} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr', gap: 26, padding: '22px 24px 24px 50px', animation: 'wsExpand .18s ease-out' }}>
+                              {/* Col 1: Sales Reporting */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Sales Reporting</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px', marginBottom: 16 }}>
+                                  {[
+                                    ['Gross Sales', ss.revenue ? money(ss.revenue) : '—'],
+                                    ['Orders', ss.orders ? ss.orders.toLocaleString() : '—'],
+                                    ['Avg Order', ss.orders ? money(ss.revenue / ss.orders) : '—'],
+                                    ['Catalog Items', s.catalog_count ?? '—'],
+                                  ].map(([label, val]) => (
+                                    <div key={label}>
+                                      <div style={{ fontSize: 11.5, color: '#8A93A8', textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 600 }}>{label}</div>
+                                      <div style={{ ...BCN, fontWeight: 800, fontSize: 24, color: '#192853', lineHeight: 1.1 }}>{val}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <button className="btn btn-sm btn-secondary" onClick={() => onOpen(s)}>Open Orders Tab →</button>
+                              </div>
+                              {/* Col 2: Store URL + quick links */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Storefront</div>
+                                <div style={{ fontSize: 13.5, color: '#2A6FDB', fontFamily: 'monospace', marginBottom: 12, wordBreak: 'break-all' }}>/shop/{s.slug}</div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 8, marginTop: 4 }}>Links</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                  <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                </div>
+                              </div>
+                              {/* Col 3: Store Setup */}
+                              <div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Store Setup</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', fontSize: 13.5, marginBottom: 16 }}>
+                                  {[
+                                    ['Payment', s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
+                                    ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
+                                    ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
+                                    ['Opened', fmtYear(s.open_at) || 'Not opened'],
+                                    ['Closes', fmtYear(s.close_at) || 'No close date'],
+                                  ].map(([label, val]) => (
+                                    <React.Fragment key={label}>
+                                      <span style={{ color: '#8A93A8' }}>{label}</span>
+                                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
+                                    </React.Fragment>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={9} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {nonTemplates.length > 0 && <div style={{ marginTop: 10, fontSize: 13, color: '#8A93A8' }}>Showing {filtered.length} of {nonTemplates.length} stores</div>}
+        </>
+      )}
+
+      {/* ══════════ REPORTING VIEW ══════════ */}
+      {view === 'reporting' && (
+        <>
+          {/* KPI tiles */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 16 }}>
+            {[
+              { label: 'Gross Sales', value: moneyK(totalRev) },
+              { label: 'Orders', value: totalOrders.toLocaleString() },
+              { label: 'Avg Order', value: totalOrders ? money(totalRev / totalOrders) : '—' },
+              { label: 'Open Stores', value: openCount },
+            ].map((k) => (
+              <div key={k.label} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 8, padding: '16px 18px', boxShadow: '0 2px 12px rgba(0,0,0,.04)' }}>
+                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 12, color: '#5A6075' }}>{k.label}</div>
+                <div style={{ ...BCN, fontWeight: 800, fontSize: 30, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{k.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Sales by Rep */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
+            <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 12 }}>Sales by Rep</div>
+            {repLeaderboard.length === 0 && <div style={{ fontSize: 14, color: '#8A93A8' }}>No sales data yet.</div>}
+            {repLeaderboard.map((r) => {
+              const share = (r.revenue / Math.max(1, totalRev) * 100).toFixed(1);
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '13px 0', borderBottom: '1px solid #EEF1F6' }}>
+                  <div style={{ width: 38, height: 38, borderRadius: '50%', background: r.color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 14, flexShrink: 0 }}>{initials(r.name)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                      <span style={{ fontWeight: 700, color: '#192853', fontSize: 14.5 }}>{r.name}</span>
+                      <span style={{ ...BCN, fontWeight: 800, fontSize: 18, color: '#192853' }}>{moneyK(r.revenue)}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
-                  </div>
-                  <Quick label="Storefront"><a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontFamily: 'monospace', fontSize: 12, color: '#2563eb', textDecoration: 'none' }}>/shop/{s.slug} ↗</a></Quick>
-                  <Quick label="Payment">{pay}</Quick>
-                  <Quick label="Delivery">{deliver}</Quick>
-                  <Quick label="Numbers">{s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'}</Quick>
-                  <Quick label="Sale window">{window_}</Quick>
-                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {onToggleTemplate && <button className="btn btn-sm btn-secondary" title={s.is_template ? 'Remove from templates' : 'Save as a reusable template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }}>{s.is_template ? '★ Template' : '☆ Template'}</button>}
-                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Exact copy of this store as a new draft" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
-                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Copy this store for a new team, then open settings to swap the customer, colors & logo" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; rebrand</button>}
-                    <span style={{ color: '#cbd5e1', fontSize: 20 }}>›</span>
+                    <div style={{ fontSize: 12.5, color: '#8A93A8', margin: '2px 0 7px' }}>{r.count} store{r.count === 1 ? '' : 's'} · {r.orders} order{r.orders === 1 ? '' : 's'} · {share}% of total</div>
+                    <div style={{ height: 6, borderRadius: 3, background: '#EEF1F6', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: (r.revenue / maxRepRev * 100).toFixed(1) + '%', background: r.color, borderRadius: 3 }} />
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+
+          {/* Stores by status */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 16 }}>Stores by Status</div>
+              {[['Open', '#1B7F4B'], ['Closing soon', '#962C32'], ['Scheduled', '#2A6FDB'], ['Draft', '#E0A92B'], ['Closed', '#5A6075']].map(([st, color]) => {
+                const count = nonTemplates.filter((s) => storeStatus(s) === st).length;
+                return (
+                  <div key={st} style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5, marginBottom: 4 }}>
+                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{st}</span>
+                      <span style={{ color: '#8A93A8' }}>{count} store{count === 1 ? '' : 's'}</span>
+                    </div>
+                    <div style={{ height: 8, borderRadius: 4, background: '#EEF1F6', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: (count / Math.max(1, nonTemplates.length) * 100).toFixed(0) + '%', background: color, borderRadius: 4 }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 16 }}>Top Stores <span style={{ color: '#962C32', fontStyle: 'italic' }}>by Revenue</span></div>
+              {nonTemplates.filter((s) => (storeStats[s.id] || {}).revenue > 0).sort((a, b) => (storeStats[b.id]?.revenue || 0) - (storeStats[a.id]?.revenue || 0)).slice(0, 8).map((s, i) => {
+                const rev = storeStats[s.id]?.revenue || 0;
+                const maxR = Math.max(1, ...nonTemplates.map((x) => storeStats[x.id]?.revenue || 0));
+                return (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', background: i < 3 ? '#962C32' : '#192853', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...BCN, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{i + 1}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13, marginBottom: 3 }}>
+                        <span style={{ color: '#2A2F3E', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                        <span style={{ color: '#8A93A8', whiteSpace: 'nowrap' }}>{money(rev)}</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 3, background: '#EEF1F6', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: (rev / maxR * 100).toFixed(0) + '%', background: '#192853', borderRadius: 3 }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {nonTemplates.filter((s) => (storeStats[s.id] || {}).revenue > 0).length === 0 && <div style={{ fontSize: 14, color: '#8A93A8' }}>No revenue data yet.</div>}
+            </div>
+          </div>
+        </>
       )}
+
+      {/* ══════════ TEMPLATES VIEW ══════════ */}
+      {view === 'templates' && (
+        <>
+          <TemplateManager REPS={REPS} cu={cu} onStartStore={onStartStoreFromTemplate} onAddToStore={onAddTemplateToStore} />
+
+          <div style={{ borderTop: '1px solid #E5E9F0', margin: '38px 0 26px' }} />
+          <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
+          <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
+            {/* Blank store card */}
+            <button onClick={onNew} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 10, padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 200, gap: 12, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 19, color: '#192853', letterSpacing: '.5px' }}>Start from Blank</div>
+              <div style={{ fontSize: 13 }}>Build a store from scratch</div>
+            </button>
+            {templates.map((t) => {
+              const pay = t.payment_mode === 'either' ? 'Paid + Invoice' : t.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only';
+              const deliver = t.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
+              const nums = t.number_enabled ? (t.number_unique ? 'Unique #s' : 'On') : 'Off';
+              return (
+                <div key={t.id} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden' }}>
+                    <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(-55deg,rgba(255,255,255,0.05) 0 1px,transparent 1px 9px)' }} />
+                    <div style={{ position: 'relative', ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 20, letterSpacing: '.5px', color: '#fff', lineHeight: 1 }}>{t.name}</div>
+                  </div>
+                  <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid #EEF1F6' }}>
+                      {[['Delivery', deliver], ['Payment', pay], ['Numbers', nums]].map(([l, v]) => (
+                        <div key={l}>
+                          <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontSize: 10.5, fontWeight: 700, color: '#8A93A8' }}>{l}</div>
+                          <div style={{ fontSize: 12.5, color: '#2A2F3E', fontWeight: 600, lineHeight: 1.2, marginTop: 2 }}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                      {onNewFromTemplate && <button className="btn btn-sm btn-primary" onClick={() => onNewFromTemplate(t)} style={{ flex: 1 }}>Start Store</button>}
+                      {onToggleTemplate && <button className="btn btn-sm btn-secondary" onClick={() => onToggleTemplate(t)}>Remove Template</button>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {templates.length === 0 && (
+              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
+            )}
+          </div>
+        </>
+      )}
+
+      <style>{`@keyframes wsExpand{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}`}</style>
     </div>
   );
 }
@@ -1872,10 +3178,12 @@ const BLANK = {
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
   fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
+  processing_pct: 5,
   size_upcharge_enabled: true,
   public_listed: true,
   decoration_mode: 'in_house',
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
+  featured_product_ids: null,
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
@@ -1893,6 +3201,30 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
   // upload otherwise: the small logo lands, the larger banner doesn't).
   const [uploading, setUploading] = useState(0);
   const onUpBusy = (b) => setUploading((n) => Math.max(0, n + (b ? 1 : -1)));
+  // Products for the "Featured items" hero picker (only meaningful once the
+  // store exists and has products). Loaded lazily on the branding page.
+  const [featProducts, setFeatProducts] = useState([]);
+  useEffect(() => {
+    if (!store?.id) return;
+    let live = true;
+    Promise.all([
+      supabase.from('webstore_storefront_products')
+        .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
+        .eq('store_id', store.id).order('sort_order'),
+      supabase.from('webstore_products')
+        .select('id,display_name,image_url')
+        .eq('store_id', store.id).eq('active', false),
+    ]).then(([{ data: vis }, { data: arch }]) => {
+      if (!live) return;
+      const visSet = new Set((vis || []).map((p) => p.webstore_product_id));
+      const archItems = (arch || []).filter((p) => !visSet.has(p.id)).map((p) => ({
+        webstore_product_id: p.id, name: p.display_name || '(unnamed)',
+        image_front_url: p.image_url || null, kind: 'single', sort_order: 99999, _archived: true,
+      }));
+      setFeatProducts([...(vis || []).filter((p) => p.kind !== 'bundle'), ...archItems]);
+    });
+    return () => { live = false; };
+  }, [store?.id]);
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || 'team');
@@ -1990,7 +3322,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
 
   const submit = async () => {
     setError('');
-    if (uploading > 0) return setError('Hold on — an image is still uploading. It’ll just be a moment.');
+    if (uploading > 0) return setError("Hold on — an image is still uploading. It'll just be a moment.");
     if (!f.name.trim()) return setError('Store name is required.');
     if (!f.slug.trim()) return setError('A URL slug is required.');
     setBusy(true);
@@ -2006,6 +3338,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
     payload.close_at = payload.close_at || null;
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
+    payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
     payload.org_type = orgType;
     // Team stores collect numbers per item (Catalog), so there's no store-wide
     // enable toggle — mark numbers active so order views/claims behave.
@@ -2035,7 +3368,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
-          <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? 'Update this store’s setup.' : 'Set it up here — add products and artwork after it’s created.'}</div>
+          <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? "Update this store's setup." : "Set it up here — add products and artwork after it's created."}</div>
         </div>
         <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
           {['team', 'club'].map((t) => (
@@ -2082,6 +3415,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         <Row label="Payment mode"><select className="form-select" value={f.payment_mode} onChange={(e) => set('payment_mode', e.target.value)}>
           <option value="paid">Card only (parents pay)</option><option value="unpaid">Invoice only (team tab)</option><option value="either">Both — card or team tab</option>
         </select></Row>
+        <Row label="Processing fee (% of items)"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input className="form-input" type="number" step="0.5" min={0} style={{ maxWidth: 120 }} value={f.processing_pct} onChange={(e) => set('processing_pct', e.target.value)} placeholder="5" /><span style={{ color: '#6A7180', fontWeight: 700 }}>%</span></div></Row>
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2 }}>Added to each order at checkout as a separate line, charged on the item subtotal only (not shipping, tax, or fundraising). Standard is 5%. Set to 0 to turn off.</div>
         <Row label="SO creation"><select className="form-select" value={f.so_creation} onChange={(e) => set('so_creation', e.target.value)}>{['manual', 'on_close', 'daily', 'weekly'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
         <Toggle label={`Require login (${noun.toLowerCase()} members only)`} checked={f.require_login} onChange={(v) => set('require_login', v)} />
         <Toggle label="Findable on the public Team Stores search" checked={f.public_listed !== false} onChange={(v) => set('public_listed', v)} />
@@ -2150,7 +3485,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
         <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
-          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}’s default address`}</option>
+          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>
         </select></Row>
         {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
@@ -2184,6 +3519,75 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           </div>
           <textarea className="form-input" rows={3} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official team store — gear up for the season!" />
         </div>
+
+        {/* Featured items — curate the hero collage. null = auto (first 3); [] = none; [ids] = those. */}
+        {(() => {
+          const featOn = Array.isArray(f.featured_product_ids);
+          const featSel = featOn ? f.featured_product_ids : [];
+          return (
+            <div style={{ marginTop: 4 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180', display: 'block', marginBottom: 6 }}>Featured items · hero collage</label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginBottom: 8, color: '#3A4150' }}>
+                <input type="checkbox" checked={featOn} onChange={(e) => set('featured_product_ids', e.target.checked ? [] : null)} />
+                Choose specific items{featOn ? '' : ' — auto: first 3 products'}
+              </label>
+              {featOn && (
+                !store?.id ? <div style={{ fontSize: 12, color: '#94a3b8' }}>Save the store and add products first, then pick up to 3 featured items.</div>
+                : featProducts.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No products in this store yet.</div>
+                : <>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 8 }}>{featSel.length ? `${featSel.length} of 3 selected — shown in the hero collage.` : 'None selected — the hero shows no collage.'}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(86px,1fr))', gap: 8 }}>
+                      {featProducts.map((p) => {
+                        const idx = featSel.indexOf(p.webstore_product_id);
+                        const on = idx >= 0;
+                        const full = featSel.length >= 3 && !on;
+                        return (
+                          <button key={p.webstore_product_id} type="button" disabled={full} onClick={() => set('featured_product_ids', on ? featSel.filter((x) => x !== p.webstore_product_id) : [...featSel, p.webstore_product_id])}
+                            style={{ position: 'relative', border: `2px solid ${on ? '#191919' : '#e2e6ec'}`, borderRadius: 8, background: '#fff', padding: 4, cursor: full ? 'not-allowed' : 'pointer', opacity: full ? 0.5 : 1, textAlign: 'left' }}>
+                            <div style={{ width: '100%', aspectRatio: '1', borderRadius: 6, overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
+                              {p.image_front_url ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>No photo</span>}
+                            </div>
+                            {on && <span style={{ position: 'absolute', top: 6, right: 6, width: 18, height: 18, borderRadius: '50%', background: '#191919', color: '#fff', fontSize: 11, display: 'grid', placeItems: 'center', fontWeight: 800 }}>{idx + 1}</span>}
+                            <div style={{ fontSize: 10.5, fontWeight: 700, color: '#3A4150', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                            {p._archived && <div style={{ fontSize: 9, fontWeight: 800, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>in package</div>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+              )}
+            </div>
+          );
+        })()}
+        {store?.id && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f3f4f7' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180', marginBottom: 8 }}>Flyer &amp; Sharing</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={async () => {
+                try {
+                  setBusy(true);
+                  const pdfItems = await loadFlyerItems(store);
+                  const b64 = await generateFlyerPdfBase64(store, pdfItems);
+                  const a = document.createElement('a');
+                  a.href = 'data:application/pdf;base64,' + b64;
+                  a.download = `${store.slug || 'team-store'}-flyer.pdf`;
+                  a.click();
+                } catch (e) { alert('PDF generation failed: ' + (e.message || e)); }
+                finally { setBusy(false); }
+              }} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                ↓ Download Flyer PDF
+              </button>
+              <button type="button" onClick={async () => {
+                const printItems = await loadFlyerItems(store);
+                const w = window.open('', '_blank');
+                if (!w) { alert('Allow pop-ups to open the flyer.'); return; }
+                w.document.write(flyerHtml(store, printItems)); w.document.close();
+              }} style={{ background: '#fff', color: '#191919', border: '1px solid #e2e6ec', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                Print Flyer
+              </button>
+            </div>
+          </div>
+        )}
       </Section>
 
       </div>
@@ -2272,6 +3676,34 @@ function MenuButton({ label, items = [], primary = false, align = 'left', icon }
 }
 
 // Launch confirmation — going live, with an explicit option to email the coach/director
+function EmailStoreLinkModal({ store, onClose, onSend }) {
+  const onFile = (store.director_email || store.coach_contact_email || '').trim();
+  const [email, setEmail] = useState(onFile);
+  const [busy, setBusy] = useState(false);
+  const valid = /.+@.+\..+/.test(email.trim());
+  const go = async () => { if (!valid) return; setBusy(true); await onSend(email.trim()); setBusy(false); onClose(); };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 460, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>✉️ Email store link</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, color: '#334155', marginBottom: 12 }}>Send the store link, QR code, and PDF flyer to a coach or parent.</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Recipient email</div>
+          <input className="form-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} autoFocus />
+          {!valid && email && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email address.</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={busy || !valid} onClick={go}>{busy ? 'Sending…' : 'Send email'}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // the store link + QR (prefilled from the email on file; a newly typed one is saved).
 function LaunchStoreModal({ store, onClose, onLaunch }) {
   const onFile = (store.coach_contact_email || store.director_email || '').trim();
@@ -2311,10 +3743,11 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [emailLinkOpen, setEmailLinkOpen] = useState(false);
   const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
@@ -2325,7 +3758,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
   const totalSales = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const playerCount = new Set(orderItems.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
+  const totalItems = orderItems.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
   // Sales Orders created from this store's batches, with how many orders each covers.
   const soSummary = (() => {
@@ -2369,12 +3802,50 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const _qmArt = (detail?.libraryArt || []);
   const _qmU = (f) => typeof f === 'string' ? f : (f && f.url) || '';
   const _qmIsImg = (u) => /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u || '');
+  const _qmIsVec = (u) => /\.(ai|eps|pdf)(\?|$)/i.test(u || '');
   const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
   const qmLocations = _qmArt.map((a) => {
-    const urls = [a.preview_url, ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
+    // Web logos (color-way default + legacy web_logo_url) are clean transparent cutouts —
+    // include them so art that only has a stored web logo (no preview/mockup/source file
+    // yet) still shows up as a placeable layer instead of "No file yet".
+    const urls = [webLogoDefault(a), a.web_logo_url, a.preview_url, ...((a.web_logos || []).map(_qmU)), ...((a.mockup_files || []).map(_qmU)), ...((a.files || []).map(_qmU))].filter(Boolean);
     const files = []; const seen = new Set();
-    urls.forEach((u) => { if (!u || seen.has(u) || !_qmIsImg(u)) return; seen.add(u); files.push({ name: (u.split('/').pop() || 'art').split('?')[0], url: u, preview: { url: u } }); });
+    urls.forEach((u) => {
+      if (!u || seen.has(u)) return;
+      seen.add(u);
+      const nm = (u.split('/').pop() || 'art').split('?')[0];
+      if (_qmIsImg(u)) { files.push({ name: nm, url: u, preview: { url: u } }); }
+      else if (_qmIsVec(u)) { const png = _cloudinaryPdfThumb(u); if (png) files.push({ name: nm, url: png, preview: { url: png, vectorSrc: u } }); }
+    });
     return { artFileId: a.id, name: a.name || 'Logo', position: '', existingFiles: (a.files || []), files, preview: files[0] ? files[0].preview : null, garmentKeys: [] };
+  });
+  // Art already APPLIED to items (set on the item detail, or pushed by an artist) lives on each
+  // catalog item's `decorations`. Surface it in the builder: pre-place it on that garment color at
+  // its saved placement, and make sure the logo appears in the Logo Library with a real preview —
+  // even when the deduped library entry had none (the "No art" case).
+  const qmAppliedByGarment = {};
+  const _qmLocById = new Map(qmLocations.map((l) => [l.artFileId, l]));
+  // Color-specific web logos for a decoration (matches how the storefront / item detail resolve art).
+  const _qmWebLogos = (d) => { const id = d.art_id || d.art_file_id; const a = (id && (_qmArt.find((x) => x.id === id) || (Array.isArray(s.store_art) ? s.store_art.find((x) => x.id === id) : null))) || null; return a && Array.isArray(a.web_logos) ? a.web_logos : []; };
+  catalog.filter((c) => c.kind === 'single').forEach((c) => {
+    const st = stockByWp[c.id] || {};
+    const color = st.color || '';
+    const key = (c.sku || '') + '|' + color;
+    (Array.isArray(c.decorations) ? c.decorations : []).forEach((d) => {
+      if (!d || d.kind !== 'art') return;
+      const url = decoUrlForColor(d, color, _qmWebLogos(d)) || d.art_url || d.web_url || '';
+      if (!url || !_qmIsImg(url)) return;
+      const artId = d.art_file_id || d.art_id || ('deco-' + url);
+      const lib = _qmArt.find((a) => a.id === artId);
+      const name = (lib && lib.name) || d.color_label || 'Logo';
+      const p = placementById(d.placement);
+      const xPct = d.x != null ? d.x : p.x, yPct = d.y != null ? d.y : p.y, wPct = d.w != null ? d.w : p.w;
+      const side = (d.side || 'front') === 'back' ? 'back' : 'front';
+      (qmAppliedByGarment[key] = qmAppliedByGarment[key] || []).push({ artFileId: artId, name, url, side, xPct, yPct, wPct });
+      const ex = _qmLocById.get(artId);
+      if (ex) { if (!ex.preview) { ex.preview = { url }; if (!ex.files || !ex.files.length) ex.files = [{ name, url, preview: { url } }]; } }
+      else { const loc = { artFileId: artId, name, position: '', existingFiles: [], files: [{ name, url, preview: { url } }], preview: { url }, garmentKeys: [] }; qmLocations.push(loc); _qmLocById.set(artId, loc); }
+    });
   });
   const qmInitialMocks = {}; const qmInitialScene = {};
   _qmArt.forEach((a) => { Object.entries(a.item_mockups || {}).forEach(([k, arr]) => { if (arr && arr.length) qmInitialMocks[k] = [...(qmInitialMocks[k] || []), ...arr]; }); Object.entries(a.qm_scenes || {}).forEach(([k, objs]) => { if (objs && objs.length && !qmInitialScene[k]) qmInitialScene[k] = objs; }); });
@@ -2388,9 +3859,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           <MenuButton label="Share" align="right" items={[
             portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
-            (s.director_email || s.coach_contact_email)
-              ? { label: 'Email store link', icon: '✉️', title: `Email the launch link + QR to ${s.director_email || s.coach_contact_email}`, onClick: onEmailDirector }
-              : { label: 'Email store link', icon: '✉️', title: 'Add a coach/director email in Settings first', disabled: true },
+            { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
           {onSetStatus && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
@@ -2399,6 +3868,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         </div>
       </div>
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
+      {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
         const primary = s.primary_color || '#192853';
@@ -2408,7 +3878,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         return (
           <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 12, marginBottom: 12, background: `linear-gradient(120deg, ${primary} 0%, ${shadeHex(primary, -24)} 100%)`, borderBottom: `3px solid ${accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.14)' }}>
             <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
-            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '14px 18px', color: '#fff' }}>
+            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, padding: '14px 18px', color: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 13, minWidth: 0 }}>
                 {s.logo_url
                   ? <img src={s.logo_url} alt="" style={{ height: 48, width: 48, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, flexShrink: 0, boxShadow: '0 2px 8px rgba(0,0,0,.28)' }} />
@@ -2419,9 +3889,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
                   <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start', paddingTop: 2 }}>
                 <BannerStat label="Orders" value={orders.length} />
-                <BannerStat label="Players" value={playerCount} />
+                <BannerStat label="Items" value={totalItems} />
                 <BannerStat label="Sales" value={money(totalSales)} />
                 {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
               </div>
@@ -2444,18 +3914,18 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={s.store_art || []} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onReorder={onReorder} onMove={onMove} onUpdateItem={onUpdateItem} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && _qmArt.length > 0} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
-          {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} />}
+          {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
-      {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} nf={(m) => onFlash && onFlash(m)}
+      {showMock && <QuickMockBuilder garments={qmGarments} locations={qmLocations} initialMocks={qmInitialMocks} initialScene={qmInitialScene} appliedByGarment={qmAppliedByGarment} nf={(m) => onFlash && onFlash(m)}
         onClose={() => setShowMock(false)}
         onSave={async (payload) => { if (onSaveMocks) await onSaveMocks(payload, _qmArt); setShowMock(false); }} />}
     </>
@@ -2546,12 +4016,41 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onRemove, onRemoveGroup, onUpdateImage, onReorder, onMove, onUpdateItem }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
+  const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
+  const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
+  const selMode = mode === 'select';
+  const toggleBulk = (id) => setBulkSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [bulkPrice, setBulkPrice] = useState('');
+  const [bulkFund, setBulkFund] = useState('');
+  const [bulkFundMode, setBulkFundMode] = useState('$'); // '$' flat | '%' of price
+  const [bulkCat, setBulkCat] = useState('');
+  const pkgSel = new Set(pkgItems.map((c) => c.webstore_product_id));
+  const togglePkg = (p) => setPkgItems((cur) => {
+    if (cur.some((c) => c.webstore_product_id === p.id)) return cur.filter((c) => c.webstore_product_id !== p.id);
+    const stock = stockByWp[p.id];
+    // Inherit number/name/sizing from the item itself — it's configured there.
+    return [...cur, { webstore_product_id: p.id, product_id: p.product_id, sku: p.sku, name: p.display_name || stock?.name || p.sku, image: p.image_url || stock?.image_front_url || null, retail_price: Number(p.retail_price) || 0, qty: 1, size_required: true, takes_number: !!p.takes_number, takes_name: !!p.takes_name, name_upcharge: Number(p.name_upcharge) || 0, transfer_code: null, num_transfer_size: null, num_transfer_color: null }];
+  });
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
+  const [pendingOpenPid, setPendingOpenPid] = useState(null); // product just created — open its card once it lands
   const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
   const [overCat, setOverCat] = useState(null); // category section being dragged over
+  const [dragCat, setDragCat] = useState(null); // category section being dragged
+  const [overDragCat, setOverDragCat] = useState(null); // category drop target during cat-drag
+  const paneEditorSaveRef = useRef(null); // bound to CatalogItemEditor's save() in split view
+  const paneEditorDirtyRef = useRef(false); // true when the open editor has unsaved edits
+  // Switch which item is being edited, but offer to save first if the current one is dirty —
+  // so a rep never loses edits by clicking the next item before hitting Save.
+  const switchEditId = (id) => {
+    if (id !== editId && paneEditorDirtyRef.current && paneEditorSaveRef.current) {
+      if (window.confirm('You have unsaved changes on this item. Save them before switching?')) paneEditorSaveRef.current();
+    }
+    paneEditorDirtyRef.current = false;
+    setEditId(id);
+  };
   const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
   useEffect(() => { setPaneTab('details'); }, [editId]);
   // Side-by-side layout: a persistent item list on the left, the item editor in a
@@ -2571,13 +4070,39 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   {
     const byKey = new Map();
     for (const p of ordered) { const k = groupKeyOf(p); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(p); }
-    for (const [k, rows] of byKey) { const rep = rows.find((r) => r.id === k) || rows[0]; groups.push({ key: k, rep, rows }); }
+    // The leftmost color (lowest sort_order — rows are pre-sorted) is the primary: its image
+    // leads the catalog row and it's the default on the storefront. Reordering colors changes it.
+    for (const [k, rows] of byKey) { groups.push({ key: k, rep: rows[0], rows }); }
     groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
   }
   const repsList = groups.map((g) => g.rep);
   const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
+
+  // ── Bulk edit (Select mode): tick items on the left, then act on them all at once.
+  // Price/fundraising apply to the card's priced (representative) row; category &
+  // availability apply to the whole color group so a hidden item hides every variant.
+  const allCats = [...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean)])].sort();
+  const groupRowIds = (repId) => (groups.find((g) => g.rep.id === repId)?.rows || []).map((r) => r.id);
+  const applyBulk = async (fields, expand) => {
+    const ids = [...bulkSel].filter((id) => repsList.some((r) => r.id === id));
+    if (!ids.length || !onBulkUpdate) return;
+    const rows = expand ? ids.flatMap((id) => groupRowIds(id).map((rid) => ({ id: rid, fields }))) : ids.map((id) => ({ id, fields }));
+    await onBulkUpdate(rows);
+  };
+  const applyBulkFund = async () => {
+    const v = Number(bulkFund);
+    if (!(v >= 0) || !onBulkUpdate) return;
+    const rows = [...bulkSel].map((id) => {
+      const rep = repsList.find((r) => r.id === id);
+      if (!rep) return null;
+      const amt = bulkFundMode === '%' ? Math.round((Number(rep.retail_price) || 0) * v) / 100 : v;
+      return { id, fields: { fundraise_amount: amt } };
+    }).filter(Boolean);
+    if (rows.length) await onBulkUpdate(rows);
+    setBulkFund('');
+  };
 
   // ── Category sections (side list): group cards by their category, with "+ Category"
   // adding a (possibly empty) section you drag cards into. Dropping a card on a section
@@ -2594,6 +4119,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   })();
   const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
+  const _webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
   const renderRep = ({ rep: p, rows: colorRows }) => {
     const stock = stockByWp[p.id];
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
@@ -2602,21 +4128,31 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     const sel = editId === p.id;
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
+    const archived = p.active === false;
+    const bulkOn = selMode && bulkSel.has(p.id);
     return (
-      <div key={p.id} onClick={() => setEditId(p.id)}
+      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : switchEditId(p.id))}
         onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
         style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
-          borderLeft: sel ? '3px solid #191919' : '3px solid transparent',
-          background: sel ? '#f1f5f9' : '#fff',
+          borderLeft: bulkOn ? '3px solid #2563eb' : sel ? '3px solid #191919' : '3px solid transparent',
+          background: bulkOn ? '#eef2ff' : sel ? '#f1f5f9' : '#fff',
           borderTop: dragId && dragId !== p.id && overId === p.id && overPos === 'before' ? '2px solid #191919' : '1px solid #f4f6f9',
           borderBottom: dragId && dragId !== p.id && overId === p.id && overPos === 'after' ? '2px solid #191919' : undefined,
-          opacity: dragId === p.id ? 0.4 : 1 }}>
-        <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>
-        <div style={{ width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          opacity: dragId === p.id ? 0.4 : (archived && !bulkOn ? 0.5 : 1) }}>
+        {selMode
+          ? <input type="checkbox" checked={bulkSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleBulk(p.id)} title="Select for bulk edit" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#2563eb' }} />
+          : mode === 'bundle' && p.kind !== 'bundle'
+          ? <input type="checkbox" checked={pkgSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => togglePkg(p)} title="Add to the package" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#4f46e5' }} />
+          : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
+        <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
+          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+            <img key={i} src={decoUrlForColor(d, stock?.color, _webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
+          ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
           <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
@@ -2626,6 +4162,15 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
   useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  // After a custom product is created + added, drop the rep straight into the full item
+  // editor once the reloaded catalog contains it — so they never have to reopen it to
+  // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
+  // wins the selection.
+  useEffect(() => {
+    if (!pendingOpenPid) return;
+    const m = repsList.find((p) => p.product_id === pendingOpenPid);
+    if (m) { setEditId(m.id); setPaneTab('details'); setPendingOpenPid(null); }
+  }, [catalog, pendingOpenPid]);
 
   // Drag-to-reorder: the grab handle on a row starts the drag; every row is a
   // drop target. Hovering the top/bottom half drops the item before/after that
@@ -2668,28 +4213,76 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           { label: 'Import list (Excel / Sheets)', icon: '⬆', onClick: () => { setMode('import'); setPending(null); } },
           { divider: true },
           { label: 'Add template', icon: '🎯', onClick: () => { setMode('template'); setPending(null); } },
-          { label: 'Create a package', icon: '📦', onClick: () => { setMode('bundle'); setPending(null); } },
+          { label: 'Create a package', icon: '📦', onClick: () => { setMode('bundle'); setPending(null); setPkgItems([]); } },
           { label: 'Build with AI', icon: '✨', onClick: () => { setMode('ai'); setPending(null); } },
         ]} />
         <MenuButton label="Tools" items={[
           { label: 'Price to margin', icon: '💲', onClick: () => { setMode('margin'); setPending(null); } },
           (view === 'table') && { label: expandAll ? 'Collapse all sizes' : 'Expand all sizes', icon: '↕', onClick: () => { setExpandAll((v) => !v); setOpenRows(new Set()); } },
         ]} />
+        <button type="button" onClick={() => { setMode(selMode ? null : 'select'); setBulkSel(new Set()); setPending(null); }} title="Select multiple items to price, add fundraising, move category, or archive them at once"
+          style={{ border: '1px solid ' + (selMode ? '#2563eb' : '#d7dbe2'), cursor: 'pointer', borderRadius: 9, padding: '6px 12px', fontSize: 12.5, fontWeight: 800, background: selMode ? '#2563eb' : '#fff', color: selMode ? '#fff' : '#334155' }}>
+          {selMode ? '✓ Done' : '☑ Select'}
+        </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', background: '#eef0f3', borderRadius: 9, padding: 3 }} title="Switch how the catalog is laid out">
           {[['split', '▥ Side-by-side'], ['table', '☰ List + popup']].map(([v, lbl]) => (
-            <button key={v} type="button" onClick={() => { if (v === 'table') setEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
+            <button key={v} type="button" onClick={() => { if (v === 'table') switchEditId(null); setView(v); }} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, background: view === v ? '#fff' : 'transparent', color: view === v ? '#191919' : '#6A7180', boxShadow: view === v ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
           ))}
         </div>
       </div>
 
-      {mode === 'single' && !pending && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {selMode && (() => {
+        const n = bulkSel.size;
+        const gBtn = (bg) => ({ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 10px', fontSize: 12, fontWeight: 800, background: bg, color: '#fff' });
+        const inp = { width: 64, border: '1px solid #334155', background: '#1e293b', color: '#fff', borderRadius: 6, padding: '4px 7px', fontSize: 12.5, outline: 'none' };
+        const lbl = { fontSize: 10.5, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.4 };
+        const grp = { display: 'inline-flex', alignItems: 'center', gap: 5 };
+        const sep = { width: 1, height: 22, background: '#334155' };
+        const link = { background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: '2px 4px' };
+        return (
+          <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 1200, background: '#0f172a', color: '#fff', borderRadius: 14, boxShadow: '0 14px 44px rgba(0,0,0,.35)', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap', maxWidth: '95vw' }}>
+            <span style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap' }}>{n} selected</span>
+            <button style={link} onClick={() => setBulkSel(new Set(repsList.map((r) => r.id)))}>All</button>
+            <button style={link} onClick={() => setBulkSel(new Set())}>None</button>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Price $</span>
+              <input value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} placeholder="0.00" style={inp} />
+              <button style={{ ...gBtn('#2563eb'), opacity: !n || bulkPrice === '' ? 0.4 : 1 }} disabled={!n || bulkPrice === ''} onClick={async () => { const v = Number(bulkPrice); if (!(v >= 0)) return; await applyBulk({ retail_price: v }, false); setBulkPrice(''); }}>Set</button>
+            </div>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Fundraise</span>
+              <input value={bulkFund} onChange={(e) => setBulkFund(e.target.value)} placeholder="0" style={{ ...inp, width: 52 }} />
+              <div style={{ display: 'inline-flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #334155' }}>
+                {['$', '%'].map((m) => <button key={m} onClick={() => setBulkFundMode(m)} style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: 12, fontWeight: 800, background: bulkFundMode === m ? '#2563eb' : '#1e293b', color: '#fff' }}>{m}</button>)}
+              </div>
+              <button style={{ ...gBtn('#2563eb'), opacity: !n || bulkFund === '' ? 0.4 : 1 }} disabled={!n || bulkFund === ''} onClick={applyBulkFund}>Apply</button>
+            </div>
+            <span style={sep} />
+            <div style={grp}>
+              <span style={lbl}>Category</span>
+              <input list="bulk-cat-list" value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} placeholder="move to…" style={{ ...inp, width: 104 }} />
+              <datalist id="bulk-cat-list">{allCats.map((c) => <option key={c} value={c} />)}</datalist>
+              <button style={{ ...gBtn('#2563eb'), opacity: !n ? 0.4 : 1 }} disabled={!n} onClick={async () => { await applyBulk({ category: (bulkCat || '').trim() || null }, true); setBulkCat(''); }}>Move</button>
+            </div>
+            <span style={sep} />
+            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
+            <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
+            <span style={sep} />
+            <button style={{ ...link, fontWeight: 800, color: '#fff' }} onClick={() => { setMode(null); setBulkSel(new Set()); }}>Done</button>
+          </div>
+        );
+      })()}
+
+      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setMode(null); }} />}
+      {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
+      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '34px 16px', border: '1.5px dashed #d7dbe2', borderRadius: 14, background: '#fafbfc' }}>
@@ -2714,9 +4307,20 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
             </div>
             {useCats
               ? catSections.map((sec) => (
-                <div key={sec.cat || '__unc'} onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverCat(sec.cat); } }} onDrop={(e) => { e.preventDefault(); dropToCat(sec.cat); }}
-                  style={{ boxShadow: overCat === sec.cat && dragId ? 'inset 0 0 0 2px #93c5fd' : undefined }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: overCat === sec.cat && dragId ? '#dbeafe' : '#f8fafc', borderBottom: '1px solid #eef0f3', borderTop: '1px solid #eef0f3', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: sec.cat ? '#334155' : '#94a3b8' }}>
+                <div key={sec.cat || '__unc'}
+                  onDragOver={(e) => {
+                    if (dragCat && dragCat !== sec.cat) { e.preventDefault(); setOverDragCat(sec.cat); }
+                    else if (dragId) { e.preventDefault(); setOverCat(sec.cat); }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragCat && dragCat !== sec.cat) { moveCatSection(dragCat, sec.cat); setDragCat(null); setOverDragCat(null); }
+                    else { dropToCat(sec.cat); }
+                  }}
+                  style={{ boxShadow: overCat === sec.cat && dragId ? 'inset 0 0 0 2px #93c5fd' : overDragCat === sec.cat && dragCat ? 'inset 0 0 0 2px #a78bfa' : undefined }}>
+                  <div draggable={!!sec.cat} onDragStart={(e) => { e.stopPropagation(); setDragCat(sec.cat); }} onDragEnd={() => { setDragCat(null); setOverDragCat(null); }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: overDragCat === sec.cat && dragCat ? '#ede9fe' : overCat === sec.cat && dragId ? '#dbeafe' : '#f8fafc', borderBottom: '1px solid #eef0f3', borderTop: '1px solid #eef0f3', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: sec.cat ? '#334155' : '#94a3b8', cursor: sec.cat ? 'grab' : 'default' }}>
+                    {sec.cat && <span style={{ color: '#cbd5e1', fontSize: 10, marginRight: 2, cursor: 'grab' }}>⠿</span>}
                     <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sec.cat || 'Uncategorized'}</span><span style={{ color: '#cbd5e1', fontWeight: 700 }}>· {sec.groups.length}</span>
                     {sec.groups.length === 0 && <button type="button" onClick={() => setNewCats((p) => p.filter((x) => x !== sec.cat))} title="Remove this empty section" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>}
                   </div>
@@ -2736,16 +4340,19 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
               return (
                 <div style={{ border: '1px solid #eef0f3', borderRadius: 14, background: '#fff' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', borderBottom: '1px solid #eef0f3', borderRadius: '14px 14px 0 0', flexWrap: 'wrap' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{p.display_name || stock?.name || p.sku}{groupColors.length > 1 ? <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}> · {groupColors.length} colors</span> : null}</div>
+                    <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>{p.display_name || stock?.name || p.sku}{groupColors.length > 1 ? <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}> · {groupColors.length} {groupColors.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
                     {p.kind !== 'bundle' && <div style={{ display: 'flex', gap: 2 }}>
-                      {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = paneTab === k; return (
+                      {[['details', '1 · Item setup'], ['sizes', '2 · Sizes'], ['art', '3 · Art & colors']].map(([k, lbl]) => { const on = paneTab === k; return (
                         <button key={k} type="button" onClick={() => setPaneTab(k)} style={{ background: 'none', border: 'none', borderBottom: '2px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 12.5, padding: '4px 10px', cursor: 'pointer' }}>{lbl}</button>
                       ); })}
                     </div>}
-                    <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto', color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
+                    <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => paneEditorSaveRef.current?.()}>Save</button>
+                    {onCopyItem && <button className="btn btn-sm btn-secondary" title="Duplicate this item — image, price, art & options all copied" onClick={() => onCopyItem(p)}>⧉ Copy</button>}
+                    <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
               );
@@ -2793,7 +4400,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <td style={td}><RowImage row={p} stockImg={stock?.image_front_url} onUpdateImage={onUpdateImage} /></td>
                     <td style={{ ...td, cursor: 'pointer' }} onClick={() => setEditId(p.id)} title="Click to edit this item">
                       <div style={{ fontWeight: 600, color: '#191919' }}>{label} <span style={{ fontSize: 11, fontWeight: 600, color: '#2563eb' }}>· edit</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, stock?.color, stock?.category].filter(Boolean).join(' · ')}{nColors > 1 ? <span style={{ color: '#2563eb', fontWeight: 700 }}> · {nColors} colors</span> : null}</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, stock?.color, stock?.category].filter(Boolean).join(' · ')}{nColors > 1 ? <span style={{ color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
                       {comps.length > 0 && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
                         {comps.map((c) => <div key={c.id}>• {c.qty}× {c.sku || c.product_id}{c.size_required ? '' : ' (one size)'}{c.takes_number ? ' #' : ''}</div>)}
                       </div>}
@@ -2829,11 +4436,11 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                   {editId === p.id && <tr><td colSpan={9} style={{ padding: 0 }}>
                     <div onClick={() => setEditId(null)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
                       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1240, margin: 'auto' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', position: 'sticky', top: 0, background: '#fff', borderRadius: '14px 14px 0 0', zIndex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', background: '#fff', borderRadius: '14px 14px 0 0' }}>
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
                       </div>
                     </div>
                   </td></tr>}
@@ -2864,7 +4471,13 @@ function ApplyToOthers({ deco, siblings, onApply }) {
   const apply = async () => {
     if (!picked.size) return;
     setBusy(true);
-    try { await onApply([...picked], { ...deco }); setPicked(new Set()); setOpen(false); }
+    // Carry the EXACT position & size the rep set: resolve x/y/w to concrete numbers
+    // (a freshly-placed logo may still be reading them from the placement default), so
+    // every target garment gets the logo at the same spot and scale. The deco's
+    // cw_by_color map rides along too, so each garment color resolves its own colorway.
+    const p = placementById(deco.placement);
+    const full = { ...deco, x: deco.x != null ? deco.x : p.x, y: deco.y != null ? deco.y : p.y, w: deco.w != null ? deco.w : p.w };
+    try { await onApply([...picked], full); setPicked(new Set()); setOpen(false); }
     finally { setBusy(false); }
   };
   return (
@@ -2903,7 +4516,7 @@ const vectorPreviewUrl = (url) => {
 };
 const _probeImg = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res(true); im.onerror = () => res(false); im.src = u; });
 
-function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false }) {
+function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo, backImageUrl, stockBackImg, onBackImageChange, storeColors = [], siblings = [], onApplyToItems, takesNumber = false, takesName = false, colorRows = [], primaryColorId = null, onReorderColors }) {
   const boxRef = useRef();
   const fileRef = useRef();
   const backRef = useRef();
@@ -2938,7 +4551,15 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
       if (/^#[0-9a-f]{6}$/i.test(h) && !seen.has(h.toLowerCase())) { seen.add(h.toLowerCase()); palette.push({ label: (pc && (pc.name || pc.code)) || h, hex: h }); }
     });
   }
-  const frontUrl = imageUrl;
+  // Which garment color is previewed on the stage. Defaults to the primary item; clicking a
+  // color in the filmstrip below the canvas swaps the front image so reps can flip through
+  // colorways without leaving the page. The primary uses imageUrl (honors a custom override).
+  const [previewColorId, setPreviewColorId] = useState(primaryColorId);
+  const [dragColorId, setDragColorId] = useState(null); // filmstrip chip being dragged to reorder
+  const _prevRow = (colorRows || []).find((c) => c.id === previewColorId);
+  const frontUrl = (previewColorId && previewColorId !== primaryColorId && _prevRow && _prevRow.frontUrl) ? _prevRow.frontUrl : imageUrl;
+  const _prevColorName = _prevRow ? _prevRow.name : null;
+  const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
   const backUrl = backImageUrl || stockBackImg || '';
   const stageUrl = side === 'back' ? backUrl : frontUrl;
   // Show the front/back toggle when a back exists/can be added, or when the item is
@@ -3054,8 +4675,12 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
   };
   const endDrag = () => { drag.current = null; };
   const current = decos[sel];
-  const currentOnSide = current && sideOf(current) === side;
-  const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side);
+  const currentOnSide = current && sideOf(current) === side && !isPerso(current);
+  const shown = decos.map((d, i) => ({ d, i })).filter(({ d }) => sideOf(d) === side && !isPerso(d));
+  // Explicit perso placements (number/name) live in decorations as tokens.
+  const persoIdx = (kind) => decos.findIndex((d) => d.kind === kind);
+  const addPerso = (kind) => { const p = persoDefault(kind); onChange([...decos, { kind, side: 'back', x: p.x, y: p.y, w: p.w }]); setSel(decos.length); };
+  const removePerso = (kind) => { const idx = persoIdx(kind); if (idx >= 0) { setSel(-1); onChange(decos.filter((_, i) => i !== idx)); } };
   const card = { background: '#fff', border: '1px solid #eef2f7', borderRadius: 12, padding: 12, marginBottom: 10 };
   const cardTitle = { fontSize: 11, fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 8 };
   const cardHint = { fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' };
@@ -3075,15 +4700,16 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
-          {decos.map((d, i) => (sideOf(d) === side ? (
+          {decos.map((d, i) => (sideOf(d) === side && !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName) ? (
             <div key={i}
               onPointerDown={(e) => { e.preventDefault(); setSel(i); drag.current = { i, mode: 'move' }; }}
               style={{ position: 'absolute', left: `${coord(d, 'x')}%`, top: `${coord(d, 'y')}%`, width: `${coord(d, 'w')}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: i === sel ? '2px solid #2563eb' : 'none', outlineOffset: 1, touchAction: 'none' }}>
-              <img src={d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+              {isPerso(d)
+                ? <PersoArt kind={d.kind} />
+                : <img src={(side === 'front' && decoUrlForColor(d, _prevColorName, webLogosOf(d))) || d.art_url} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />}
               {i === sel && <div onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setSel(i); drag.current = { i, mode: 'resize' }; }} title="Drag to resize" style={{ position: 'absolute', right: -8, bottom: -8, width: 16, height: 16, borderRadius: 4, background: '#2563eb', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />}
             </div>
           ) : null))}
-          {side === 'back' && <PersoMock takesNumber={takesNumber} takesName={takesName} />}
         </div>
         {side === 'back' && onBackImageChange && stageUrl && <div style={{ textAlign: 'center', marginTop: 8 }}><button type="button" onClick={() => backRef.current && backRef.current.click()} disabled={upBusy} style={{ border: '1px dashed #94a3b8', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{upBusy ? '…' : 'Replace back image'}</button></div>}
         <input ref={backRef} type="file" accept="image/*,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadBack(f); e.target.value = ''; }} />
@@ -3096,6 +4722,30 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
               </button>
             ))}
           </div>
+        )}
+        {/* Garment-color filmstrip: each color previewed with the art. Click to flip the stage
+            to that color; drag to reorder — the leftmost color leads the catalog row and the
+            storefront card (its default color). */}
+        {colorRows.length > 1 && side === 'front' && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+              {colorRows.map((c) => { const on = c.id === previewColorId; const isFirst = colorRows[0] && colorRows[0].id === c.id; const dragging = dragColorId === c.id; return (
+                <button key={c.id} type="button" draggable={!!onReorderColors}
+                  onClick={() => setPreviewColorId(c.id)}
+                  onDragStart={(e) => { setDragColorId(c.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={(e) => { if (dragColorId && dragColorId !== c.id) e.preventDefault(); }}
+                  onDrop={(e) => { e.preventDefault(); if (!onReorderColors || !dragColorId || dragColorId === c.id) return; const ids = colorRows.map((r) => r.id); const from = ids.indexOf(dragColorId); const to = ids.indexOf(c.id); if (from < 0 || to < 0) return; ids.splice(to, 0, ids.splice(from, 1)[0]); setDragColorId(null); onReorderColors(ids); }}
+                  onDragEnd={() => setDragColorId(null)}
+                  title={(onReorderColors ? 'Click to preview · drag to reorder' : 'Click to preview') + ' — ' + c.name}
+                  style={{ flex: '0 0 auto', width: 76, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 9, padding: 3, background: '#fff', cursor: onReorderColors ? 'grab' : 'pointer', opacity: dragging ? 0.4 : 1, position: 'relative' }}>
+                  {isFirst && <span style={{ position: 'absolute', top: -7, left: -6, background: '#191919', color: '#fff', fontSize: 8, fontWeight: 800, letterSpacing: 0.3, padding: '1px 5px', borderRadius: 6, textTransform: 'uppercase' }}>1st</span>}
+                  <GarmentLogoPreview imageUrl={c.frontUrl} decorations={decos} colorName={c.name} library={library} />
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: on ? '#191919' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 3 }}>{c.name}</div>
+                </button>
+              ); })}
+            </div>
+            {onReorderColors && <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 5 }}>Drag to reorder · the <b>1st</b> color leads the catalog row &amp; the storefront.</div>}
+          </>
         )}
       </div>
 
@@ -3133,6 +4783,30 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           {dragOver && <div style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, marginTop: 6 }}>Drop to add to the library</div>}
           {note && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600, marginTop: 8 }}>{note}</div>}
         </div>
+
+        {(takesNumber || takesName) && (
+          <div style={card}>
+            <div style={cardTitle}>Number &amp; name on the mockup <span style={cardHint}>· sample preview shoppers see on the back</span></div>
+            {side !== 'back'
+              ? <div style={{ fontSize: 12, color: '#94a3b8' }}>Switch the mockup to <b>Back</b> to place the number/name.</div>
+              : [takesNumber && 'perso_number', takesName && 'perso_name'].filter(Boolean).map((kind) => {
+                  const idx = persoIdx(kind); const label = kind === 'perso_number' ? 'Number' : 'Name'; const placed = idx >= 0;
+                  return (
+                    <div key={kind} style={{ marginBottom: 8 }}>
+                      {placed ? (<>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: '#191919' }}>{label} placed <span style={{ color: '#94a3b8', fontWeight: 500 }}>· drag it, corner to resize</span></span>
+                          <button type="button" onClick={() => removePerso(kind)} style={{ background: 'none', border: 'none', color: '#b91c1c', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Remove</button>
+                        </div>
+                        <input type="range" min={8} max={80} value={Math.round((decos[idx] && decos[idx].w) || persoDefault(kind).w)} onChange={(e) => update(idx, { w: Number(e.target.value) })} style={{ width: '100%' }} />
+                      </>) : (
+                        <button type="button" onClick={() => addPerso(kind)} className="btn btn-sm btn-secondary">+ Add {label.toLowerCase()} to mockup</button>
+                      )}
+                    </div>
+                  );
+                })}
+          </div>
+        )}
 
         {shown.length === 0 ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '6px 2px' }}>No logo on the {side} yet — tap a logo above to drop it on the garment, then position &amp; recolor it here.</div> : currentOnSide && <React.Fragment>
           <div style={card}>
@@ -3186,11 +4860,11 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
 
 // Inline editor for an existing catalog item (single or bundle).
 // Titled panel — the editor is organized into clear sectioned cards.
-function ItemSection({ title, hint, right, children, pad = 14 }) {
+function ItemSection({ title, hint, right, children, pad = 14, subtle = false }) {
   return (
-    <div style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: pad, marginBottom: 14, background: '#fff' }}>
-      {(title || right) && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
-        <div style={{ fontSize: 12, fontWeight: 800, color: '#334155', textTransform: 'uppercase', letterSpacing: 0.4 }}>{title}{hint && <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8', marginLeft: 8 }}>{hint}</span>}</div>
+    <div style={{ border: `1px solid ${subtle ? '#eef0f3' : '#e8ebf0'}`, borderRadius: 12, padding: pad, marginBottom: 14, background: subtle ? '#fafbfc' : '#fff' }}>
+      {(title || right) && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: subtle ? 8 : 10 }}>
+        <div style={{ fontSize: subtle ? 11 : 12, fontWeight: subtle ? 700 : 800, color: subtle ? '#94a3b8' : '#334155', textTransform: 'uppercase', letterSpacing: 0.4 }}>{title}{hint && <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: '#94a3b8', marginLeft: 8 }}>{hint}</span>}</div>
         {right}
       </div>}
       {children}
@@ -3251,21 +4925,40 @@ const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
 // color name -> the web-logo URL to use for that color (e.g. a white logo on a black tee,
 // a dark logo on a white tee). Falls back to the deco's placed art_url when unset.
 const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
-const decoUrlForColor = (deco, colorName) => {
+// Pick the web-logo color way meant for a given garment color — e.g. a "Navy" colorway for
+// a Navy garment, a "Grey" colorway for "Heather Grey". Matches on a shared word token so
+// "Heather Grey" still finds the "Grey" colorway. Falls back to an "all garments"/blank
+// colorway, then null (caller uses the deco's placed art_url).
+const _normColorWords = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+const webLogoForGarmentColor = (webLogos, colorName) => {
+  const wls = (webLogos || []).filter((w) => w && w.url);
+  if (!wls.length) return null;
+  const g = _normColorWords(colorName);
+  if (g.length) {
+    const hit = wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); });
+    if (hit) return hit.url;
+  }
+  const generic = wls.find((w) => { const c = (w.color_way || '').trim(); return !c || /all/i.test(c); });
+  return generic ? generic.url : null;
+};
+const decoUrlForColor = (deco, colorName, webLogos) => {
   if (!deco) return '';
   const m = deco.cw_by_color; const k = colorKeyOf(colorName);
-  return (m && k && m[k]) || deco.art_url || '';
+  if (m && k && m[k]) return m[k];                       // explicit per-color override wins
+  const auto = webLogoForGarmentColor(webLogos, colorName); // else auto-match the garment color
+  return auto || deco.art_url || '';
 };
 // Read-only garment thumbnail with the placed FRONT logos composited at their saved
 // placement — previews each color of a multi-color card with its art (and per-color web
 // logo) applied. Mirrors the LogoPlacer hero-canvas math (x/y center %, w = width %).
-function GarmentLogoPreview({ imageUrl, decorations = [], colorName }) {
-  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName));
+function GarmentLogoPreview({ imageUrl, decorations = [], colorName, library = [] }) {
+  const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
+  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
       {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
       {front.map((d, i) => { const p = placementById(d.placement); const x = d.x != null ? d.x : p.x, y = d.y != null ? d.y : p.y, w = d.w != null ? d.w : p.w; return (
-        <img key={i} src={decoUrlForColor(d, colorName)} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
+        <img key={i} src={decoUrlForColor(d, colorName, webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
       ); })}
     </div>
   );
@@ -3288,35 +4981,157 @@ function PersoMock({ takesNumber, takesName, sampleName = 'PLAYER', sampleNumber
     {takesNumber && tok(PERSO_DEFAULTS.number, 64, 52, 58, sampleNumber)}
   </>;
 }
+// A perso placement lives in the item's `decorations` as a token (no art_url), so
+// it flows editor → DB → storefront with the logos and is ignored by DecoOverlay.
+const isPerso = (d) => d && (d.kind === 'perso_number' || d.kind === 'perso_name');
+const persoDefault = (kind) => ({ ...(kind === 'perso_number' ? PERSO_DEFAULTS.number : PERSO_DEFAULTS.name) });
+// Sample text token that fills its container's width (so resizing the box resizes the text).
+function PersoArt({ kind, sampleName = 'PLAYER', sampleNumber = '00' }) {
+  const isNum = kind === 'perso_number';
+  const vb = isNum ? 64 : 26, ty = isNum ? 52 : 20, fs = isNum ? 58 : 20;
+  const body = isNum ? sampleNumber : String(sampleName).toUpperCase();
+  return <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible', pointerEvents: 'none' }}>
+    <text x="50" y={ty} textAnchor="middle" fontFamily="'Barlow Condensed',Oswald,Impact,sans-serif" fontWeight="800" fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.6)" strokeWidth="1.3" paintOrder="stroke" letterSpacing="1">{body}</text>
+  </svg>;
+}
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], standardCategories = [], stockByWp = {}, costByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onCancel, onSave }) {
+// Fit/size variants of one garment. A jersey is the same design across Adult /
+// Women's / Youth cuts, but each cut is its own product (own SKU + size scale), so
+// we attach them as sibling rows on one card. The storefront shows every fit's
+// sizes at once on the shared image; picking a size resolves that fit's own SKU.
+const FIT_LABELS = ['Adult', "Men's", "Women's", 'Youth', 'Unisex'];
+function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemoveFit }) {
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const rows = fits || [];
+  const isGroup = rows.length > 1 || rows.some((r) => r.variant_label);
+  const attach = async (pr) => {
+    if (!onAttach || busy) return;
+    setBusy(true);
+    try { await onAttach(pr); setAdding(false); } finally { setBusy(false); }
+  };
+  return (
+    <ItemSection subtle title="Add-on · sizes / fits" hint="· optional — same garment in another cut; each fit is its own SKU & size row in the store"
+      right={onAttach ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => setAdding((v) => !v)}>{adding ? 'Close' : '+ Add a fit'}</button> : null}>
+      {isGroup ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map((r) => { const st = stockByWp[r.id]; const nm = r.display_name || st?.name || r.sku; const isPrimary = r.id === item.id; const cur = r.variant_label || ''; const preset = FIT_LABELS.includes(cur); return (
+            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', border: '1px solid #eef0f3', borderRadius: 8, background: '#fafbfc' }}>
+              <div style={{ width: 34, height: 34, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {(r.image_url || st?.image_front_url) ? <img src={r.image_url || st?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1' }}>—</span>}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}{isPrimary ? ' (main)' : ''}</div>
+                <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{r.sku}</div>
+              </div>
+              <select value={cur} onChange={(e) => { const v = e.target.value; if (v === '__custom') { const c = window.prompt('Fit label (e.g. Adult, Women\'s, Youth)', cur); if (c != null) onLabel(r.id, c.trim()); } else onLabel(r.id, v); }} title="What cut this SKU is" style={{ fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 6px', background: '#fff', cursor: 'pointer', flexShrink: 0 }}>
+                <option value="">— fit —</option>
+                {FIT_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                {cur && !preset && <option value={cur}>{cur}</option>}
+                <option value="__custom">Custom…</option>
+              </select>
+              {rows.length > 1 && !isPrimary && onRemoveFit && <button type="button" title="Remove this fit" onClick={() => onRemoveFit(r.id, nm)} style={{ background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', borderRadius: 6, width: 24, height: 24, fontSize: 13, fontWeight: 800, cursor: 'pointer', flexShrink: 0 }}>×</button>}
+            </div>
+          ); })}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: adding ? 10 : 0 }}>This jersey is one cut. Add a Women's or Youth version as its own SKU — shoppers pick the fit and size together, on this same image.</div>
+      )}
+      {adding && <div style={{ marginTop: 10 }}>
+        <ProductSearch label="Find the other cut (its own SKU)" onPick={attach} onClose={() => setAdding(false)} />
+      </div>}
+    </ItemSection>
+  );
+}
+
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onEditItem, onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
+  const [dragBundleId, setDragBundleId] = useState(null);
+  const [overBundleId, setOverBundleId] = useState(null);
   // Other single items on this store, for "apply this logo to other items".
   const siblings = (catalog || []).filter((c) => c.kind === 'single' && c.id !== item.id).map((c) => ({ id: c.id, name: c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku, img: c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url) }));
+  // Vendor (the PO recipient) + SKU live on the catalog product. Loaded here so the rep can
+  // view/edit them in Basics; persisted via onUpdateProductMeta. The vendor is a searchable
+  // datalist of all vendors. Only meaningful for product-backed items (not bundles).
+  const [vendorList, setVendorList] = useState([]);
+  const [vendorId, setVendorId] = useState('');
+  const [vendorText, setVendorText] = useState(''); // free text in the vendor search box
+  const [skuEdit, setSkuEdit] = useState(item.sku || '');
+  const _initVendorId = useRef('');
+  const _initSku = useRef(item.sku || '');
+  useEffect(() => {
+    if (isBundle || !item.product_id || !onUpdateProductMeta) return;
+    let cancelled = false;
+    (async () => {
+      const [{ data: vs }, { data: pr }] = await Promise.all([
+        supabase.from('vendors').select('id,name').order('name'),
+        supabase.from('products').select('vendor_id,sku').eq('id', item.product_id).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      setVendorList(vs || []);
+      const vid = (pr && pr.vendor_id) || '';
+      const sk = (pr && pr.sku) || item.sku || '';
+      setVendorId(vid); _initVendorId.current = vid;
+      setVendorText((vs || []).find((v) => v.id === vid)?.name || '');
+      setSkuEdit(sk); _initSku.current = sk;
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.product_id]);
+  const saveVendor = (vid) => { setVendorId(vid); if (vid !== _initVendorId.current) { _initVendorId.current = vid; onUpdateProductMeta(item.product_id, { vendor_id: vid || null }); } };
+  const saveSku = () => { const s = (skuEdit || '').trim().toUpperCase(); if (s && s !== (_initSku.current || '').toUpperCase()) { _initSku.current = s; onUpdateProductMeta(item.product_id, { sku: s }); } };
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
-  // Per-color web-logo override: set/clear the web logo a given garment color uses for a
-  // placed deco (so a black tee can wear the white logo, a white tee the dark one). Empty
-  // url clears the override (falls back to the placed art).
-  const setColorCw = (colorName, decoIndex, url) => {
-    const k = colorKeyOf(colorName);
-    setDecorations((ds) => ds.map((d, i) => {
-      if (i !== decoIndex) return d;
-      const m = { ...(d.cw_by_color || {}) };
-      if (!url) delete m[k]; else m[k] = url;
-      return { ...d, cw_by_color: m };
-    }));
-  };
-  // Available web-logo color ways per placed deco (from the art library record), so each
-  // color can pick a different one. Only decos whose art has 2+ web logos offer a choice.
-  const decoCwChoices = decorations.map((d) => {
-    const art = (library || []).find((a) => a.id === d.art_id);
-    return (art && Array.isArray(art.web_logos)) ? art.web_logos.filter((w) => w && w.url) : [];
-  });
   const [name, setName] = useState(item.display_name || defaultName || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || '');
+  // Decoration charge: a flat amount folded INTO retail_price to cover decorating an
+  // otherwise-cheap garment (e.g. shorts). `price` always holds the full price the
+  // shopper pays; `decoUp` is the slice of it that's the deco charge, persisted to
+  // webstore_products.deco_upcharge so the toggle survives a reopen (and so margin math
+  // and "price to margin" know it's already covered). Toggling adjusts price by ±amount,
+  // so the whole order / SO / reporting pipeline keeps using retail_price unchanged.
+  const [decoUp, setDecoUp] = useState(Number(item.deco_upcharge) || 0);
+  // Inventory tracking: only stock-backed items (a real vendor / warehouse product) can
+  // follow the stock guard. Custom / made-to-order items (inventory_source 'manual', or no
+  // product link) are never tracked, so the toggle is hidden for them. Default ON.
+  const _invSrc = invSrcByPid[item.product_id];
+  const inventoryBacked = !isBundle && !!_invSrc && _invSrc !== 'manual';
+  const [trackInv, setTrackInv] = useState(item.track_inventory !== false);
+  const [sizeSkus, setSizeSkus] = useState(item.size_skus || {});
+  // Estimated NSA decoration cost — NSA's cost to decorate this item, which raises the sale
+  // price to keep the margin (the delta is stored as deco_upcharge). Defaults to $5 when the
+  // item has artwork, $0 when it doesn't. Rep-editable.
+  // Live artwork presence (ignoring number/name perso tokens), so adding/removing a logo on
+  // the Art tab re-defaults the deco cost.
+  const _itemDecorated = decorations.some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name') || isTeam;
+  const [decoCostEst, setDecoCostEst] = useState(((Array.isArray(item.decorations) && item.decorations.some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name')) || isTeam) ? 5 : 0);
+  // True once the rep types in the deco-cost box, so the artwork-driven default stops overriding it.
+  const [decoCostTouched, setDecoCostTouched] = useState((Number(item.deco_upcharge) || 0) > 0);
+  const setDecoCharge = (on, newCostStr) => {
+    const newCost = Math.max(0, Number(newCostStr != null ? newCostStr : decoCostEst) || 0);
+    if (newCostStr != null) setDecoCostEst(newCost);
+    const base = (Number(price) || 0) - (Number(decoUp) || 0); // price without any deco delta
+    if (on && newCost > 0) {
+      // Increase price enough to maintain the current base margin (fall back to 45% target)
+      const baseMarginFrac = effCost != null && base > 0 ? (base - effCost) / base : null;
+      const targetFrac = baseMarginFrac != null ? Math.max(0.01, baseMarginFrac) : 0.45;
+      const newPrice = effCost != null ? Math.ceil((effCost + newCost) / (1 - targetFrac)) : base + newCost;
+      const delta = Math.max(0, newPrice - base);
+      setDecoUp(delta); setPrice(newPrice);
+    } else { setDecoUp(0); setPrice(Math.max(0, base)); }
+  };
+  // When artwork is added/removed in-session, default the deco cost to $5 / $0 (unless the rep
+  // set it by hand). Skips the initial mount so opening an item never silently moves its price.
+  const _decoMountRef = useRef(true);
+  useEffect(() => {
+    if (_decoMountRef.current) { _decoMountRef.current = false; return; }
+    if (isBundle || decoCostTouched) return;
+    const cost = _itemDecorated ? (decoCostEst > 0 ? decoCostEst : 5) : 0;
+    setDecoCharge(cost > 0, cost);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_itemDecorated]);
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
   const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
@@ -3338,6 +5153,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
+  const [cardStyle, setCardStyle] = useState(item.card_style || '');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
@@ -3361,7 +5177,25 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [offeredSizes, setOfferedSizes] = useState(
     Array.isArray(item.sizes_offered) && item.sizes_offered.length ? item.sizes_offered : allSizes
   );
+  const sortSizes = (arr) => [...new Set(arr)].sort((a, b) => sizeRank(a) - sizeRank(b));
+  // The full set of chips shown on the Sizes tab: the product's scale plus any sizes the
+  // rep has added (e.g. 3XL/4XL, or a whole footwear scale). `offeredSizes` is which of
+  // these are toggled on (sold). Extras (not in the product scale) can be removed outright.
+  const [sizeList, setSizeList] = useState(() => sortSizes([...allSizes, ...(Array.isArray(item.sizes_offered) ? item.sizes_offered : [])]));
+  const [newSize, setNewSize] = useState('');
+  const [addingToBundle, setAddingToBundle] = useState(false);
+  const [bundleAddSelId, setBundleAddSelId] = useState('');
   const toggleSize = (sz) => setOfferedSizes((cur) => cur.includes(sz) ? cur.filter((s) => s !== sz) : [...cur, sz]);
+  const addSizeChip = () => {
+    const s = newSize.trim().toUpperCase();
+    setNewSize('');
+    if (!s || sizeList.includes(s)) return;
+    setSizeList((cur) => sortSizes([...cur, s]));
+    setOfferedSizes((cur) => cur.includes(s) ? cur : [...cur, s]);
+  };
+  const removeSizeChip = (sz) => { setSizeList((cur) => cur.filter((s) => s !== sz)); setOfferedSizes((cur) => cur.filter((s) => s !== sz)); };
+  const applySizePreset = (preset) => { const sz = sortSizes(preset.sizes); setSizeList(sz); setOfferedSizes(sz); };
+  const sizePresetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizeList.length && sortSizes(p.sizes).every((s, i) => s === sizeList[i]))?.label || 'Custom';
   // Singles fall back to the store-wide fundraising rule (10% + round-up etc.) when no
   // per-item amount is set, so "Shopper pays" matches what families are actually charged.
   const storeFundAmt = isBundle ? 0 : storeFundAmount(price, storeFund);
@@ -3371,12 +5205,20 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // True-margin readout: garment cost + a rough $5 decoration cost (quantity unknown at
   // store-build time) when the item is decorated, so staff can price to ~45% margin.
   const garmentCost = (costByPid && costByPid[item.product_id] != null) ? Number(costByPid[item.product_id]) : null;
-  const decoIncluded = !isBundle && (decorations.length > 0 || isTeam);
-  const decoCost = decoIncluded ? 5 : 0;
-  const trueCost = (garmentCost != null ? garmentCost : 0) + decoCost;
+  // Cost is editable inline (persists to the catalog product via onUpdateCost); track it
+  // locally so the margin readout updates live before the save round-trips.
+  const [costInput, setCostInput] = useState(garmentCost != null ? String(garmentCost) : '');
+  const _editedCost = costInput.trim() === '' ? null : Number(costInput);
+  const effCost = (_editedCost != null && Number.isFinite(_editedCost)) ? _editedCost : garmentCost;
+  const costDirty = onUpdateCost && !isBundle && (costInput.trim() === '' ? garmentCost != null : !(garmentCost != null && Number(costInput) === garmentCost));
+  const decoIncluded = !isBundle && _itemDecorated;
+  // Only a decorated item carries a deco cost (per the rule: no artwork → $0).
+  const decoCost = (!isBundle && _itemDecorated) ? (Number(decoCostEst) || 0) : 0;
+  const trueCost = (effCost != null ? effCost : 0) + decoCost;
   const priceNum = Number(price) || 0;
-  const marginPct = (garmentCost != null && priceNum > 0) ? Math.round((1 - trueCost / priceNum) * 100) : null;
-  const target45 = garmentCost != null ? Math.ceil(trueCost / 0.55) : null; // price for ~45% margin after deco
+  const marginPct = (effCost != null && priceNum > 0) ? Math.round((1 - trueCost / priceNum) * 100) : null;
+  const target45 = effCost != null ? Math.ceil(trueCost / 0.55) : null; // price for ~45% margin after deco
+  const saveCost = () => { if (costDirty) onUpdateCost(item.product_id, costInput.trim() === '' ? null : Number(costInput)); };
 
   // Other colorways of this garment (same product name) the store doesn't already carry,
   // so staff can add them in one step at the same price/options.
@@ -3443,30 +5285,80 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setImgBusy(false);
   };
 
+  // Replace the main front photo (e.g. after copying an item that kept the
+  // source garment's image). Empty = fall back to the catalog stock photo.
+  const mainImgRef = useRef();
+  const [mainDragOver, setMainDragOver] = useState(false);
+  const setMainFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    setImgBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-webstores'); setImage(url); }
+    catch (x) { /* cloudUpload surfaces error via toast */ }
+    setImgBusy(false);
+  };
+
+  // Dirty tracking: a signature of every editable field. Compared to the baseline (the
+  // values as last loaded / saved) so the parent can prompt a save before the rep switches
+  // to another item. Reset to the current signature whenever we persist.
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
+  const _baselineSig = useRef(_dirtySig);
+  if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
+
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
       fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
-      fields.decorations = decorations;
-      // null = every available size (default). Store a subset only when one is set.
-      const _allOn = allSizes.length === 0 || offeredSizes.length === 0 || offeredSizes.length >= allSizes.length;
-      fields.sizes_offered = _allOn ? null : allSizes.filter((s) => offeredSizes.includes(s));
+      // Drop a perso placement if its toggle was turned back off.
+      fields.decorations = decorations.filter((d) => !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName));
+      // Bake the auto-matched web-logo color way into cw_by_color for every garment color in
+      // this card, so the storefront and SO handoff (which don't have the art library) show the
+      // right logo per color — a "Navy" colorway on Navy, a "Grey" one on Heather Grey, etc.
+      // Only fills colors without an explicit rep override.
+      const _cardColors = (groupColors || []).map((c) => (stockByWp[c.id]?.color) || c.sku).filter(Boolean);
+      if (_cardColors.length) fields.decorations = fields.decorations.map((d) => {
+        const art = (library || []).find((a) => a.id === d.art_id);
+        const wls = art && Array.isArray(art.web_logos) ? art.web_logos.filter((w) => w && w.url) : [];
+        if (wls.length < 2) return d;
+        const m = { ...(d.cw_by_color || {}) };
+        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const u = webLogoForGarmentColor(wls, cn); if (u) m[k] = u; } });
+        return Object.keys(m).length ? { ...d, cw_by_color: m } : d;
+      });
+      // null = the product's full scale, unchanged (default). Persist an explicit list
+      // whenever the rep narrowed it OR added/swapped sizes (3XL/4XL, footwear, etc.).
+      const _off = sizeList.filter((s) => offeredSizes.includes(s));
+      const _sameAsScale = _off.length === allSizes.length && allSizes.every((s) => _off.includes(s));
+      fields.sizes_offered = (_off.length === 0 || _sameAsScale) ? null : sortSizes(_off);
+      // Inventory tracking only matters for stock-backed items; persist the choice there.
+      if (inventoryBacked) fields.track_inventory = !!trackInv;
+      // Size-level SKU overrides: only persist when there's something set.
+      fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
     }
     onSave(fields);
+    _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
+    if (dirtyRef) dirtyRef.current = false;
     // Stay on the item after saving — just confirm briefly on the button.
     setJustSaved(true); setTimeout(() => setJustSaved(false), 1800);
   };
 
   const catListId = 'cat-suggest-' + item.id;
   const kitListId = 'kit-suggest-' + item.id;
+  if (saveRef) saveRef.current = save;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
+      {!setPageProp && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, position: 'sticky', top: 0, zIndex: 5, background: '#f6f7f9', paddingBottom: 12, borderBottom: '1px solid #e5e8ec' }}>
+          {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" onClick={() => setPage('sizes')}>Next: Sizes →</button>}
+          {!isBundle && page === 'sizes' && <button type="button" className="btn btn-secondary" onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
+          <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={onCancel}>{justSaved ? 'Close' : 'Cancel'}</button>
+          <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
+        </div>
+      )}
       {!isBundle && !setPageProp && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
-          {[['details', '1 · Item setup'], ['art', '2 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
+          {[['details', '1 · Item setup'], ['sizes', '2 · Sizes & options'], ['art', '3 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
             <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
           ); })}
         </div>
@@ -3477,39 +5369,123 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         <div>
         <ItemSection title="Basics" hint="· name shown in the catalog">
           <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
-        </ItemSection>
-
-        <ItemSection title="Pricing & margin">
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <Row label="Price"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 120 }} /></Row>
-            <Row label="Fundraising"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? storeFundAmt.toFixed(2) + ' (auto)' : '0'} style={{ width: 130 }} /></Row>
-            <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700, width: 110 }}>{money(total)}</div></Row>
-          </div>
-          {!isBundle && (garmentCost != null
-            ? <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12.5, color: '#64748b' }}>
-                <span>Cost <b style={{ color: '#191919' }}>{money(trueCost)}</b>{decoIncluded ? <span style={{ color: '#94a3b8' }}> (incl. ~{money(decoCost)} deco)</span> : null}</span>
-                <span style={{ color: marginPct != null && marginPct >= 45 ? '#166534' : '#b45309', fontWeight: 800 }}>{marginPct != null ? marginPct + '% margin' : '— margin'}</span>
-                {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ fontSize: 11.5, fontWeight: 700, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '4px 10px', cursor: 'pointer' }}>Set {money(target45)} (45%)</button>}
+          {!isBundle && item.product_id && onUpdateProductMeta && (
+            <div style={{ display: 'flex', gap: 12, marginTop: 2 }}>
+              <div style={{ flex: 2, minWidth: 0 }}>
+                <Row label="Vendor (PO goes to)">
+                  <input className="form-input" list={'vendor-suggest-' + item.id} value={vendorText} placeholder="Search vendors…" style={{ width: '100%' }}
+                    onChange={(e) => { setVendorText(e.target.value); const v = vendorList.find((x) => x.name.toLowerCase() === e.target.value.trim().toLowerCase()); if (v) saveVendor(v.id); else if (e.target.value.trim() === '') saveVendor(''); }}
+                    onBlur={() => { const v = vendorList.find((x) => x.name.toLowerCase() === vendorText.trim().toLowerCase()); setVendorText(v ? v.name : (vendorList.find((x) => x.id === vendorId)?.name || '')); }} />
+                  <datalist id={'vendor-suggest-' + item.id}>{vendorList.map((v) => <option key={v.id} value={v.name} />)}</datalist>
+                </Row>
               </div>
-            : <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>Add a cost to this product to see margin.</div>)}
-          {!isBundle && storeFund?.enabled && (Number(fundraise) > 0
-            ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Overrides the store rule ({money(storeFundAmt)} default).</div>
-            : storeFundAmt > 0 ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Includes {money(storeFundAmt)} store fundraising — enter to override.</div> : null)}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Row label="SKU"><input className="form-input" value={skuEdit} onChange={(e) => setSkuEdit(e.target.value)} onBlur={saveSku} placeholder="SKU" style={{ width: '100%' }} title="Catalog SKU — used to match vendor stock; saving updates the product" /></Row>
+              </div>
+            </div>
+          )}
         </ItemSection>
 
-        {!isBundle && allSizes.length > 0 && (
-          <ItemSection title="Sizes offered" hint="· tap to toggle (all on by default)">
-            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-              {allSizes.map((sz) => { const on = offeredSizes.includes(sz); return (
-                <button key={sz} type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
-              ); })}
+        <ItemSection title="Pricing">
+          {/* Sale price — hero input with live margin badge */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 5 }}>Sale price</div>
+              <div style={{ display: 'flex', alignItems: 'center', border: '1.5px solid #cbd5e1', borderRadius: 9, overflow: 'hidden', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.07)' }}>
+                <span style={{ padding: '0 11px', color: '#94a3b8', borderRight: '1px solid #e2e8f0', fontSize: 15, height: 40, display: 'grid', placeItems: 'center' }}>$</span>
+                <input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 96, border: 'none', borderRadius: 0, padding: '8px 10px', fontSize: 18, fontWeight: 700, outline: 'none', boxShadow: 'none' }} />
+              </div>
             </div>
-            {offeredSizes.length > 0 && offeredSizes.length < allSizes.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {allSizes.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
+            {!isBundle && marginPct != null && (
+              <div style={{ paddingBottom: 3, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: marginPct >= 45 ? '#15803d' : marginPct >= 35 ? '#b45309' : '#b91c1c', background: marginPct >= 45 ? '#dcfce7' : marginPct >= 35 ? '#fef3c7' : '#fee2e2', borderRadius: 20, padding: '3px 12px', display: 'inline-block' }}>{marginPct}% margin</span>
+                {target45 != null && marginPct !== 45 && <button type="button" onClick={() => setPrice(target45)} style={{ fontSize: 11.5, fontWeight: 700, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline', textAlign: 'left' }}>→ {money(target45)} for 45%</button>}
+              </div>
+            )}
+            {!isBundle && effCost == null && <div style={{ paddingBottom: 8, fontSize: 11.5, color: '#94a3b8' }}>Enter a cost below to see margin.</div>}
+          </div>
+
+          {/* Cost strip — garment cost + deco cost (only when decorated), non-bundles only */}
+          {!isBundle && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#f8fafc', border: '1px solid #e9ecf0', borderRadius: 8, padding: '7px 12px', marginBottom: 10, fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: '#475569' }}>Cost</span>
+              {onUpdateCost
+                ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#374151' }}>$<input type="number" step="0.01" min={0} value={costInput} onChange={(e) => setCostInput(e.target.value)} onBlur={saveCost} placeholder="0.00" title="Base item cost — saves to catalog product" style={{ width: 64, padding: '2px 5px', fontSize: 12, border: '1px solid #d1d5db', borderRadius: 5, background: '#fff' }} /></span>
+                : <span style={{ fontWeight: 600, color: '#374151' }}>{effCost != null ? money(effCost) : <span style={{ color: '#94a3b8' }}>—</span>}</span>}
+              {_itemDecorated && <>
+                <span style={{ color: '#d1d5db', fontWeight: 400, fontSize: 14 }}>+</span>
+                <span style={{ fontWeight: 700, color: '#475569' }}>Deco</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#374151' }}>$<input type="number" step="0.01" min={0} value={decoCostEst} onChange={(e) => { setDecoCostTouched(true); setDecoCharge(true, e.target.value); }} style={{ width: 52, padding: '2px 5px', fontSize: 12, border: '1px solid #d1d5db', borderRadius: 5, background: '#fff' }} /></span>
+                {decoUp > 0 && <span style={{ color: '#2563eb', fontWeight: 600 }}>+{money(decoUp)} to price</span>}
+              </>}
+              {effCost != null && <><span style={{ color: '#e2e8f0', fontWeight: 400, fontSize: 14 }}>·</span><span style={{ color: '#475569' }}>Total <b style={{ color: '#1e293b' }}>{money(trueCost)}</b></span></>}
+            </div>
+          )}
+
+          {/* Fundraise add-on + shopper pays — inline, always visible */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Fundraise</span>
+            <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 7, overflow: 'hidden', background: '#fff' }}>
+              <span style={{ padding: '0 8px', color: '#94a3b8', borderRight: '1px solid #e2e8f0', fontSize: 13, height: 30, display: 'grid', placeItems: 'center' }}>$</span>
+              <input type="number" step="0.01" min={0} value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? storeFundAmt.toFixed(2) : '0.00'} style={{ width: 72, padding: '4px 6px', border: 'none', fontSize: 12.5, outline: 'none' }} />
+            </div>
+            {!isBundle && storeFund?.enabled && storeFundAmt > 0 && <span style={{ fontSize: 11, color: '#94a3b8' }}>{Number(fundraise) > 0 ? `overrides ${money(storeFundAmt)} store default` : `${money(storeFundAmt)} from store`}</span>}
+            {(Number(fundraise) > 0 || (!isBundle && storeFund?.enabled && storeFundAmt > 0)) && <span style={{ fontSize: 12, color: '#475569' }}>→ shopper pays <b style={{ color: '#0f172a' }}>{money(total)}</b></span>}
+          </div>
+        </ItemSection>
+
+        {isBundle && (
+          <ItemSection title="Card style" hint="· how this package appears in the store grid">
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => setCardStyle('')} style={{ padding: 0, border: '2px solid ' + (cardStyle === '' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 88 100" style={{ display: 'block', width: 88, height: 100 }}>
+                  <rect width="88" height="100" fill="#f8fafc" />
+                  <rect x="0" y="0" width="88" height="66" fill="#e2e8f0" />
+                  <rect x="14" y="74" width="44" height="6" rx="3" fill="#cbd5e1" />
+                  <rect x="14" y="84" width="30" height="5" rx="2" fill="#e2e8f0" />
+                </svg>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === '' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === '' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === '' ? '#bfdbfe' : '#f1f5f9') }}>Standard card</div>
+              </button>
+              <button type="button" onClick={() => setCardStyle('banner')} style={{ padding: 0, border: '2px solid ' + (cardStyle === 'banner' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 176 76" style={{ display: 'block', width: 176, height: 76 }}>
+                  <rect width="176" height="76" fill="#1e293b" />
+                  <rect x="10" y="16" width="8" height="8" rx="2" fill="#ef4444" />
+                  <rect x="21" y="17" width="32" height="5" rx="2" fill="rgba(239,68,68,0.7)" />
+                  <rect x="10" y="28" width="70" height="7" rx="2" fill="rgba(255,255,255,0.9)" />
+                  <rect x="10" y="39" width="55" height="5" rx="2" fill="rgba(255,255,255,0.5)" />
+                  <rect x="10" y="54" width="32" height="14" rx="4" fill="#ef4444" />
+                  <rect x="100" y="5" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="138" y="5" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="100" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
+                  <rect x="138" y="40" width="34" height="31" rx="4" fill="#2d4a6e" />
+                </svg>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === 'banner' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === 'banner' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === 'banner' ? '#bfdbfe' : '#f1f5f9') }}>Banner + collage</div>
+              </button>
+              <button type="button" onClick={() => setCardStyle('showcase')} style={{ padding: 0, border: '2px solid ' + (cardStyle === 'showcase' ? '#191919' : '#d1d5db'), borderRadius: 8, background: '#fff', cursor: 'pointer', overflow: 'hidden' }}>
+                <svg viewBox="0 0 176 90" style={{ display: 'block', width: 176, height: 90 }}>
+                  <rect width="176" height="90" fill="#f8fafc" />
+                  <rect width="176" height="26" fill="#1e293b" />
+                  <rect x="10" y="9" width="72" height="8" rx="3" fill="rgba(255,255,255,0.85)" />
+                  <rect x="136" y="8" width="30" height="10" rx="3" fill="#ef4444" />
+                  <rect x="6" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="48" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="90" y="31" width="36" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="132" y="31" width="38" height="36" rx="4" fill="#e2e8f0" />
+                  <rect x="8" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="50" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="92" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                  <rect x="134" y="70" width="32" height="5" rx="2" fill="#cbd5e1" />
+                </svg>
+                <div style={{ padding: '4px 8px 6px', fontWeight: 700, fontSize: 11, color: cardStyle === 'showcase' ? '#191919' : '#374151', textAlign: 'center', background: cardStyle === 'showcase' ? '#f0f9ff' : '#fff', borderTop: '1px solid ' + (cardStyle === 'showcase' ? '#bfdbfe' : '#f1f5f9') }}>Showcase (each item)</div>
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Banner and Showcase span the full store grid width.</div>
           </ItemSection>
         )}
+
         </div>
         <div>
-        <ItemSection title="Store placement" hint="· section, kit & whether it’s required">
+        <ItemSection title="Store placement" hint="· section, kit & whether it's required">
           <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <Row label="Category / section on the store">
               <input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Spirit Wear, Coaches, Headwear" />
@@ -3519,16 +5495,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
-            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={setRequired} /></div>
+            <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit’s items Mandatory to require them at checkout.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
         </ItemSection>
-
-        {!isBundle && (
-          <ItemSection title="Add-on options" hint="· shopper-selected extras, e.g. embroidered name or collar color">
-            <OptionsEditor value={options} onChange={setOptions} />
-          </ItemSection>
-        )}
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
           <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 130 }} /></Row>
@@ -3537,12 +5507,173 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         </div>
       </div>
 
-        {isBundle && <div style={{ fontSize: 12, color: '#94a3b8' }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
+        {isBundle && (() => {
+          const myItems = (bundleItems || []).filter((b) => b.bundle_id === item.id);
+          // Any single in the store can be added — including ones already in the package
+          // (a 2nd pair of shorts) and archived ones (kept alive only inside the package).
+          const eligible = (catalog || []).filter((c) => c.kind === 'single');
+          const doAddItem = () => {
+            if (!bundleAddSelId || !onAddBundleItem) return;
+            const picked = (catalog || []).find((c) => c.id === bundleAddSelId);
+            if (!picked) return;
+            onAddBundleItem(item.id, { webstore_product_id: picked.id, product_id: picked.product_id, sku: picked.sku, qty: 1, size_required: true, takes_number: !!picked.takes_number, takes_name: !!picked.takes_name, name_upcharge: Number(picked.name_upcharge) || 0 });
+            // Auto-bump bundle price by the item's retail price
+            const added = Number(picked.retail_price) || 0;
+            if (added > 0 && onSave) { const np = (Number(price) || 0) + added; setPrice(np); onSave({ retail_price: np }); }
+            setBundleAddSelId('');
+            setAddingToBundle(false);
+          };
+          return (
+            <ItemSection title="Items in this package" hint="· stays linked — edit an item and the package follows">
+              {myItems.length === 0
+                ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '10px 12px', border: '1.5px dashed #d7dbe2', borderRadius: 8, marginBottom: 8 }}>No items yet — add from the store below.</div>
+                : <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                    {(() => {
+                      let displayed = [...myItems];
+                      if (dragBundleId && overBundleId && dragBundleId !== overBundleId) {
+                        const fi = displayed.findIndex((x) => x.id === dragBundleId);
+                        const ti = displayed.findIndex((x) => x.id === overBundleId);
+                        if (fi !== -1 && ti !== -1) { const [mv] = displayed.splice(fi, 1); displayed.splice(ti, 0, mv); }
+                      }
+                      return displayed.map((b) => {
+                        const c = (catalog || []).find((x) => x.id === b.webstore_product_id) || {};
+                        const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || b.sku || 'Item';
+                        const img = c.image_url || (stockByWp[c.id] && stockByWp[c.id].image_front_url);
+                        const archived = c.active === false;
+                        const canEdit = !!(c.id && onEditItem);
+                        const isDragging = dragBundleId === b.id;
+                        const isOver = overBundleId === b.id && dragBundleId !== b.id;
+                        return (
+                          <div key={b.id}
+                            draggable={!!onReorderBundleItems}
+                            onDragStart={() => setDragBundleId(b.id)}
+                            onDragOver={(e) => { e.preventDefault(); setOverBundleId(b.id); }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (dragBundleId && dragBundleId !== b.id && onReorderBundleItems) {
+                                const fi = myItems.findIndex((x) => x.id === dragBundleId);
+                                const ti = myItems.findIndex((x) => x.id === b.id);
+                                if (fi !== -1 && ti !== -1) {
+                                  const reord = [...myItems];
+                                  const [mv] = reord.splice(fi, 1);
+                                  reord.splice(ti, 0, mv);
+                                  onReorderBundleItems(item.id, reord.map((x) => x.id));
+                                }
+                              }
+                              setDragBundleId(null); setOverBundleId(null);
+                            }}
+                            onDragEnd={() => { setDragBundleId(null); setOverBundleId(null); }}
+                            style={{ width: 120, border: '1px solid ' + (isOver ? '#93c5fd' : '#e2e8f0'), borderRadius: 8, overflow: 'hidden', position: 'relative', background: '#fff', opacity: isDragging ? 0.45 : 1, boxShadow: isOver ? '0 0 0 2px #bfdbfe' : undefined }}>
+                            {onReorderBundleItems && <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 14, background: '#f8fafc', cursor: 'grab', borderBottom: '1px solid #f1f5f9' }} title="Drag to reorder"><span style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1, userSelect: 'none' }}>⠿</span></div>}
+                            {onRemoveBundleItem && <button type="button" title="Remove from package" onClick={() => {
+                              onRemoveBundleItem(b.id);
+                              const removed = Number((catalog || []).find((x) => x.id === b.webstore_product_id)?.retail_price) || 0;
+                              if (removed > 0 && onSave) { const np = Math.max(0, (Number(price) || 0) - removed); setPrice(np); onSave({ retail_price: np }); }
+                            }} style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, right: 4, width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 12, lineHeight: '16px', padding: 0, textAlign: 'center', zIndex: 1 }}>×</button>}
+                            {archived && <span style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, left: 4, fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 5px', zIndex: 1 }}>Archived</span>}
+                            <div onClick={canEdit ? () => onEditItem(c.id) : undefined} title={canEdit ? 'Edit this item' : undefined} style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
+                              {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
+                            </div>
+                            <div style={{ padding: '5px 8px 7px' }}>
+                              <div onClick={canEdit ? () => onEditItem(c.id) : undefined} style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: canEdit ? '#2563eb' : '#191919', cursor: canEdit ? 'pointer' : 'default' }} title={nm}>{nm}{canEdit ? ' · edit' : ''}</div>
+                              {Number(b.qty) > 1 && <div style={{ fontSize: 11, color: '#64748b' }}>Qty {b.qty}</div>}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+              }
+              {addingToBundle
+                ? <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+                    <select className="form-input" value={bundleAddSelId} onChange={(e) => setBundleAddSelId(e.target.value)} style={{ flex: '1 1 200px', fontSize: 13 }}>
+                      <option value="">— pick an item —</option>
+                      {eligible.map((c) => { const nm = c.display_name || (stockByWp[c.id] && stockByWp[c.id].name) || c.sku; return <option key={c.id} value={c.id}>{nm}{c.active === false ? ' (archived)' : ''}{c.retail_price ? ` · $${Number(c.retail_price).toFixed(2)}` : ''}</option>; })}
+                    </select>
+                    <button className="btn btn-sm btn-primary" disabled={!bundleAddSelId} onClick={doAddItem}>Add</button>
+                    <button className="btn btn-sm btn-secondary" onClick={() => { setAddingToBundle(false); setBundleAddSelId(''); }}>Cancel</button>
+                  </div>
+                : eligible.length > 0 && <button className="btn btn-sm btn-secondary" style={{ marginTop: 4 }} onClick={() => setAddingToBundle(true)}>+ Add item from store</button>
+              }
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Archive a standalone item to take it off the store grid while keeping it sellable inside this package. Editing the (archived) item still updates the package.</div>
+            </ItemSection>
+          );
+        })()}
+      </React.Fragment>}
+
+      {page === 'sizes' && !isBundle && <React.Fragment>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
+        <div>
+        <ItemSection title="Sizes offered" hint="· tap to toggle, add your own, or switch the size style">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Size style</span>
+            <select className="form-input" value={sizePresetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) applySizePreset(p); }} style={{ minWidth: 190, fontSize: 13 }}>
+              {sizePresetLabel === 'Custom' && <option value="Custom">Custom</option>}
+              {SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
+            </select>
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>Switching replaces the sizes below.</span>
+          </div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
+            {sizeList.map((sz) => { const on = offeredSizes.includes(sz); const extra = !allSizes.includes(sz); return (
+              <span key={sz} style={{ position: 'relative', display: 'inline-flex' }}>
+                <button type="button" onClick={() => toggleSize(sz)} style={{ border: '1px solid ' + (on ? '#191919' : '#d1d5db'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#3A4150', borderRadius: 8, padding: '5px 12px', fontSize: 13, fontWeight: 700, cursor: 'pointer', minWidth: 40 }}>{sz}</button>
+                {extra && <button type="button" title="Remove this size" onClick={() => removeSizeChip(sz)} style={{ position: 'absolute', top: -7, right: -7, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 16, height: 16, fontSize: 11, lineHeight: '14px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
+              </span>
+            ); })}
+            <input className="form-input" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') { if (newSize.trim()) { e.preventDefault(); addSizeChip(); } } }} onBlur={addSizeChip} placeholder="+ size" style={{ width: 78, fontSize: 13 }} title="Type a size (e.g. 3XL) and press Enter or Tab" />
+          </div>
+          {offeredSizes.length > 0 && sizeList.some((s) => !offeredSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Storefront shows only: {sizeList.filter((s) => offeredSizes.includes(s)).join(', ')}</div>}
+          {sizeList.some((s) => !allSizes.includes(s)) && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Added sizes are made-to-order (not stock-checked).</div>}
+        </ItemSection>
+        {inventoryBacked && (
+          <ItemSection title="Inventory tracking" hint="· turn off for custom / made-to-order items">
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={trackInv} onChange={(e) => setTrackInv(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, cursor: 'pointer', accentColor: '#2563eb', flexShrink: 0 }} />
+              <span>
+                <span style={{ fontWeight: 700, fontSize: 13, color: '#191919' }}>Follow vendor &amp; in-house stock</span>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{trackInv
+                  ? 'On — a size stops selling when it runs out of stock (and shows as sold out).'
+                  : 'Off — custom / made-to-order: every size keeps selling, and the item is never flagged as a stock shortfall when batching the Sales Order.'}</div>
+              </span>
+            </label>
+          </ItemSection>
+        )}
+        {!isBundle && item.product_id && sizeList.length > 0 && (
+          <ItemSection title="SKU overrides by size" hint="· substitute a different item number for specific sizes — same decoration, same price">
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Leave blank to use the default SKU{item.sku ? ` (${item.sku})` : ''}. Sizes with an override become a separate line on the Sales Order.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'center' }}>
+              {sizeList.map((sz) => (
+                <React.Fragment key={sz}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{sz}</span>
+                  <input
+                    className="form-input"
+                    value={sizeSkus[sz] || ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim().toUpperCase();
+                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = v; else delete n[sz]; return n; });
+                    }}
+                    placeholder={item.sku || 'e.g. JL5412XL'}
+                    style={{ fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
+                  />
+                </React.Fragment>
+              ))}
+            </div>
+          </ItemSection>
+        )}
+        </div>
+        <div>
+        <ItemSection title="Add-on options" hint="· shopper-selected extras, e.g. embroidered name or collar color">
+          <OptionsEditor value={options} onChange={setOptions} />
+        </ItemSection>
+        </div>
+      </div>
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
-        <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName} />
+        <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
+        <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
+          primaryColorId={item.id} onReorderColors={onReorderColors} colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '' }; })} />
       </ItemSection>
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
@@ -3558,26 +5689,6 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        {groupColors && groupColors.length > 0 && (
-          <ItemSection title="Colors in this item" hint={`· each color previewed with the art — pick a web-logo color way per color`} right={onCopyItem ? <button type="button" className="btn btn-sm btn-secondary" onClick={() => onCopyItem(item)} title="Make a separate card from this item">⧉ Copy to a separate card</button> : null}>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {groupColors.map((c) => { const cs = stockByWp[c.id]; const cName = cs?.color || c.sku; const cImg = c.image_url || cs?.image_front_url; const isPrimary = c.id === item.id; const ck = colorKeyOf(cName); return (
-                <div key={c.id} style={{ position: 'relative', width: 116, border: '2px solid ' + (isPrimary ? '#191919' : '#e2e8f0'), borderRadius: 10, padding: 6, background: '#fff' }}>
-                  <GarmentLogoPreview imageUrl={cImg} decorations={decorations} colorName={cName} />
-                  <div style={{ fontSize: 10.5, color: '#191919', fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cName}{isPrimary ? ' (main)' : ''}</div>
-                  {decorations.map((d, di) => { const choices = decoCwChoices[di]; if ((d.side || 'front') === 'back' || !choices || choices.length < 2) return null; const cur = (d.cw_by_color && d.cw_by_color[ck]) || ''; return (
-                    <select key={di} value={cur} onChange={(e) => setColorCw(cName, di, e.target.value)} title="Which web-logo color way this garment color uses" style={{ width: '100%', marginTop: 4, fontSize: 10, border: '1px solid #e2e8f0', borderRadius: 6, padding: '2px 4px', background: '#fff', color: '#334155', cursor: 'pointer' }}>
-                      <option value="">Logo {di + 1}: auto</option>
-                      {choices.map((w, wi) => <option key={wi} value={w.url}>{w.color_way || 'All garments'}</option>)}
-                    </select>
-                  ); })}
-                  {onRemoveColor && groupColors.length > 1 && <button type="button" title="Remove this color" onClick={() => onRemoveColor(c.id, cName)} style={{ position: 'absolute', top: -8, right: -8, background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', borderRadius: '50%', width: 20, height: 20, fontSize: 12, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.15)' }}>×</button>}
-                </div>
-              ); })}
-            </div>
-          </ItemSection>
-        )}
-
         {onAddColors && colorOptions.length > 0 && (
           <ItemSection title="Add more colors" hint="· add other colors of this garment to this same card, at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -3594,8 +5705,28 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           </ItemSection>
         )}
 
-        <ItemSection title="Additional images" hint="· extra angles / back views shown on the product page">
-          <div onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); [...(e.dataTransfer.files || [])].forEach(addExtraFile); }} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>
+        <ItemSection title="Additional images" hint="· front, back & extra angles shown on the product page">
+          <div
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
+            onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); }}
+            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const first = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (first) addExtraFile(first); else [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
+            style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: `1.5px dashed ${mainDragOver ? '#2563eb' : '#d7dbe2'}`, borderRadius: 10, background: mainDragOver ? '#eff4ff' : '#fafbfc', transition: 'background .12s, border-color .12s' }}>
+            {/* Front (main) photo */}
+            <div style={{ position: 'relative', cursor: 'pointer' }} title="Front photo — click to change" onClick={() => mainImgRef.current?.click()}>
+              <div style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid #cbd5e1', overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
+                {(image || stockImg || item.image_url) ? <img src={image || stockImg || item.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#94a3b8' }}>No photo</span>}
+              </div>
+              <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
+              {image && <button type="button" title="Remove custom photo (revert to stock)" onClick={(e) => { e.stopPropagation(); setImage(null); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
+            </div>
+            {/* Back photo */}
+            {(backImage || stockBackImg) && (
+              <div style={{ position: 'relative' }} title="Back photo">
+                <img src={backImage || stockBackImg} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
+                <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>BACK</span>
+                {backImage && <button type="button" title="Remove custom back photo" onClick={() => setBackImage(null)} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
+              </div>
+            )}
             {extraImages.map((url, i) => (
               <div key={i} style={{ position: 'relative' }}>
                 <img src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
@@ -3603,18 +5734,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               </div>
             ))}
             <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
-            <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Drop or add images'}</button>
+            <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Add images'}</button>
           </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Click MAIN to change the front photo · drag any image here to add an extra angle</div>
         </ItemSection>
         </div>
       </div>
       </React.Fragment>}
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, position: 'sticky', bottom: 0, background: '#f6f7f9', paddingTop: 12, borderTop: '1px solid #e5e8ec' }}>
-        <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
-        <button className="btn btn-secondary" onClick={onCancel}>{justSaved ? 'Close' : 'Cancel'}</button>
-        {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
-      </div>
     </div>
   );
 }
@@ -3687,103 +5814,81 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
   );
 }
 
-// After a product is picked, set its base price (X), fundraising add-on (Y), image, personalization + transfers.
-function SinglePriceEditor({ product, designOptions, numberSets, isTeam = false, library = [], storeFund = {}, onSaveLogo, onAdd, onCancel }) {
+// Color-selector modal — clicking a product card opens this over the picker so the rep can
+// see every colorway of the style and tick only the ones they want. Adds them at a shared
+// price (tweak fundraising / art per item after, in the catalog editor).
+function SinglePriceEditor({ product, storeFund = {}, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
-  const [fundraise, setFundraise] = useState(0);
-  const [image, setImage] = useState(null);
-  const [decorations, setDecorations] = useState([]);
-  const [takesNumber, setTakesNumber] = useState(false);
-  const [takesName, setTakesName] = useState(false);
-  const [nameUpcharge, setNameUpcharge] = useState(0);
-  const [transferCodes, setTransferCodes] = useState([]);
-  const [numTransferSets, setNumTransferSets] = useState([]);
-  // Other colorways of this style (same product name) — add several at once at
-  // one price. Grouping key is `name` (SKUs are unique per color in this catalog).
-  const [siblings, setSiblings] = useState([]);
-  const [extraColors, setExtraColors] = useState(() => new Set());
+  const [rows, setRows] = useState([]);       // one row per colorway (incl. base), with _stock
+  const [loading, setLoading] = useState(true);
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [sel, setSel] = useState(() => new Set([product.id])); // base preselected
   useEffect(() => {
-    if (!product?.name) { setSiblings([]); return; }
-    let cancelled = false;
+    let cancelled = false; setLoading(true);
     (async () => {
-      const { data } = await supabase.from('products')
-        .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
-        .eq('name', product.name).neq('id', product.id).order('color').limit(200);
-      if (!cancelled) setSiblings(data || []);
+      let sibs = [];
+      if (product?.name) {
+        const { data } = await supabase.from('products')
+          .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
+          .eq('name', product.name).order('color').limit(300);
+        sibs = data || [];
+      }
+      // One row per distinct color (incl. the base), preferring a row that has an image.
+      const map = new Map();
+      for (const s of [product, ...sibs]) {
+        const key = (s.color || '').trim().toLowerCase() || ('sku:' + (s.sku || '').toLowerCase());
+        const cur = map.get(key);
+        if (!cur || (!cur.image_front_url && s.image_front_url)) map.set(key, s);
+      }
+      const list = [...map.values()];
+      let stock = new Map();
+      try { stock = await fetchStockMap(list); } catch { /* show without stock */ }
+      for (const r of list) r._stock = stock.get(r.id) || { units: 0, sizes: [], incoming: false };
+      list.sort((a, b) => (a.id === product.id ? -1 : b.id === product.id ? 1 : String(a.color || '').localeCompare(String(b.color || ''))));
+      if (!cancelled) { setRows(list); setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [product.id, product.name]);
-  // Collapse to one swatch per distinct color, preferring a row that actually has
-  // an image (the catalog has several SKUs per color, many without art); drop the
-  // base item's own color so we don't offer to add it twice.
-  const colorOptions = useMemo(() => {
-    const base = (product.color || '').trim().toLowerCase();
-    const map = new Map();
-    for (const s of siblings) {
-      const key = (s.color || '').trim().toLowerCase();
-      if (!key || key === base) continue;
-      const cur = map.get(key);
-      if (!cur || (!cur.image_front_url && s.image_front_url)) map.set(key, s);
-    }
-    return [...map.values()].sort((a, b) => (a.color || '').localeCompare(b.color || ''));
-  }, [siblings, product.color]);
-  const toggleColor = (id) => setExtraColors((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selectedSiblings = colorOptions.filter((s) => extraColors.has(s.id));
-  const storeFundAmt = storeFundAmount(price, storeFund);
-  const total = (Number(price) || 0) + effectiveFundraise(price, fundraise, storeFund);
+  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const shown = inStockOnly ? rows.filter((r) => (r._stock?.units || 0) > 0) : rows;
+  const chosen = rows.filter((r) => sel.has(r.id));
+  const linkBtn = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: 0 };
+  const add = () => { if (!chosen.length) return; onAdd({ products: chosen, price: Number(price) || 0, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: [] }); };
   return (
-    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
-      <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
-      {colorOptions.length > 0 && (
-        <div style={{ margin: '0 0 12px', padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #eef2f7' }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 7 }}>
-            Also add other colors of this style <span style={{ fontWeight: 400, color: '#94a3b8' }}>· same price &amp; options apply to all</span>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {colorOptions.map((s) => {
-              const on = extraColors.has(s.id);
-              return (
-                <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku}
-                  style={{ position: 'relative', width: 66, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 4, cursor: 'pointer' }}>
-                  <div style={{ width: '100%', height: 56, borderRadius: 6, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {s.image_front_url ? <img src={s.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(s.color || s.sku || '').slice(0, 10)}</span>}
-                  </div>
-                  <div style={{ fontSize: 10, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.color || s.sku}</div>
-                  {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+    <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 720, margin: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,.3)', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div><div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', lineHeight: 1.1 }}>{product.name}</div><div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 2 }}>Pick the colors to add to this store{[product.brand, product.category].filter(Boolean).length ? ' · ' + [product.brand, product.category].filter(Boolean).join(' · ') : ''}</div></div>
+          <button onClick={onCancel} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 800, color: '#475569' }}>{chosen.length} selected</span>
+          <button type="button" style={linkBtn} onClick={() => setSel(new Set(shown.map((r) => r.id)))}>All</button>
+          <button type="button" style={linkBtn} onClick={() => setSel(new Set())}>None</button>
+          <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' }}><input type="checkbox" checked={inStockOnly} onChange={(e) => setInStockOnly(e.target.checked)} /> In stock only</label>
+        </div>
+        <div style={{ maxHeight: '52vh', overflowY: 'auto', padding: 14 }}>
+          {loading ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Loading colors…</div>
+            : shown.length === 0 ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>No colors{inStockOnly ? ' in stock' : ''} for this style.</div>
+            : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(132px,1fr))', gap: 10 }}>
+              {shown.map((r) => { const on = sel.has(r.id); const u = r._stock?.units || 0; const inc = r._stock?.incoming; return (
+                <button key={r.id} type="button" onClick={() => toggle(r.id)} style={{ position: 'relative', textAlign: 'left', border: '2px solid ' + (on ? '#2563eb' : '#e2e8f0'), background: on ? '#eff6ff' : '#fff', borderRadius: 10, padding: 8, cursor: 'pointer' }}>
+                  <div style={{ position: 'absolute', top: 6, right: 6, width: 20, height: 20, borderRadius: 6, background: on ? '#2563eb' : 'rgba(255,255,255,.92)', border: '1.5px solid ' + (on ? '#2563eb' : '#cbd5e1'), color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800 }}>{on ? '✓' : ''}</div>
+                  <div style={{ height: 92, borderRadius: 6, background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.image_front_url ? <img src={r.image_front_url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ width: 28, height: 28, borderRadius: '50%', background: colorNameToHex(r.color), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.2)' }} />}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.color || r.sku}{r.id === product.id ? ' · base' : ''}</div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, marginTop: 1, color: u > 0 ? '#166534' : inc ? '#92400e' : '#b91c1c' }}>{u > 0 ? `${u} in stock` : inc ? 'Incoming' : 'Out of stock'}</div>
                 </button>
-              );
-            })}
-          </div>
+              ); })}
+            </div>}
         </div>
-      )}
-      <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
-      <LogoPlacer imageUrl={image || product.image_front_url} decorations={decorations} onChange={setDecorations} library={library} onSaveLogo={onSaveLogo} />
-      <div style={{ display: 'flex', gap: 12 }}>
-        <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
-        <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder={storeFundAmt > 0 ? String(storeFundAmt) : '0'} /></Row>
-        <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
-      </div>
-      {storeFund?.enabled && (
-        <div style={{ fontSize: 11.5, color: storeFundAmt > 0 ? '#166534' : '#94a3b8', marginTop: 4 }}>
-          {Number(fundraise) > 0
-            ? `Overrides the store rule (store default would add ${money(storeFundAmt)}).`
-            : `Store fundraising adds ${Number(storeFund.flat) > 0 ? money(storeFund.flat) : (storeFund.pct || 0) + '%'}${storeFund.round ? ', rounded up' : ''} = ${money(storeFundAmt)} — included in “Shopper pays.”`}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', borderTop: '1px solid #eef0f3', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Price&nbsp;$<input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 92, display: 'inline-block', marginLeft: 6 }} /></label>
+          <span style={{ fontSize: 11.5, color: '#94a3b8' }}>Applied to each color — tweak fundraising / art per item after.</span>
+          <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={onCancel}>Cancel</button>
+          <button className="btn btn-primary" disabled={!chosen.length} style={{ opacity: chosen.length ? 1 : 0.5 }} onClick={add}>Add {chosen.length || ''} {chosen.length === 1 ? 'color' : 'colors'} →</button>
         </div>
-      )}
-      <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
-        <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
-        <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
-        {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUpcharge} onChange={(e) => setNameUpcharge(e.target.value)} /></label>}
       </div>
-      {isTeam
-        ? <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Logo &amp; number transfers are a club-store option — team-store decoration is handled in production, so there’s nothing to stock here.</div>
-        : <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
-      <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ products: [product, ...selectedSiblings], price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: isTeam ? [] : transferCodes.filter(Boolean), num_transfer_sets: isTeam ? [] : numTransferSets.filter((s) => s && s !== '|'), decorations })}>{selectedSiblings.length > 0 ? `Add ${selectedSiblings.length + 1} items` : 'Add to store'}</button>
-        <button className="btn btn-secondary" onClick={onCancel}>Back</button>
-      </div>
-    </div></div>
+    </div>
   );
 }
 
@@ -3860,6 +5965,15 @@ const productMatchesColors = (productColor, words) => {
   if (!words.length) return true;
   const primary = String(productColor || '').split(/[/,|]| - /)[0].toLowerCase();
   return words.some((w) => primary.includes(w));
+};
+// A small swatch hex for a catalog color name — match its primary segment to a color
+// family and use that family's representative rgb. Falls back to a neutral grey.
+const _rgbToHex = (rgb) => '#' + rgb.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('');
+const colorNameToHex = (name) => {
+  const primary = String(name || '').split(/[/,|]| - /)[0].trim().toLowerCase();
+  if (!primary) return '#cbd5e1';
+  for (const f of _COLOR_FAMILIES) { if (f.words.some((w) => primary.includes(w))) return _rgbToHex(f.rgb); }
+  return '#cbd5e1';
 };
 
 const TEMPLATE_SPORTS = ['Baseball', 'Softball', 'Football', 'Basketball', 'Volleyball', 'Soccer', 'Wrestling', 'Track & Field', 'Cross Country', 'Lacrosse', 'Hockey', 'Golf', 'Tennis', 'Swim', 'Cheer', 'Band', 'General / Spirit'];
@@ -3974,6 +6088,18 @@ function TemplateEditor({ template, onClose, onSaved }) {
 // On bring-in, pick which colors of each template style to add. Decoration never carries
 // over (templates are product sets) — this only chooses garment colors. Each style's picked
 // colors fold into one multi-color card. Defaults to the color(s) saved in the template.
+// Some vendor feeds (notably adidas team gear) bake the colorway code into the product
+// NAME — "M FLEECE HOOD ROYBLU/WHITE", "…BLACK/WHITE" — instead of leaving it to the color
+// field. That makes every color look like its own one-color style. Strip a trailing
+// ALL-CAPS color code (optionally slash-joined, e.g. ROYBLU/WHITE) so the colorways of a
+// style collapse into one card. Mixed-case names (most of the catalog) keep their color in
+// the color field and are left untouched.
+const styleKey = (name) => {
+  const n = String(name || '').trim();
+  const base = n.replace(/\s+[A-Z]{4,}(?:\/[A-Z0-9]{2,})*$/, '').trim();
+  return base || n;
+};
+
 function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
@@ -3989,23 +6115,36 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       const found = [];
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
-      // Group template items by style (product name); remember the saved colors as defaults.
+      // Group template items by STYLE so every color of a garment folds into one card.
+      // styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
+      // ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
       const styleMap = new Map();
+      const savedByKey = new Map();
       items.forEach((it) => { const p = bySku.get(String(it.sku || '').trim().toUpperCase()); if (!p) return;
-        if (!styleMap.has(p.name)) styleMap.set(p.name, { name: p.name, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() });
-        styleMap.get(p.name).defaults.add(String(p.sku || '').trim().toUpperCase()); });
-      const names = [...styleMap.keys()];
-      const sibs = [];
-      for (let i = 0; i < names.length; i += 100) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('name', names.slice(i, i + 100)).limit(1000); if (data) sibs.push(...data); }
-      const byName = new Map(); sibs.forEach((p) => { if (!byName.has(p.name)) byName.set(p.name, []); byName.get(p.name).push(p); });
-      const built = names.map((nm) => {
-        const s = styleMap.get(nm);
+        const key = styleKey(p.name);
+        if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() }); savedByKey.set(key, []); }
+        styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
+        savedByKey.get(key).push(p); });
+      const keys = [...styleMap.keys()];
+      // Pull every sibling sharing a style's base name (prefix), then keep only those whose
+      // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
+      const byKey = new Map();
+      await Promise.all(keys.map(async (key) => {
+        const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
+        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
+        const sibs = (data || []).filter((p) => styleKey(p.name) === key);
+        const seen = new Set(); const list = [];
+        [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
+        byKey.set(key, list);
+      }));
+      const built = keys.map((key) => {
+        const s = styleMap.get(key);
         // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
         const colMap = new Map();
-        (byName.get(nm) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
+        (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
         const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
         const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: nm, image: s.image, meta: s.meta, colors, picked };
+        return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
       });
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
@@ -4013,6 +6152,14 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   }, [tpl]);
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
+  // Whether an ITEM (style) is being brought in at all — i.e. at least one not-already-in-store
+  // color is picked. The item checkbox toggles the whole style on (its saved colors) or off.
+  const itemIn = (r) => [...r.picked].some((id) => !existingPids.has(id));
+  const itemAvail = (r) => r.colors.some((c) => !existingPids.has(c.id));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const itemsAvailable = rows.filter(itemAvail).length;
+  const itemsIncluded = rows.filter(itemIn).length;
   const totalPicked = rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
   const confirm = async () => {
     setBusy(true);
@@ -4024,21 +6171,30 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Pick colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Choose the colors of each item to add. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors. No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
-        <div style={{ padding: 16, maxHeight: '64vh', overflowY: 'auto' }}>
+        {!loading && rows.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>Bringing in {itemsIncluded} of {itemsAvailable} item{itemsAvailable === 1 ? '' : 's'}</span>
+            <span style={{ marginLeft: 'auto' }} />
+            <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </div>
+        )}
+        <div style={{ padding: 16, maxHeight: '60vh', overflowY: 'auto' }}>
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading colors…</div>
             : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>None of this template's items resolve to live products.</div>
-            : rows.map((r, ri) => (
-              <div key={r.name} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            : rows.map((r, ri) => { const included = itemIn(r); const avail = itemAvail(r); return (
+              <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0 }}>
+                  <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
                   {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{[...r.picked].filter((id) => !existingPids.has(id)).length} of {r.colors.length} colors</div></div>
-                  <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All</button>
-                  <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+                  {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
+                  {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
                     <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
                       <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
@@ -4047,9 +6203,9 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
                       {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
                     </button>
                   ); })}
-                </div>
+                </div>}
               </div>
-            ))}
+            ); })}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !totalPicked} onClick={confirm}>{busy ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'}`}</button>
@@ -4071,7 +6227,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form' | 'edit'
   const [editingTpl, setEditingTpl] = useState(null);
   const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
-  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' });
+  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
   const [saving, setSaving] = useState(false);
   const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
 
@@ -4087,22 +6243,16 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
 
   const captureItems = () => (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
-  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'store', sourceCat: '', section: '' })); setView('form'); };
-  // Save just one section/category of the current store as a bolt-on section template.
-  const startSection = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'section', sourceCat: '', section: '' })); setView('form'); };
+  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '' })); setView('form'); };
   const del = async (id) => { await supabase.from('store_templates').delete().eq('id', id); load(); };
-  // Section templates can be limited to one captured category; full-store templates keep all.
-  const pendingCats = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
-  const sectionItems = (meta.kind === 'section' && meta.sourceCat) ? pendingItems.filter((i) => (i.category || '').trim() === meta.sourceCat) : pendingItems;
+  // Sections the captured items already carry (a template can span one or many).
+  const pendingSections = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
   const saveTemplate = async () => {
-    const isSection = meta.kind === 'section';
-    const secName = isSection ? (meta.section || meta.sourceCat || '').trim() : null;
-    const itemsToSave = sectionItems;
-    if (!meta.name.trim() || !itemsToSave.length || (isSection && !secName)) return;
+    if (!meta.name.trim() || !pendingItems.length) return;
     setSaving(true);
-    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: itemsToSave, kind: isSection ? 'section' : 'store', section: secName, created_by: myEmail || null });
+    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: pendingItems, kind: 'store', section: null, created_by: myEmail || null });
     setSaving(false);
-    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' }); load(); }
+    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' }); load(); }
   };
 
   const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
@@ -4128,29 +6278,15 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
           {view === 'form' && (
             <div>
-              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{sectionItems.length} item{sectionItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                {[['store', 'Full store', 'Bolt every item onto a store'], ['section', 'Section', 'A bolt-on section, e.g. Football Cleats']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
-                  <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
-                    <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
-                  </button>
-                ); })}
-              </div>
-              {meta.kind === 'section' && (
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
-                  <Row label="Limit to section (optional)"><select className="form-input" value={meta.sourceCat} onChange={(e) => setMeta((m) => ({ ...m, sourceCat: e.target.value, section: m.section || e.target.value }))}><option value="">All captured items</option>{pendingCats.map((c) => <option key={c} value={c}>{c}</option>)}</select></Row>
-                  <Row label="Section name (lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
-                </div>
-              )}
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{pendingItems.length} item{pendingItems.length === 1 ? '' : 's'} captured{pendingSections.length ? ` across ${pendingSections.length} section${pendingSections.length === 1 ? '' : 's'}` : ''}. Name it so reps can find it.</div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={meta.kind === 'section' ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
+                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
                 <Row label="Sport"><input className="form-input" list="tpl-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tpl-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
                 <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
                 <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
               </div>
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!meta.name.trim() || !sectionItems.length || (meta.kind === 'section' && !(meta.section || meta.sourceCat).trim()) || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
+                <button className="btn btn-primary" disabled={!meta.name.trim() || !pendingItems.length || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
                 <button className="btn btn-secondary" onClick={() => setView('gallery')}>Cancel</button>
               </div>
             </div>
@@ -4161,8 +6297,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
               {isCurator && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', alignSelf: 'center' }}>Curator:</span>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save full store as template</button>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startSection}>＋ Save a section as template</button>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save this store as a template</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => setView('ai')}>✨ Draft with AI</button>
                 </div>
               )}
@@ -4185,14 +6320,13 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                          {t.kind === 'section' ? chip('Section', '#ecfdf5', '#047857') : chip('Full store', '#eff6ff', '#1d4ed8')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{t.kind === 'section' && t.section ? ` · → ${t.section}` : ''}</div>
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>{t.kind === 'section' ? 'Add section →' : 'Add to store →'}</button>
+                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
                           {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
                           {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
@@ -4207,6 +6341,363 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
       </div>
     </div>
     </>
+  );
+}
+
+// Who "owns" a store template — a rep (matched by created_by email) or the shared
+// "General" pool (curators/admins/legacy). Drives the Templates-page owner filter.
+function templateOwner(tpl, REPS = []) {
+  const email = String(tpl?.created_by || '').trim().toLowerCase();
+  if (email) {
+    const rep = (REPS || []).find((r) => r.role === 'rep' && String(r.email || '').trim().toLowerCase() === email);
+    if (rep) return { scope: 'rep', id: rep.id, name: rep.name };
+  }
+  return { scope: 'general', id: 'general', name: 'General' };
+}
+
+// Build a store template from scratch — search the master catalog, add items with a
+// price / section / kit, then name & save it to `store_templates`. Saved templates show
+// up in every store's "Add template" button, so any of them can be bolted onto an
+// existing store. Also used to edit an existing template (pass `template`).
+function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
+  const editing = !!template;
+  const [items, setItems] = useState(() => (editing && Array.isArray(template.items) ? template.items : []).map((it) => ({
+    sku: it.sku, name: it.name || it.sku, image: it.image || null,
+    category: it.category || null, price: it.price != null ? it.price : null,
+    fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required,
+  })));
+  const [meta, setMeta] = useState({
+    name: template?.name || '', sport: template?.sport || '', brand_focus: template?.brand_focus || 'Mixed',
+    gender: template?.gender || 'Unisex', note: template?.note || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  // Fold newly-picked products into the item list, de-duped by SKU (re-adding a SKU
+  // just refreshes its setup). Decorations don't carry into templates, so they're ignored.
+  const addProducts = useCallback((products, _decos, setup = {}) => {
+    setItems((prev) => {
+      const bySku = new Map(prev.map((it) => [String(it.sku || '').trim().toUpperCase(), it]));
+      (products || []).forEach((p) => {
+        const key = String(p.sku || '').trim().toUpperCase();
+        if (!key) return;
+        bySku.set(key, {
+          sku: p.sku, name: p.name || p.sku, image: p.image_front_url || null,
+          category: (setup.category || '').trim() || null,
+          price: (setup.price !== '' && setup.price != null) ? Number(setup.price) : (p.retail_price != null ? p.retail_price : null),
+          fundraise: Number(setup.fundraise) || 0,
+          kit: (setup.kit_name || '').trim() || null,
+          required: !!setup.required,
+        });
+      });
+      return [...bySku.values()];
+    });
+  }, []);
+  const patchItem = (sku, patch) => setItems((prev) => prev.map((it) => it.sku === sku ? { ...it, ...patch } : it));
+  const removeItem = (sku) => setItems((prev) => prev.filter((it) => it.sku !== sku));
+
+  // Editing an existing template: its saved items are SKU-only, so resolve product
+  // names / images once on open so the list shows real garments, not bare SKUs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const need = items.filter((it) => !it.image && it.sku);
+      if (!need.length) return;
+      const skus = [...new Set(need.map((it) => it.sku))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('sku,name,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      if (cancelled) return;
+      setItems((prev) => prev.map((it) => { if (it.image) return it; const p = bySku.get(String(it.sku || '').trim().toUpperCase()); return p ? { ...it, name: p.name || it.name, image: p.image_front_url || null } : it; }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
+
+  const sections = [...new Set(items.map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canSave = meta.name.trim() && items.length;
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    const payload = {
+      name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null,
+      gender: meta.gender || null, note: meta.note || null, kind: 'store', section: null,
+      items: items.map((it) => ({ sku: it.sku, category: it.category || null, price: it.price, fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required })),
+    };
+    let error;
+    if (editing) {
+      ({ error } = await supabase.from('store_templates').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', template.id));
+    } else {
+      ({ error } = await supabase.from('store_templates').insert({ ...payload, created_by: myEmail || null }));
+    }
+    setSaving(false);
+    if (error) { alert('Could not save template: ' + error.message); return; }
+    onSaved && onSaved();
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '32px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#f7f8fa', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', background: '#fff', borderRadius: '14px 14px 0 0' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{editing ? 'Edit template' : 'Create a template'}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          {/* Lead: name the template, then jump straight into the catalog finder */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
+            <div style={{ fontSize: 12.5, color: '#6A7180', marginTop: 2 }}>Search the catalog below and add the items this template should include. Give each item a <b>section</b> — a template can have one section or many. Sport / brand / gender are at the bottom.</div>
+          </div>
+
+          {/* Captured items */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>Items in this template <span style={{ color: '#94a3b8', fontWeight: 600 }}>({items.length})</span></div>
+              {items.length > 0 && <button type="button" onClick={() => setItems([])} style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear all</button>}
+            </div>
+            {items.length === 0 ? (
+              <div style={{ color: '#9AA1AC', fontSize: 13, padding: '14px 4px' }}>No items yet — search the catalog below and add products to build the template.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {items.map((it) => (
+                  <div key={it.sku} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px' }}>
+                    <div style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{it.image ? <img src={it.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(it.sku || '').slice(0, 8)}</span>}</div>
+                    <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{it.sku}</div>
+                    </div>
+                    <input className="form-input" value={it.category || ''} onChange={(e) => patchItem(it.sku, { category: e.target.value })} placeholder="Section" style={{ width: 130, fontSize: 12.5, padding: '5px 8px' }} />
+                    <label style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>$<input className="form-input" type="number" step="0.01" value={it.price ?? ''} onChange={(e) => patchItem(it.sku, { price: e.target.value === '' ? null : Number(e.target.value) })} placeholder="list" style={{ width: 78, fontSize: 12.5, padding: '5px 8px' }} /></label>
+                    <label style={{ fontSize: 11.5, color: '#475569', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}><input type="checkbox" checked={!!it.required} onChange={(e) => patchItem(it.sku, { required: e.target.checked })} />Req</label>
+                    <button type="button" onClick={() => removeItem(it.sku)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Catalog search / picker — the main way to add items */}
+          <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" initialInStock={false} standardCategories={[...new Set(items.map((it) => it.category).filter(Boolean))]} />
+
+          {/* Who it's for */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, margin: '14px 0' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Details</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>{sections.length ? `${sections.length} section${sections.length === 1 ? '' : 's'}: ${sections.join(', ')}` : 'Tip: give items a section so they group when added to a store.'}</div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Row label="Sport"><input className="form-input" list="tplb-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tplb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+              <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+              <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 4, position: 'sticky', bottom: 0, background: '#f7f8fa', padding: '12px 0 4px' }}>
+            <button className="btn btn-primary" disabled={!canSave || saving} onClick={save}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Save template'}</button>
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            {!canSave && <span style={{ fontSize: 12, color: '#94a3b8', alignSelf: 'center' }}>{!meta.name.trim() ? 'Name the template' : 'Add at least one item'}</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only detail view for one template — resolves its saved SKUs to live products so you
+// can see every item (image, name, section, price, fundraising, mandatory) in one place.
+function TemplateDetail({ template, owner, canEdit, onClose, onEdit, onDelete, onStartStore, onAddToStore }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const sections = [...new Set((Array.isArray(template?.items) ? template.items : []).map((it) => (it.category || '').trim()).filter(Boolean))];
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const items = Array.isArray(template?.items) ? template.items : [];
+      const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,brand,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      const built = items.map((it) => ({ ...it, product: bySku.get(String(it.sku || '').trim().toUpperCase()) || null }));
+      if (!cancelled) { setRows(built); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [template]);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+  const missing = rows.filter((r) => !r.product).length;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1050, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{template.name}</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+              {owner && (owner.scope === 'rep' ? chip(owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9'))}
+              {template.sport && chip(template.sport, '#eff6ff', '#1d4ed8')}
+              {template.brand_focus && chip(template.brand_focus)}
+              {template.gender && chip(template.gender)}
+              {sections.map((s) => chip('§ ' + s, '#ecfdf5', '#047857'))}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '12px 16px', maxHeight: '62vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 10 }}>{rows.length} item{rows.length === 1 ? '' : 's'} in this template.{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> {missing} no longer in the catalog.</span>}</div>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading items…</div>
+            : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>This template has no items.</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {rows.map((r, i) => {
+                  const price = (r.price != null && r.price !== '') ? r.price : (r.product ? r.product.retail_price : null);
+                  return (
+                    <div key={(r.sku || '') + i} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px', opacity: r.product ? 1 : 0.6 }}>
+                      <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.product?.image_front_url ? <img src={r.product.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(r.sku || '').slice(0, 8)}</span>}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.product?.name || r.sku}{!r.product && <span style={{ color: '#b45309', fontWeight: 700, fontSize: 11 }}> · not found</span>}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{r.sku}{r.product?.brand ? ` · ${r.product.brand}` : ''}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        {r.category && chip(r.category)}
+                        {r.kit && chip('Kit: ' + r.kit, '#eff6ff', '#1d4ed8')}
+                        {r.required && chip('Mandatory', '#fef2f2', '#b91c1c')}
+                        {Number(r.fundraise) > 0 && chip('+' + money(r.fundraise) + ' fund', '#ecfdf5', '#047857')}
+                        <span style={{ fontSize: 13, fontWeight: 800, color: '#191919', minWidth: 54, textAlign: 'right' }}>{price != null ? money(price) : '—'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          {onAddToStore && <button className="btn btn-primary" onClick={() => onAddToStore(template)}>Add to a store →</button>}
+          {onStartStore && <button className="btn btn-secondary" onClick={() => onStartStore(template)}>Start a store</button>}
+          <span style={{ flex: '1 1 8px' }} />
+          {canEdit && <button className="btn btn-secondary" onClick={onEdit}>Edit</button>}
+          {canEdit && <button className="btn btn-secondary" onClick={onDelete} style={{ color: '#b91c1c' }}>Delete</button>}
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Templates page manager — lists the saved `store_templates` (the item sets that get bolted
+// onto stores via "Add template"), lets a curator create/edit/delete them, and filters by
+// owner: the shared "General" pool vs each rep's own templates.
+function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [ownerFilter, setOwnerFilter] = useState('all'); // 'all' | 'general' | rep id
+  const [builder, setBuilder] = useState(null);           // null | 'new' | template object (edit)
+  const [viewing, setViewing] = useState(null);           // template being inspected (detail view)
+  // Identity from the logged-in team member (reliable), with the auth email as a fallback.
+  const myEmail = (cu?.email || '').toLowerCase();
+  const isAdmin = cu?.role === 'admin' || FAV_CURATORS.includes(myEmail);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from('store_templates').select('*').order('name');
+    setTemplates(data || []); setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const withOwner = templates.map((t) => ({ ...t, _owner: templateOwner(t, REPS) }));
+  // Reps that actually have templates — drives the owner filter chips.
+  const repChips = REPS.filter((r) => r.role === 'rep' && withOwner.some((t) => t._owner.scope === 'rep' && t._owner.id === r.id));
+  const hasGeneral = withOwner.some((t) => t._owner.scope === 'general');
+  const shown = withOwner.filter((t) => ownerFilter === 'all' || (ownerFilter === 'general' ? t._owner.scope === 'general' : t._owner.id === ownerFilter));
+  const del = async (id) => { if (!window.confirm('Delete this template?')) return; await supabase.from('store_templates').delete().eq('id', id); load(); };
+  const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
+  const sectionsOf = (t) => [...new Set(itemsOf(t).map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canEdit = (t) => isAdmin || (myEmail && String(t.created_by || '').toLowerCase() === myEmail);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+
+  return (
+    <div style={{ marginBottom: 34 }}>
+      {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={cu?.email || ''} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
+      {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} onStartStore={onStartStore ? (t) => { setViewing(null); onStartStore(t); } : null} onAddToStore={onAddToStore ? (t) => { setViewing(null); onAddToStore(t); } : null} />}
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Item Templates</div>
+      <div style={{ marginBottom: 16, fontSize: 15, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Build a reusable set of items from the catalog, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
+
+      {(hasGeneral || repChips.length > 0) && (
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#8A93A8', textTransform: 'uppercase', letterSpacing: '.04em', marginRight: 2 }}>Owner</span>
+          <FilterBtn on={ownerFilter === 'all'} onClick={() => setOwnerFilter('all')}>All</FilterBtn>
+          {hasGeneral && <FilterBtn on={ownerFilter === 'general'} onClick={() => setOwnerFilter('general')}>General</FilterBtn>}
+          {repChips.map((r) => <FilterBtn key={r.id} on={ownerFilter === r.id} onClick={() => setOwnerFilter(r.id)}>{r.name}</FilterBtn>)}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
+            {/* Build a Template — the primary action: opens the catalog picker */}
+            <button onClick={() => setBuilder('new')} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 12, padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 168, gap: 10, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 18, color: '#192853', letterSpacing: '.5px' }}>Build a Template</div>
+              <div style={{ fontSize: 12.5 }}>Pick items from the catalog</div>
+            </button>
+            {loading ? <div style={{ gridColumn: '1/-1', color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
+              : shown.length === 0 ? <div style={{ gridColumn: '1/-1', color: '#8A93A8', fontSize: 13.5, padding: '18px 4px' }}>{templates.length === 0 ? 'No item templates yet — click “Build a Template” to create your first one.' : 'No templates for this owner.'}</div>
+              : shown.map((t) => (
+              <div key={t.id} onClick={() => setViewing(t)} title="View items" style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {t._owner.scope === 'rep' ? chip(t._owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9')}
+                  {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
+                  {t.brand_focus && chip(t.brand_focus)}
+                </div>
+                <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{sectionsOf(t).length ? ` · ${sectionsOf(t).length} section${sectionsOf(t).length === 1 ? '' : 's'}` : ''}</div>
+                <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {onAddToStore && <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); onAddToStore(t); }} style={{ flex: 1 }}>Add to store</button>}
+                    {onStartStore && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onStartStore(t); }} style={{ flex: 1 }}>Start store</button>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setViewing(t); }} style={{ flex: 1 }}>View items</button>
+                    {canEdit(t) && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setBuilder(t); }}>Edit</button>}
+                    {canEdit(t) && <button title="Delete template" onClick={(e) => { e.stopPropagation(); del(t.id); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                  </div>
+                </div>
+              </div>
+            ))}
+      </div>
+    </div>
+  );
+}
+
+// Pick an existing store to bolt a template onto (used by the Templates-page "Add to a
+// store" action). Lists live (non-template) stores, searchable by store or club name.
+function StorePickerModal({ stores = [], custName = () => '', title = 'Pick a store', onPick, onClose }) {
+  const [q, setQ] = useState('');
+  const ql = q.trim().toLowerCase();
+  const list = stores
+    .filter((s) => !ql || String(s.name || '').toLowerCase().includes(ql) || String(custName(s.customer_id) || '').toLowerCase().includes(ql))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+    .slice(0, 300);
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1040, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 560, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{title}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stores by name or club…" style={{ width: '100%', marginBottom: 12 }} />
+          <div style={{ maxHeight: '52vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {list.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>No stores match.</div>
+              : list.map((s) => (
+                <button key={s.id} type="button" onClick={() => onPick(s)} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #eef1f5', borderRadius: 10, padding: '9px 12px', background: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{custName(s.customer_id)}{s.status ? ` · ${s.status}` : ''}{s.slug ? ` · /shop/${s.slug}` : ''}</div>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1d4ed8' }}>Add →</span>
+                </button>
+              ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4228,6 +6719,9 @@ const SIZE_PRESETS = [
   { label: 'Jersey (numeric)', sizes: ['36', '38', '40', '42', '44', '46', '48', '50', '52'] },
   { label: 'Combo S/M · L/XL', sizes: ['S/M', 'L/XL'] },
   { label: 'Combo XS/S–XL/2XL', sizes: ['XS/S', 'S/M', 'M/L', 'L/XL', 'XL/2XL'] },
+  { label: 'Shoe M 7–13', sizes: ['7', '7.5', '8', '8.5', '9', '9.5', '10', '10.5', '11', '11.5', '12', '13'] },
+  { label: 'Shoe W 5–11', sizes: ['5', '5.5', '6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10', '11'] },
+  { label: 'Shoe Youth 1Y–7Y', sizes: ['1Y', '2Y', '3Y', '4Y', '5Y', '6Y', '7Y'] },
   { label: 'Hat — fitted', sizes: ['6 3/4', '6 7/8', '7', '7 1/8', '7 1/4', '7 3/8', '7 1/2', '7 5/8', '7 3/4'] },
   { label: 'One size (OSFA)', sizes: ['OSFA'] },
 ];
@@ -4299,6 +6793,8 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
   const [price, setPrice] = useState('');
   const [image, setImage] = useState(null);
   const [imgBusy, setImgBusy] = useState(false);
+  const [imageBack, setImageBack] = useState(null);
+  const [imgBackBusy, setImgBackBusy] = useState(false);
   const [alsoAdd, setAlsoAdd] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -4311,8 +6807,28 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 
   useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,name').order('name'); setVendors(data || []); })(); }, []);
 
-  const presetLabel = SIZE_PRESETS.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
-  const addSize = () => { const s = newSize.trim().toUpperCase(); if (s && !sizes.includes(s)) setSizes([...sizes, s]); setNewSize(''); };
+  const [customPresets, setCustomPresets] = useState([]);
+  const [showNewPreset, setShowNewPreset] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [newPresetSizes, setNewPresetSizes] = useState('');
+  const allPresets = [...SIZE_PRESETS, ...customPresets];
+  const presetLabel = allPresets.find((p) => p.sizes.length === sizes.length && p.sizes.every((s, i) => s === sizes[i]))?.label || 'Custom';
+  // Keep the size list ordered smallest → largest no matter what order they're typed in.
+  const sortSizes = (arr) => [...arr].sort((a, b) => sizeRank(a) - sizeRank(b));
+  const addSize = () => {
+    const s = newSize.trim().toUpperCase();
+    if (s && !sizes.includes(s)) setSizes(sortSizes([...sizes, s]));
+    setNewSize('');
+  };
+  const saveCustomPreset = () => {
+    const label = newPresetName.trim();
+    const szArr = newPresetSizes.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    if (!label || !szArr.length) return;
+    const preset = { label, sizes: szArr };
+    setCustomPresets((prev) => [...prev.filter((p) => p.label !== label), preset]);
+    setSizes(szArr);
+    setNewPresetName(''); setNewPresetSizes(''); setShowNewPreset(false);
+  };
   const logoUrlOf = (it) => it && (webLogoDefault(it) || it.web_logo_url || it.preview_url || it.art_url);
   const storeLogos = (library || []).filter((it) => it && it.kind !== 'art' && logoUrlOf(it));
   const pickLogoFile = async (file) => {
@@ -4334,22 +6850,29 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
     // Per-size cost overrides (e.g. 2XL/3XL cost more) → products.size_costs.
     const size_costs = {};
     for (const s of sizes) { const v = sizeCost[s]; if (v !== '' && v != null && !Number.isNaN(Number(v))) size_costs[s] = Number(v); }
-    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
+    const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, image_back_url: imageBack || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
     const { error } = await supabase.from('products').insert(row);
     if (error) { setSaving(false); setErr('Could not save: ' + error.message); return; }
     // Seed in-house warehouse stock so the item shows as fulfillable right away.
     const invRows = sizes.map((s) => ({ product_id: id, size: s, quantity: Math.max(0, Math.floor(Number(sizeQty[s]) || 0)) })).filter((r) => r.quantity > 0);
     if (invRows.length) { try { await supabase.from('product_inventory').insert(invRows); } catch (e) { /* non-fatal */ } }
-    setSaving(false);
     // Attach the chosen logo as a front decoration (default placement; fine-tune later in Art).
     const decorations = logo ? [{ art_id: logo.art_id || ('cpc-' + Date.now().toString(36)), art_url: logo.art_url, orig_url: logo.art_url, source_url: logo.source_url || logo.art_url, placement: 'full-front', color_label: 'original', side: 'front', x: 50, y: 44, w: 30 }] : [];
     const addToStore = reusable ? alsoAdd : true; // a one-time item only makes sense in this store
-    onCreated && onCreated(row, addToStore, decorations);
+    // Keep the spinner up through the (sometimes slow) add-to-store + catalog reload so it
+    // never looks like nothing happened — onCreated closes the modal when it's done.
+    try { await (onCreated && onCreated(row, addToStore, decorations)); } catch (e) { setSaving(false); setErr('Saved the product, but adding it to the store failed: ' + (e.message || e)); }
   };
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        {saving && (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.78)', borderRadius: 14, zIndex: 5, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+            <span style={{ display: 'inline-block', width: 34, height: 34, border: '3px solid #e2e8f0', borderTop: '3px solid #2563eb', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>Saving the item{reusable ? '' : ' to this store'}…</div>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>New custom product</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
@@ -4358,7 +6881,8 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
           <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{reusable ? 'Saved to the product catalog for reuse in any store.' : 'Created for this store only — not added to the shared catalog.'} Only a name is required.</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <div style={{ flex: '0 0 auto', width: 160 }}>
-              <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Product image" />
+              <ImageUpload value={image} onChange={setImage} onBusy={setImgBusy} label="Front image" />
+              <ImageUpload value={imageBack} onChange={setImageBack} onBusy={setImgBackBusy} label="Back image" />
             </div>
             <div style={{ flex: 1, minWidth: 280 }}>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -4378,13 +6902,29 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <Row label="Sizing type"><select className="form-input" value={presetLabel} onChange={(e) => { const p = SIZE_PRESETS.find((x) => x.label === e.target.value); if (p) setSizes(p.sizes); }} style={{ width: 190 }}>{SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}{presetLabel === 'Custom' && <option value="Custom">Custom</option>}</select></Row>
+              <Row label="Sizing type">
+                <select className="form-input" value={presetLabel} onChange={(e) => { if (e.target.value === '__new__') { setShowNewPreset(true); return; } const p = allPresets.find((x) => x.label === e.target.value); if (p) setSizes(p.sizes); }} style={{ width: 210 }}>
+                  {SIZE_PRESETS.map((p) => <option key={p.label} value={p.label}>{p.label}</option>)}
+                  {customPresets.map((p) => <option key={p.label} value={p.label}>{p.label} ★</option>)}
+                  {presetLabel === 'Custom' && <option value="Custom">Custom</option>}
+                  <option value="__new__">+ Define new sizing...</option>
+                </select>
+              </Row>
               <Row label="Cost (NSA)"><input className="form-input" type="number" step="0.01" min={0} value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
-              <Row label="Retail price"><input className="form-input" type="number" step="0.01" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
+              <Row label="Sale price"><input className="form-input" type="number" step="0.01" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" style={{ width: 110 }} /></Row>
             </div>
+            {showNewPreset && (
+              <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, background: '#f0f9ff', border: '1px solid #bae6fd', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#0369a1' }}>New preset</span>
+                <input className="form-input" placeholder="Name (e.g. Shoe W 6–10)" value={newPresetName} onChange={(e) => setNewPresetName(e.target.value)} style={{ width: 180 }} />
+                <input className="form-input" placeholder="Sizes, comma-separated" value={newPresetSizes} onChange={(e) => setNewPresetSizes(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveCustomPreset(); } }} style={{ width: 210 }} />
+                <button type="button" className="btn btn-sm btn-primary" onClick={saveCustomPreset}>Save</button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setShowNewPreset(false)}>Cancel</button>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
               {sizes.map((s) => <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', borderRadius: 7, padding: '3px 8px', fontSize: 12, fontWeight: 700 }}>{s}<button type="button" onClick={() => setSizes(sizes.filter((x) => x !== s))} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}>×</button></span>)}
-              <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSize(); } }} />
+              <input className="form-input" style={{ width: 90 }} placeholder="+ size" value={newSize} onChange={(e) => setNewSize(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); addSize(); } }} title="Type a size and press Tab or Enter to add it" />
             </div>
             {sizes.length > 0 && (
               <div style={{ marginTop: 8 }}>
@@ -4436,11 +6976,11 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
                 <button key={v} type="button" onClick={() => setReusable(v === 'reuse')} style={{ border: 'none', cursor: 'pointer', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 800, background: on ? '#fff' : 'transparent', color: on ? '#191919' : '#6A7180', boxShadow: on ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{lbl}</button>
               ); })}
             </div>
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>{reusable ? 'Recurring item — kept in the catalog so you can drop it into other stores later.' : 'Just for this store — it won’t clutter the shared catalog or product search.'}</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>{reusable ? "Recurring item — kept in the catalog so you can drop it into other stores later." : "Just for this store — it won't clutter the shared catalog or product search."}</div>
           </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" disabled={saving || imgBusy || logoBusy || !name.trim()} onClick={save}>{saving ? 'Saving…' : reusable ? 'Save to catalog' : 'Add to this store'}</button>
+            <button className="btn btn-primary" disabled={saving || imgBusy || imgBackBusy || logoBusy || !name.trim()} onClick={save}>{saving ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />Saving…</span> : reusable ? 'Save to catalog' : 'Add to this store'}</button>
             {reusable && <Toggle label="Also add to this store" checked={alsoAdd} onChange={setAlsoAdd} />}
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           </div>
@@ -4550,13 +7090,13 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
             <div style={{ textAlign: 'center', padding: '20px 10px' }}>
               <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
               <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 4 }}>Imported {done.added} item{done.added === 1 ? '' : 's'}</div>
-              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They’re in the catalog now — set art, colors and any per-item overrides next.</div>
+              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog now — set art, colors and any per-item overrides next.</div>
               <button className="btn btn-primary" onClick={onClose}>Done</button>
             </div>
           ) : (
             <>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>
-                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item’s list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
+                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item's list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
                 <button type="button" onClick={downloadTemplate} style={{ marginLeft: 6, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}>Download template ↓</button>
               </div>
 
@@ -4624,7 +7164,93 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {} }) {
+// Live vendor-catalog lookup. Searches SanMar/District, S&S, Richardson and Momentec APIs
+// for any style (even ones not in the local catalog), then imports the picked colorways into
+// `products` so they can be dropped into a store. Returns the imported product rows.
+function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
+  const [q, setQ] = useState(initialQuery || '');
+  const [loading, setLoading] = useState(false);
+  const [styles, setStyles] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [ran, setRan] = useState(false);
+  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
+  const [importing, setImporting] = useState(false);
+  // Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
+  // a valid id (or null). Map api_provider → id.
+  const [vendorMap, setVendorMap] = useState(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2 || vendorMap == null) { setStyles([]); setRan(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try { const { results, errors } = await searchVendorCatalogs(query, { vendorMap }); if (!cancelled) { setStyles(results); setErrors(errors || {}); } }
+      catch (e) { if (!cancelled) { setStyles([]); setErrors({ Search: String(e?.message || e) }); } }
+      finally { if (!cancelled) { setLoading(false); setRan(true); } }
+    }, 550);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, vendorMap]);
+  const SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
+  const keyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
+  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = keyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  const add = async () => {
+    if (!selected.size) return;
+    setImporting(true);
+    const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
+    const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
+    setImporting(false);
+    if (error) { alert('Could not import from vendor: ' + error.message); return; }
+    onAdd((data && data.length ? data : rows));
+    onClose();
+  };
+  const errList = Object.entries(errors || {});
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 800, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Search live vendor catalogs</div><div style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec. Picked items are imported so they can go into a {destLabel}.</div></div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Style number or name — e.g. DM130, PC61, 112, C2 Tee" style={{ width: '100%', marginBottom: 12 }} />
+          {errList.length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {errList.map(([v]) => v).join(', ')}.</div>}
+          <div style={{ maxHeight: '54vh', overflowY: 'auto' }}>
+            {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Searching vendor catalogs…</div>
+              : q.trim().length < 2 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Type a style number or name to search.</div>
+              : styles.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>{ran ? 'No vendor styles matched. Try the exact style number (e.g. DM130).' : ''}</div>
+              : styles.map((s) => (
+                <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
+                    <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{SRC[s.source] || s.source}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {s.colors.map((c) => { const on = selected.has(keyOf(s, c)); return (
+                      <button key={c.colorName || c.sku} type="button" onClick={() => toggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+                        <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
+                        <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
+                        <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+                        {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                      </button>
+                    ); })}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={importing || !selected.size} onClick={add}>{importing ? 'Importing…' : `Add ${selected.size} to ${destLabel}`}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <span style={{ fontSize: 11.5, color: '#9AA1AC', marginLeft: 'auto' }}>Imported at ~50% margin — reprice after.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -4634,12 +7260,15 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(300);
-  const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
+  const [inStockOnly, setInStockOnly] = useState(initialInStock); // school stores default to fulfillable; templates don't
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
+  const [colorSel, setColorSel] = useState(() => new Set()); // color-family filter (e.g. {navy, red})
+  const toggleColorFam = (f) => setColorSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [vendorOpen, setVendorOpen] = useState(false);
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -4704,30 +7333,50 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      // Hide retired products (archived) so the store builder can't add what the catalog
-      // live-look already hides, while still including legacy rows whose is_active is null.
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
-        .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
-      if (favOnly) {
-        // Favorites view — load every colorway of each starred STYLE (across all categories)
-        // so the rep's + team's picks always show, regardless of color/stock filters.
-        if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
-        query = query.in('name', favNames);
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-      } else {
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-        // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
-        // category like Tees doesn't bury the school's colors past the row limit.
-        // School colors only narrow when BROWSING; a typed search overrides them so a
-        // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
-        if (colorOnly && colorWords.length && q.trim().length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      const typed = q.trim();
+      let rows = null;
+      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
+      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
+      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
+      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      if (!favOnly && typed.length >= 2) {
+        try {
+          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          if (error) throw error;
+          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
+          // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
+          // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
+          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
+          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
+          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+        } catch (e) { rows = null; /* fall through to the table query */ }
       }
-      const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
-      const rows = data || [];
+      if (rows == null) {
+        // Hide retired products (archived) so the store builder can't add what the catalog
+        // live-look already hides, while still including legacy rows whose is_active is null.
+        let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+          .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
+        if (favOnly) {
+          // Favorites view — load every colorway of each starred STYLE (across all categories)
+          // so the rep's + team's picks always show, regardless of color/stock filters.
+          if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+          query = query.in('name', favNames);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+        } else {
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+          // category like Tees doesn't bury the school's colors past the row limit.
+          // School colors only narrow when BROWSING; a typed search overrides them so a
+          // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
+          if (colorOnly && colorWords.length && typed.length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+        }
+        const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
+        rows = data || [];
+      }
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
@@ -4748,20 +7397,26 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     return APPAREL.every((s) => inSt.has(s));
   };
   const isSearch = q.trim().length >= 2;
+  // Map a catalog color string to a color FAMILY (by its primary segment) for the color filter.
+  const famOf = (color) => { const primary = String(color || '').split(/[/,|]| - /)[0].toLowerCase(); for (const f of _COLOR_FAMILIES) { if (f.words.some((w) => primary.includes(w))) return f.fam; } return null; };
   const matched = results.filter((r) =>
     (isSearch || !colorOnly || productMatchesColors(r.color, colorWords)) &&
+    (!colorSel.size || colorSel.has(famOf(r.color))) &&
     // The catalog tags some jerseys as Tees — keep the Tees view to actual tees.
     !(catSel === 'Tees' && /jersey/i.test(r.name || '')));
+  // Color families present in the loaded results — drives the color filter pills.
+  const colorFams = [...new Set(results.map((r) => famOf(r.color)).filter(Boolean))].sort();
   // Collapse colorways → one card per STYLE (name), so the grid isn't the same short in six
   // colors. The rep prefers an image + in-stock; other colorways are added later from the
   // item editor's "Other colors of this garment".
   const styleKey = (r) => (r.name || r.sku || r.id || '').trim().toLowerCase();
-  const colorCountByStyle = matched.reduce((m, r) => { const k = styleKey(r); m[k] = (m[k] || 0) + 1; return m; }, {});
+  // Pick the colorway that fronts a style's card: a favorited one first, then the
+  // school's own colors (so a navy school sees the navy hood, not the green one), then
+  // image, then stock. Shared by the rep dedupe and the on-card color swatches.
+  const repScore = (x) => (favUnion.has(favStyleKey(x)) ? 16 : 0) + (productMatchesColors(x.color, colorWords) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
   const dedupeByStyle = (rows) => {
     const map = new Map();
-    // A favorited colorway wins the card so the star shows on the rep; then image, then stock.
-    const score = (x) => (favUnion.has(favStyleKey(x)) ? 8 : 0) + (x.image_front_url ? 2 : 0) + (wellStocked(x) ? 1 : 0);
-    for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || score(r) > score(cur)) map.set(k, r); }
+    for (const r of rows) { const k = styleKey(r); const cur = map.get(k); if (!cur || repScore(r) > repScore(cur)) map.set(k, r); }
     return [...map.values()];
   };
   let styles = dedupeByStyle(inStockOnly ? matched.filter(wellStocked) : matched);
@@ -4771,7 +7426,20 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const allStyleN = new Set(matched.map(styleKey)).size;
   const inStockStyleN = new Set(matched.filter(wellStocked).map(styleKey)).size;
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selProducts = styles.filter((p) => selected.has(p.id));
+  // All sellable colorways per style (one entry per color, best image/stock kept), so a
+  // card can offer color swatches inline — the rep no longer has to "add later" to swap
+  // a green hood for the navy one. Sorted school-color-first to match the card's default.
+  const swatchPool = inStockOnly ? matched.filter(wellStocked) : matched;
+  const colorwaysByStyle = (() => {
+    const m = new Map();
+    for (const r of swatchPool) { const k = styleKey(r); if (!m.has(k)) m.set(k, new Map()); const byColor = m.get(k); const ck = (r.color || '').trim().toLowerCase() || ('sku:' + (r.sku || '').toLowerCase()); const cur = byColor.get(ck); if (!cur || repScore(r) > repScore(cur)) byColor.set(ck, r); }
+    const out = new Map();
+    for (const [k, byColor] of m) out.set(k, [...byColor.values()].sort((a, b) => repScore(b) - repScore(a) || String(a.color || '').localeCompare(String(b.color || ''))));
+    return out;
+  })();
+  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
+  const rowById = new Map(swatchPool.map((r) => [r.id, r]));
+  const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
 
   const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
     <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
@@ -4781,6 +7449,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
+      {vendorOpen && <VendorSearchModal initialQuery={q} destLabel={destLabel} onClose={() => setVendorOpen(false)} onAdd={(rows) => { if (onPickMany && rows && rows.length) onPickMany(rows, [], {}); }} />}
       <CatalogKitStyles />
       <KitScope style={{ padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -4791,8 +7460,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search by name or SKU — or pick a category below to browse…" aria-label="Search products" />
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12, alignItems: 'center' }}>
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
+          <button type="button" onClick={() => setVendorOpen(true)} title="Look up any style from SanMar, S&S, Richardson or Momentec — even if it's not in the catalog yet" style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#3730a3', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 999, padding: '5px 12px', cursor: 'pointer' }}>🔎 Search vendor catalogs</button>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
@@ -4809,6 +7479,18 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
             <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockStyleN} of {allStyleN} styles in stock</span>
             {brands.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 2px' }} />}
             {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
+          </div>
+        )}
+        {active && colorFams.length > 1 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.3, marginRight: 2 }}>Color</span>
+            {colorFams.map((f) => { const on = colorSel.has(f); return (
+              <button key={f} type="button" onClick={() => toggleColorFam(f)} aria-pressed={on} title={`Show ${f} items`}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 999, padding: '4px 11px 4px 7px', fontSize: 12, fontWeight: 700, textTransform: 'capitalize', border: '1px solid ' + (on ? '#2563eb' : '#d1d5db'), background: on ? '#eff6ff' : '#fff', color: on ? '#1d4ed8' : '#3A4150' }}>
+                <span style={{ width: 14, height: 14, borderRadius: '50%', background: colorNameToHex(f), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.18)' }} />{f}
+              </button>
+            ); })}
+            {colorSel.size > 0 && <button type="button" onClick={() => setColorSel(new Set())} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11.5, fontWeight: 700 }}>Clear</button>}
           </div>
         )}
 
@@ -4834,7 +7516,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} selected={selected.has(p.id)} moreColors={(colorCountByStyle[styleKey(p)] || 1) - 1} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onToggle={() => toggleSel(p.id)} onDetails={onPick ? () => onPick(p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -4845,7 +7527,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       {selProducts.length > 0 && (
         <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
+          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to {destLabel} →</button>
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
           <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
         </div>
@@ -4854,12 +7536,12 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <div onClick={() => setBulkOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the store</div>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the {destLabel}</div>
               <button onClick={() => setBulkOpen(false)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
             </div>
             <div style={{ padding: 16 }}>
               <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '2px solid #e5e8ec' }}>
-                {[['setup', '1 · Item setup'], ['art', '2 · Art & logo']].map(([k, lbl]) => { const on = bulkTab === k; return (
+                {(destLabel === 'template' ? [['setup', 'Item setup']] : [['setup', '1 · Item setup'], ['art', '2 · Art & logo']]).map(([k, lbl]) => { const on = bulkTab === k; return (
                   <button key={k} type="button" onClick={() => setBulkTab(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
                 ); })}
               </div>
@@ -4926,10 +7608,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to store →`}</button>
-                {bulkTab === 'setup'
+                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to ${destLabel} →`}</button>
+                {destLabel !== 'template' && (bulkTab === 'setup'
                   ? <button className="btn btn-secondary" onClick={() => setBulkTab('art')}>Next: Art &amp; logo →</button>
-                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>}
+                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>)}
                 <button className="btn btn-secondary" onClick={() => setBulkOpen(false)}>Cancel</button>
               </div>
             </div>
@@ -4941,38 +7623,57 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 }
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
-// "Details" opens the per-item editor for price/fundraising/personalization.
-function PickerCard({ p, selected, moreColors = 0, fav = false, team = false, canFav = false, curate = false, onToggleFav, onToggle, onDetails }) {
+// Clicking the card (or "Colors →") opens the color-selector modal for the style.
+function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
   const [imgErr, setImgErr] = useState(false);
-  const st = p._stock || { units: 0, sizes: [], incoming: false };
+  const ways = colorways.length ? colorways : [p];
+  // Which colorway the card is showing / will add. Defaults to the rep (ways[0] = the
+  // school-color-preferred pick). Picking a swatch swaps the image, price, sizes & stock.
+  const [activeId, setActiveId] = useState(null);
+  const active = ways.find((c) => c.id === activeId) || p;
+  const isSel = !!selectedIds && selectedIds.has(active.id);
+  useEffect(() => { setImgErr(false); }, [active.id]);
+  const st = active._stock || { units: 0, sizes: [], incoming: false };
   const out = (st.units || 0) <= 0;
   // Prefer the live in-stock sizes; fall back to the catalog's listed sizes.
-  const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(p.available_sizes) ? p.available_sizes : []);
+  const sizes = st.sizes && st.sizes.length ? st.sizes : (Array.isArray(active.available_sizes) ? active.available_sizes : []);
+  // Switch the shown color. If the old color was already selected, move the selection
+  // to the newly-picked one so the basket follows what the rep is looking at.
+  const pickColor = (c) => { if (c.id === active.id) return; if (isSel) { onToggleId(active.id); onToggleId(c.id); } setActiveId(c.id); };
+  const toggle = () => onToggleId(active.id);
   return (
-    <div className="ai-card" onClick={onToggle} role="button" aria-pressed={selected} style={{ position: 'relative', cursor: 'pointer', outline: selected ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
-      <div onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (selected ? '#2563eb' : '#cbd5e1'), background: selected ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{selected ? '✓' : ''}</div>
+    <div className="ai-card" onClick={() => onColors && onColors(active)} role="button" title="See colors of this item" style={{ position: 'relative', cursor: 'pointer', outline: isSel ? '2px solid #2563eb' : 'none', outlineOffset: -1 }}>
+      <div onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ position: 'absolute', top: 8, left: 8, zIndex: 2, width: 24, height: 24, borderRadius: 7, border: '2px solid ' + (isSel ? '#2563eb' : '#cbd5e1'), background: isSel ? '#2563eb' : 'rgba(255,255,255,.92)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800 }}>{isSel ? '✓' : ''}</div>
       {canFav && (
         <button type="button" onClick={(e) => { e.stopPropagation(); onToggleFav && onToggleFav(); }} title={fav ? (team ? 'Shared team favorite' : 'Your favorite') : (curate ? 'Add to the shared list' : 'Add to your favorites')}
           style={{ position: 'absolute', top: 8, left: 40, zIndex: 2, width: 26, height: 26, borderRadius: 7, border: 'none', background: 'rgba(255,255,255,.92)', cursor: 'pointer', fontSize: 16, lineHeight: '26px', padding: 0, color: fav ? '#f59e0b' : '#b6bcc6', boxShadow: '0 1px 3px rgba(0,0,0,.12)' }}>{fav ? '★' : '☆'}</button>
       )}
       <div style={{ position: 'relative', background: '#fff', aspectRatio: '1 / 1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #F0F1F4', width: '100%' }}>
-        {p.image_front_url && !imgErr
-          ? <img src={p.image_front_url} alt={p.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
+        {active.image_front_url && !imgErr
+          ? <img src={active.image_front_url} alt={active.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
-        {p.retail_price != null && (
-          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</span>
+        {active.retail_price != null && (
+          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(active.retail_price)}</span>
         )}
         {out && <span style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
-          {p.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{p.brand}</div>}
-          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{p.name || p.sku}</div>
+          {active.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{active.brand}</div>}
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, lineHeight: 1.15, textTransform: 'uppercase' }}>{active.name || active.sku}</div>
           {team && <span style={{ fontSize: 10, fontWeight: 800, color: '#7c3aed', background: '#ede9fe', borderRadius: 5, padding: '1px 6px', marginTop: 3, display: 'inline-block' }}>★ Team pick</span>}
-          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[p.category, p.color].filter(Boolean).join(' · ') || ' '}</div>
-          {p.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{p.sku}</div>}
-          {moreColors > 0 && <div style={{ fontSize: 11, color: '#6A7180', marginTop: 3, fontWeight: 600 }}>+{moreColors} more color{moreColors === 1 ? '' : 's'} · add later</div>}
+          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>{[active.category, active.color].filter(Boolean).join(' · ') || ' '}</div>
+          {active.sku && <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{active.sku}</div>}
         </div>
+        {ways.length > 1 && (
+          <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }} title="Pick a color — this is the one added to the store">
+            {ways.slice(0, 12).map((c) => { const on = c.id === active.id; const isSchool = schoolWords.length > 0 && productMatchesColors(c.color, schoolWords); return (
+              <button key={c.id} type="button" title={(c.color || c.sku || '') + (isSchool ? ' (school color)' : '')} onClick={() => pickColor(c)}
+                style={{ width: 20, height: 20, borderRadius: '50%', padding: 0, cursor: 'pointer', background: colorNameToHex(c.color), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.18)', border: on ? '2px solid #2563eb' : (isSchool ? '2px solid #f59e0b' : '2px solid transparent') }} />
+            ); })}
+            {ways.length > 12 && <span style={{ fontSize: 11, color: '#9AA1AC', fontWeight: 700 }}>+{ways.length - 12}</span>}
+          </div>
+        )}
         <div style={{ fontSize: 11.5, fontWeight: 800, color: st.units > 0 ? '#166534' : st.incoming ? '#92400e' : '#b91c1c' }}>
           {st.units > 0 ? `${st.units} in stock` : st.incoming ? 'Incoming only' : 'Out of stock'}
         </div>
@@ -4983,8 +7684,8 @@ function PickerCard({ p, selected, moreColors = 0, fav = false, team = false, ca
           </div>
         )}
         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
-          <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: selected ? '#dbeafe' : '#191919', color: selected ? '#1d4ed8' : '#fff' }}>{selected ? '✓ Selected' : 'Select'}</button>
-          {onDetails && <button type="button" onClick={(e) => { e.stopPropagation(); onDetails(); }} title="Set price, fundraising & options" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Details →</button>}
+          <button type="button" onClick={(e) => { e.stopPropagation(); toggle(); }} style={{ flex: 1, border: 'none', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.03em', background: isSel ? '#dbeafe' : '#191919', color: isSel ? '#1d4ed8' : '#fff' }}>{isSel ? '✓ Selected' : 'Select'}</button>
+          {onColors && <button type="button" onClick={(e) => { e.stopPropagation(); onColors(active); }} title="See & add other colors of this item" style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: '#3A4150' }}>Colors →</button>}
         </div>
       </div>
     </div>
@@ -5405,7 +8106,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [addOpen, setAddOpen] = useState(false);
   const [pickOpen, setPickOpen] = useState(true); // collapse the logo-picker section
   const [upBusy, setUpBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
+  const emptyRef = useRef();
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -5469,10 +8172,25 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
     setApplying(false);
   };
 
-  if (!libraryArt.length) {
-    return <div className="card"><div style={{ padding: 28, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-      No art in this team's library yet. Add artwork to the customer's art library (it's shared with order artwork), then it'll show here to apply to the store.
-    </div></div>;
+  if (!libraryArt.length && !(storeArt || []).length) {
+    return (
+      <div className="card">
+        <div
+          onClick={() => !upBusy && emptyRef.current && emptyRef.current.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadArt(f); }}
+          style={{ margin: 16, padding: '40px 24px', textAlign: 'center', border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), borderRadius: 14, background: dragOver ? '#eff6ff' : '#fafbfc', cursor: upBusy ? 'wait' : 'pointer' }}>
+          <input ref={emptyRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
+          <div style={{ fontSize: 34, marginBottom: 8 }}>🎨</div>
+          <div style={{ fontWeight: 800, fontSize: 17, color: '#191919', marginBottom: 6 }}>Add artwork to this store</div>
+          <div style={{ fontSize: 13, color: '#64748b', maxWidth: 460, margin: '0 auto 16px', lineHeight: 1.55 }}>
+            Drag a logo here, or click to upload (PNG, SVG). It's saved to this team's art library <i>and</i> this store — then set it up right here: attach a web‑ready cutout, place it, recolor, and apply to your items. No need to leave this page.
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload artwork'}</button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -5606,60 +8324,67 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   );
 }
 
-function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], onCreate, onClose }) {
+// Components are selected via the checkboxes on the catalog list (controlled by
+// the parent); this panel just names/prices the package and tunes per-item options.
+function BundleBuilder({ components = [], setComponents, designOptions = [], numberSets = [], categories = [], onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [fundraise, setFundraise] = useState('');
+  const [category, setCategory] = useState('');
   const [image, setImage] = useState(null);
-  const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
-  // ProductSearch returns {id,sku,name}; store items already carry {product_id,sku,name}.
-  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
-  const addedKeys = new Set(components.map((c) => c.product_id));
+  const priceTouched = useRef(false);
+  const catListId = 'pkg-cat-suggest';
+  // ProductSearch (non-store products) returns {id,sku,name}.
+  const addComp = (p) => { setComponents((c) => [...c, { webstore_product_id: p.webstore_product_id || null, product_id: p.product_id || p.id, sku: p.sku, name: p.name, image: p.image || null, retail_price: Number(p.retail_price) || 0, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
+  // Sum the items' retail prices — default the package price to it (rep can then
+  // discount); stop auto-filling once the price is hand-edited.
+  const itemsTotal = components.reduce((a, c) => a + (Number(c.retail_price) || 0) * (Number(c.qty) || 1), 0);
+  useEffect(() => { if (!priceTouched.current && itemsTotal > 0) setPrice(itemsTotal.toFixed(2)); }, [itemsTotal]);
   const valid = name.trim() && Number(price) > 0 && components.length > 0;
+  const reason = !components.length ? 'Check the items on the left to add them' : !name.trim() ? 'Enter a package name' : !(Number(price) > 0) ? 'Enter a package price' : '';
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><div style={{ fontWeight: 700 }}>Create a package</div><button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18 }}>×</button></div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 4 }}>
-        <Row label="Package name"><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Player Kit" /></Row>
-        <Row label="Package price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="120.00" /></Row>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><div style={{ fontWeight: 700 }}>Create a package <span style={{ fontWeight: 500, fontSize: 12, color: '#94a3b8' }}>· check items in the list to add them</span></div><button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18 }}>×</button></div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
+        <Row label="Package name *"><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Player Kit" style={{ borderColor: !name.trim() ? '#fca5a5' : undefined }} /></Row>
+        <Row label="Category / section"><input className="form-input" list={catListId} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Player Kits" /><datalist id={catListId}>{categories.map((c) => <option key={c} value={c} />)}</datalist></Row>
+        <Row label="Package price *"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => { priceTouched.current = true; setPrice(e.target.value); }} placeholder="120.00" style={{ borderColor: !(Number(price) > 0) ? '#fca5a5' : undefined }} /></Row>
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder="0.00" /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
+      {itemsTotal > 0 && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>Items add up to <b>{money(itemsTotal)}</b>{Number(price) > 0 && Math.abs(Number(price) - itemsTotal) > 0.005 ? <> · package is {money(Number(price))} (<button type="button" onClick={() => { priceTouched.current = true; setPrice(itemsTotal.toFixed(2)); }} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontWeight: 700, fontSize: 12, padding: 0 }}>use sum</button>)</> : null}</div>}
       <ImageUpload value={image} onChange={setImage} label="Package image" />
-      <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package</div>
-      {components.map((c, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 140 }}><b>{c.name}</b> <span style={{ color: '#94a3b8' }}>{c.sku}</span></div>
-          <label style={{ fontSize: 12 }}>Qty <input type="number" min={1} value={c.qty} onChange={(e) => upd(i, 'qty', Number(e.target.value) || 1)} style={{ width: 50, marginLeft: 4 }} /></label>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.size_required} onChange={(e) => upd(i, 'size_required', e.target.checked)} />needs size</label>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_number} onChange={(e) => upd(i, 'takes_number', e.target.checked)} />add number</label>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_name} onChange={(e) => upd(i, 'takes_name', e.target.checked)} />add name</label>
-          {c.takes_name && <label style={{ fontSize: 12 }}>name +$<input type="number" step="0.01" min={0} value={c.name_upcharge} onChange={(e) => upd(i, 'name_upcharge', Number(e.target.value) || 0)} style={{ width: 60, marginLeft: 2 }} /></label>}
-          <button onClick={() => rm(i)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }}>remove</button>
-          <div style={{ flexBasis: '100%', display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
-            <label style={{ fontSize: 12 }}>Logo transfer <select value={c.transfer_code || ''} onChange={(e) => upd(i, 'transfer_code', e.target.value)} style={{ marginLeft: 4, fontSize: 12 }}><option value="">None</option>{designOptions.map((d) => <option key={d.code} value={d.code}>{d.label}</option>)}</select></label>
-            {c.takes_number && <label style={{ fontSize: 12 }}>Number set <select value={(c.num_transfer_size || '') + '|' + (c.num_transfer_color || '')} onChange={(e) => { const [s, cl] = e.target.value.split('|'); upd(i, 'num_transfer_size', s || null); upd(i, 'num_transfer_color', cl || null); }} style={{ marginLeft: 4, fontSize: 12 }}><option value="|">None</option>{numberSets.map((s, si) => <option key={si} value={`${s.size}|${s.color}`}>{s.size} · {s.color}</option>)}</select></label>}
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package <span style={{ fontWeight: 500, color: '#94a3b8' }}>({components.length})</span></div>
+      {components.length === 0
+        ? <div style={{ fontSize: 12.5, color: '#94a3b8', padding: '10px 12px', border: '1.5px dashed #d7dbe2', borderRadius: 10, background: '#fafbfc' }}>← Tick the checkbox next to each item in the list to add it to this package.</div>
+        : <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{components.map((c, i) => {
+          const persoNote = [c.takes_number && 'number', c.takes_name && 'name'].filter(Boolean).join(' + ');
+          return (
+          <div key={c.webstore_product_id || c.product_id || i} style={{ width: 152, border: '1px solid #e6e8ec', borderRadius: 10, overflow: 'hidden', background: '#fff', position: 'relative' }}>
+            <button onClick={() => rm(i)} title="Remove from package" style={{ position: 'absolute', top: 5, right: 5, width: 20, height: 20, borderRadius: '50%', background: 'rgba(255,255,255,.95)', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 13, lineHeight: 1, display: 'grid', placeItems: 'center', zIndex: 1 }}>×</button>
+            <div style={{ width: '100%', height: 112, background: '#f4f6f9', display: 'grid', placeItems: 'center' }}>
+              {c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 6, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
+            </div>
+            <div style={{ padding: '8px 10px' }}>
+              <div style={{ fontWeight: 700, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</div>
+              <div style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.retail_price > 0 ? money(c.retail_price) : c.sku}{persoNote ? ` · ${persoNote}` : ''}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7 }}>
+                <span style={{ fontSize: 11, color: '#64748b' }}>Qty</span>
+                <input type="number" min={1} value={c.qty} onChange={(e) => upd(i, 'qty', Number(e.target.value) || 1)} style={{ width: 50 }} />
+              </div>
+            </div>
           </div>
-        </div>
-      ))}
-      {storeItems.length > 0 && <div style={{ margin: '10px 0' }}>
-        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Add from items already in this store:</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {storeItems.map((it) => {
-            const added = addedKeys.has(it.product_id);
-            return <button key={it.product_id} disabled={added} onClick={() => addComp(it)}
-              style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: added ? '#f1f5f9' : '#fff', color: added ? '#94a3b8' : '#1e40af', cursor: added ? 'default' : 'pointer' }}>
-              {added ? '✓ ' : '+ '}{it.name}</button>;
-          })}
-        </div>
-      </div>}
-      {picking ? <ProductSearch label="Or search all products" onPick={addComp} onClose={() => setPicking(false)} /> :
-        <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Search all products</button>}
-      <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
+        ); })}</div>}
+      {picking ? <ProductSearch label="Add a product not in this store" onPick={addComp} onClose={() => setPicking(false)} /> :
+        <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Add a product not in this store</button>}
+      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components, category: category.trim() || null })}>Create package</button>
+        {!valid && <span style={{ fontSize: 12.5, color: '#b45309', fontWeight: 700 }}>{reason} (image optional)</span>}
+      </div>
     </div></div>
   );
 }
@@ -5668,23 +8393,31 @@ function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], o
 // or free-shipping promos. Redemption count is tracked per code.
 function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRemove }) {
   const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState('single'); // 'single' | 'bulk'
+  const [customCode, setCustomCode] = useState('');
   const [kind, setKind] = useState('percent');
-  const [value, setValue] = useState(100);
+  const [value, setValue] = useState(10);
   const [count, setCount] = useState(10);
-  const [single, setSingle] = useState(true);
+  const [single, setSingle] = useState(false);
   const [coverShip, setCoverShip] = useState(true);
   const [prefix, setPrefix] = useState('');
   const [label, setLabel] = useState('');
   const [expires, setExpires] = useState('');
-  const [generated, setGenerated] = useState(null); // codes from the last batch
+  const [generated, setGenerated] = useState(null);
 
-  // Live redemption count = orders that used the code (more reliable than a counter).
   const usedByCode = {};
   orders.forEach((o) => { if (o.coupon_code && o.status !== 'cancelled' && o.status !== 'pending_payment') { const k = o.coupon_code.toUpperCase(); usedByCode[k] = (usedByCode[k] || 0) + 1; } });
 
   const submit = async () => {
-    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
-    if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    if (mode === 'single') {
+      const code = customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!code) return;
+      const r = await onCreate({ kind, value, count: 1, single, prefix: '', batch_label: label, expires_at: expires || null, cover_shipping: coverShip, code });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); setCustomCode(''); }
+    } else {
+      const r = await onCreate({ kind, value, count, single: true, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
+      if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+    }
   };
   const copyAll = () => { if (generated) navigator.clipboard?.writeText(generated.join('\n')); };
 
@@ -5692,21 +8425,33 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontSize: 13, color: '#64748b' }}>Codes apply a discount at checkout. Single-use codes (one order each) are ideal for comping a player — the discounted order still gets batched and invoiced to the program.</div>
-        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Create codes</button>
+        <div style={{ fontSize: 13, color: '#64748b' }}>Discount codes families enter at checkout. Use named codes (e.g. TEAM10) for store-wide promos, or bulk-generate single-use codes for comping individual players.</div>
+        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Add code</button>
       </div>
 
-      {adding && <div className="card"><div style={{ padding: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
-        {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
-        <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
-        <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
-        <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="2026 scholarships" /></Row>
-        <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
-        <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use (one order per code)</label>
-        {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
-        <button className="btn btn-primary" onClick={submit}>Generate</button>
-        <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+      {adding && <div className="card"><div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <button onClick={() => setMode('single')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'single' ? '#0b1f3a' : '#e2e8f0', background: mode === 'single' ? '#0b1f3a' : '#fff', color: mode === 'single' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Named code</button>
+          <button onClick={() => setMode('bulk')} style={{ padding: '6px 14px', borderRadius: 8, border: '2px solid', borderColor: mode === 'bulk' ? '#0b1f3a' : '#e2e8f0', background: mode === 'bulk' ? '#0b1f3a' : '#fff', color: mode === 'bulk' ? '#fff' : '#0b1f3a', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Bulk single-use</button>
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {mode === 'single' ? (
+            <Row label="Code (letters & numbers)"><input className="form-input" value={customCode} onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} placeholder="e.g. TEAM10" style={{ width: 160, fontFamily: 'monospace', fontWeight: 700 }} /></Row>
+          ) : (
+            <>
+              <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
+              <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
+            </>
+          )}
+          <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
+          {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
+          <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Spring promo" /></Row>
+          <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
+          {mode === 'single' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use</label>}
+          {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
+          <button className="btn btn-primary" onClick={submit}>{mode === 'bulk' ? 'Generate' : 'Create'}</button>
+          <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+        </div>
       </div></div>}
 
       {generated && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16 }}>
@@ -5746,11 +8491,15 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
 }
 
 // Store analytics — computed live from orders.
-function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
+function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
+  // Catalog (with placed decorations) + art names, for the decoration breakdown.
+  const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
+  const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
+  const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
@@ -5759,14 +8508,73 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
   const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const fundPending = fundraise - fundPaid;
   const paid = orders.filter((o) => o.payment_mode === 'paid');
-  const lines = orderItems.filter((i) => !i.is_bundle_parent);
-  const units = lines.reduce((a, i) => a + (i.qty || 1), 0);
 
-  const bySku = {}; lines.forEach((i) => { const k = i.sku || i.product_id || '?'; bySku[k] = (bySku[k] || 0) + (i.qty || 1); });
-  const topSellers = Object.entries(bySku).map(([sku, q]) => ({ sku, q, name: nameBySku[sku] || sku })).sort((a, b) => b.q - a.q).slice(0, 8);
-  const bySize = {}; lines.forEach((i) => { if (i.size) bySize[i.size] = (bySize[i.size] || 0) + (i.qty || 1); });
-  const SZ = ['YXS', 'YS', 'YM', 'YL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'];
-  const sizeRows = Object.entries(bySize).sort((a, b) => { const ia = SZ.indexOf(a[0]), ib = SZ.indexOf(b[0]); return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib); });
+  // ── Accounting ledger — every dollar in and out of the store ──
+  // Reconciliation (per checkout): total = subtotal − discount + fundraise + shipping + tax.
+  // cc_fee and label_cost are booked after the sale (Stripe / postage) and are costs, not
+  // money a buyer paid us. Team-tab orders collect $0 through the store — that balance is
+  // billed to the club on the Sales Order / invoice instead of a card.
+  const sumF = (f) => orders.reduce((a, o) => a + (Number(o[f]) || 0), 0);
+  const acct = {
+    grossSales: sumF('subtotal'),      // product retail before discounts
+    discounts: sumF('discount_amt'),   // coupon savings given to buyers
+    fundraiseAll: sumF('fundraise_amt'),
+    shipCharged: sumF('shipping_fee'),
+    processing: sumF('processing_fee'),
+    taxColl: sumF('tax'),
+    grossColl: sumF('total'),          // what every live order was billed
+    refunds: sumF('refunded_amt'),
+    ccFees: sumF('cc_fee'),
+    labelCost: sumF('label_cost'),
+  };
+  acct.netColl = acct.grossColl - acct.refunds;
+  acct.netAfterFees = acct.netColl - acct.ccFees - acct.labelCost;
+  const cardColl = paid.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const tabColl = acct.grossColl - cardColl;
+
+  // Scope line items to LIVE orders only — orderItems carries items for every order
+  // in the store (incl. abandoned pre-payment carts and cancellations), which would
+  // otherwise inflate Units, Top sellers, and the Size breakdown.
+  const liveIds = new Set(orders.map((o) => o.id));
+  const lines = orderItems.filter((i) => !i.is_bundle_parent && liveIds.has(i.order_id));
+  const units = lines.reduce((a, i) => a + (i.qty || 1), 0);
+  // Packages: each purchased package is one bundle-parent line. Reported for
+  // reference + club fundraising (we sometimes pay the club per package). The
+  // components still ship/report as individual items via the non-parent lines.
+  const pkgLines = orderItems.filter((i) => i.is_bundle_parent && liveIds.has(i.order_id));
+  const packagesSold = pkgLines.reduce((a, i) => a + (i.qty || 1), 0);
+  const pkgFund = pkgLines.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (i.qty || 1), 0);
+  const byPkg = {}; pkgLines.forEach((i) => { const k = i.name || 'Package'; byPkg[k] = (byPkg[k] || 0) + (i.qty || 1); });
+  const pkgRows = Object.entries(byPkg).sort((a, b) => b[1] - a[1]);
+
+  // Top sellers keyed by product, labelled with the real item name (the order line
+  // stores it; fall back to the storefront catalog name, then sku).
+  const byProd = {}; lines.forEach((i) => {
+    const k = i.sku || i.product_id || '?';
+    if (!byProd[k]) byProd[k] = { q: 0, name: i.name || nameBySku[i.sku] || '' };
+    byProd[k].q += (i.qty || 1);
+    if (!byProd[k].name && i.name) byProd[k].name = i.name;
+  });
+  const topSellers = Object.entries(byProd).map(([sku, v]) => ({ sku, q: v.q, name: v.name || nameBySku[sku] || sku })).sort((a, b) => b.q - a.q).slice(0, 8);
+
+  // Decoration breakdown — how many ordered units carry each placed logo. A product's
+  // logos live on its catalog row's `decorations` (kind:'art'); every ordered unit of
+  // that product (single or bundle component, matched by product_id then sku) counts
+  // once per distinct logo it carries.
+  const decoCounts = {};
+  lines.forEach((i) => {
+    const c = (i.product_id && catByPid[i.product_id]) || (i.sku && catBySku[String(i.sku).toUpperCase()]) || null;
+    const decos = (c && Array.isArray(c.decorations)) ? c.decorations : [];
+    const seen = new Set();
+    decos.filter((d) => d && d.kind === 'art' && (d.art_id || d.art_url)).forEach((d) => {
+      const key = d.art_id || d.art_url;
+      if (seen.has(key)) return; seen.add(key); // don't double-count the same logo twice on one garment
+      const label = (d.art_id && artName[d.art_id]) || d.name || (d.side === 'back' ? 'Back logo' : 'Front logo');
+      if (!decoCounts[key]) decoCounts[key] = { label, units: 0 };
+      decoCounts[key].units += (i.qty || 1);
+    });
+  });
+  const decoRows = Object.values(decoCounts).sort((a, b) => b.units - a.units);
   const byDay = {}; orders.forEach((o) => { const d = (o.created_at || '').slice(0, 10); if (d) byDay[d] = (byDay[d] || 0) + 1; });
   const days = Object.entries(byDay).sort((a, b) => a[0].localeCompare(b[0]));
   const maxSeller = Math.max(1, ...topSellers.map((s) => s.q));
@@ -5774,22 +8582,65 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
 
   const Bar = ({ frac, color }) => <div style={{ flex: 1, height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: Math.round(frac * 100) + '%', height: '100%', background: color }} /></div>;
 
+  // One line of the accounting ledger. `sign` colors and prefixes a deduction;
+  // `sub` indents a memo line; `bold` + `divider` mark a subtotal.
+  const Led = ({ label, amt, sign = '', bold, sub, color, note, divider }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: bold ? '9px 0' : '6px 0', borderTop: divider ? '1px solid #e2e8f0' : 'none', marginTop: divider ? 2 : 0 }}>
+      <div style={{ fontSize: bold ? 14 : 13, fontWeight: bold ? 800 : (sub ? 400 : 600), color: sub ? '#94a3b8' : '#334155', paddingLeft: sub ? 16 : 0 }}>
+        {label}{note && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>{note}</span>}
+      </div>
+      <div style={{ fontSize: bold ? 16 : 14, fontWeight: bold ? 900 : 700, color: color || (sign === '−' ? '#b91c1c' : '#1e293b'), fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{sign}{money(Math.abs(amt))}</div>
+    </div>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
           ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
       </div>
+
+      <div className="card"><div style={{ padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 800 }}>Accounting · money flow</div>
+          <button className="btn btn-secondary" onClick={() => printAccounting(store, acct, { cardColl, tabColl, orders: orders.length })}>🖨️ Print statement</button>
+        </div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, marginBottom: 6 }}>Every dollar collected, discounted, and paid out across {orders.length} live order{orders.length === 1 ? '' : 's'}.</div>
+        <Led label="Product sales" amt={acct.grossSales} sign="+" note="retail before discounts" />
+        <Led label="Coupon discounts" amt={acct.discounts} sign="−" />
+        {acct.fundraiseAll > 0.005 && <Led label="Club fundraising" amt={acct.fundraiseAll} sign="+" color="#166534" />}
+        <Led label="Shipping charged" amt={acct.shipCharged} sign="+" />
+        {acct.processing > 0.005 && <Led label="Processing fees" amt={acct.processing} sign="+" />}
+        <Led label="Sales tax collected" amt={acct.taxColl} sign="+" />
+        <Led label="Gross collected" amt={acct.grossColl} bold divider />
+        <Led label="card payments" amt={cardColl} sub note="charged to cards" />
+        <Led label="team tab" amt={tabColl} sub note="billed on club invoice" />
+        {acct.refunds > 0.005 && <><Led label="Refunds issued" amt={acct.refunds} sign="−" divider /><Led label="Net collected" amt={acct.netColl} bold /></>}
+        <Led label="Card processing fees" amt={acct.ccFees} sign="−" divider />
+        <Led label="Shipping label cost" amt={acct.labelCost} sign="−" />
+        <Led label="Net after fees" amt={acct.netAfterFees} bold color="#166534" divider />
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.5 }}>Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
+      </div></div>
 
       {fundraise > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontSize: 11, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Club fundraising payout</div>
           <div style={{ fontSize: 26, fontWeight: 900, color: '#166534' }}>{money(fundPaid)}</div>
           <div style={{ fontSize: 12, color: '#64748b' }}>collected & owed to the club{fundPending > 0.005 ? ` · ${money(fundPending)} pending on unpaid/team-tab orders` : ''}</div>
+          {pkgFund > 0.005 && <div style={{ fontSize: 12, color: '#15803d', fontWeight: 600, marginTop: 4 }}>Includes {money(pkgFund)} from {packagesSold} package{packagesSold === 1 ? '' : 's'}.</div>}
         </div>
         <button className="btn btn-secondary" onClick={() => printPayout(store, { fundPaid, fundPending, orders: orders.length })}>🖨️ Print payout statement</button>
+      </div></div>}
+
+      {packagesSold > 0 && <div className="card"><div style={{ padding: 16 }}>
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>Packages sold</div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>For reference & club fundraising — components still report &amp; ship as individual items.</div>
+        {pkgRows.map(([nm, q]) => <div key={nm} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}>
+          <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={nm}>{nm}</div>
+          <Bar frac={q / Math.max(...pkgRows.map((r) => r[1]))} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{q}</div>
+        </div>)}
       </div></div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
@@ -5802,8 +8653,9 @@ function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
         </div></div>
 
         <div className="card"><div style={{ padding: 16 }}>
-          <div style={{ fontWeight: 800, marginBottom: 12 }}>Size breakdown</div>
-          {sizeRows.length === 0 ? <div style={{ fontSize: 13, color: '#94a3b8' }}>No sized items.</div> : sizeRows.map(([sz, q]) => { const m = Math.max(...sizeRows.map((r) => r[1])); return <div key={sz} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}><div style={{ width: 44, fontWeight: 700 }}>{sz}</div><Bar frac={q / m} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{q}</div></div>; })}
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>Decoration breakdown</div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>Ordered units carrying each placed logo — how many of each decoration to produce.</div>
+          {decoRows.length === 0 ? <div style={{ fontSize: 13, color: '#94a3b8' }}>No logos placed on this store's items yet.</div> : decoRows.map((d, idx) => { const m = Math.max(...decoRows.map((r) => r.units)); return <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}><div style={{ width: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.label}>{d.label}</div><Bar frac={d.units / m} color="#7c3aed" /><div style={{ width: 36, textAlign: 'right', fontWeight: 700 }}>{d.units}</div></div>; })}
         </div></div>
       </div>
 
@@ -6363,9 +9215,15 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
   };
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  // Order's overall status = the least-advanced REAL line. Bundle parents have no SKU
+  // to receive against so they sit at 'pending' forever; keying the badge off items[0]
+  // (the parent, inserted first) showed shipped package orders as 'pending'.
+  const SRANK = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 5 };
   const enrich = (o) => {
     const items = itemsByOrder[o.id] || [];
-    return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus: items[0]?.line_status || 'pending' };
+    const real = items.filter((i) => !i.is_bundle_parent);
+    const lineStatus = (real.length ? real : items).reduce((acc, i) => ((SRANK[i.line_status] ?? 0) < (SRANK[acc] ?? 0) ? i.line_status : acc), (real[0] || items[0] || {}).line_status || 'pending');
+    return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
   const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
 
@@ -6432,7 +9290,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
               <React.Fragment key={o.id}>
-              <tr style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+              <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
@@ -6445,14 +9303,14 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
               {isOpen && (
-                <tr style={{ background: '#f8fafc' }}>
+                <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                       <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
                         {lineItems.map((i) => (
-                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
-                            <td style={td}>{i.sku || i.name || '—'}</td>
+                          <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
@@ -6505,58 +9363,108 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
 // Edit an order's line items (size/qty/remove) and issue refunds.
 function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
-  const [rows, setRows] = useState(() => editable.map((i) => ({ id: i.id, sku: i.sku, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false })));
+  const initRows = editable.map((i) => ({ id: i.id, sku: i.sku, name: i.name, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false }));
+  const [rows, setRows] = useState(initRows);
   const [refundAmt, setRefundAmt] = useState('');
   const [busy, setBusy] = useState(false);
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
-  const newSubtotal = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
-  const newFund = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+
+  // Auto-suggest refund = value of removed items when user clicks "remove"
+  useEffect(() => {
+    if (!rows.some((r) => r._removed)) { setRefundAmt(''); return; }
+    const bSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+    const bFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+    const sub = bSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+    const fund = bFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+    const nt = Math.max(0, sub + fund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    const delta = Math.max(0, (Number(order.total) || 0) - (Number(order.tax) || 0) - nt);
+    setRefundAmt(delta > 0.005 ? delta.toFixed(2) : '');
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Only recompute total when the user has actually made a change — bundle
+  // components have unit_price:0 (price lives on the parent row which is
+  // excluded), so computing from scratch gives a wrong $0 on load.
+  const hasChanges = rows.some((r, i) => r._removed || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  // Bundle parents hold the package price (components are $0) and aren't editable, so
+  // seed the recompute with their value — otherwise the New total drops every package.
+  const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+  const bundleBaseFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+  const newSubtotal = bundleBaseSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+  const newFund = bundleBaseFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
   const newTotal = Math.max(0, newSubtotal + newFund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
 
   const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
   const refund = async () => { setBusy(true); const r = await onRefund(order, Number(refundAmt)); setBusy(false); if (r && r.ok) { setRefundAmt(''); onClose(); } };
 
+  const sectionLabel = { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 10 };
+
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflow: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 620, width: '100%', marginTop: 24 }}>
-        <div style={{ padding: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
-            <h3 style={{ margin: 0, fontSize: 18 }}>Manage order — {order.buyer_name || order.buyer_email}</h3>
-            <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
-          </div>
-          {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, margin: '8px 0 14px' }}>⚠️ This order is already batched into Sales Order <b>{order.so_id}</b>. Edits here won't automatically update that production order — adjust the SO too if needed.</div>}
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflow: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 580, width: '100%', marginTop: 24, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.25)' }}>
 
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '10px 0 6px' }}>Items</div>
-          {rows.map((r) => {
-            const sizes = availSizes[r.product_id] || [];
-            return (
-              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', opacity: r._removed ? 0.4 : 1 }}>
-                <div style={{ flex: 1, fontSize: 13 }}><div style={{ fontWeight: 600 }}>{r.sku || 'Item'}</div>{(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}</div>
-                {sizes.length > 0
-                  ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-                  : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 56, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />
-                <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12 }}>{r._removed ? 'undo' : 'remove'}</button>
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
+              {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
+              {Number(order.refunded_amt) > 0 && <span style={{ color: '#b45309' }}> · {money(order.refunded_amt)} refunded</span>}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: '#f1f5f9', border: 'none', borderRadius: 8, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'grid', placeItems: 'center', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: '18px 20px' }}>
+          {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>⚠️ Batched into SO <b>{order.so_id}</b> — adjust that SO too if needed.</div>}
+
+          {/* Items */}
+          <div style={sectionLabel}>Items</div>
+          <div style={{ background: '#f8fafc', borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
+            {rows.map((r, idx) => {
+              const sizes = availSizes[r.product_id] || [];
+              return (
+                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0b1220' }}>{r.sku || r.name || 'Item'}</div>
+                    {r.name && r.name !== r.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{r.name}</div>}
+                    {(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}
+                  </div>
+                  {sizes.length > 0
+                    ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                    : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
+                  <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
+                </div>
+              );
+            })}
+          </div>
+
+          {hasChanges && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 14 }}>
+              <span style={{ color: '#1e40af' }}>New total{Number(order.discount_amt) > 0 ? ` (after ${money(order.discount_amt)} discount)` : ''}</span>
+              <span style={{ fontWeight: 800, color: '#1e40af' }}>{money(newTotal)} <span style={{ fontWeight: 400, color: '#94a3b8', textDecoration: 'line-through' }}>{money(order.total)}</span></span>
+            </div>
+          )}
+
+          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : 'Save item changes'}</button>
+
+          {/* Refund */}
+          <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
+            <div style={sectionLabel}>Refund</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+              {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
+              {Number(order.refunded_amt) > 0 && <> Already refunded <b>{money(order.refunded_amt)}</b>; <b>{money(remaining)}</b> remaining.</>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                <span style={{ padding: '0 10px', color: '#94a3b8', fontSize: 15, borderRight: '1px solid #e2e8f0', height: '100%', display: 'grid', placeItems: 'center' }}>$</span>
+                <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 110, padding: '9px 10px', border: 'none', fontSize: 14, outline: 'none' }} />
               </div>
-            );
-          })}
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 14 }}>
-            <span style={{ color: '#64748b' }}>New total {Number(order.discount_amt) > 0 ? `(after ${money(order.discount_amt)} discount)` : ''}</span>
-            <span style={{ fontWeight: 800 }}>{money(newTotal)} {newTotal !== (Number(order.total) || 0) && <span style={{ color: '#94a3b8', fontWeight: 400, textDecoration: 'line-through' }}>{money(order.total)}</span>}</span>
-          </div>
-          <button className="btn btn-primary" disabled={busy} onClick={save} style={{ marginTop: 12 }}>Save item changes</button>
-
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '22px 0 6px', borderTop: '1px solid #eef1f5', paddingTop: 16 }}>Refund</div>
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
-            {order.stripe_pi_id ? 'Refunds the buyer’s card via Stripe.' : 'Team-tab order — records a credit/adjustment (no card to refund).'}
-            {Number(order.refunded_amt) > 0 && <> Already refunded {money(order.refunded_amt)}; up to <b>{money(remaining)}</b> remaining.</>}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ color: '#64748b' }}>$</span>
-            <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 120, padding: '8px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 14 }} />
-            <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
-            <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+              <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
+              <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{busy ? 'Processing…' : order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+            </div>
           </div>
         </div>
       </div>

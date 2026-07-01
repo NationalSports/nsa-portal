@@ -2,7 +2,7 @@
 // Pure data constants extracted from App.js
 
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount'];
+export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount','deco_pos'];
 export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','source','webstore_id','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected'];
 // Session-only underscore fields (_ss_live, _colorImage, _sizeCosts, etc.) are
 // intentionally excluded — they're set by vendor inventory hooks and live in
@@ -10,7 +10,7 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
 export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
-export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes'];
+export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','fulfillment','deco_po_id'];
 // NOTE: names_list (jsonb) and _cost_locked (boolean) exist in DB but PostgREST schema cache hasn't picked them up yet — add back here once Supabase refreshes
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
@@ -18,14 +18,15 @@ export const _estExtraCols=new Set(['promo_applied','promo_amount','update_reque
 // deco_pos is intentionally NOT in this strip-on-retry set: the column exists in the DB, so dropping it
 // on an upsert retry silently loses decorator/Topstar POs (the SO row saves, but its POs vanish).
 export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','delivered','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected']);
-export const _decoExtraCols=new Set(['print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','_cost_locked','names_list','split_group','split_sizes']);
+export const _decoExtraCols=new Set(['print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','_cost_locked','names_list','split_group','split_sizes','fulfillment','deco_po_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
 export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','prod_files_attached','preview_url','notes','status','archived','uploaded'];
-// Columns that may not exist in art file tables — stripped on retry
-export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches','archived','prod_files_attached']);
+export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','notes','status','archived','uploaded'];
+// Columns that may not exist in art file tables — stripped on retry (incl. mock_links/design_id
+// until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
+export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','sample_art','stitches','archived','prod_files_attached']);
 // Columns that may not exist in so_jobs — stripped on retry
 export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open']);
 export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group'];
@@ -291,7 +292,7 @@ export const DEFAULT_REPS=[
 export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'2238 N Glassell St Ste E',city:'Orange',state:'CA',zip:'92865',
   fullAddr:'2238 N Glassell St Ste E, Orange, CA 92865',
-  logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
+  logo:'NSA',logoUrl:'/NEW%20NSA%20Logo%20on%20white.png',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
 // Physical warehouse / receiving address (where goods ship back to). Distinct from the
@@ -311,8 +312,10 @@ export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attac
 // job may SKIP the production-files stage — a file merely sitting in prod_files (e.g. an order PDF) is
 // not enough; artProdFilesReady stays the looser gate for marking an already-staged job complete.
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
-export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete'};
-export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'}};
+export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
+// 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
+// dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.
+export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'},changes_requested:{bg:'#fee2e2',c:'#b91c1c'}};
 
 // ═══════════════════════════════════════════════
 // PRINT DOCUMENT HELPER — CSS string
@@ -379,8 +382,16 @@ export const FOOTWEAR_DEFAULT_SIZES=['7','7.5','8','8.5','9','9.5','10','10.5','
 export const NUMERIC_SIZES=['26','28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 // Default waist run for new numeric products
 export const NUMERIC_DEFAULT_SIZES=['28','30','32','34','36','38','40'];
+// Ball / small-numeric sizes for equipment that isn't apparel/footwear/waist — soccer balls
+// (3/4/5), basketballs (5/6/7), volleyballs (5), and similar small numeric runs. Note that
+// 5/6/7 already exist in the footwear block of SZ_ORD; the low numbers 1–4 are added there too
+// (right before '4.5') so a full ball run sorts 3,4,5 and passes every SZ_ORD.filter/includes site.
+export const BALL_SIZES=['1','2','3','4','5','6','7'];
+// Default run for a new ball / equipment product (soccer-ball sizing)
+export const BALL_DEFAULT_SIZES=['3','4','5'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','ST','MT','LT','XLT','2XLT','3XLT','4XLT','5XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
+  '1','2','3','4',
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
@@ -392,7 +403,13 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD
   'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
   'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
   'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA'};  // OSFM = One Size Fits Most (UA)
+  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
+  // Sports Inc's EDI feed truncates spelled-out sizes to 5 chars (seen on Augusta): MEDIUM->MEDIU,
+  // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
+  // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
+  // an Augusta extra-small would truncate the same way and gets caught by the order/over-bill check.)
+  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
+  'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
 // Status color/label map
 export const SC={
@@ -412,7 +429,7 @@ export const SC={
 
 // DATA — sample seeds removed; real data loads from Supabase on startup.
 export const D_C=[];
-export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
+export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:150},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
 // Vendors whose Add-to-Batch pops the "batch ready" prompt (batch PO# + link to Batch POs page) once the queue total reaches the threshold
 export const BATCH_NOTIFY_VENDORS=['momentec','sanmar','sss'];
 export const MACHINES=[

@@ -12,7 +12,7 @@ import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -23,9 +23,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // When a web logo / mockup is added, prompt for the color way it belongs to
   // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
   const[cwPrompt,setCwPrompt]=useState(null);
-  const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);
+  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -94,6 +93,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[initCust.id,sos]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
+  // show both store types in one place and jump into either.
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // Live order totals per web store (orders, gross, fundraising, units) so the Stores tab
+  // can show sales/order numbers inline and in the expandable reporting row — same "real
+  // demand only" filter the close-sweep uses (drop cancelled / never-paid carts).
+  useEffect(()=>{if(!supabase||!custWebstores.length)return;const ids=custWebstores.map(s=>s.id);let cancelled=false;(async()=>{
+    const{data:orders}=await supabase.from('webstore_orders').select('id,store_id,status,total,fundraise_amt').in('store_id',ids);
+    const live=(orders||[]).filter(o=>o.status!=='cancelled'&&o.status!=='pending'&&o.status!=='pending_payment');
+    const agg={};const orderStore={};
+    for(const o of live){orderStore[o.id]=o.store_id;const a=agg[o.store_id]||(agg[o.store_id]={orders:0,gross:0,fundraise:0,units:0});a.orders++;a.gross+=Number(o.total)||0;a.fundraise+=Number(o.fundraise_amt)||0;}
+    const liveIds=live.map(o=>o.id);
+    for(let i=0;i<liveIds.length;i+=200){const chunk=liveIds.slice(i,i+200);const{data:items}=await supabase.from('webstore_order_items').select('order_id,qty,is_bundle_parent').in('order_id',chunk);(items||[]).forEach(it=>{if(it.is_bundle_parent)return;const sid=orderStore[it.order_id];if(sid&&agg[sid])agg[sid].units+=Number(it.qty)||0});}
+    if(!cancelled)setWsAgg(agg);
+  })();return()=>{cancelled=true}},[custWebstores]);
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
@@ -193,7 +207,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
-      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
+      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
     </div>
   </div>
   {openBalance>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${openBalance.toLocaleString()}</div></div>}</div></div>
@@ -203,7 +217,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','catalog','roster','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','roster','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -434,6 +448,63 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <ThreadAdder onAdd={(tc)=>saveThreads([...threads,tc])} existingNames={threads.map(t=>t.name)}/>
     </div></div>})()}
+  {/* STORES TAB — web stores + OMG ("Order My Gear") stores for this account, open & past,
+      with a one-click jump into either store. */}
+  {tab==='webstores'&&(()=>{
+    const money=n=>'$'+(Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    const dt=s=>s?String(s).slice(0,10):'—';
+    const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
+    const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
+    const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
+    const th={padding:'8px 12px',textAlign:'left',fontSize:10.5,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.3};
+    const thR={...th,textAlign:'right'};
+    const td={padding:'8px 12px'};
+    const tdR={...td,textAlign:'right'};
+    const toggle=id=>setStExpanded(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+    const caret=ex=><span style={{display:'inline-block',width:12,color:'#94a3b8',fontSize:9,transform:ex?'rotate(90deg)':'none',transition:'transform .15s'}}>▶</span>;
+    const metric=(label,val)=><div key={label} style={{minWidth:84}}><div style={{fontSize:9.5,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{label}</div><div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginTop:1}}>{val}</div></div>;
+    const detailRow=(cols,metrics)=><tr><td colSpan={cols} style={{padding:0,background:'#f8fafc',borderTop:'1px solid #eef2f7'}}><div style={{display:'flex',flexWrap:'wrap',gap:22,padding:'12px 34px'}}>{metrics.filter(Boolean)}</div></td></tr>;
+    if(!ws.length&&!omg.length)return<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet.</div></div>;
+    const wsCols=8+(isP?1:0);
+    return <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      {ws.length>0&&<div className="card"><div className="card-header"><h2>Web Stores ({ws.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th>{isP&&<th style={th}>Director</th>}<th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
+          {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
+            <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
+              <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
+              <td style={{...td,fontWeight:700,color:'#0369a1'}}>{s.name}</td>
+              <td style={td}>{chip(s.status)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.open_at)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.close_at)}</td>
+              {isP&&<td style={{...td,color:'#64748b'}}>{s.director_name||'—'}</td>}
+              <td style={{...tdR,color:'#64748b'}}>{a.orders||0}</td>
+              <td style={{...tdR,fontWeight:700}}>{money(a.gross)}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenWebstore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenWebstore(s.id)}>Open store →</button>}</td>
+            </tr>
+            {ex&&detailRow(wsCols,[metric('Orders',a.orders||0),metric('Units',a.units||0),metric('Gross',money(a.gross)),metric('Fundraising',money(a.fundraise)),metric('Avg / order',money((a.orders?a.gross/a.orders:0))),s.director_name?metric('Director',s.director_name):null])}
+          </React.Fragment>;})}
+        </tbody></table>
+        <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Sales are live order totals (excludes cancelled / unpaid carts). Open a store for full reporting.</div>
+      </div></div>}
+      {omg.length>0&&<div className="card"><div className="card-header"><h2>OMG Stores ({omg.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
+          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');return <React.Fragment key={s.id}>
+            <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
+              <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
+              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+              <td style={td}>{chip(s.status)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
+              <td style={{...td,color:'#64748b'}}>{dt(s.close_date)}</td>
+              <td style={{...tdR,color:'#64748b'}}>{s.orders||0}</td>
+              <td style={{...tdR,fontWeight:700}}>{money(s.total_sales)}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
+            </tr>
+            {ex&&detailRow(8,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv)])}
+          </React.Fragment>;})}
+        </tbody></table>
+      </div></div>}
+    </div>;
+  })()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
     // Promo $ is owned by the parent customer; subs inherit (data is loaded with parent's id at the App level).
@@ -727,9 +798,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Helper: save customer art
     const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onRefreshCustomer(newCust)};
     const ownArt=customer.art_files||[];
-    const addCustArt=()=>{const newId='caf'+Date.now();saveCustArt([...ownArt,{id:newId,name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);setCustArtExpanded(newId)};
-    const uCustArt=(i,k,v)=>{saveCustArt(ownArt.map((a,x)=>x===i?{...a,[k]:v}:a))};
-    const rmCustArt=(i)=>{saveCustArt(ownArt.filter((_,x)=>x!==i))};
+    const addCustArt=()=>{const newId='caf'+Date.now();const rec={id:newId,name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()};saveCustArt([...ownArt,rec]);setCustArtDetail({...rec,_src:'library',_ownIdx:ownArt.length,_usedOnSOs:[],_allMockups:[],_allProd:[]})};
     // Build unified list with source tags + compute usage
     const unifiedAll=allArt.map(art=>{
       const st=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
@@ -786,7 +855,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {/* Unified art list */}
       {(()=>{
-        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
+        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;
           const _subLabel=isP&&!art._appliesToAll?(art._srcCustIds||[]).map(id=>teamName(id)).filter(Boolean).join(', '):'';
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
@@ -809,66 +878,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   {art._usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{art._usedOnSOs.length} order(s)</span>}
                 </div>
               </div>
-              {isEditable&&<button title="Edit details — name, type, size, status, delete" onClick={e=>{e.stopPropagation();setCustArtExpanded(isExp?null:art.id)}} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,border:'1px solid #cbd5e1',background:isExp?'#0f172a':'white',color:isExp?'white':'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}>Edit details <span style={{transition:'transform 0.2s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▼</span></button>}
+              {isEditable&&<button title="Edit details — name, type, size, status, delete" onClick={e=>{e.stopPropagation();setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}>Edit details</button>}
             </div>
-            {/* Expanded editor — only for customer library art */}
-            {isEditable&&isExp&&<div style={{padding:'0 14px 14px',borderTop:'1px solid #e2e8f0'}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,marginTop:10}}>
-                <input className="form-input" value={art.name} onChange={e=>uCustArt(oi,'name',e.target.value)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}}/>
-                <select style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,border:'1px solid #e2e8f0',background:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}} value={art._st} onChange={e=>uCustArt(oi,'status',e.target.value)}>
-                  <option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select>
-                <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmCustArt(oi)}}><Icon name="trash" size={10}/></button>
-              </div>
-              <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
-                <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uCustArt(oi,'deco_type',v)}/></div>
-              <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end'}}>
-                <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</label><input className="form-input" value={art.art_size||''} onChange={e=>uCustArt(oi,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
-              </div>
-              {/* Color Ways */}
-              <div style={{marginBottom:6}}>
-                <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uCustArt(oi,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(customer,allCustomers,'pantone_colors')} threadColors={mergeColors(customer,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
-              </div>
-              {/* Web logo — clean transparent cutout used to place this art on webstore garments */}
-              <div style={{marginBottom:6}}>
-                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#166534'}}>WEB LOGO</span><span style={{fontSize:9,color:'#94a3b8'}}>Clean PNG/SVG for webstores — placed &amp; recolored on garments</span></div>
-                {art.web_logo_url&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                  <div style={{width:54,height:54,borderRadius:6,background:'#fff',border:'1px solid #bbf7d0',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}><img src={art.web_logo_url} alt="" style={{maxWidth:'90%',maxHeight:'90%',objectFit:'contain'}}/></div>
-                  <button onClick={()=>uCustArt(oi,'web_logo_url','')} style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:4,border:'1px solid #fca5a5',background:'#fef2f2',color:'#dc2626',cursor:'pointer'}}>Remove</button>
-                </div>}
-                <div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-store-art');uCustArt(oi,'web_logo_url',url);nf('Web logo added')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}
-                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
-                  onDragLeave={e=>{e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0'}}
-                  onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#f0fdf4';e.currentTarget.style.borderColor='#bbf7d0';const f=Array.from(e.dataTransfer.files)[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-store-art');uCustArt(oi,'web_logo_url',url);nf('Web logo added')}catch(err){nf('Upload failed: '+err.message,'error')}}}>
-                  <div style={{fontSize:11,color:'#166534',fontWeight:600}}>{art.web_logo_url?'Replace web logo':'Drop a transparent PNG/SVG or click to browse'}</div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>Used on webstores to place this art on garments</div></div>
-              </div>
-              <div style={{marginBottom:6}}>
-                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>MOCKUP FILES</span></div>
-                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{art._mockups.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
-                  <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...art._mockups];mf.splice(fi,1);uCustArt(oi,'mockup_files',mf);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
-                <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#eff6ff'}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let acc=[...art._mockups];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(oi,'mockup_files',acc);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[]);nf(f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
-                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
-                  onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
-                  onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';let acc=[...art._mockups];for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(oi,'mockup_files',acc);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[]);nf(f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
-                  <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}>Drop mockup files or click to browse</div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
-              </div>
-              <div style={{marginBottom:6}}>
-                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>PRODUCTION FILES</span><span style={{fontSize:9,color:'#94a3b8'}}>Internal only</span></div>
-                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
-                  <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uCustArt(oi,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
-                <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#fffbeb'}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let acc=[...(art.prod_files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');acc=[...acc,{url,name:f.name}];uCustArt(oi,'prod_files',acc);nf(f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
-                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
-                  onDragLeave={e=>{e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                  onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';let acc=[...(art.prod_files||[])];for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');acc=[...acc,{url,name:f.name}];uCustArt(oi,'prod_files',acc);nf(f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
-                  <div style={{fontSize:11,color:'#d97706',fontWeight:600}}>Drop production files or click to browse</div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
-              </div>
-              <input className="form-input" value={art.notes||''} onChange={e=>uCustArt(oi,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
-            </div>}
           </div>};
         if(filtered.length===0)return<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>;
         if(!isP)return<div style={{display:'flex',flexDirection:'column',gap:8}}>{filtered.map(renderArtCard)}</div>;
@@ -894,6 +905,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Persist file add/remove/tag via the lightweight art-files-only save so we don't re-persist
     // the whole order (items/POs) — which trips data-loss guards when items aren't hydrated here.
     const saveArt=onSaveArtFiles||onSaveSO;
+    // This art is one of the customer's own library records → its core fields (name,
+    // type, size, status, notes) are editable right here, and it can be deleted. Edits
+    // match by id so renaming/retyping doesn't lose the row. (Order/estimate-sourced art
+    // that isn't in the library yet stays read-only, same as before.)
+    const isOwnLib=(customer.art_files||[]).some(a=>a.id===art.id);
+    const editLib=(patch)=>{const lib=customer.art_files||[];if(!lib.some(a=>a.id===art.id))return;const newCust={...customer,art_files:lib.map(a=>a.id===art.id?{...a,...patch}:a)};setCustLocal(newCust);onRefreshCustomer(newCust);setCustArtDetail(d=>d?{...d,...patch}:d)};
+    const delLib=()=>{if(!window.confirm('Delete "'+(art.name||'this artwork')+'" from the library? This cannot be undone.'))return;const lib=customer.art_files||[];const newCust={...customer,art_files:lib.filter(a=>a.id!==art.id)};setCustLocal(newCust);onRefreshCustomer(newCust);setCustArtDetail(null);nf&&nf('Artwork deleted')};
     // If no precomputed data, compute it
     const mockups=allMockups.length>0?allMockups:(art.mockup_files||art.files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Remove a file from this artwork everywhere it's attached (mockups/files/prod/item_mockups)
@@ -1076,16 +1094,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
     const _hasDefaultWebLogo=webLogos.some(w=>w.url&&!((w.color_way||'').trim()));
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
-      <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
+      <div className="modal-header">{isOwnLib?<input value={art.name||''} onChange={e=>editLib({name:e.target.value})} placeholder="Art group name…" style={{flex:1,fontSize:18,fontWeight:800,border:'1px solid #e2e8f0',borderRadius:8,padding:'5px 10px',marginRight:10,outline:'none',color:'#0f172a'}}/>:<h2>{art.name||'Untitled'}</h2>}<button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
-        {/* Art details */}
-        <div style={{display:'flex',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap'}}>
+        {/* Art details — editable for own library art, read-only otherwise */}
+        {isOwnLib&&<div style={{display:'flex',gap:14,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap',alignItems:'flex-end'}}>
+          <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Type</div><Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>editLib({deco_type:v})}/></div>
+          <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Size</div><input className="form-input" value={art.art_size||''} onChange={e=>editLib({art_size:e.target.value})} placeholder='e.g. 12" x 4"' style={{fontSize:12,width:150}}/></div>
+          <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Status</div><select value={art.status||'waiting_for_art'} onChange={e=>editLib({status:e.target.value})} style={{padding:'5px 8px',borderRadius:8,fontSize:12,fontWeight:600,border:'1px solid #e2e8f0',background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}}><option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select></div>
+        </div>}
+        {!isOwnLib&&<div style={{display:'flex',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap'}}>
           <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Type</span><div style={{fontSize:13,fontWeight:600}}>{(art.deco_type||'').replace(/_/g,' ')||'—'}</div></div>
           {art.art_size&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</span><div style={{fontSize:13,fontWeight:600}}>{art.art_size}</div></div>}
           {art.ink_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Colors</span><div style={{fontSize:12}}>{art.ink_colors.split('\n').filter(l=>l.trim()).map((c,ci)=><div key={ci} style={{fontWeight:600}}>{c.trim()}</div>)}</div></div>}
           {art.thread_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread</span><div style={{fontSize:13,fontWeight:600}}>{art.thread_colors}</div></div>}
           <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Status</span><div><span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span></div></div>
-        </div>
+        </div>}
         {/* Color Ways (editable) */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
@@ -1233,10 +1256,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>
         </div>}
         {usedOnSOs.length===0&&art._src==='library'&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>Not yet used on any orders</div>}
-        {art.notes&&<div style={{marginTop:12,fontSize:12,color:'#64748b',padding:8,background:'#f1f5f9',borderRadius:6}}>Notes: {art.notes}</div>}
+        {isOwnLib?<div style={{marginTop:12}}><input className="form-input" value={art.notes||''} onChange={e=>editLib({notes:e.target.value})} placeholder="Notes…" style={{fontSize:12,width:'100%'}}/></div>:(art.notes&&<div style={{marginTop:12,fontSize:12,color:'#64748b',padding:8,background:'#f1f5f9',borderRadius:6}}>Notes: {art.notes}</div>)}
       </div>
       <div className="modal-footer">
         {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
+        {isOwnLib&&<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5',marginRight:isP&&!art._appliesToAll?0:'auto'}} onClick={delLib}><Icon name="trash" size={12}/> Delete</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div>
     {cwPrompt&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
@@ -1438,7 +1462,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const toList=stmtEmail.split(',').map(s=>s.trim()).filter(s=>s&&/@/.test(s));
           if(toList.length===0){nf('Enter a valid email address','error');return}
           setStmtSending(true);
-          const portalUrl=customer.alpha_tag?(window.location.origin+'/?portal='+customer.alpha_tag):'';
+          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+customer.alpha_tag):'';
           const rep=REPS.find(r=>r.id===customer.primary_rep_id);
           const repEmail=rep&&cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'';
           const senderEmail=stmtFrom==='rep'&&repEmail?repEmail:'accounting@nationalsportsapparel.com';

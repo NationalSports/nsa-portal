@@ -13,7 +13,7 @@
 // grow into a multi-brand catalog later (Sanmar, Momentec) — the grouping and
 // filter logic only assume {sku,name,color,category,sizes[]} per variant.
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabaseCoach as supabase } from '../lib/supabaseCoach';
 import { rQ, auTierDisc } from '../pricing';
 
 // Type system aligned with the NSA marketing site (same as Storefront.js)
@@ -128,6 +128,9 @@ const catalogPath = () => window.location.pathname.replace(/\/+$/, '') || '/adid
 // the site header isn't doubled up. A cross-origin iframe can't be styled from
 // the parent page, so this has to be opted into here.
 const isEmbedded = () => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } };
+// Reorder deep-link from the coach portal Art Locker: /adidas?art=<url>&an=<name>&ad=<deco>.
+// Carries a saved design into the order so the artwork reaches the rep on the request.
+const REORDER_ART = (() => { try { const p = new URLSearchParams(window.location.search); const url = p.get('art'); if (!url) return null; return { url, name: p.get('an') || 'Your design', deco: (p.get('ad') || '').trim() }; } catch { return null; } })();
 
 // "Adidas" + "W LS Pregame" → "Adidas W LS Pregame". Won't double up when the
 // name already leads with the brand (only a leading "adidas" is stripped for
@@ -142,6 +145,11 @@ const withBrand = (brand, name) => {
 // Light category cleanup so near-duplicate labels land in one bucket.
 const CATEGORY_ALIASES = { Hood: 'Hoods', Jerseys: 'Jersey', 'Jersey Tops': 'Jersey', 'Jersey Bottoms': 'Jersey' };
 const normCategory = (c) => CATEGORY_ALIASES[c] || c || 'Other';
+// Quick-pick category chips shown above the grid — the types coaches shop most,
+// with Footwear surfaced first so it reads as its own section. Only chips whose
+// category is actually present (live, imaged stock) render; the complete list of
+// categories still lives in the "Item type" dropdown for the long tail.
+const QUICK_CATS = ['Footwear', 'Tees', 'Hoods', '1/4 Zips', 'Outerwear', 'Polos', 'Shorts', 'Pants', 'Jersey', 'Hats', 'Bags', 'Socks'];
 // Bags browse as one "Bags" category (backpacks, duffels, totes, coolers, …).
 // The marquee team duffels (Defender, Team Issue) merchandise to the very top,
 // then any other duffel — coaches shop bags by these first. Sort-only: the DB
@@ -322,6 +330,38 @@ async function fetchAllPages(buildQuery) {
 // Columns LiveLook needs for a product row — shared by the catalog load and the
 // on-demand search effect. No cost columns: this renders on a public storefront.
 const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
+
+// Live per-size availability for a set of product SKUs (inventory_unified) and a
+// set of product ids (product_inventory = NSA in-house stock). Both feeds are
+// read in URL-safe chunks: a single PostgREST .in() list of more than a few
+// hundred values builds a request URL the Supabase gateway rejects outright with
+// a bare 400 "Bad Request" — which is exactly what took LiveLook down once the
+// featured set grew large. Splitting into batches of 400 (fetched in waves of 6)
+// keeps every request well under the URL limit no matter how big the catalog or
+// the featured/teaser set gets. Shared by both load phases and on-demand search.
+const INV_SELECT = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced';
+const chunkArr = (arr, n) =>
+  Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
+async function fetchInventory(skus, ids, isAlive = () => true) {
+  const waves = async (batches, buildReq) => {
+    const rows = [];
+    for (let w = 0; w < batches.length; w += 6) {
+      if (!isAlive()) return rows;
+      const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
+      for (const r of res) { if (r.error) throw r.error; rows.push(...(r.data || [])); }
+    }
+    return rows;
+  };
+  const [inv, ih] = await Promise.all([
+    waves(chunkArr(skus, 400), (batch) =>
+      supabase.from('inventory_unified').select(INV_SELECT)
+        .in('sku', batch).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
+    waves(chunkArr(ids, 400), (batch) =>
+      supabase.from('product_inventory').select('product_id,size,quantity')
+        .in('product_id', batch).gt('quantity', 0).limit(2000)),
+  ]);
+  return { inv, ih };
+}
 
 function buildStyles(prods, inv, inHouseRows, opts = {}) {
   const bySku = {};
@@ -699,9 +739,10 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
   };
 
   const share = async () => {
-    // Build the link off the current path so it works whether the catalog is on
-    // /adidas or proxied onto nationalsportsapparel.com/livelook.
-    const url = `${window.location.origin}${catalogPath()}?style=${encodeURIComponent(st.colorways[0].sku)}`;
+    // Always share the public marketing URL (nationalsportsapparel.com/livelook) so the
+    // link never exposes the raw nsa-portal.netlify.app app origin — even when a staff
+    // member shares from /adidas inside the app.
+    const url = `https://nationalsportsapparel.com/livelook?style=${encodeURIComponent(st.colorways[0].sku)}`;
     if (navigator.share) {
       try { await navigator.share({ title: `${st.name} — NSA adidas catalog`, url }); return; } catch { /* fall through to copy */ }
     }
@@ -1018,9 +1059,16 @@ function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoadi
   );
 }
 
+// Decoration methods a coach can request per item. Multi-select (an item can be
+// screen-printed AND embroidered); "no deco" is the absence of any. Stored on the
+// line as a comma-joined `decoration` string so the rep email / inbox / estimate
+// all read one display value, with the free-text in `decoration_note`.
+const DECO_METHODS = ['Screen print', 'Embroidery', 'Heat press'];
+const parseDeco = (s) => new Set(String(s || '').split(',').map((x) => x.trim()).filter(Boolean));
+
 // ── Order list drawer: review lines, coach info, send to rep ─────────
-function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList, onClose, notify, account,
-  savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder }) {
+function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onClose, notify, account,
+  savedOrders = [], activeOrderId = null, savedLoading = false, onSaveOrder, onLoadOrder, onRenameOrder, onDeleteOrder, onNewOrder, reorderArt = null }) {
   const [coach, setCoach] = useState(() => {
     const s = loadJson(COACH_KEY, { name: '', email: '', phone: '', team: '' });
     // Signed-in coach account prefills anything the browser doesn't remember
@@ -1046,6 +1094,14 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
     if (o) { setOrderName(o.name && o.name !== 'Untitled order' ? o.name : ''); setNotes(o.notes || ''); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeOrderId]);
+
+  // Reorder deep-link: pre-attach the carried design to a fresh cart's notes so the rep gets it.
+  useEffect(() => {
+    if (reorderArt && !activeOrderId) {
+      setNotes((n) => n ? n : ('Reorder of our design "' + reorderArt.name + '"' + (reorderArt.deco ? ' (' + reorderArt.deco + ')' : '') + '. Please apply this artwork. Logo on file: ' + reorderArt.url));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -1120,8 +1176,11 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
           coach_phone: coach.phone.trim(),
           team_name: coach.team.trim(),
           notes: notes.trim(),
+          // The coach's order name becomes the estimate's memo line when the rep
+          // builds it from this request.
+          order_name: orderName.trim(),
           customer_id: (account && account.customerId) || null,
-          lines: list.map((l) => ({ sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration })),
+          lines: list.map((l) => ({ sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size, qty: l.qty, price: l.price, inbound: l.inbound, decoration: l.decoration, decoration_note: l.decoration_note })),
           images: images.map(({ name, type, content }) => ({ name, type, content })),
         }),
       });
@@ -1218,6 +1277,17 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
               {groups.map((g) => {
                 const gUnits = g.lines.reduce((a, l) => a + l.qty, 0);
                 const gTotal = g.lines.reduce((a, l) => a + (l.price || 0) * l.qty, 0);
+                const deco = parseDeco(g.lines[0].decoration);
+                const decoNote = g.lines[0].decoration_note || '';
+                // Toggle one decoration method on/off for this SKU. Clearing the
+                // last method drops the note too. Picking any method is mutually
+                // exclusive with "no deco" (which is just the empty set).
+                const toggleMethod = (m) => {
+                  const next = new Set(deco);
+                  if (next.has(m)) next.delete(m); else next.add(m);
+                  const joined = DECO_METHODS.filter((x) => next.has(x)).join(', ');
+                  setSkuDeco(g.sku, { decoration: joined || null, decoration_note: joined ? decoNote : null });
+                };
                 return (
                 <div key={g.sku} style={{ padding: '12px 0', borderBottom: '1px solid #F0F1F4' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -1229,13 +1299,32 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                     </div>
                     <button onClick={() => removeSku(g)} aria-label={`Remove ${g.name}`} style={{ border: 'none', background: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 15, fontWeight: 700, flex: 'none', padding: 2 }}>✕</button>
                   </div>
-                  <select className="ai-input" style={{ width: 'auto', padding: '3px 6px', fontSize: 11.5, marginTop: 6, color: g.lines[0].decoration ? '#2563EB' : '#6A7180', fontWeight: 600 }}
-                    value={g.lines[0].decoration || ''} onChange={(e) => setSkuDecoration(g.sku, e.target.value)} aria-label={`Decoration for ${g.name}`}>
-                    <option value="">Blank (no decoration)</option>
-                    <option>Screen print</option>
-                    <option>Embroidery</option>
-                    <option>Heat press</option>
-                  </select>
+                  {/* Decoration: tap any methods that apply (an item can be
+                      screen-printed AND embroidered). A description box appears
+                      once a method is on; its text rides into the estimate line's
+                      notes so the rep sees exactly what the coach wants. */}
+                  <div role="group" aria-label={`Decoration for ${g.name}`} style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {DECO_METHODS.map((m) => {
+                      const on = deco.has(m);
+                      return (
+                        <button key={m} type="button" className={'ai-filterbtn' + (on ? ' on' : '')} aria-pressed={on}
+                          onClick={() => toggleMethod(m)} style={{ padding: '4px 11px', fontSize: 12 }}>
+                          {on ? '✓ ' : ''}{m}
+                        </button>
+                      );
+                    })}
+                    <button type="button" className={'ai-filterbtn' + (deco.size === 0 ? ' on' : '')} aria-pressed={deco.size === 0}
+                      onClick={() => setSkuDeco(g.sku, { decoration: null, decoration_note: null })} style={{ padding: '4px 11px', fontSize: 12 }}>
+                      No deco
+                    </button>
+                  </div>
+                  {deco.size > 0 && (
+                    <textarea className="ai-input" rows={2} value={decoNote}
+                      onChange={(e) => setSkuDeco(g.sku, { decoration_note: e.target.value })}
+                      placeholder={`Describe the ${[...deco].join(' + ').toLowerCase()} — logo/text, colors, placement…`}
+                      aria-label={`Decoration details for ${g.name}`}
+                      style={{ marginTop: 7, resize: 'vertical', fontSize: 13, padding: '7px 10px' }} />
+                  )}
                   {/* Every size for this item sits on one line — type a qty under each (0 removes it). */}
                   <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-start' }}>
                     {g.lines.map((l) => (
@@ -1278,6 +1367,14 @@ function OrderDrawer({ list, updateLine, setSkuDecoration, removeLine, clearList
                 <input className="ai-input" placeholder="Email *" type="email" value={coach.email} onChange={setField('email')} />
                 <input className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
               </div>
+              {reorderArt && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '9px 11px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10 }}>
+                  {/\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(reorderArt.url)
+                    ? <img src={reorderArt.url} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, background: '#fff', border: '1px solid #E2E5EA', flexShrink: 0 }} />
+                    : <span style={{ fontSize: 26 }}>🎨</span>}
+                  <div style={{ fontSize: 12, color: '#166534', lineHeight: 1.35 }}><b>{reorderArt.name}</b> is attached to this order{reorderArt.deco ? ' (' + reorderArt.deco + ')' : ''}. Your rep will apply this artwork.</div>
+                </div>
+              )}
               <textarea className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 {images.map((im, i) => (
@@ -1464,16 +1561,18 @@ export default function AdidasInventory() {
       const i = prev.findIndex((l) => l.sku === cw.sku && l.size === size);
       if (n === 0) return i >= 0 ? prev.filter((_, j) => j !== i) : prev;
       if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: n } : l));
-      return [...prev, { sku: cw.sku, brand: st.brand, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null }];
+      return [...prev, { sku: cw.sku, brand: st.brand, name: st.name, color: cw.color || cw.family, size, qty: n, price: (yourPriceFn(cw) || cw.price) || 0, inbound: inbound || null, decoration: null, decoration_note: null }];
     });
   }, [mutateList, yourPriceFn]);
   const updateLine = useCallback((i, qty) => {
     mutateList((prev) => (qty <= 0 ? prev.filter((_, j) => j !== i) : prev.map((l, j) => (j === i ? { ...l, qty: Math.min(9999, qty) } : l))));
   }, [mutateList]);
-  // Decoration is chosen per item (colorway), so it applies to every size of
-  // that SKU on the list at once.
-  const setSkuDecoration = useCallback((sku, deco) => {
-    mutateList((prev) => prev.map((l) => (l.sku === sku ? { ...l, decoration: deco || null } : l)));
+  // Decoration is chosen per item (colorway), so a patch applies to every size
+  // of that SKU on the list at once. `patch` is a partial line — { decoration,
+  // decoration_note } — letting the drawer toggle methods and edit the note
+  // without clobbering the other field.
+  const setSkuDeco = useCallback((sku, patch) => {
+    mutateList((prev) => prev.map((l) => (l.sku === sku ? { ...l, ...patch } : l)));
   }, [mutateList]);
   const removeLine = useCallback((i) => mutateList((prev) => prev.filter((_, j) => j !== i)), [mutateList]);
   const clearList = useCallback(() => mutateList(() => []), [mutateList]);
@@ -1504,6 +1603,7 @@ export default function AdidasInventory() {
   const linesForSave = useCallback(() => list.map((l) => ({
     sku: l.sku, brand: l.brand, name: l.name, color: l.color, size: l.size,
     qty: l.qty, price: l.price, inbound: l.inbound || null, decoration: l.decoration || null,
+    decoration_note: l.decoration_note || null,
   })), [list]);
 
   // Create or update a saved order from the current cart. forceNew always inserts
@@ -1682,18 +1782,11 @@ export default function AdidasInventory() {
         const prods = [...(featRes.data || []), ...quickResults.flatMap((r) => r.data || [])];
         const skus  = [...new Set(prods.map((p) => p.sku))];
         const ids   = [...new Set(prods.map((p) => p.id))];
-        const [invRes, ihRes] = await Promise.all([
-          supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(20000),
-          supabase.from('product_inventory')
-            .select('product_id,size,quantity')
-            .in('product_id', ids).gt('quantity', 0).limit(5000),
-        ]);
+        // Chunked so the SKU/id .in() lists can't overflow the gateway URL limit
+        // (a large featured + teaser set previously 400'd here and broke LiveLook).
+        const { inv, ih } = await fetchInventory(skus, ids, () => alive);
         if (!alive) return;
-        if (invRes.error) throw invRes.error;
-        if (ihRes.error) throw ihRes.error;
-        const { grouped, synced } = buildStyles(prods, invRes.data || [], ihRes.data || [], { groups: groupsData });
+        const { grouped, synced } = buildStyles(prods, inv, ih, { groups: groupsData });
         if (!alive) return;
         setStyles(grouped);
         setLastSynced(synced);
@@ -1718,35 +1811,7 @@ export default function AdidasInventory() {
           const allSkus = [...new Set(allProds.map((p) => p.sku))];
           const allIds  = [...new Set(allProds.map((p) => p.id))];
 
-          // Chunk into groups of 400 to stay within PostgREST URL limits.
-          const chunks = (arr, n) =>
-            Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
-          const skuBatches = chunks(allSkus, 400);
-          const idBatches  = chunks(allIds,  400);
-
-          // Fetch all batches in waves of 6 (mirrors fetchAllPages concurrency).
-          const wavesFetch = async (batches, buildReq) => {
-            const rows = [];
-            for (let w = 0; w < batches.length; w += 6) {
-              if (!alive) return rows;
-              const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
-              for (const r of res) {
-                if (r.error) throw r.error;
-                rows.push(...(r.data || []));
-              }
-            }
-            return rows;
-          };
-
-          const [allInv, allIh] = await Promise.all([
-            wavesFetch(skuBatches, (skus) =>
-              supabase.from('inventory_unified')
-                .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-                .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
-            wavesFetch(idBatches, (ids) =>
-              supabase.from('product_inventory')
-                .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000)),
-          ]);
+          const { inv: allInv, ih: allIh } = await fetchInventory(allSkus, allIds, () => alive);
           if (!alive) return;
 
           const full = buildStyles(allProds, allInv, allIh, { groups: groupsData });
@@ -1797,16 +1862,10 @@ export default function AdidasInventory() {
         if (!prods || !prods.length) { setSearchExtra([]); return; }
         const skus = [...new Set(prods.map((p) => p.sku))];
         const ids  = [...new Set(prods.map((p) => p.id))];
-        const [invRes, ihRes] = await Promise.all([
-          supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced')
-            .in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000),
-          supabase.from('product_inventory')
-            .select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0).limit(2000),
-        ]);
+        const { inv, ih } = await fetchInventory(skus, ids, () => alive);
         if (!alive) return;
         // keepAllMomentec: don't drop non-featured Momentec from search results.
-        const { grouped } = buildStyles(prods, invRes.data || [], ihRes.data || [], { keepAllMomentec: true, groups: productGroups });
+        const { grouped } = buildStyles(prods, inv, ih, { keepAllMomentec: true, groups: productGroups });
         setSearchExtra(grouped);
       } catch (e) {
         if (alive) { console.warn('[livelook] search failed:', (e && e.message) || e); setSearchExtra([]); }
@@ -2123,6 +2182,20 @@ export default function AdidasInventory() {
               {!loading && loadingAll ? ' · loading more…' : ''}
             </span>
           </div>
+          {/* Quick category chips — one-tap "sections" for the most-shopped types
+              (Footwear surfaced first). Full category list stays in the dropdown above. */}
+          {facets.categories.length > 1 && (
+          <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>Shop:</span>
+            <button className={'ai-filterbtn' + (category === 'All' ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }} onClick={() => setCategory('All')}>All</button>
+            {QUICK_CATS.filter((c) => facets.categories.some((fc) => fc.v === c)).map((c) => (
+              <button key={c} className={'ai-filterbtn' + (category === c ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }}
+                onClick={() => setCategory(category === c ? 'All' : c)}>
+                {c === 'Footwear' ? '👟 Footwear' : c}
+              </button>
+            ))}
+          </div>
+          )}
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>In stock in:</span>
             {FILTER_SIZES.map((s) => (
@@ -2222,7 +2295,7 @@ export default function AdidasInventory() {
         <OrderDrawer
           list={list}
           updateLine={updateLine}
-          setSkuDecoration={setSkuDecoration}
+          setSkuDeco={setSkuDeco}
           removeLine={removeLine}
           clearList={clearList}
           onClose={() => setDrawerOpen(false)}
@@ -2236,6 +2309,7 @@ export default function AdidasInventory() {
           onRenameOrder={renameOrder}
           onDeleteOrder={deleteOrder}
           onNewOrder={newBlankOrder}
+          reorderArt={REORDER_ART}
         />
       )}
 

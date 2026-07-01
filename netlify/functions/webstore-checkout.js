@@ -117,7 +117,7 @@ async function priceCart(sb, store, cart) {
       const unit = r2(unitPrice + sizeExtra);
       subtotal += r2(unit * qty);
       fundraise += r2((fundAmt + nameExtra) * qty);
-      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, image: wp.image_url });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url });
     }
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise) };
@@ -135,13 +135,15 @@ const _availForSize = (p, size) => {
 };
 
 // Mirrors the storefront's verifyStock(): on-hand + vendor stock per size (incl. tall
-// twin), with incoming/ETA items allowed as backorders. Read through the storefront view.
+// twin), with incoming/ETA items allowed as backorders. Read through the storefront
+// view — whose vendor stock/ETA now span every synced vendor (inventory_unified, not
+// just Adidas), so non-Adidas items are validated against real vendor availability.
 async function checkStock(sb, store, lines) {
   const singles = lines.filter((l) => l.kind === 'single' && l.size);
   if (!singles.length) return null;
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta')
+    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return null; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
@@ -149,6 +151,9 @@ async function checkStock(sb, store, lines) {
   const short = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+    // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
+    const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+    if (!tracked) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
@@ -186,11 +191,88 @@ async function loadCoupon(sb, store, code) {
 }
 
 const shipFee = (store) => store.delivery_mode === 'ship_home' ? r2(store.flat_shipping) : 0;
+// Store processing fee: a flat percent of the item subtotal only (not shipping,
+// tax, or fundraising). Standard 5%, configurable per store; 0 turns it off.
+const procFee = (store, subtotal) => r2((Number(store.processing_pct) || 0) / 100 * (Number(subtotal) || 0));
 
 function couponDiscount(coupon, cartTotal, shipping) {
   if (!coupon || coupon.kind !== 'percent') return 0;
   const base = cartTotal + (coupon.cover_shipping !== false ? (Number(shipping) || 0) : 0);
   return r2(base * (Number(coupon.value) || 0) / 100);
+}
+
+// ── Sales tax ────────────────────────────────────────────────────────
+// CA orders use the free CDTFA address rate service; out-of-state orders use the
+// (metered) TaxCloud edge function, which applies the apparel TIC + each state's
+// exemptions. We only collect where NSA is registered — TAX_COLLECT_STATES (default
+// "CA"); a destination state not on that list is taxed at $0 (we can't remit it).
+// Pickup / team-delivery orders source to NSA's origin (possession happens there).
+const taxCollectStates = () => (process.env.TAX_COLLECT_STATES || 'CA').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+const TAX_ORIGIN = {
+  street1: process.env.NSA_ORIGIN_ADDRESS || '',
+  city: process.env.NSA_ORIGIN_CITY || '',
+  state: (process.env.NSA_ORIGIN_STATE || 'CA').toUpperCase(),
+  zip: (process.env.NSA_ORIGIN_ZIP || '').slice(0, 5),
+};
+
+// CDTFA free rate-by-address lookup (California only). Returns a decimal rate or null.
+async function cdtfaRate({ street1, city, zip }) {
+  try {
+    const qs = new URLSearchParams({ address: street1 || '', city: city || '', zip: (zip || '').slice(0, 5) });
+    const res = await fetch('https://services.maps.cdtfa.ca.gov/api/taxrate/GetRateByAddress?' + qs.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const info = data && Array.isArray(data.taxRateInfo) ? data.taxRateInfo[0] : null;
+    const rate = info && Number(info.rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch (e) { console.warn('[webstore-checkout] CDTFA lookup failed:', e.message); return null; }
+}
+
+// TaxCloud rate via the deployed edge function (respects its monthly cap + apparel TIC).
+async function taxcloudRate({ street1, city, state, zip }) {
+  const url = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  try {
+    const res = await fetch(url + '/functions/v1/taxcloud-lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key, apikey: key },
+      body: JSON.stringify({ address1: street1 || '', city, state, zip5: (zip || '').slice(0, 5) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    const rate = data && data.ok ? Number(data.tax_rate) : NaN;
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch (e) { console.warn('[webstore-checkout] TaxCloud lookup failed:', e.message); return null; }
+}
+
+// Returns { tax, rate, state, source } for a taxable base (product subtotal).
+async function calcTax(store, ship, taxableBase, billing) {
+  const base = Math.max(0, Number(taxableBase) || 0);
+  if (base <= 0) return { tax: 0, rate: 0, state: '', source: 'zero_base' };
+  const isPickup = store.delivery_mode !== 'ship_home';
+  let dest;
+  if (isPickup) {
+    // Club-delivery: tax at the BUYER's home ZIP (their address), not NSA's origin.
+    // CA buyers pay their local rate; a ZIP outside CA's range is treated as out-of-state
+    // (we only collect where registered). No ZIP → can't source tax, so $0.
+    const zip = String((billing && billing.zip) || '').replace(/\D/g, '').slice(0, 5);
+    if (!zip) return { tax: 0, rate: 0, state: '', source: 'no_buyer_zip' };
+    const zn = Number(zip);
+    const isCaZip = zn >= 90001 && zn <= 96162;
+    dest = { street1: '', city: '', state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(), zip };
+  } else {
+    dest = { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
+  }
+  if (!dest.state || !taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
+  if (dest.state === 'CA') {
+    let rate = await cdtfaRate(dest);
+    let source = 'cdtfa';
+    if (rate == null) { rate = Number(process.env.CA_DEFAULT_TAX_RATE) || 0.0775; source = 'cdtfa_fallback'; }
+    return { tax: r2(base * rate), rate, state: 'CA', source };
+  }
+  const rate = await taxcloudRate(dest);
+  if (rate == null) return { tax: 0, rate: 0, state: dest.state, source: 'taxcloud_unavailable' };
+  return { tax: r2(base * rate), rate, state: dest.state, source: 'taxcloud' };
 }
 
 exports.handler = async (event) => {
@@ -203,6 +285,7 @@ exports.handler = async (event) => {
 
   try {
     if (body.action === 'place_order') return await placeOrder(sb, body);
+    if (body.action === 'quote') return await quoteTotals(sb, body);
     if (body.action === 'finalize') return await finalize(sb, body);
     if (body.action === 'check_coupon') return await checkCoupon(sb, body);
     if (body.action === 'get_order') return await getOrder(sb, body);
@@ -245,15 +328,24 @@ async function placeOrder(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const total = Math.max(0, r2(cartTotal + shipping - discount));
-  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, discount, total };
+  const processing = procFee(store, priced.subtotal);
+  const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
 
-  // If the client's displayed total drifted from the server's (stale price,
-  // tampered cart), bounce with the real numbers instead of silently charging
-  // a different amount than the shopper saw.
-  if (expectedTotalCents != null && Math.abs(Math.round(total * 100) - Math.round(Number(expectedTotalCents))) > 1) {
-    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals });
+  // The drift guard validates the PRE-TAX total — the number the shopper saw and
+  // approved. Tax is computed server-side and added on top, so a stale price still
+  // bounces but the (always server-authoritative) tax never trips this check.
+  if (expectedTotalCents != null && Math.abs(Math.round(preTax * 100) - Math.round(Number(expectedTotalCents))) > 1) {
+    return bad(409, 'Prices were updated while you were shopping — please review your total and try again.', { code: 'totals_changed', totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, total: preTax } });
   }
+
+  // Sales tax on the product subtotal (CA via CDTFA, registered out-of-state via TaxCloud).
+  // When a coupon fully covers the pre-tax total the order is comped — charge no tax
+  // either, so we never create an "unpaid" order carrying tax that is never collected
+  // (and never email a buyer a total they weren't charged).
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal, { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
+  const tax = taxRes.tax;
+  const total = r2(preTax + tax);
+  const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
 
   let mode = payMode === 'paid' ? 'paid' : 'unpaid';
   if (total <= 0) mode = 'unpaid'; // fully covered by a code → no card
@@ -269,7 +361,7 @@ async function placeOrder(sb, body) {
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
-    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, total,
+    subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   }).select().single();
   if (ordErr) return bad(502, 'Could not create the order: ' + ordErr.message);
@@ -289,7 +381,7 @@ async function placeOrder(sb, body) {
       items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
       l.components.forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
-      items.push({ order_id: order.id, product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name, player_number: l.player_number, name: l.name || null, color: l.color, image_url: l.image || null, line_status: 'pending' });
+      items.push({ order_id: order.id, product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
   }
   const { error: itemErr } = await sb.from('webstore_order_items').insert(items);
@@ -354,6 +446,27 @@ async function placeOrder(sb, body) {
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals }) };
 }
 
+// Price + tax preview (no order written) so the storefront can show the tax line
+// once it knows the ship-to address, before the shopper commits to paying.
+async function quoteTotals(sb, body) {
+  const { storeSlug, cart, ship, couponCode, billing } = body;
+  const { data: stores } = await sb.from('webstores').select('*').eq('slug', String(storeSlug || '')).limit(1);
+  const store = stores && stores[0];
+  if (!store) return bad(404, 'Store not found');
+  const priced = await priceCart(sb, store, cart);
+  if (priced.error) return bad(409, priced.error);
+  const coup = await loadCoupon(sb, store, couponCode);
+  const coupon = coup.coupon;
+  const cartTotal = r2(priced.subtotal + priced.fundraise);
+  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const discount = couponDiscount(coupon, cartTotal, shipping);
+  const processing = procFee(store, priced.subtotal);
+  const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
+  const taxRes = await calcTax(store, ship || {}, priced.subtotal, billing);
+  const total = r2(preTax + taxRes.tax);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
+}
+
 async function finalize(sb, body) {
   const { orderId, stripePiId } = body;
   if (!orderId || !stripePiId) return bad(400, 'orderId and stripePiId required');
@@ -410,7 +523,18 @@ async function getOrder(sb, body) {
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   const { data: items } = await sb.from('webstore_order_items').select('*').eq('order_id', order.id);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: items || [] }) };
+  const rows = items || [];
+  // Enrich items that have no stored image_url with catalog fallback images.
+  const needImg = rows.filter((i) => !i.image_url);
+  if (needImg.length) {
+    const imgByPid = {};
+    const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
+    (cat || []).forEach((c) => { if (c.image_url) { if (c.product_id) imgByPid[c.product_id] = c.image_url; imgByPid['wp:' + c.id] = c.image_url; } });
+    const pids = [...new Set(needImg.map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
+    if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
+    rows.forEach((i) => { if (!i.image_url) i.image_url = imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null) || null; });
+  }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: rows }) };
 }
 
 // ── Order tracking (by emailed status_token) ─────────────────────────
@@ -552,3 +676,15 @@ async function updateShip(sb, body) {
   if (upErr) return bad(502, 'Could not save the address: ' + upErr.message);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, ship_address: addr }) };
 }
+
+// ── Test surface ─────────────────────────────────────────────────────
+// Exported only so the unit tests can exercise the pricing/stock math in
+// isolation. Netlify invokes `handler`; these extra exports are inert in prod.
+module.exports.priceCart = priceCart;
+module.exports.checkStock = checkStock;
+module.exports.checkNumberRange = checkNumberRange;
+module.exports.couponDiscount = couponDiscount;
+module.exports._availForSize = _availForSize;
+module.exports.effFund = effFund;
+module.exports.shipFee = shipFee;
+module.exports.r2 = r2;

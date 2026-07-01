@@ -131,6 +131,95 @@ function calcSOStatus(ord) {
   return 'need_order';
 }
 
+// ── Outside decoration (deco POs) ──
+// Which deco TYPES are outsourced for each item. A deco PO (SO-level so.deco_pos) and an item-level
+// outside-deco PO line each carry a single deco_type and a set of items — when sending work out, the
+// rep picks ONE type plus the items it covers. So outsourcing is per DECO TYPE, not per whole item: a
+// garment embroidered out of house can still carry a screen-print / DTF / names / numbers run produced
+// in-house, and that run still needs its own production job. Returns { [item_idx]: Set<deco_type|'*'> };
+// a covering PO with no deco_type can't be matched by type, so it's recorded as '*' (wildcard) and
+// suppresses every decoration on that item — preserving the legacy all-or-nothing behavior.
+const outsourcedDecoTypes = (o) => {
+  const map = {};
+  const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
+  safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
+  safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
+  return map;
+};
+// Is a decoration whose resolved type is `concreteDt` produced by an outside vendor (so it must NOT
+// spawn an in-house production job)? `outTypes` is the Set returned above for the item (undefined when
+// nothing is outsourced). Art with no file assigned yet has no concrete type (pass null/undefined):
+// while the item is outsourced we treat that as covered, so a not-yet-assigned design doesn't spawn a
+// mistyped placeholder job — once art is assigned, a type that doesn't match the PO un-suppresses it.
+const decoIsOutsourced = (outTypes, concreteDt) => !!outTypes && (outTypes.has('*') || !concreteDt || outTypes.has(concreteDt));
+
+// Resolve a decoration's CONCRETE deco type — the art file's type is the source of truth once a
+// real design is attached, else the decoration's own type hint. `null` for an art deco that has no
+// file/type yet. Mirrors exactly how syncJobs classifies a decoration so jobs and costs never drift.
+const decoConcreteType = (o, d) => {
+  if (!d) return null;
+  if (d.kind === 'art') { const af = d.art_file_id ? safeArt(o).find(a => a.id === d.art_file_id) : null; return (af && af.deco_type) || d.deco_type || null; }
+  if (d.kind === 'numbers') return d.num_method || 'heat_transfer';
+  if (d.kind === 'names') return d.name_method || 'heat_press';
+  return d.deco_type || d.type || null;
+};
+// THE unified in-house↔outside switch. A decoration is produced outside when it carries a legacy
+// kind:'outside_deco', or a covering deco PO (SO-level o.deco_pos or an item-level outside-deco PO
+// line) matches its resolved type. This is the single gate BOTH job creation (syncJobs) and cost
+// accounting (Costs tab) read, so routing a decoration onto a deco PO suppresses its in-house job
+// AND its in-house cost together — never double-counting the in-house cost against the PO's bill.
+// Pass a precomputed outsourcedDecoTypes(o) as `outByItem` when calling inside an item loop.
+const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
+  if (!d) return false;
+  if (d.kind === 'outside_deco') return true;
+  // Soft routing flag / explicit PO link (Slice 2): a decoration marked outside, or bundled onto a
+  // deco PO, is produced by the vendor — no in-house job, cost from the PO.
+  if (d.fulfillment === 'outside' || d.deco_po_id) return true;
+  const map = outByItem || outsourcedDecoTypes(o);
+  return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
+};
+
+// ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
+// a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
+// (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
+const _LIGHT_GARMENT = /white|vegas|(?:light|lt)[\s.]*gr[ae]y/i;
+const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(c) : false; };
+
+// ── ONE asset resolver (Layer 3 of the one-process art model) ──
+// Resolve a design's image for a given color way, keyed on the STABLE `color_way_id` (never the CW
+// label string). One function for BOTH the web logo (the standalone cutout placed on a garment
+// color) and the mock (the approval proof) so Webstores / OrderEditor / CoachPortal all agree on
+// one fallback chain instead of five ad-hoc ones. Returns a url string, or '' when nothing resolves.
+//   sel = { kind: 'web_logo' | 'mock', colorWayId, sku, color }
+const _assetUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+function pickCwAsset(art, sel) {
+  if (!art || !sel) return '';
+  const cwId = sel.colorWayId || null;
+  if (sel.kind === 'web_logo') {
+    const wl = safeArr(art.web_logos).filter((w) => w && w.url);
+    if (cwId) { const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url; }
+    // blank/default web logo applies to all garments; then legacy single, then design-level default
+    const def = wl.find((w) => w.is_default || (!w.color_way_id && !w.color_way));
+    if (def) return def.url;
+    if (wl.length && !cwId) return wl[0].url;
+    return safeStr(art.web_logo_url) || safeStr(art.preview_url) || '';
+  }
+  // mock: per-garment mockups first (sku|color, with legacy plain-sku fallback), then general bucket
+  const im = safeObj(art.item_mockups);
+  const pool = [];
+  if (sel.sku != null) {
+    const ck = sel.sku + '|' + (sel.color || '');
+    if (Array.isArray(im[ck])) pool.push(...im[ck]);
+    if (Array.isArray(im[sel.sku])) pool.push(...im[sel.sku]);
+  }
+  if (Array.isArray(art.mockup_files)) pool.push(...art.mockup_files);
+  // A CW-tagged mock matches only its own color way; if none matches, fall back to UNTAGGED mocks
+  // only — a color-specific mock must never bleed onto a non-matching garment (mirrors #942).
+  if (cwId) { const m = pool.find((f) => f && f.color_way_id === cwId); if (m) return _assetUrl(m); }
+  const untagged = pool.find((f) => f && !(typeof f === 'object' && f.color_way_id));
+  return untagged ? _assetUrl(untagged) : '';
+}
+
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
@@ -668,7 +757,7 @@ function calcQualifyingSpend(o, minMargin = 0.2) {
     if (!q) return;
     let rev = 0, cost = 0;
     if (it._sizeSells && sq > 0) {
-      Object.entries(safeSizes(it)).forEach(([sz, v]) => { const n = safeNum(v); if (n > 0) { rev += n * (it._sizeSells?.[sz] || safeNum(it.unit_sell)); cost += n * safeNum(it.nsa_cost) } });
+      Object.entries(safeSizes(it)).forEach(([sz, v]) => { const n = safeNum(v); if (n > 0) { rev += n * (it._sizeSells?.[sz] || safeNum(it.unit_sell)); cost += n * (it._sizeCosts?.[sz] || safeNum(it.nsa_cost)) } });
     } else {
       rev += q * safeNum(it.unit_sell); cost += q * safeNum(it.nsa_cost);
     }
@@ -802,7 +891,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

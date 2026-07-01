@@ -99,8 +99,11 @@ function formatLines(lines) {
 // exact per-size breakdown), scoped to the task's SO. Returns a payload-shaped
 // object {target, vendor_name, po_number, lines} or null if it can't.
 async function resolveOrderFromDb(task) {
-  const m = (task.title || '').match(/PO\s*\d[\w\s.\/-]*/i);
-  const poId = m ? m[0].trim() : null;
+  // Prefer the explicit po_id column (migration 00116); fall back to parsing title.
+  const poId = task.po_id || (() => {
+    const m = (task.title || '').match(/PO\s*\d[\w\s.\/-]*/i);
+    return m ? m[0].trim() : null;
+  })();
   if (!poId) return null;
 
   const { data: pls, error } = await supabase
@@ -356,7 +359,7 @@ async function processOne() {
   // flips them back to 'queued' in the portal.)
   const { data: tasks, error } = await supabase
     .from('assigned_todos')
-    .select('id,title,description,so_id,bot_payload,bot_status,status')
+    .select('id,title,description,so_id,po_id,bot_payload,bot_status,status')
     .eq('assigned_to', BOT_MEMBER_ID)
     .eq('status', 'open')
     .in('bot_status', ['queued', 'scheduled'])
@@ -411,7 +414,19 @@ async function processOne() {
   // needs_input = the bot has a question (e.g. a backorder) and is waiting on a
   // human answer. Replying in the portal re-queues the task so it resumes.
   const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed', 'queued'];
-  const status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
+  let status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
+
+  // Sanity-check: if the agent says needs_review but reports 0 total qty across
+  // all lines, the cart wasn't actually filled — downgrade to blocked so a human
+  // investigates rather than assuming the order is ready to submit.
+  if (status === 'needs_review' && Array.isArray(result.lines_added) && result.lines_added.length > 0) {
+    const totalAdded = result.lines_added.reduce((a, l) => a + (l.qty || 0), 0);
+    if (totalAdded === 0) {
+      log('agent said needs_review but lines_added total qty is 0 — downgrading to blocked');
+      status = 'blocked';
+      result.summary = (result.summary || '') + ' (No quantities were entered — all size cells may be unavailable.)';
+    }
+  }
   const merged = { ...(task.bot_payload || {}), ...(order || {}), result };
   await supabase
     .from('assigned_todos')

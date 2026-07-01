@@ -41,6 +41,11 @@ The brief describes which products the store should carry — by brand, color, p
 - keywords: remaining specific style cues or model names that are not a brand, category, or color — e.g. "D4T", "techfit", a style number. These get matched against product names. Empty if none.
 - interpretation: one short sentence summarizing what you understood, for the user to confirm.
 
+Sport relevance — keep a store ON its sport:
+- When the brief names a sport (volleyball, baseball, soccer, etc.), add that sport word to keywords so sport-specific items match by name.
+- Do NOT pick broad equipment/ball/gear categories that would sweep in OTHER sports' gear. A volleyball store must not surface soccer balls, baseball gloves, etc. If the only way to include equipment is a generic category, prefer leaving categories to apparel and rely on the sport keyword instead.
+- Apparel (tees, hoods, shorts, polos, pants, outerwear, hats, bags) is sport-neutral and fine to include broadly; sport-specific EQUIPMENT must match the named sport only.
+
 Only use brand/category values that appear verbatim in the provided lists. If unsure, leave the field empty rather than inventing a value.`;
 
 // additionalProperties:false is required on every object for structured outputs.

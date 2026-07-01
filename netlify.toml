@@ -1,5 +1,10 @@
 [build]
-  command = "GENERATE_SOURCEMAP=true npm run build"
+  # Clear the CRA/webpack 5 filesystem cache before each build. Netlify restores
+  # node_modules (incl. node_modules/.cache) between builds; a poisoned webpack
+  # cache was serving a STALE compiled App.js — producing byte-identical bundles
+  # that silently dropped newly merged code (e.g. the /onboarding route) even on
+  # a successful fresh deploy. Wiping the compiler cache forces a clean compile.
+  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
   environment = { NODE_VERSION = "18" }
 
@@ -19,6 +24,13 @@
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
 
+# build-meta.json is the deploy fingerprint that long-lived tabs poll to detect a new
+# build (see src/deployReload.js). It must never be cached or the reload would never fire.
+[[headers]]
+  for = "/build-meta.json"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 # Hashed build assets are content-addressed and safe to cache forever.
 [[headers]]
   for = "/static/*"
@@ -27,6 +39,11 @@
 
 [functions]
   directory = "netlify/functions"
+
+# New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
+# who were invited but haven't finished (capped at 3 reminders, 3 days apart).
+[functions."onboarding-reminder"]
+  schedule = "7 16 * * *"
 
 [functions."vectorizer-proxy"]
   timeout = 26
@@ -62,6 +79,12 @@
 # creates a rep to-do + emails the rep & assigned CSR a breakdown to process the orders.
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
+
+# Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
+# recap of the prior PT day's orders across their stores (+ any that closed).
+# Reps with no activity get nothing.
+[functions."rep-daily-digest"]
+  schedule = "11 9 * * *"
 
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
@@ -109,6 +132,23 @@
 # to populate on the first run.
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
+
+# Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
+# safely after the 10:30 EST SI processing cutoff). The cron fires
+# sportslink-sync-background, which mirrors all active SI documents since the portal
+# cutover into the si_documents queue (EDI → approve flow, scanned → manual worklist)
+# and emails the daily digest to accounting. Env: SPORTSLINK_API_KEY,
+# SPORTSLINK_SINCE_DATE (default 2026-04-01), SPORTSLINK_DIGEST_EMAIL.
+[functions."sportslink-sync-cron"]
+  schedule = "30 16 * * *"
+
+# S&S Activewear orders sync — daily at 12:30 UTC (~7:30 AM ET / 6:30 AM CT, before the
+# workday). The cron fires ss-orders-sync-background, which pulls the last 3 months of S&S
+# orders (GET /Orders?All=True&lines=true) into the ss_documents queue and emails the daily
+# digest. S&S bills bypass Sports Inc (which only scans them); `yourSku` echoes our own SKU
+# back → exact match. Env: SS_ACCOUNT_NUMBER, SS_API_KEY, SS_DIGEST_EMAIL (optional).
+[functions."ss-orders-sync-cron"]
+  schedule = "30 12 * * *"
 
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once

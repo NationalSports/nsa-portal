@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles } from './safeHelpers';
 import { calcSOStatus } from './components';
-import { dP, rQ, SP } from './pricing';
+import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
@@ -31,14 +31,55 @@ const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minim
 const _cpStages = { pending: 'Ordered', received: 'Received', in_production: 'In production', bagging: 'Bagging', shipped: 'Shipped', complete: 'Complete' };
 const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'bagging' ? '#86198f' : s === 'in_production' ? '#92400e' : s === 'received' ? '#3730a3' : '#64748b';
 
-function CoachStore({ customer }) {
+// ── Team-colored portal header ───────────────────────────────────────
+// Wear the team's own colors in the portal header, the way each webstore
+// header is themed by its store colors. customer.school_colors is an array of
+// catalog color-family names (e.g. ["Navy","Orange","White"]); families + hexes
+// match src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js.
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// Darkest-first: which team color makes the best deep banner background (white
+// text stays readable). Light/neutral families are intentionally excluded.
+const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
+// Brightest-first: which team color pops best as the accent underline/eyebrow.
+const CP_ACCENT_PREF = ['Orange', 'Red', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
+const CP_DEFAULT_THEME = { primary: '#1e3a5f', accent: '#2563eb' }; // NSA navy/blue fallback
+// Lighten (pct>0) / darken (pct<0) a hex — mirrors storefront/Storefront.js shade().
+const cpShade = (hex, pct) => {
+  try {
+    const h = (hex || '#1e3a5f').replace('#', '');
+    const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+    const f = (v) => Math.max(0, Math.min(255, Math.round(v + (pct / 100) * 255)));
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  } catch { return hex; }
+};
+// Resolve a {primary, accent} header theme from a customer's school colors.
+// primary is always a dark, readable banner color (a dark team color or the NSA
+// navy default); accent is the team's brightest color (or a tonal fallback).
+function cpTeamTheme(customer) {
+  const fams = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  if (!fams.length) return { ...CP_DEFAULT_THEME };
+  const darkFam = CP_PRIMARY_PREF.find((f) => fams.includes(f));
+  const primary = darkFam ? CP_HEX[darkFam] : CP_DEFAULT_THEME.primary;
+  const accentFam = CP_ACCENT_PREF.find((f) => fams.includes(f) && f !== darkFam)
+    || fams.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
+  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, 45);
+  return { primary, accent };
+}
+
+function CoachStore({ customer, storeIds }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
   const [loaded, setLoaded] = useState(false);
+  // For an athletic-dept (parent) account, storeIds covers the dept + every sub-team so
+  // the parent sees all its teams' stores; for a single team it's [self, parent]. Falls
+  // back to [self, parent] when no explicit set is passed.
+  const _storeIdKey = (storeIds && storeIds.length ? storeIds : [customer.id, customer.parent_id]).filter(Boolean).join(',');
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const ids = [customer.id, customer.parent_id].filter(Boolean);
+      const ids = _storeIdKey ? _storeIdKey.split(',') : [];
+      if (!ids.length) { setLoaded(true); return; }
       const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
@@ -58,7 +99,7 @@ function CoachStore({ customer }) {
       if (!cancel) { setData(out); setLoaded(true); }
     })();
     return () => { cancel = true; };
-  }, [customer.id, customer.parent_id]);
+  }, [_storeIdKey]);
 
   if (!loaded) return null;
   // The coach sees their own submissions as "pending review"; staff work-in-
@@ -233,10 +274,53 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[invs,setInvs]=useState(initInvs);
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
+  const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
+  const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
+  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
+  const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
+  const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
+  const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
+  const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
+  // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
+  const cpTheme=cpTeamTheme(customer);
+  const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
+  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
+  const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
+  const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
+  const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
+  const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
+  const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
+  const _nsaFont="'Source Sans 3',system-ui,sans-serif";
+  const _nsaImport="@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');";
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
+  // Logo: use own logo_url, fall back to parent's logo if sub has none set
+  const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
+  const cpLogo=customer.logo_url||(_parentCust&&_parentCust.logo_url)||null;
+  // ── Team store presence — drives the conditional "Team Store" nav tab. Lightweight
+  // top-level lookup (the full per-store tracking is fetched by <CoachStore/> when the
+  // tab is opened). A store earns the tab when the coach should see it: any live/non-draft
+  // store, or their own submitted draft awaiting review (mirrors CoachStore's render rule).
+  // Parent/athletic-dept accounts track the dept's own store + every sub-team's store;
+  // a single team tracks its own + its parent dept's. This same id set gates the nav tab
+  // and is passed to <CoachStore/> so the tab's visibility always matches what it renders.
+  const cpStoreCustomerIds=(isP?ids:[customer.id,customer.parent_id]).filter(Boolean);
+  const[cpStores,setCpStores]=useState([]);
+  const _cpStoreKey=cpStoreCustomerIds.join(',');
+  useEffect(()=>{let cancel=false;(async()=>{
+    const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
+    if(!sIds.length){if(!cancel)setCpStores([]);return;}
+    const{data}=await supabase.from('webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
+    if(!cancel)setCpStores(data||[]);
+  })();return()=>{cancel=true;};},[_cpStoreKey]);
+  const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
+  const hasStore=cpVisibleStores.length>0;
+  const openStoreCount=cpStores.filter(s=>s.status==='open').length;
+  // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
+  // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
+  const hasRoster=!!customer.coach_roster;
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -251,6 +335,31 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   };
   const activeSOs=custSOs.filter(s=>calcSOStatus(s)!=='complete');
   const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
+  // Active orders collapse on the portal — default collapsed for department/parent accounts and
+  // long lists (they aggregate every team's orders), expanded for a regular single-team coach.
+  const[ordersOpen,setOrdersOpen]=useState(!(isP||activeSOs.length>3));
+  const openEstCount=custEsts.filter(e=>e.status==='sent'||e.status==='open').length;
+  // ── Art Locker — every design the team has run, gathered from order artwork & mockups.
+  // Deduped by art name + decoration; each card tracks which teams/orders used it.
+  const artLibrary=(()=>{
+    const map=new Map();
+    custSOs.forEach(so=>{
+      const team=((allCustomers||[]).find(c=>c.id===so.customer_id)||{}).name||customer.name;
+      safeArt(so).forEach(af=>{
+        const imgs=_filterDisplayable([...Object.values(af.item_mockups||{}).flatMap(a=>a||[]),...(af.mockup_files||[]),...(af.files||[])]);
+        const urls=imgs.map(f=>typeof f==='string'?f:((f&&f.url)||'')).filter(u=>u&&isUrl(u));
+        if(!urls.length)return;
+        const name=af.name||af.logo_name||'Artwork';
+        const deco=(af.deco_type||'').replace(/_/g,' ').trim();
+        const key=(name+'|'+(af.deco_type||'')).toLowerCase();
+        let rec=map.get(key);
+        if(!rec){rec={key,name,deco,urls:new Set(),teams:new Set(),orders:new Set(),createdAt:so.created_at||''};map.set(key,rec);}
+        urls.forEach(u=>rec.urls.add(u));if(team)rec.teams.add(team);rec.orders.add(so.id);
+        if((so.created_at||'')>rec.createdAt)rec.createdAt=so.created_at||rec.createdAt;
+      });
+    });
+    return[...map.values()].map(r=>({...r,urls:[...r.urls],teams:[...r.teams],orders:[...r.orders]})).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  })();
   // Recent (last 30 days) not-yet-converted estimates, surfaced in Active Orders.
   const _estRecentCutoff=Date.now()-30*24*60*60*1000;
   const recentEsts=custEsts.filter(e=>{if(e.status==='converted')return false;const t=new Date(e.created_at).getTime();return isFinite(t)&&t>=_estRecentCutoff;});
@@ -273,6 +382,37 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const coachAiBuilder=!!customer.coach_ai_builder;
   const coachLivelook=!!customer.coach_livelook;
   const coachBuildOrders=!!customer.coach_build_orders;
+
+  // ── Athletic-director Spend & Promo dashboard data (opt-in via customer.ad_spend_tracking) ──
+  // Rolls up the family root (parent_id||id) + every team beneath it. Spend uses calcOrderTotals
+  // (products + decoration; shipping & tax excluded). Promo reads the owner's merged periods.
+  // Dates are parsed with Date() — order_date/created_at are stored M/D/YYYY, so an ISO string
+  // compare would wrongly drop everything from the current-period filter.
+  const adData=customer.ad_spend_tracking?(()=>{
+    const now=new Date();const y=now.getFullYear();const h1=now.getMonth()<6;
+    const period=h1?{start:y+'-01-01',end:y+'-06-30',label:'Jan–Jun '+y}:{start:y+'-07-01',end:y+'-12-31',label:'Jul–Dec '+y};
+    const pStart=new Date(period.start+'T00:00:00').getTime();const pEnd=new Date(period.end+'T23:59:59').getTime();
+    const parse=v=>{if(!v)return null;let d=new Date(v);if(isNaN(d.getTime()))d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?null:d.getTime();};
+    const inRange=so=>{if(adRange==='all')return true;const t=parse(so.order_date||so.created_at);return t!=null&&t>=pStart&&t<=pEnd;};
+    const adRoot=customer.parent_id||customer.id;
+    const adFamily=(allCustomers||[]).filter(c=>c.id===adRoot||c.parent_id===adRoot);
+    const deptName=(adFamily.find(c=>c.id===adRoot)||customer).name||'Athletic department';
+    const teamCount=adFamily.filter(c=>c.id!==adRoot).length;
+    const teams=adFamily.map(c=>{const isDept=c.id===adRoot;const tSOs=(sos||[]).filter(s=>s.customer_id===c.id&&inRange(s));const spend=tSOs.reduce((a,s)=>a+(calcOrderTotals(s).rev||0),0);const adidas=tSOs.reduce((a,s)=>a+(calcAdidasItemSpend(s)||0),0);return{id:c.id,name:c.name||'Team',isDept,spend,adidas,orders:tSOs.length};}).filter(t=>!t.isDept||t.orders>0).sort((a,b)=>b.spend-a.spend);
+    const totalSpend=teams.reduce((a,t)=>a+t.spend,0);
+    const adidasTotal=teams.reduce((a,t)=>a+t.adidas,0);
+    const maxSpend=teams.reduce((a,t)=>Math.max(a,t.spend),0)||1;
+    const periods=customer.promo_periods||[];
+    const scoped=adRange==='all'?periods:periods.filter(p=>p.period_start===period.start);
+    const allocated=scoped.reduce((a,p)=>a+(p.allocated||0),0);
+    const used=scoped.reduce((a,p)=>a+(p.used||0),0);
+    const remaining=allocated-used;const remainingDisplay=Math.max(0,remaining);const overspent=remaining<0;
+    const hasPromo=periods.length>0;
+    const usedPct=allocated>0?Math.min(100,Math.round(used/allocated*100)):0;
+    const money=n=>'$'+Math.round(n||0).toLocaleString();
+    const money2=n=>'$'+(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    return{period,teams,totalSpend,adidasTotal,maxSpend,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2};
+  })():null;
 
   // Track portal visit — mark sent documents as viewed by coach
   const _portalTracked=useRef(false);
@@ -459,22 +599,30 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
       });
     };
-    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
-      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-        <div style={{background:'linear-gradient(135deg,#92400e,#d97706)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setEstView(null)}>← Back</button>
-          <div style={{textAlign:'center',paddingTop:16}}>
-            <div style={{fontSize:10,opacity:0.6}}>ESTIMATE</div>
-            <div style={{fontSize:20,fontWeight:800}}>{est.memo||est.id}</div>
-            <div style={{fontSize:12,opacity:0.8}}>{est.id} · {est.created_at?.split(' ')[0]}</div>
+    const _estStatusPill=est.status==='approved'?['Approved','#1F7A43','#E8F5EC']:est.status==='converted'?['Converted to Order','#1A3A6B','#E6ECF5']:['Open',tAccent,tAccentSoft];
+    return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:_nsaFont,color:'#2A2F3E',display:'flex',justifyContent:'center',padding:'32px 16px'}}>
+      <style>{_nsaImport+`.nsa-disp{font-family:'Barlow Condensed',sans-serif}.nsa-skew{transform:skewX(-3deg)}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}`}</style>
+      <div style={{width:'100%',maxWidth:660}}>
+        <button className="nsa-disp" onClick={()=>setEstView(null)} style={{display:'inline-flex',alignItems:'center',gap:8,background:'#fff',border:'1px solid #EEF1F6',color:tPrimary,fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 16px',borderRadius:4,cursor:'pointer',marginBottom:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>← Back to Estimates</button>
+        <div style={{background:'#fff',borderRadius:8,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{position:'relative',overflow:'hidden',padding:'28px 28px 24px',color:'#fff',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`}}>
+          <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+          <div style={{position:'absolute',top:0,right:0,width:120,height:'100%',background:tAccent,opacity:.9,clipPath:'polygon(38% 0, 100% 0, 100% 100%, 0 100%)'}}/>
+          <div style={{position:'relative'}}>
+            <div className="nsa-disp" style={{fontSize:12,letterSpacing:'2px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Estimate</div>
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:34,textTransform:'uppercase',lineHeight:1.02,marginTop:2}}>{est.memo||est.id}</div>
+            <div style={{width:60,height:4,background:tAccentLight,transform:'skewX(-12deg)',margin:'10px 0 8px'}}/>
+            <div style={{fontSize:13,color:'rgba(255,255,255,.8)'}}>{est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
           </div>
         </div>
-        <div style={{padding:'20px 24px'}}>
-          <div style={{textAlign:'center',padding:16,marginBottom:16}}>
-            <div style={{fontSize:12,color:'#64748b'}}>Estimated Total</div>
-            <div style={{fontSize:36,fontWeight:800,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-            <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:est.status==='approved'?'#dcfce7':est.status==='converted'?'#dbeafe':'#fef3c7',color:est.status==='approved'?'#166534':est.status==='converted'?'#1e40af':'#92400e'}}>{est.status==='converted'?'Converted to Order':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
-            <div style={{marginTop:10}}><button style={{background:'#1e3a5f',color:'white',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:'pointer'}} onClick={downloadEstPdf}>📄 Download Estimate PDF</button></div>
+        <div style={{padding:'22px 28px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap',padding:'4px 0 18px',borderBottom:'1px solid #EEF1F6',marginBottom:18}}>
+            <div>
+              <div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0'}}>Estimated Total</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:44,color:tPrimary,lineHeight:1}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+              <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:_estStatusPill[2],color:_estStatusPill[1],fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px',borderRadius:4,marginTop:8}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{_estStatusPill[0]}</span></span>
+            </div>
+            <button className="nsa-disp" onClick={downloadEstPdf} style={{background:'#fff',color:tPrimary,border:`2px solid ${tPrimary}`,borderRadius:4,padding:'11px 18px',fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}}>📄 Download PDF</button>
           </div>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
           {(est.items||[]).map((it,i)=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qty=_sq>0?_sq:safeNum(it.est_qty);const lineTotal=qty*safeNum(it.unit_sell);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))});
@@ -512,15 +660,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   return<div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>{d.kind==='numbers'?'#️⃣':d.kind==='names'?'🏷️':'🎨'} {decoLabel}</span>{decoLine>0&&<span style={{fontWeight:600}}>{eq2} × ${dp2.sell.toFixed(2)}/ea = +${decoLine.toFixed(2)}</span>}</div>})}
               </div>}
             </div>})}
-          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
-            {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
-            {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
-              <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <div style={{borderTop:'1px solid #EEF1F6',paddingTop:14,marginBottom:18}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Subtotal</span><span style={{fontWeight:700,color:'#2A2F3E'}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
+            {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'12px 0 4px',borderTop:`2px solid ${tPrimary}`,marginTop:8}}>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimated Total</span><span className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
-          {canApprove&&<button id="est-approve-btn" style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={async()=>{
+          {canApprove&&<button id="est-approve-btn" className="nsa-skew nsa-disp" style={{width:'100%',padding:'15px 20px',background:tAccent,color:'white',border:'none',borderRadius:4,fontSize:17,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer',marginBottom:10}} onClick={async()=>{
             const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
             const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
@@ -537,8 +685,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
             if(!_res.ok)alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));
-          }}>✅ Approve This Estimate</button>}
-          {canApprove&&<div id="est-request-box" style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
+          }}><span>✅ Approve This Estimate</span></button>}
+          {canApprove&&<div id="est-request-box" style={{border:'1px solid #EEF1F6',borderRadius:6,padding:18,marginBottom:10,background:'#F7F8FB'}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
             {updateRequestSent?<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:600}}>Your update request has been sent to your rep!</div>
             :<>
@@ -581,11 +729,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {canApprove&&<div style={{height:64}}/>}
         </div>
       </div>
+      </div>
       {/* Sticky action bar — keeps Approve / Request changes reachable on long estimates without forcing the coach to commit before reviewing the items above */}
-      {canApprove&&<div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',padding:'10px 16px',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(6px)',borderTop:'1px solid #e2e8f0',boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',zIndex:50}}>
-        <div style={{width:'100%',maxWidth:640,display:'flex',gap:10}}>
-          <button style={{flex:1,padding:'12px 16px',background:'white',color:'#d97706',border:'1px solid #d97706',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>document.getElementById('est-request-box')?.scrollIntoView({behavior:'smooth',block:'center'})}>✏️ Request changes</button>
-          <button style={{flex:1,padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>document.getElementById('est-approve-btn')?.scrollIntoView({behavior:'smooth',block:'center'})}>✅ Approve</button>
+      {canApprove&&<div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',padding:'10px 16px',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(6px)',borderTop:'1px solid #EEF1F6',boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',zIndex:50}}>
+        <div style={{width:'100%',maxWidth:660,display:'flex',gap:10}}>
+          <button className="nsa-disp" style={{flex:1,padding:'13px 16px',background:'#fff',color:tAccent,border:`2px solid ${tAccent}`,borderRadius:4,fontSize:14,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}} onClick={()=>document.getElementById('est-request-box')?.scrollIntoView({behavior:'smooth',block:'center'})}>✏️ Request changes</button>
+          <button className="nsa-skew nsa-disp" style={{flex:1,padding:'13px 16px',background:tAccent,color:'#fff',border:'none',borderRadius:4,fontSize:14,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer'}} onClick={()=>document.getElementById('est-approve-btn')?.scrollIntoView({behavior:'smooth',block:'center'})}><span>✅ Approve</span></button>
         </div>
       </div>}
     </div>
@@ -609,92 +758,106 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const soShipments=so._shipments||[];
     const soLegacy=so._tracking_number&&!soShipments.find(s=>s.tracking_number===so._tracking_number);
     const soAllShipments=soLegacy?[{tracking_number:so._tracking_number,carrier:so._carrier||'',ship_date:so._ship_date||'',tracking_url:so._tracking_url||''},...soShipments]:soShipments;
-    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+    const _soSt=calcSOStatus(so);const _soStMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging',tPrimary,'#E6ECF5'],in_production:['In Production',tPrimary,'#E6ECF5'],received:['Received',tPrimary,'#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
+    const _soSm=_soStMap[_soSt]||['Ordered','#5A6075','#EEF1F6'];
+    return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:_nsaFont,color:'#2A2F3E',display:'flex',justifyContent:'center',padding:'32px 16px'}}>
+      <style>{_nsaImport+`.nsa-disp{font-family:'Barlow Condensed',sans-serif}.nsa-skew{transform:skewX(-3deg)}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}`}</style>
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
         <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
         {_isImgUrl(lightbox)?<img src={lightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
         :_isPdfUrl(lightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
         :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
       </div>}
-      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setSoView(null)}>← Back</button>
-          <div style={{textAlign:'center',paddingTop:16}}>
-            <div style={{fontSize:10,opacity:0.6}}>ORDER</div>
-            <div style={{fontSize:20,fontWeight:800}}>{so.memo||so.id}</div>
-            <div style={{fontSize:12,opacity:0.8}}>{so.id} · {so.created_at?.split(' ')[0]}{so.expected_date?(' · Expected '+so.expected_date):''}</div>
+      <div style={{width:'100%',maxWidth:660}}>
+        <button className="nsa-disp" onClick={()=>setSoView(null)} style={{display:'inline-flex',alignItems:'center',gap:8,background:'#fff',border:'1px solid #EEF1F6',color:tPrimary,fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 16px',borderRadius:4,cursor:'pointer',marginBottom:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>← Back to Orders</button>
+        <div style={{background:'#fff',borderRadius:8,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        {/* NSA hero */}
+        <div style={{position:'relative',overflow:'hidden',padding:'28px 28px 24px',color:'#fff',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 60%, ${tNavyMid} 100%)`}}>
+          <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+          <div style={{position:'absolute',top:0,right:0,width:120,height:'100%',background:tAccent,opacity:.9,clipPath:'polygon(38% 0, 100% 0, 100% 100%, 0 100%)'}}/>
+          <div style={{position:'relative'}}>
+            <div className="nsa-disp" style={{fontSize:12,letterSpacing:'2px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Order</div>
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:34,textTransform:'uppercase',lineHeight:1.02,marginTop:2}}>{so.memo||so.id}</div>
+            <div style={{width:60,height:4,background:tAccentLight,transform:'skewX(-12deg)',margin:'10px 0 8px'}}/>
+            <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <div style={{fontSize:13,color:'rgba(255,255,255,.8)'}}>{so.id}{so.created_at?' · '+so.created_at.split(' ')[0]:''}{so.expected_date?' · ETA '+so.expected_date:''}</div>
+              <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:'rgba(0,0,0,.25)',color:'#fff',fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'3px 10px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{_soSm[0]}</span></span>
+            </div>
           </div>
         </div>
-        <div style={{padding:'20px 24px'}}>
+        <div style={{padding:'22px 28px'}}>
           {/* Progress bar */}
-          <div style={{marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
-              <span style={{fontSize:11,fontWeight:700,color:soPct>=100?'#166534':'#1e3a5f'}}>{soPct}%</span>
+          <div style={{marginBottom:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+              <span className="nsa-disp" style={{fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',color:'#5A6075'}}>Order Progress</span>
+              <span className="nsa-disp" style={{fontSize:14,fontWeight:800,color:soPct>=100?'#1F7A43':tPrimary}}>{soPct}%</span>
             </div>
-            <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
-              <div style={{height:8,borderRadius:6,background:soPct>=100?'#22c55e':soPct>50?'#3b82f6':'#f59e0b',width:soPct+'%',transition:'width 0.3s'}}/></div>
-            {soDaysOut!=null&&<div style={{fontSize:11,color:soDaysOut<=7?'#dc2626':'#64748b',marginTop:4,textAlign:'right'}}>{soDaysOut>0?soDaysOut+' day'+(soDaysOut!==1?'s':'')+' out':soDaysOut===0?'Due today':'Overdue'}</div>}
+            <div style={{background:'#EEF1F6',borderRadius:999,height:7,overflow:'hidden'}}>
+              <div style={{height:7,borderRadius:999,background:soPct>=100?'#1F7A43':tPrimary,width:soPct+'%',transition:'width 0.4s'}}/>
+            </div>
+            {soDaysOut!=null&&<div style={{fontSize:12,color:soDaysOut<=7?tAccent:'#94A0B0',marginTop:5,textAlign:'right',fontWeight:600}}>{soDaysOut>0?soDaysOut+' day'+(soDaysOut!==1?'s':'')+' out':soDaysOut===0?'Due today':'Overdue'}</div>}
           </div>
-          {/* Line items */}
-          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
+          {/* Section label */}
+          <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Items</div>
           {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
             let recvQ=0;Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);recvQ+=Math.min(v,pQ+rQ)});
             let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);decoTotal+=eq2*dp2.sell});
             const lineTotal=qty*safeNum(it.unit_sell)+decoTotal;
             const _prd=(prod||[]).find(pp=>pp.id===it.product_id||pp.sku===it.sku);
             const itImg=_prd?.image_url||(_prd?.images&&_prd.images[0])||it._colorImage||'';
-            return<div key={ii} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
-                <div style={{flex:1,display:'flex',gap:10,alignItems:'center'}}>
-                  {itImg&&isUrl(itImg)?<img src={itImg} alt={safeStr(it.name)||'Item'} title="Click to enlarge" onClick={()=>setLightbox(itImg)} style={{width:48,height:48,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0,cursor:'zoom-in'}}/>
-                  :<div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:20}}>👕</div></div>}
+            const recvPct=qty>0?Math.round(recvQ/qty*100):0;
+            return<div key={ii} style={{border:'1px solid #EEF1F6',borderLeft:`4px solid ${tPrimary}`,borderRadius:6,padding:'14px 16px',marginBottom:10,background:'#fff'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div style={{flex:1,display:'flex',gap:12,alignItems:'center'}}>
+                  {itImg&&isUrl(itImg)?<img src={itImg} alt={safeStr(it.name)||'Item'} title="Click to enlarge" onClick={()=>setLightbox(itImg)} style={{width:52,height:52,objectFit:'cover',borderRadius:6,border:'1px solid #EEF1F6',flexShrink:0,cursor:'zoom-in'}}/>
+                  :<div style={{width:52,height:52,background:'#F7F8FB',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:'1px solid #EEF1F6'}}><div style={{fontSize:22}}>👕</div></div>}
                   <div style={{minWidth:0}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.05}}>{safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{it.sku} · {safeStr(it.color)||'—'}{it.brand?' · '+it.brand:''}</div>
                   </div>
                 </div>
-                <div style={{textAlign:'right'}}>
-                  <div style={{fontWeight:800,fontSize:14,color:'#1e3a5f'}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-                  <div style={{fontSize:10,color:'#64748b'}}>{qty} units</div>
+                <div style={{textAlign:'right',flexShrink:0}}>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:12,color:'#94A0B0'}}>{qty} units</div>
                 </div>
               </div>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div style={{flex:1,background:'#f1f5f9',borderRadius:6,height:4,marginRight:10}}>
-                  <div style={{height:4,borderRadius:6,background:recvQ>=qty?'#22c55e':recvQ>0?'#3b82f6':'#e2e8f0',width:(qty>0?Math.round(recvQ/qty*100):0)+'%'}}/></div>
-                <span style={{fontSize:11,fontWeight:600,color:recvQ>=qty?'#166534':'#64748b',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <div style={{flex:1,background:'#EEF1F6',borderRadius:999,height:5,overflow:'hidden'}}>
+                  <div style={{height:5,borderRadius:999,background:recvQ>=qty?'#1F7A43':tPrimary,width:recvPct+'%',transition:'width .4s'}}/>
+                </div>
+                <span style={{fontSize:12,fontWeight:600,color:recvQ>=qty?'#1F7A43':'#94A0B0',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
               </div>
               {(()=>{const _szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
                 if(_szList.length===0)return null;
-                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8}}>
-                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'3px 8px',background:'#f8fafc',borderRadius:6,minWidth:34}}>
-                    <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
-                    <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{sq}</div>
+                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:10}}>
+                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'4px 10px',background:'#F7F8FB',borderRadius:4,minWidth:36,border:'1px solid #EEF1F6'}}>
+                    <div className="nsa-disp" style={{fontSize:9,fontWeight:700,color:'#94A0B0',letterSpacing:'.5px'}}>{sz}</div>
+                    <div className="nsa-disp" style={{fontSize:14,fontWeight:800,color:tPrimary}}>{sq}</div>
                   </div>)}
                 </div>})()}
             </div>})}
           {/* Order totals */}
-          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
-            {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
-            {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
-              <span style={{fontWeight:800,fontSize:16}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#1e3a5f'}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <div style={{borderTop:'1px solid #EEF1F6',paddingTop:14,marginBottom:18,marginTop:6}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Subtotal</span><span style={{fontWeight:700,color:'#2A2F3E'}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
+            {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:14,color:'#5A6075'}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'12px 0 4px',borderTop:`2px solid ${tPrimary}`,marginTop:8}}>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Total</span>
+              <span className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
           {/* Artwork & Decoration jobs */}
           {soJobsList.length>0&&<>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Artwork &amp; Decoration</div>
             {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
-              // Scope mockups to SKUs that belong to THIS job — prevents leakage from sibling jobs that share an art file.
               const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
               const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
               const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
               const _jSeen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
               const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
-              return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:10,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
-                {/* Mockup thumbnails — show all images in a grid */}
-                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+              const _jWait=j.art_status==='waiting_approval';
+              return<div key={j.id} style={{border:`1px solid ${_jWait?tAccent:'#EEF1F6'}`,background:_jWait?tAccentSoft:'#F7F8FB',borderRadius:6,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
+                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#EEF1F6'}}>
                   {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);const isPdf=_isPdfUrl(url,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(url):null;
                     return<div key={fi} style={{background:'white'}}>
                       {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}}/>
@@ -702,35 +865,32 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                       :<div style={{height:mockups.length>1?140:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
                     </div>})}
                 </div>}
-                {/* Job info bar */}
-                <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px'}}>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>{j.art_name}</div>
+                    <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                   </div>
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                  <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#E8F5EC':_jWait?tAccentSoft:'#EEF1F6',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#1F7A43':_jWait?tAccent:'#5A6075',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 10px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{artLabelsP[j.art_status]}</span></span>
+                  <span style={{color:'#94A0B0',fontSize:16}}>›</span>
                 </div>
               </div>})}
           </>}
           {/* Shipping / Tracking */}
-          {soAllShipments.length>0&&<div style={{marginTop:12}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Shipping & Tracking</div>
-            {soAllShipments.map((shp,si)=><div key={si} style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginBottom:6}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div>
-                  <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>📦 {shp.carrier||'Package'} {soAllShipments.length>1?'#'+(si+1):''}</div>
-                  {shp.ship_date&&<div style={{fontSize:10,color:'#64748b'}}>Shipped {shp.ship_date}</div>}
-                </div>
-                {shp.tracking_number&&<a href={shp.tracking_url||((/^1Z/i.test(shp.tracking_number))?'https://www.ups.com/track?tracknum='+shp.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+shp.tracking_number)} target="_blank" rel="noreferrer" style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'none'}}>Track →</a>}
+          {soAllShipments.length>0&&<div style={{marginTop:14}}>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'#94A0B0',marginBottom:10}}>Shipping &amp; Tracking</div>
+            {soAllShipments.map((shp,si)=><div key={si} style={{padding:'12px 16px',background:'#E8F5EC',border:'1px solid #A7D9B5',borderRadius:6,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+              <div>
+                <div className="nsa-disp" style={{fontSize:14,fontWeight:700,color:'#1F7A43',textTransform:'uppercase'}}>📦 {shp.carrier||'Package'}{soAllShipments.length>1?' #'+(si+1):''}</div>
+                {shp.ship_date&&<div style={{fontSize:12,color:'#5A6075',marginTop:2}}>Shipped {shp.ship_date}</div>}
+                {shp.tracking_number&&<div style={{fontSize:11,fontFamily:'monospace',color:'#5A6075',marginTop:3}}>{shp.tracking_number}</div>}
               </div>
-              {shp.tracking_number&&<div style={{fontSize:11,fontFamily:'monospace',color:'#64748b',marginTop:4}}>{shp.tracking_number}</div>}
+              {shp.tracking_number&&<a href={shp.tracking_url||((/^1Z/i.test(shp.tracking_number))?'https://www.ups.com/track?tracknum='+shp.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+shp.tracking_number)} target="_blank" rel="noreferrer" className="nsa-disp" style={{fontSize:13,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',color:'#1F7A43',textDecoration:'none',border:'2px solid #1F7A43',borderRadius:4,padding:'7px 14px',flexShrink:0}}>Track →</a>}
             </div>)}
           </div>}
-          {/* Firm dates */}
-          {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:8,fontSize:12,color:'#166534'}}>
-            📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
+          {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'10px 14px',background:'#E8F5EC',border:'1px solid #A7D9B5',borderRadius:6,fontSize:13,color:'#1F7A43',fontWeight:600}}>
+            📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||'TBD'}</div>}
         </div>
+      </div>
       </div>
     </div>
   }
@@ -1149,33 +1309,342 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Coach store builder — full-screen guided flow
   if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
-  // Main portal view
-  return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
-    <div style={{width:'100%',maxWidth:1100,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+  // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
+  if(spendView&&adData){
+    const{period,teams,totalSpend,adidasTotal,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
+    const teamsActive=teams.filter(t=>t.orders>0);
+    const teamsZero=teams.filter(t=>t.orders===0);
+    const adiAvail=adidasTotal>0;const isAdi=adiAvail&&spendMode==='adidas';const metric=isAdi?'adidas':'spend';
+    const modeMax=Math.max(1,...teamsActive.map(t=>t[metric]||0));const modeTotal=isAdi?adidasTotal:totalSpend;
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',padding:'32px 16px'}}>
+      <style>{`.ad-teams{display:grid;grid-template-columns:1fr 1fr;gap:0 48px}@media(max-width:680px){.ad-teams{grid-template-columns:1fr}}.ad-top{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:stretch}@media(max-width:800px){.ad-top{grid-template-columns:1fr}}`}</style>
+      <div style={{maxWidth:1000,margin:'0 auto'}}>
+        <button onClick={()=>setSpendView(false)} style={{display:'inline-flex',alignItems:'center',gap:6,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:.5,color:'#64748b',background:'none',border:'none',cursor:'pointer',padding:0,marginBottom:14}}>‹ Back to Dashboard</button>
+        <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,marginBottom:26,flexWrap:'wrap'}}>
           <div>
-            <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:38,filter:'brightness(0) invert(1)',marginBottom:6}}/>
-            <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
-            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:2,textTransform:'uppercase',color:tAccent,marginBottom:8}}>Athletic Department</div>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>Spend &amp; Promo</h1>
+            <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',margin:'12px 0 10px'}}/>
+            <div style={{fontSize:15,color:'#64748b'}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
           </div>
-          <div style={{textAlign:'right'}}>
-            {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
+          <div style={{display:'flex',background:'#fff',border:'1px solid #e2e8f0',borderRadius:6,padding:4,boxShadow:'0 1px 3px rgba(0,0,0,.08)'}}>
+            {[['period',period.label],['all','All time']].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setAdRange(k)} className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:.5,textTransform:'uppercase',padding:'9px 18px',border:'none',borderRadius:4,cursor:'pointer',background:adRange===k?tPrimary:'transparent',color:adRange===k?'#fff':'#64748b',transition:'all .15s'}}>{lbl}</button>
+            ))}
           </div>
         </div>
+        <div className="ad-top" style={{marginBottom:34}}>
+          {hasPromo&&<div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 8px 32px rgba(0,0,0,.18)',background:`linear-gradient(125deg,${tNavyDark} 0%,${tPrimary} 60%,${tNavyMid} 100%)`,padding:'28px 30px',color:'#fff'}}>
+            <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.02) 26px,rgba(255,255,255,.02) 52px)'}}/>
+            <div style={{position:'relative'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:18}}>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.62)'}}>Promo Budget · {adRange==='all'?'All time':period.label}</div>
+                {overspent&&<span className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',background:tAccent,color:'#fff',padding:'4px 11px',borderRadius:999,whiteSpace:'nowrap'}}>Over by {money2(-remaining)}</span>}
+              </div>
+              <div style={{display:'flex',alignItems:'baseline',gap:12}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:52,lineHeight:1,color:'#fff'}}>{money2(used)}</div>
+                <div style={{fontSize:15,color:'rgba(255,255,255,.7)'}}>used of {money2(allocated)}</div>
+              </div>
+              <div style={{height:10,background:'rgba(255,255,255,.14)',borderRadius:999,overflow:'hidden',margin:'20px 0 8px'}}>
+                <div style={{height:'100%',width:Math.min(usedPct,100)+'%',background:overspent?'linear-gradient(90deg,#f59e0b,#b45309)':'linear-gradient(90deg,#22c55e,#15803d)',borderRadius:999}}/>
+              </div>
+              <div style={{fontSize:13,color:'rgba(255,255,255,.6)'}}>{usedPct}% used{overspent?' · over budget':remainingDisplay>0?' · '+money2(remainingDisplay)+' remaining':''}</div>
+              <div style={{display:'flex',gap:26,marginTop:22,paddingTop:20,borderTop:'1px solid rgba(255,255,255,.14)'}}>
+                {[['Allocated',money2(allocated)],['Applied to Orders',money2(used)],['Remaining',money2(remainingDisplay)]].map(([lbl,val])=>(
+                  <div key={lbl}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:11,letterSpacing:1,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>{lbl}</div>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:22,color:lbl==='Remaining'?tAccentLight:'#fff',marginTop:2}}>{val}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>}
+          <div style={{display:'flex',flexDirection:'column',gap:22,...(!hasPromo?{gridColumn:'1/-1'}:{})}}>
+            <div style={{flex:1,background:'#fff',border:'1px solid #e2e8f0',borderTop:`3px solid ${tPrimary}`,borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'24px 26px',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:'uppercase',color:'#94a3b8'}}>Department Spend</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:40,color:tPrimary,lineHeight:1.05,margin:'5px 0 3px'}}>{money(totalSpend)}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{adRange==='all'?'All time':period.label} · {teamsActive.length} active</div>
+            </div>
+            {adiAvail&&<div style={{flex:1,background:'#fff',border:'1px solid #e2e8f0',borderTop:`3px solid ${tAccent}`,borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'24px 26px',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:'uppercase',color:'#94a3b8'}}>Adidas Items</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:40,color:tPrimary,lineHeight:1.05,margin:'5px 0 3px'}}>{money(adidasTotal)}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>Items only · no deco</div>
+            </div>}
+          </div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,marginBottom:18,flexWrap:'wrap'}}>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',color:tPrimary}}>{isAdi?'Adidas Spend by Team':'Spend by Team'}</div>
+          {adiAvail&&<div style={{display:'flex',background:'#fff',border:'1px solid #e2e8f0',borderRadius:6,padding:4,boxShadow:'0 1px 3px rgba(0,0,0,.08)'}}>
+            {[['all','All Spend'],['adidas','Adidas Only']].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setSpendMode(k)} className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:.5,textTransform:'uppercase',padding:'8px 16px',border:'none',borderRadius:4,cursor:'pointer',background:spendMode===k?tPrimary:'transparent',color:spendMode===k?'#fff':'#64748b',transition:'all .15s'}}>{lbl}</button>
+            ))}
+          </div>}
+        </div>
+        {teamsActive.length===0?
+          <div style={{color:'#94a3b8',fontSize:13,padding:'20px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No team spend {adRange==='all'?'on record yet':'in '+period.label}.{adRange!=='all'?<> Try <button onClick={()=>setAdRange('all')} style={{border:'none',background:'none',color:tPrimary,fontWeight:700,cursor:'pointer',textDecoration:'underline',padding:0,font:'inherit'}}>All time</button>.</>:null}</div>:
+          <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 1px 4px rgba(0,0,0,.07)',padding:'10px 28px'}}>
+            <div className="ad-teams">
+              {teamsActive.map(t=>{const val=t[metric]||0;const w=Math.round(val/modeMax*100);const share=modeTotal>0?Math.round(val/modeTotal*100):0;
+                return<div key={t.id} style={{padding:'16px 0',borderBottom:'1px solid #f1f5f9'}}>
+                  <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:14,marginBottom:9}}>
+                    <div className="nsa-disp" style={{flex:1,minWidth:0,fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t.isDept?'🏛️ ':''}{t.name}</div>
+                    <div style={{display:'flex',alignItems:'baseline',gap:9,flexShrink:0}}>
+                      <span className="nsa-disp" style={{fontWeight:800,fontSize:16,color:tPrimary}}>{money2(val)}</span>
+                      <span style={{fontSize:12,color:'#94a3b8',width:30,textAlign:'right'}}>{share}%</span>
+                    </div>
+                  </div>
+                  <div style={{height:6,background:'#f1f5f9',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:w+'%',background:tAccent,borderRadius:999}}/></div>
+                </div>;
+              })}
+            </div>
+          </div>}
+        {teamsZero.length>0&&<details style={{marginTop:16}}>
+          <summary style={{cursor:'pointer',fontSize:12.5,fontWeight:700,color:'#64748b'}}>{teamsZero.length} team{teamsZero.length!==1?'s':''} with no orders {adRange==='all'?'on record':'in '+period.label}</summary>
+          <div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:6}}>
+            {teamsZero.map(t=><span key={t.id} style={{fontSize:12,color:'#64748b',background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:999,padding:'4px 11px'}}>{t.name}</span>)}
+          </div>
+        </details>}
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:20,lineHeight:1.5,borderTop:'1px solid #f1f5f9',paddingTop:14}}>
+          {isAdi?'Adidas items only — decoration, shipping & tax are excluded.':'Spend reflects products & decoration only — shipping and tax are excluded.'}{hasPromo?' Promo dollars are shared across the whole department.':''}
+        </div>
       </div>
-      <div style={{padding:'20px 28px'}}>
-        <style>{`.cp-grid{display:grid;grid-template-columns:1fr;gap:24px;align-items:start}@media(min-width:900px){.cp-grid{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}}.cp-col{min-width:0}.cp-colhead{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:12px}.cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{border-color:#2563eb;box-shadow:0 2px 10px rgba(37,99,235,.10)}`}</style>
+    </div>;
+  }
+
+  // Main portal view — a branded "Team HQ" shell: team-colored sidebar + bottom nav, paged content.
+  const cpTint=cpShade(cpTheme.primary,84);// light team-tint for active nav pills & highlights
+  const cpNav=[
+    {key:'home',label:'Home',icon:'🏠'},
+    {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
+    {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
+    ...(hasRoster?[{key:'roster',label:'Roster',icon:'📋'}]:[]),
+    ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
+    {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
+    {key:'art',label:'Art',icon:'🎨'},
+    {key:'shop',label:'Shop',icon:'🛍️'},
+    ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
+  ];
+  // Reorder a saved design through Live Look — deep-links the catalog with the artwork so the
+  // coach picks gear and the design rides along to the rep on the order request.
+  const cpOrderWithArt=(a,url)=>{
+    const base=CP_LIVELOOK_URL;const sep=base.includes('?')?'&':'?';
+    const href=base+sep+'art='+encodeURIComponent(url||a.urls[0]||'')+'&an='+encodeURIComponent(a.name||'Design')+(a.deco?'&ad='+encodeURIComponent(a.deco):'');
+    try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
+  };
+  // ── NSA nav (design tokens are hoisted to the top of the component) ──
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
+  const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
+  const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
+  const _teamSort=(a,b)=>(_teamName(a.customer_id)||'').localeCompare(_teamName(b.customer_id)||'');
+  const _teamSelect=(<select value={teamFilter} onChange={e=>setTeamFilter(e.target.value)} className="nsa-disp" style={{border:'1px solid #EEF1F6',borderRadius:4,padding:'10px 12px',fontSize:13,fontWeight:700,textTransform:'uppercase',letterSpacing:'.3px',color:tPrimary,background:'#fff',cursor:'pointer',maxWidth:260}}><option value="all">All teams</option>{_teamOpts.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select>);
+  return<div style={{minHeight:'100vh',background:'#F7F8FB',fontFamily:"'Source Sans 3',system-ui,sans-serif",color:'#2A2F3E'}}>
+    <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');
+      .nsa-disp{font-family:'Barlow Condensed','Source Sans 3',system-ui,sans-serif}
+      .nsa-tile{transition:transform .25s cubic-bezier(.4,0,.2,1),box-shadow .25s,border-color .25s}
+      .nsa-tile:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.12)!important}
+      .nsa-card{transition:background .2s}.nsa-card:hover{background:#F7F8FB}
+      .nsa-nav{position:relative;background:none;border:none;cursor:pointer;height:84px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;text-transform:uppercase;letter-spacing:.8px;font-size:16px;font-weight:700;transition:color .2s}
+      .nsa-skew{transform:skewX(-3deg);transition:transform .2s,background .2s,filter .2s}.nsa-skew>span{display:inline-block;transform:skewX(3deg)}.nsa-skew:hover{transform:skewX(-3deg) translateY(-2px)}
+      .nsa-desknav{display:none}@media(min-width:881px){.nsa-desknav{display:flex}}
+      @media(max-width:880px){.nsa-mkt-util{font-size:11px}}
+      .cp-bottomnav{position:fixed;left:12px;right:12px;bottom:12px;display:flex;justify-content:space-around;z-index:40;padding:8px 4px;border-radius:14px;box-shadow:0 12px 30px rgba(15,23,42,.22);background:#fff;border:1px solid #EEF1F6}@media(min-width:881px){.cp-bottomnav{display:none}}
+      .cp-bottombtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;border:none;background:none;cursor:pointer;padding:3px 2px;font-size:10px;font-weight:800}
+      .cp-grid{display:block}.cp-col{min-width:0}.cp-page{max-width:1240px;margin:0 auto}
+      .cp-tool{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid #EEF1F6;background:#fff;border-radius:6px;padding:14px 16px;cursor:pointer;text-decoration:none;color:inherit;transition:border-color .12s,box-shadow .12s}.cp-tool:hover{box-shadow:0 2px 10px rgba(0,0,0,.08)}
+      .cp-adidas{transition:box-shadow .14s,transform .14s}.cp-adidas:hover{box-shadow:0 6px 18px rgba(0,0,0,.22);transform:translateY(-1px)}
+    `}</style>
+    {/* ── Utility bar ── */}
+    <div className="nsa-mkt-util" style={{background:tNavyDark,color:'rgba(255,255,255,.85)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',padding:'8px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap',fontSize:13}}>
+        <span className="nsa-disp" style={{fontWeight:700,textTransform:'uppercase',letterSpacing:'1.5px'}}><span style={{color:tAccentLight}}>★</span> Team Portal — Powered by National Sports Apparel <span style={{color:tAccentLight}}>★</span></span>
+        <span style={{display:'flex',gap:16,alignItems:'center',fontWeight:600}}><span style={{opacity:.6}}>Need help?</span><a href="mailto:hello@nationalsportsapparel.com" style={{color:'#fff',textDecoration:'none'}}>hello@nationalsportsapparel.com</a><a href="tel:7142798777" style={{color:'#fff',textDecoration:'none'}}>(714) 279-8777</a></span>
+      </div>
+    </div>
+    {/* ── Sticky header ── */}
+    <div style={{background:'#fff',position:'sticky',top:0,zIndex:50,boxShadow:'0 4px 24px rgba(0,0,0,.08)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',display:'flex',alignItems:'center',gap:16,padding:'0 24px',height:84}}>
+        <img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:50,cursor:'pointer',flexShrink:0}} onClick={()=>setPage('home')}/>
+        <div className="nsa-desknav" style={{flex:1,justifyContent:'center',alignItems:'center'}}>
+          {_nsaNav.map(([k,lbl])=>{const active=page===k;const badge=k==='orders'?activeSOs.length:k==='estimates'?openEstCount:k==='store'?openStoreCount:0;return(
+            <button key={k} className="nsa-nav nsa-disp" onClick={()=>setPage(k)} style={{color:active?tAccent:tPrimary}}>
+              <span>{lbl}</span>
+              {badge>0?<span className="nsa-disp" style={{fontWeight:700,fontSize:11,background:k==='estimates'?tAccent:tPrimary,color:'#fff',borderRadius:999,padding:'2px 7px',lineHeight:1}}>{badge}</span>:null}
+              <span style={{position:'absolute',left:12,right:12,bottom:20,height:3,background:tAccent,transform:`skewX(-12deg) scaleX(${active?1:0})`,transformOrigin:'left',transition:'transform .25s ease'}}/>
+            </button>
+          )})}
+        </div>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,border:'1px solid #EEF1F6',borderRadius:999,padding:'6px 6px 6px 14px',flexShrink:0}}>
+          <div style={{textAlign:'right',lineHeight:1.15}}>
+            <div className="nsa-disp" style={{fontWeight:700,fontSize:14,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary}}>{customer.name}</div>
+            <div style={{fontSize:11,color:'#5A6075'}}>{(customer.contacts||[])[0]?.name||'Coach'}</div>
+          </div>
+          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:customer.logo_url?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
+        </div>
+      </div>
+    </div>
+    {/* ── Striped rule ── */}
+    <div style={{height:5,background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
+    {/* ── MAIN ── */}
+    <div className="cp-main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
+        <div className="cp-page">
         <div className="cp-grid">
 
-        {/* ── LEFT COLUMN — Orders & Billing ── */}
+        {/* ── content sections (each gated to a nav page) ── */}
         <div className="cp-col">
-        <div className="cp-colhead">Orders &amp; Billing</div>
-        {(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
+        {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
+        {page==='home'&&<div>
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}`}</style>
+          {/* ── Pennant hero ── */}
+          <div style={{position:'relative',overflow:'hidden',borderRadius:8,minHeight:320,boxShadow:'0 16px 40px rgba(0,0,0,.25)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'46%',background:tAccent,opacity:.14,clipPath:'polygon(28% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+            <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
+              <div style={{width:'100%',height:'100%',borderRadius:10,background:'rgba(255,255,255,.05)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
+              </div>
+            </div>
+            <div className="nsa-heroleft" style={{position:'relative',maxWidth:'56%',padding:'40px',color:'#fff'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'1px',color:tAccentLight,textTransform:'uppercase'}}>★ Team HQ ★</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:48,lineHeight:.98,textTransform:'uppercase',margin:'10px 0 0'}}>{customer.name}</h1>
+              <div style={{fontSize:15,color:'rgba(255,255,255,.78)',marginTop:10}}>{isP?(adData?adData.teamCount:subs.length)+' teams · ':''}Powered by National Sports Apparel</div>
+              <div style={{display:'flex',alignItems:'center',gap:12,marginTop:18}}>
+                <span className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Team Colors</span>
+                {[tPrimary,tAccent,'#ffffff'].map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
+              </div>
+              {totalDue>0&&<><div style={{height:1,background:'rgba(255,255,255,.15)',margin:'22px 0 18px',maxWidth:400}}/>
+              <div style={{display:'flex',alignItems:'center',gap:22,flexWrap:'wrap'}}>
+                <div><div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Balance Due</div><div className="nsa-disp" style={{fontWeight:800,fontSize:38,color:tAccentLight,lineHeight:1}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+                <button className="nsa-skew nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 22px',borderRadius:4,cursor:'pointer'}}><span>Pay Balance →</span></button>
+              </div></>}
+            </div>
+          </div>
+          {/* ── Quick Access ── */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary,margin:'8px 0 16px'}}>Quick Access</div>
+          <div className="nsa-qa">
+            {(()=>{const qa=[
+              {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
+              {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
+              {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
+              {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
+              {k:'shop',t:'Catalogs',sub:'Browse the team store',icon:'🛍️',accent:false},
+              ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
+            ];
+            return qa.map(q=>(
+              <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
+                <span style={{width:50,height:50,flexShrink:0,borderRadius:6,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>{q.icon}</span>
+                <span style={{minWidth:0}}>
+                  <span className="nsa-disp" style={{display:'block',fontWeight:700,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>{q.t}</span>
+                  <span style={{display:'block',fontSize:13,color:q.sa?tAccent:'#5A6075',fontWeight:q.sa?700:400,marginTop:4}}>{q.sub}</span>
+                </span>
+              </button>
+            ));})()}
+          </div>
+          {/* ── Needs Your Attention ── */}
+          <div className="nsa-attn" style={{marginTop:28}}>
+            {(()=>{const openE=custEsts.filter(e=>e.status==='sent'||e.status==='open').slice(0,3);return(
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
+                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
+              </div>
+              {openE.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>You're all caught up — nothing waiting.</div>:
+               openE.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id} · ${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                  </div>
+                  <button className="nsa-skew nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                </div>})}
+            </div>);})()}
+            {(()=>{const jobs=waitingArtJobs.slice(0,3);return(
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review</div>
+                <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
+              </div>
+              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>No proofs waiting on you right now.</div>:
+               jobs.map((j,ix)=>{const so=j.so;
+                return<div key={j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
+                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:4,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16,clipPath:'polygon(0 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px))'}}>{String(ix+1).padStart(2,'0')}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{j.art_name||so.memo||'Artwork'}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||so.id}</div>
+                  </div>
+                  <button className="nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:4,cursor:'pointer'}}>Review</button>
+                </div>})}
+            </div>);})()}
+          </div>
+          {/* ── Rep + Contact ── */}
+          <div className="nsa-rep" style={{marginTop:24}}>
+            <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
+              <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+              <div style={{position:'relative',minWidth:0}}>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:tAccentLight}}>Your Dedicated Rep</div>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
+                <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
+              </div>
+              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+            </div>
+            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
+              <div style={{fontSize:13,color:'#5A6075',margin:'6px 0 12px'}}>{(customer.contacts||[])[0]?.name||'—'}{(customer.contacts||[])[0]?.email?' · '+(customer.contacts||[])[0].email:''}{customer.shipping_city?' · '+customer.shipping_city+', '+(customer.shipping_state||''):''}</div>
+              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:4,cursor:'pointer'}}>Request Update</button>
+            </div>
+          </div>
+        </div>}
+        {/* ── ART LOCKER (NSA spec — navy proof tiles) ── */}
+        {page==='art'&&(()=>{
+          const decos=['all',...Array.from(new Set(artLibrary.map(a=>a.deco).filter(Boolean)))];
+          const q=artQuery.trim().toLowerCase();
+          const _tfName=isP&&teamFilter!=='all'?_teamName(teamFilter):null;
+          let filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q))&&(!_tfName||(a.teams||[]).includes(_tfName)));
+          if(isP)filtered=[...filtered].sort((a,b)=>((a.teams||[])[0]||'').localeCompare((b.teams||[])[0]||''));
+          return<div>
+            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:6px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}`}</style>
+            <div style={{marginBottom:24}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Proofs &amp; Approved Designs</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Art Locker</h1>
+              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+            </div>
+            {artLibrary.length===0?
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
+            :<>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
+                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:6,fontSize:14,fontFamily:'inherit'}}/>
+                {isP&&_teamSelect}
+                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:4,padding:'9px 14px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
+              </div>
+              {filtered.length===0?<div style={{color:'#5A6075',fontSize:14,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
+              <div className="nsa-artgrid">
+                {filtered.map(a=>{const u=a.urls[0];const isPdf=_isPdfUrl(u);const thumb=isPdf?_cloudinaryPdfThumb(u):u;
+                  return<div key={a.key} className="nsa-arttile" onClick={()=>setArtView({art:a,idx:0})}>
+                    <div style={{position:'relative',aspectRatio:'4 / 3.4',background:`linear-gradient(150deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',padding:14,overflow:'hidden'}}>
+                      <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+                      {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{position:'relative',maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 6px 16px rgba(0,0,0,.35))'}}/>:<span className="nsa-disp" style={{position:'relative',color:'rgba(255,255,255,.9)',fontSize:48,fontWeight:800}}>{cpMonogram}</span>}
+                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:0,transform:'skewX(-12deg)',background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px 4px 14px'}}><span style={{display:'inline-block',transform:'skewX(12deg)'}}>{a.deco}</span></span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:4,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
+                    </div>
+                    <div style={{padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
+                      <div style={{minWidth:0}}>
+                        <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+                        <div style={{fontSize:12,color:'#94A0B0',marginTop:1}}>{a.orders.length} order{a.orders.length!==1?'s':''}{isP&&a.teams.length?' · '+a.teams[0]:''}</div>
+                      </div>
+                      <span title="Approved" style={{width:9,height:9,borderRadius:'50%',background:'#1F7A43',flexShrink:0}}/>
+                    </div>
+                  </div>;
+                })}
+              </div>}
+            </>}
+          </div>;
+        })()}
+
+        {false&&(!waitingArtJobs.length&&!openInvs.length&&!paidInvs.length&&!activeSOs.length&&!completedSOs.length&&!custEsts.length&&!paySuccess)&&
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
-        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+        {page==='home'&&paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
           <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
@@ -1192,8 +1661,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
         </div>}
 
-        {/* Artwork awaiting approval — prominent at top, same treatment as estimates */}
-        {waitingArtJobs.length>0&&<>
+        {/* Artwork awaiting approval — now surfaced via the Dashboard "Designs to Review" card */}
+        {false&&waitingArtJobs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>🎨 Artwork to Approve ({waitingArtJobs.length})</div>
           {waitingArtJobs.map(j=>{const so=j.so;const soAF=safeArt(so);
             const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
@@ -1223,60 +1692,168 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Estimates awaiting approval — needs coach attention */}
-        {(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
-          const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':'#64748b'});
-          return openEsts.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates to Approve ({openEsts.length})</div>
-          {openEsts.map(est=>{const t=calcEstTotal(est);
-            return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,...estBadge(est.status)}}>{est.status==='sent'?'Awaiting Approval':est.status}</span></div>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>
-              </div></div>})}
-          </>})()}
-
-        {/* Open invoices — payment needed */}
-        {openInvs.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
-          <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
-              return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
-                <div>
-                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
-                  <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
-                  {!ccDisabled&&<button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setPayLoading(true);setShowPay(inv)}}>Pay</button>}
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>
-              </div>})}
-            <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
-              <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+        {page==='estimates'&&(()=>{
+          const _tf=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
+          const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tf(e));
+          const approvedEsts=custEsts.filter(e=>e.status==='approved'&&_tf(e));
+          if(isP){openEsts.sort(_teamSort);approvedEsts.sort(_teamSort);}
+          const cards=[...openEsts.map(e=>({e,ap:false})),...approvedEsts.map(e=>({e,ap:true}))];
+          return<div>
+            <style>{`.nsa-estgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:760px){.nsa-estgrid{grid-template-columns:1fr}}`}</style>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
+              <div>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Awaiting Your Approval</div>
+                <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Estimates</h1>
+                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                {isP&&_teamSelect}
+                {openEsts.length>0&&<div className="nsa-disp" style={{transform:'skewX(-6deg)',background:tAccent,color:'#fff',padding:'10px 18px',borderRadius:4}}><div style={{transform:'skewX(6deg)',textAlign:'center'}}><div style={{fontWeight:800,fontSize:30,lineHeight:1}}>{openEsts.length}</div><div style={{fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',opacity:.9}}>to approve</div></div></div>}
+              </div>
             </div>
-          </div>
-          {!ccDisabled&&totalDue>0&&<div style={{marginBottom:14}}>
-            <button style={{width:'100%',padding:'14px 20px',background:payLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:payLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:payLoading?0.8:1,transition:'all 0.2s'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay('all')}}>
-              {payLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay Now — ${totalDue.toLocaleString()}</>}
-            </button>
-            <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
-              <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
-              <span style={{fontSize:10,color:'#94a3b8'}}> Apple Pay</span>
-              <span style={{fontSize:10,color:'#94a3b8'}}>🏦 ACH/Bank</span>
-            </div>
-          </div>}
-        </>}
+            {cards.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No estimates right now — your rep will post quotes here.</div>:
+            <div className="nsa-estgrid">
+              {cards.map(({e:est,ap})=>{const t=calcEstTotal(est);const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';
+                return<div key={est.id} style={{position:'relative',background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${ap?'#1F7A43':tAccent}`,borderRadius:6,padding:'20px 22px',boxShadow:'0 2px 12px rgba(0,0,0,.06)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+                    <div style={{minWidth:0}}>
+                      <div className="nsa-disp" style={{fontWeight:800,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1.05}}>{tn||est.memo||est.id}</div>
+                      <div style={{fontSize:13,color:'#5A6075',marginTop:3}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div>
+                      <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>{est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                    </div>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:24,color:tPrimary,textAlign:'right',flexShrink:0}}>${t.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                  </div>
+                  <div style={{marginTop:16}}>
+                    {ap?
+                      <div className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',borderRadius:4,padding:'10px',textAlign:'center',fontWeight:800,fontSize:14}}>✓ Approved</div>
+                    :<div style={{display:'flex',gap:10}}>
+                      <button className="nsa-skew nsa-disp" onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flex:1,background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px',borderRadius:4,cursor:'pointer'}}><span>Approve Estimate</span></button>
+                      <button className="nsa-disp" onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:14,textTransform:'uppercase',padding:'11px 16px',borderRadius:4,cursor:'pointer'}}>Details</button>
+                    </div>}
+                  </div>
+                </div>;
+              })}
+            </div>}
+          </div>;
+        })()}
 
-        {/* Active orders */}
-        {(activeSOs.length>0||recentEsts.length>0)&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
-          {activeSOs.map(so=>{
+        {/* ── BILLING (NSA spec — invoice history + balance panel) ── */}
+        {page==='billing'&&(()=>{
+          const allInv=[...openInvs,...paidInvs];
+          return<div>
+            <style>{`.nsa-bill{display:grid;grid-template-columns:1.5fr 1fr;gap:24px;align-items:start}@media(max-width:820px){.nsa-bill{grid-template-columns:1fr}}`}</style>
+            <div style={{marginBottom:24}}>
+              <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Invoices &amp; Payments</div>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Billing</h1>
+              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+            </div>
+            <div className="nsa-bill">
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+                <div className="nsa-disp" style={{padding:'14px 22px',background:'#F7F8FB',fontWeight:800,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',color:tPrimary}}>Invoice History</div>
+                {allInv.length===0?<div style={{padding:'28px 22px',color:'#5A6075',fontSize:13}}>No invoices yet.</div>:
+                 allInv.map(inv=>{const open=inv.status==='open'||inv.status==='partial';const bal=(inv.total||0)-(inv.paid||0);
+                  return<div key={inv.id} className="nsa-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'14px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
+                    <div style={{minWidth:0}}>
+                      <div className="nsa-disp" style={{fontWeight:700,fontSize:16,color:tPrimary}}>{inv.id}</div>
+                      <div style={{fontSize:13,color:'#5A6075',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{inv.date||''}{inv.memo?' · '+inv.memo:''}</div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
+                      <span className="nsa-disp" style={{fontWeight:700,fontSize:18,color:tPrimary}}>${(open?bal:(inv.total||0)).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                      <span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:open?tAccentSoft:'#E8F5EC',color:open?tAccent:'#1F7A43',fontWeight:700,fontSize:11,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 11px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{open?'Open':'Paid'}</span></span>
+                    </div>
+                  </div>})}
+              </div>
+              <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:28,color:'#fff',background:`linear-gradient(135deg, ${tNavyDark}, ${tPrimary})`}}>
+                <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+                <div style={{position:'relative'}}>
+                  <div className="nsa-disp" style={{fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.7)'}}>Total Balance Due</div>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:48,color:tAccentLight,lineHeight:1,marginTop:4}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:6}}>{totalDue>0?'Net 30 terms · pay by card or PO':"You're all paid up — thank you!"}</div>
+                  {!ccDisabled&&totalDue>0&&<button onClick={()=>{setPayLoading(true);setShowPay('all')}} disabled={payLoading} className="nsa-skew nsa-disp" style={{width:'100%',marginTop:18,background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:16,letterSpacing:'.5px',textTransform:'uppercase',padding:'14px',borderRadius:4,cursor:payLoading?'wait':'pointer'}}><span>{payLoading?'Opening checkout…':'Pay Balance'}</span></button>}
+                  <div style={{height:1,background:'rgba(255,255,255,.15)',margin:'18px 0 12px'}}/>
+                  <div style={{fontSize:12,color:'rgba(255,255,255,.6)'}}>💳 Credit card · Apple Pay · 🏦 ACH/Bank · or pay by PO</div>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
+
+        {/* ── ORDERS (NSA spec — embedded estimates panel + order history table) ── */}
+        {page==='orders'&&(()=>{
+          const statusMap={complete:['Delivered','#5A6075','#EEF1F6'],shipped:['Shipped','#1F7A43','#E8F5EC'],bagging:['Bagging','#1A3A6B','#E6ECF5'],in_production:['In Production','#1A3A6B','#E6ECF5'],received:['Received','#1A3A6B','#E6ECF5'],pending:['Ordered','#5A6075','#EEF1F6']};
+          // Estimates to approve — embedded at top of orders page per new design
+          const _tfEst=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
+          const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tfEst(e));
+          if(isP)openEsts.sort(_teamSort);
+          let rows=[...activeSOs,...completedSOs];
+          if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
+          if(isP)rows=[...rows].sort(_teamSort);
+          return<div>
+            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}`}</style>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
+              <div>
+                <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
+                <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
+                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              </div>
+              {isP&&_teamSelect}
+            </div>
+            {/* ── Estimates to Approve — inline panel (new design) ── */}
+            {openEsts.length>0&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:'1px solid #EEF1F6',background:'#FAFBFC'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13}}>{openEsts.length}</span>
+                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
+                  <span style={{fontSize:13,color:'#5A6075'}}>— approve to start production</span>
+                </div>
+                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>View all →</button>
+              </div>
+              {openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''} · {est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                  </div>
+                </div>})}
+            </div>}
+            {/* ── Order History table ── */}
+            <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
+            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+              <div className="nsa-disp nsa-otab nsa-ohead" style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'14px 24px',background:'#F7F8FB',fontWeight:700,fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>
+                <span>Order</span><span>Status</span><span>Delivery</span><span style={{textAlign:'right'}}>Total</span>
+              </div>
+              {rows.map(so=>{
+                const st=calcSOStatus(so);const sm=statusMap[st]||['Ordered','#5A6075','#EEF1F6'];
+                let totalU=0,fulU=0;safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+                const pct=totalU>0?Math.round(fulU/totalU*100):0;
+                const team=(allCustomers||[]).find(c=>c.id===so.customer_id);const tn=isP&&team&&team.id!==customer.id?team.name:(so.memo||so.id);
+                const tot=calcOrderTotals(so).grand;
+                return<div key={so.id} className="nsa-card nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:17,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'Order'} · {totalU} pcs · {so.id}</div>
+                    <div style={{height:5,background:'#EEF1F6',borderRadius:999,marginTop:9,overflow:'hidden',maxWidth:220}}><div style={{height:'100%',width:pct+'%',background:tPrimary,borderRadius:999}}/></div>
+                  </div>
+                  <div><span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{sm[0]}</span></span></div>
+                  <div style={{fontSize:14,color:'#2A2F3E'}}>{so.expected_date?(st==='shipped'?'Arrives ':'ETA ')+so.expected_date:'—'}</div>
+                  <div className="nsa-disp" style={{textAlign:'right',fontWeight:700,fontSize:18,color:tPrimary}}>${tot.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                </div>;
+              })}
+            </div>}
+          </div>;
+        })()}
+        {/* Active orders (legacy, retired in favor of the NSA table above) */}
+        {false&&(activeSOs.length>0||recentEsts.length>0)&&<>
+          <button onClick={()=>setOrdersOpen(o=>!o)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',width:'100%',background:'none',border:'none',padding:0,cursor:'pointer',marginBottom:10}}>
+            <span style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>📦 Active Orders ({activeSOs.length}{recentEsts.length>0?' + '+recentEsts.length+' est':''})</span>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b',display:'inline-flex',alignItems:'center',gap:6,textTransform:'uppercase',letterSpacing:'.04em'}}>{ordersOpen?'Hide':'Show'}<span style={{fontSize:12}}>{ordersOpen?'▾':'▸'}</span></span>
+          </button>
+          {ordersOpen&&activeSOs.map(so=>{
             let totalU=0,fulU=0;
             safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -1315,7 +1892,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
                 📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
             </div>})}
-          {recentEsts.map(est=>{const t=calcEstTotal(est);
+          {ordersOpen&&recentEsts.map(est=>{const t=calcEstTotal(est);
             const _stLabel={sent:'Awaiting Approval',open:'Open',approved:'Approved',draft:'Draft'}[est.status]||est.status;
             const _stStyle={sent:{background:'#fef3c7',color:'#92400e'},open:{background:'#fef3c7',color:'#92400e'},approved:{background:'#dcfce7',color:'#166534'},draft:{background:'#f1f5f9',color:'#64748b'}}[est.status]||{background:'#f1f5f9',color:'#64748b'};
             return<div key={'recest_'+est.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12,cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
@@ -1336,7 +1913,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Approved estimates — no action needed, listed for reference */}
-        {(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
+        {false&&(()=>{const approvedEsts=custEsts.filter(e=>e.status==='approved');
           return approvedEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Approved Estimates ({approvedEsts.length})</div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
@@ -1355,8 +1932,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           </>})()}
 
-        {/* Paid invoices — historical reference */}
-        {paidInvs.length>0&&<>
+        {/* Paid invoices (legacy, retired — folded into the NSA Billing invoice history) */}
+        {false&&paidInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Paid Invoices</div>
             <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
               {paidInvs.slice(0,10).map((inv,i,arr)=>
@@ -1372,8 +1949,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </>}
 
-        {/* Completed orders — below invoices for reference */}
-        {completedSOs.length>0&&<>
+        {/* Completed orders (legacy, retired — folded into the NSA Orders table) */}
+        {false&&completedSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
           {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
@@ -1381,7 +1958,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </>}
 
         {/* Past Estimates — converted/draft, de-emphasized at bottom */}
-        {(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
+        {false&&(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
           const estBadge=(st)=>({background:st==='converted'?'#dbeafe':'#f1f5f9',color:st==='converted'?'#1e40af':'#64748b'});
           return pastEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#94a3b8',marginBottom:10,marginTop:16}}>📋 Past Estimates ({pastEsts.length})</div>
@@ -1403,70 +1980,106 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         </div>{/* ── /LEFT COLUMN ── */}
 
-        {/* ── RIGHT COLUMN — Team Store & Tools ── */}
+        {/* ── Team store, shop & home tools ── */}
         <div className="cp-col">
-        <div className="cp-colhead">Team Store</div>
 
-        {/* Build a team store — coach self-serve entry (invite-only) */}
-        {coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',borderRadius:14,padding:'18px 20px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
-          <div>
-            <div style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.8}}>New</div>
-            <div style={{fontSize:18,fontWeight:800,marginTop:2}}>✨ Build your team store</div>
-            <div style={{fontSize:12.5,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
-          </div>
-          <div style={{fontSize:13,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:9,padding:'10px 16px',whiteSpace:'nowrap'}}>Start →</div>
-        </button>}
-
-        {/* Team store — read-only order tracking for the coach */}
-        <CoachStore customer={customer} />
-
-        {/* Roster orders — spreadsheet-style kit ordering per team */}
-        <RosterOrdersCoach customer={customer} />
-
-        {/* Shop & order — invite-gated live-look + order building */}
-        {(coachLivelook||coachBuildOrders)&&<div style={{marginTop:16}}>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>🛍️ Shop &amp; Order</div>
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {coachLivelook&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🏷️</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Live Look — Shop Live Inventory</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse in-stock gear at your team pricing &amp; colors.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>}
-            {coachBuildOrders&&<a className="cp-tool" href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🧾</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Build &amp; Submit an Order</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Put an order together and send it to {rep?.name||'your rep'} for a quote.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>}
-          </div>
+        {/* ── SHOP / CATALOGS (NSA redesign — hero + Shop & Order tiles + Catalogs & Stores) ── */}
+        {page==='store'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Team Store Tracking</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Live orders, fundraising and production status for your team store{cpVisibleStores.length>1?'s':''}.</div>
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
         </div>}
 
-        {/* Catalogs — always-available browse links (open on the marketing site) */}
-        <div style={{marginTop:16}}>
-          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📚 Catalogs</div>
-          <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            <a className="cp-tool" href={CP_MARKETING+'/team-stores'} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>👕</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Team Stores</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Find an open store or see how they work.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>
-            <a className="cp-tool" href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer">
-              <span style={{fontSize:22}}>🎨</span>
-              <span style={{flex:1,minWidth:0}}><span style={{display:'block',fontWeight:700,fontSize:14}}>Custom &amp; Catalog Gear</span><span style={{display:'block',fontSize:12,color:'#64748b'}}>Browse our catalogs or request a custom quote.</span></span>
-              <span style={{color:'#94a3b8'}}>›</span>
-            </a>
+        {/* Roster orders — spreadsheet-style season kit ordering per team */}
+        {page==='roster'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Roster Orders</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Build your team, fill in player sizes, and submit to {rep?.name||'your rep'} when you're ready.</div>
+          <RosterOrdersCoach customer={customer} />
+        </div>}
+
+        {page==='shop'&&<div>
+          {/* Hero */}
+          <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'40%',background:tAccent,opacity:.14,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+            <div style={{position:'relative',maxWidth:560}}>
+              <h1 className="nsa-disp" style={{fontWeight:800,fontSize:48,lineHeight:.98,textTransform:'uppercase',margin:'0 0 14px'}}>Outfit Your Team <em style={{fontStyle:'italic',color:tAccentLight}}>The Right Way</em></h1>
+              <p style={{fontSize:16,lineHeight:1.6,color:'rgba(255,255,255,.82)',margin:'0 0 24px'}}>Browse live inventory at your team pricing and colors, build an order, or open a spirit-pack store — all in your team's gear.</p>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-skew nsa-disp" style={{background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 28px',borderRadius:4}}><span>Browse Gear</span></a>
+                <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-disp" style={{background:'transparent',color:'#fff',border:'2px solid rgba(255,255,255,.6)',textDecoration:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 26px',borderRadius:4}}>Custom Quote</a>
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* Your rep */}
-        <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
-          <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
-          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel{rep?.email?' · '+rep.email:''}</div>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
-        </div>
+          {/* Build a team store — invite-only self-serve */}
+          {coachAiBuilder&&<button onClick={()=>setStoreBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:`linear-gradient(135deg,${tNavyDark},${tPrimary})`,color:'#fff',borderRadius:8,padding:'18px 24px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
+            <div>
+              <div className="nsa-disp" style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.7}}>New</div>
+              <div className="nsa-disp" style={{fontSize:20,fontWeight:800,marginTop:2,textTransform:'uppercase'}}>Build Your Team Store</div>
+              <div style={{fontSize:13,opacity:.85,marginTop:3}}>Pick your gear, add your colors &amp; logo, and submit it — we'll publish it for you.</div>
+            </div>
+            <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
+          </button>}
 
-        {/* Contact update */}
-        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
+          {/* Shop & Order section */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
+
+          {/* Live Look tile — the highlight */}
+          <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',width:58,height:58,flexShrink:0,borderRadius:8,background:tAccent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>👁️</div>
+            <div style={{position:'relative',flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:24,textTransform:'uppercase',color:'#fff',lineHeight:1}}>Live Look — Shop Live Inventory</div>
+                <span style={{display:'inline-flex',alignItems:'center',gap:5,background:'rgba(31,122,67,.22)',border:'1px solid #2EC971',color:'#8FF0B5',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:11,letterSpacing:'1px',textTransform:'uppercase',padding:'3px 9px',borderRadius:999}}><span style={{width:7,height:7,borderRadius:999,background:'#2EC971',display:'inline-block'}}/> Live</span>
+              </div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:5}}>Browse in-stock gear at your team pricing &amp; colors — real-time inventory.</div>
+            </div>
+            <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
+          </a>
+
+          {/* Build & Submit an Order tile */}
+          {coachBuildOrders&&<a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:32}}>
+            <div style={{width:54,height:54,flexShrink:0,borderRadius:8,background:'#F7F8FB',color:tPrimary,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>🧾</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:21,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>Build &amp; Submit an Order</div>
+              <div style={{fontSize:14,color:'#5A6075',marginTop:5}}>Put an order together and send it to {rep?.name||'your rep'} for a quote.</div>
+            </div>
+            <div style={{flexShrink:0,color:'#94A0B0',fontSize:24}}>›</div>
+          </a>}
+          {!coachBuildOrders&&<div style={{marginBottom:32}}/>}
+
+          {/* Catalogs & Stores section */}
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
+
+          {/* Team Stores — inline (CoachStore renders existing stores) */}
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} />
+
+          {/* Custom & Catalog Gear tile */}
+          <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>
+            <div style={{width:54,height:54,flexShrink:0,borderRadius:8,background:'#F7F8FB',color:tPrimary,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>🎨</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:21,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>Custom &amp; Catalog Gear</div>
+              <div style={{fontSize:14,color:'#5A6075',marginTop:5}}>Browse our brand catalogs or request a custom quote.</div>
+            </div>
+            <div style={{flexShrink:0,color:'#94A0B0',fontSize:24}}>›</div>
+          </a>
+
+          {/* adidas catalog banner */}
+          <a className="cp-adidas" href="https://www.adidas-team.com/usa/us-team/" target={CP_LINK_TARGET} rel="noopener noreferrer"
+            style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:20,minHeight:100,borderRadius:8,overflow:'hidden',textDecoration:'none',color:'#fff',backgroundColor:'#0a0a0a',backgroundImage:`linear-gradient(110deg,rgba(8,8,8,.92) 0%,rgba(8,8,8,.58) 58%,rgba(8,8,8,.26) 100%),url('/adidas-team-catalog.webp')`,backgroundSize:'cover',backgroundPosition:'center 28%',padding:'28px 32px'}}>
+            <div>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'2px',textTransform:'lowercase',color:'rgba(255,255,255,.75)',marginBottom:4}}>adidas</div>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:28,textTransform:'uppercase',lineHeight:1}}>Shop the adidas Catalog</div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:6}}>Browse the full adidas team collection at your pricing.</div>
+            </div>
+            <div className="nsa-skew nsa-disp" style={{flexShrink:0,background:'#fff',color:tPrimary,fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 24px',borderRadius:4}}><span>View Catalog</span></div>
+          </a>
+        </div>}
+
+        {/* Contact update — summary lives in the Dashboard; this is the edit form when active */}
+        {page==='home'&&contactEdit&&<div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
           <div style={{fontSize:12,fontWeight:600,color:'#374151',marginBottom:6}}>📋 Update Contact / Shipping Info</div>
           {!contactEdit?<>
             <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Current: {(customer.contacts||[])[0]?.name} · {(customer.contacts||[])[0]?.email}{customer.shipping_city&&' · '+customer.shipping_city+', '+customer.shipping_state}</div>
@@ -1483,11 +2096,63 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Changes will be reviewed by your rep before updating</div>
           </>}
-        </div>
-        </div>{/* ── /RIGHT COLUMN ── */}
-        </div>{/* ── /cp-grid ── */}
+        </div>}
+        </div>{/* /RIGHT */}
+        </div>{/* /cp-grid */}
+        </div>{/* /cp-page */}
+      </div>{/* /cp-main */}
+
+    {/* ── Footer ── */}
+    <div style={{background:tNavyDark,color:'rgba(255,255,255,.6)'}}>
+      <div style={{maxWidth:1240,margin:'0 auto',padding:'28px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+        <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{height:34,filter:'brightness(0) invert(1)',opacity:.9}}/>
+        <span style={{fontSize:13}}>© 2026 National Sports Apparel · 2238 N Glassell St, Orange, CA · (714) 279-8777</span>
       </div>
     </div>
+
+    {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
+    <nav className="cp-bottomnav">
+      {/* 7 fits today's max real combo (home/orders/estimates/roster/billing/art/shop); if
+          store and roster are ever both enabled for the same account this clips one item —
+          revisit if that combo becomes common. */}
+      {cpNav.filter(n=>n.key!=='spend').slice(0,7).map(it=>{const active=page===it.key;return(
+        <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.primary:'#94a3b8'}}>
+          <span style={{position:'relative',width:38,height:30,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,background:active?cpTint:'transparent',transition:'background .12s'}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-3,right:-1,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:14,textAlign:'center'}}>{it.badge}</span>:null}</span>
+          <span>{it.label}</span>
+        </button>
+      )})}
+    </nav>
+
+    {/* Art Locker — rich design viewer with reorder-into-Live-Look CTA */}
+    {artView&&(()=>{const a=artView.art;const idx=Math.min(artView.idx,a.urls.length-1);const u=a.urls[idx];const isPdf=_isPdfUrl(u);
+      return<div style={{position:'fixed',inset:0,background:'rgba(8,11,18,.93)',zIndex:9999,display:'flex',flexDirection:'column',padding:16}} onClick={()=>setArtView(null)}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',color:'#fff',gap:12,marginBottom:8}} onClick={e=>e.stopPropagation()}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:17,fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
+            <div style={{fontSize:12,color:'rgba(255,255,255,.6)',textTransform:'capitalize'}}>{a.deco||'Design'}{a.orders.length>1?' · used on '+a.orders.length+' orders':''}{isP&&a.teams.length?' · '+a.teams.join(', '):''}</div>
+          </div>
+          <button onClick={()=>setArtView(null)} style={{flexShrink:0,background:'rgba(255,255,255,0.14)',border:'none',color:'#fff',fontSize:24,borderRadius:'50%',width:40,height:40,cursor:'pointer'}}>×</button>
+        </div>
+        <div onClick={e=>e.stopPropagation()} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0}}>
+          {isPdf?<iframe title="Design" src={'https://docs.google.com/gview?url='+encodeURIComponent(u)+'&embedded=true'} style={{width:'90vw',height:'70vh',border:'none',borderRadius:10,background:'#fff'}}/>:<img src={u} alt={a.name} style={{maxWidth:'94vw',maxHeight:'64vh',objectFit:'contain',borderRadius:10}}/>}
+        </div>
+        {a.urls.length>1&&<div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap',margin:'10px 0 2px'}}>
+          {a.urls.map((url,i)=>{const t=_isPdfUrl(url)?_cloudinaryPdfThumb(url):url;return<button key={i} onClick={()=>setArtView({art:a,idx:i})} style={{width:48,height:48,borderRadius:8,overflow:'hidden',border:'2px solid '+(i===idx?cpTheme.accent:'rgba(255,255,255,.25)'),background:'#fff',cursor:'pointer',padding:0,flexShrink:0}}>{t&&isUrl(t)?<img src={t} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:18}}>🎨</span>}</button>})}
+        </div>}
+        <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap',marginTop:12}}>
+          <a href={u} target="_blank" rel="noopener noreferrer" style={{background:'rgba(255,255,255,0.16)',color:'#fff',textDecoration:'none',padding:'11px 18px',borderRadius:10,fontSize:14,fontWeight:700}}>⬇ Download</a>
+          <button onClick={()=>cpOrderWithArt(a,u)} style={{background:cpTheme.accent,color:'#fff',border:'none',padding:'11px 22px',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}}>🛍️ Order with this design →</button>
+        </div>
+      </div>;
+    })()}
+
+    {/* Lightbox — full-size art/mockup viewer (Art Locker) */}
+    {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
+      <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
+      {_isPdfUrl(lightbox)?<iframe title="Design preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+      :<img src={lightbox} alt="Design" style={{maxWidth:'95vw',maxHeight:'86vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>}
+      <a href={lightbox} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{position:'absolute',bottom:20,background:'rgba(255,255,255,0.16)',color:'#fff',textDecoration:'none',padding:'9px 18px',borderRadius:999,fontSize:13,fontWeight:700}}>⬇ Download / open full size</a>
+    </div>}
 
     {/* Stripe Payment Modal — shared element (also rendered in the invoice-detail view above) */}
     {payModalEl}
@@ -1531,12 +2196,15 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   const[ocrResults,setOcrResults]=useState([]);// extracted PO numbers from OCR
   const ocrBusyRef=useRef(false);
   const canvasRef=useRef(null);
+  const[torchOn,setTorchOn]=useState(false);const[torchOk,setTorchOk]=useState(false);// phone flashlight (warehouse aisles are dim)
 
   const startCamera=async()=>{
     setError(null);setOcrResults([]);setOcrStatus('');
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
       streamRef.current=stream;
+      // Torch is only exposed on a live track on some phones — probe once we have the stream.
+      try{const _trk=stream.getVideoTracks&&stream.getVideoTracks()[0];const _caps=_trk&&_trk.getCapabilities&&_trk.getCapabilities();setTorchOk(!!(_caps&&_caps.torch))}catch(e){setTorchOk(false)}
       const v=videoRef.current;
       if(v){
         v.srcObject=stream;
@@ -1566,7 +2234,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
       const barcodes=await detectorRef.current.detect(videoRef.current);
       if(barcodes.length>0){
         const val=barcodes[0].rawValue;
-        if(val){stopCamera();onScan(val);return}
+        if(val){try{navigator.vibrate&&navigator.vibrate(120)}catch(e){}stopCamera();onScan(val);return}
       }
     }catch(err){if(err?.name!=='InvalidStateError')console.warn('[BarcodeScanner] detect error:',err?.message||err)}
     requestAnimationFrame(()=>setTimeout(scanLoop,150));
@@ -1613,11 +2281,16 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     ocrBusyRef.current=false;
   };
 
+  // Toggle the phone flashlight on the live video track (no-op where unsupported).
+  const toggleTorch=async()=>{
+    try{const track=streamRef.current&&streamRef.current.getVideoTracks&&streamRef.current.getVideoTracks()[0];if(!track)return;const next=!torchOn;await track.applyConstraints({advanced:[{torch:next}]});setTorchOn(next)}catch(e){setTorchOk(false)}
+  };
+
   const stopCamera=()=>{
     scanningRef.current=false;
     if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
     if(videoRef.current){videoRef.current.srcObject=null}
-    setActive(false);setOcrStatus('');setOcrResults([]);
+    setActive(false);setOcrStatus('');setOcrResults([]);setTorchOn(false);setTorchOk(false);
   };
 
   // Cleanup on unmount
@@ -1648,7 +2321,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     </div>
     {/* Single video element always in DOM so ref/stream survive re-renders */}
     <div style={{position:'relative',background:'#000',display:active?'block':'none'}}>
-      <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
+      <video ref={videoRef} style={{width:'100%',maxHeight:'58vh',minHeight:240,objectFit:'cover',display:'block',background:'#000'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
         <div style={{width:scanMode==='text'?280:200,height:scanMode==='text'?160:200,
@@ -1659,10 +2332,11 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         {scanMode==='text'?'Point camera at PO label, then tap Capture':'Point camera at barcode or QR code'}
       </div>
       {scanMode==='text'&&<button onClick={runOCR} disabled={ocrBusyRef.current}
-        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50)',background:ocrBusyRef.current?'#475569':'#f59e0b',
+        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',background:ocrBusyRef.current?'#475569':'#f59e0b',
           color:ocrBusyRef.current?'#94a3b8':'#000',border:'none',borderRadius:8,padding:'6px 24px',cursor:ocrBusyRef.current?'default':'pointer',fontSize:13,fontWeight:700}}>
         {ocrBusyRef.current?'Reading...':'Capture & Read'}
       </button>}
+      {torchOk&&<button onClick={toggleTorch} title="Toggle flashlight" style={{position:'absolute',top:8,left:8,background:torchOn?'#fde68a':'rgba(0,0,0,0.6)',border:'none',color:torchOn?'#000':'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12,fontWeight:700}}>🔦 {torchOn?'On':'Off'}</button>}
       <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
     </div>
     {/* OCR results */}

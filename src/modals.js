@@ -2,11 +2,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES, BALL_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
-import { invokeEdgeFn, getBillingContacts } from './utils';
+import { invokeEdgeFn, getBillingContacts, cloudUpload } from './utils';
 
 function VendorB2BPanel({vendor}){
   const[showPw,setShowPw]=useState(false);
@@ -44,7 +44,7 @@ function VendorB2BPanel({vendor}){
   </div></div>;
 }
 
-function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit,vendorPOs,onOpenPO,fmtCreatedAt}){
   const[syncing,setSyncing]=React.useState(false);
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
@@ -138,7 +138,54 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,onEdit}){
   </div></div>
   {(vendor.b2b_url||vendor.b2b_username||(vendor.catalog_files||[]).length>0)&&<VendorB2BPanel vendor={vendor}/>}
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
-  <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
+  <VendorPOTracking pos={vendorPOs} onOpenPO={onOpenPO} fmtCreatedAt={fmtCreatedAt}/></div>)}
+
+// ─── PHASE 4: PURCHASE ORDER TRACKING (per vendor) ───
+// Renders the POs that name this vendor — pulled from SO po_lines, decoration POs,
+// submitted batches and standalone inventory POs (aggregated in App.js rVend).
+function VendorPOTracking({pos,onOpenPO,fmtCreatedAt}){
+  const list=Array.isArray(pos)?pos:[];
+  const[stF,setStF]=useState('all');
+  const fmtDate=fmtCreatedAt||(s=>s||'—');
+  const counts={waiting:0,partial:0,received:0,cancelled:0};
+  let openUnits=0,openValue=0;
+  list.forEach(p=>{if(counts[p.status]!=null)counts[p.status]++;if(p.status!=='cancelled'){openUnits+=p.totalOpen||0;}});
+  const active=list.filter(p=>p.status!=='cancelled');
+  active.forEach(p=>{if((p.totalOpen||0)>0&&(p.totalOrd||0)>0)openValue+=(p.poTotal||0)*((p.totalOpen||0)/(p.totalOrd||1))});
+  const fPOs=stF==='all'?list:list.filter(p=>p.status===stF);
+  const stBadge=st=><span className={`badge ${st==='received'?'badge-green':st==='partial'?'badge-amber':st==='cancelled'?'badge-gray':'badge-blue'}`}>{st==='received'?'Received':st==='partial'?'Partial':st==='cancelled'?'Cancelled':'Waiting'}</span>;
+  const tabs=[['all','All',list.length,'#2563eb'],['waiting','Waiting',counts.waiting,'#d97706'],['partial','Partial',counts.partial,'#2563eb'],['received','Received',counts.received,'#059669']];
+  return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+    <h2>Purchase Orders {list.length>0&&<span style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>({list.length})</span>}</h2>
+    {openUnits>0&&<span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',padding:'4px 10px',borderRadius:8}}>{openUnits} unit{openUnits!==1?'s':''} still open{openValue>0?` · ~$${openValue.toLocaleString(undefined,{maximumFractionDigits:0})} incoming`:''}</span>}
+  </div>
+  <div className="card-body" style={{padding:list.length===0?undefined:0}}>
+    {list.length===0?<div className="empty">No purchase orders reference this vendor yet.</div>:<>
+      <div style={{display:'flex',gap:4,padding:'10px 12px',flexWrap:'wrap',borderBottom:'1px solid #e2e8f0'}}>
+        {tabs.map(([id,label,count,color])=><button key={id} className={`btn btn-sm ${stF===id?'btn-primary':'btn-secondary'}`} style={{background:stF===id?color:'',borderColor:stF===id?color:'',fontSize:11}} onClick={()=>setStF(s=>s===id&&id!=='all'?'all':id)}>{label} ({count})</button>)}
+      </div>
+      <div style={{overflow:'auto'}}><table className="data-table">
+        <thead><tr><th>PO #</th><th>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th>Status</th><th>Created</th><th>Expected</th></tr></thead>
+        <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:28}}>No {stF} purchase orders</td></tr>:
+          fPOs.map((po,i)=>{const clickable=!!onOpenPO&&(po.source!=='deco');const go=()=>{if(clickable)onOpenPO(po)};
+          return<tr key={po.po_id+'-'+i} style={{cursor:clickable?'pointer':'default'}} onClick={go}>
+            <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}{po.isInvPO&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.isDeco&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>DECO</span>}{po.dropShip&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>DS</span>}{po.isBooking&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700}} title="Booking PO">📋</span>}</td>
+            <td>{po.customer||'—'}</td>
+            <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id||'—'}</span></td>
+            <td>{po.itemSku&&<span style={{fontFamily:'monospace',fontSize:11,color:'#64748b'}}>{po.itemSku}</span>}{po.itemSku&&po.itemName?' ':''}{po.itemName}</td>
+            <td style={{textAlign:'right',fontWeight:600}}>{po.totalOrd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalRcvd>0?'#059669':'#94a3b8'}}>{po.totalRcvd}</td>
+            <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
+            <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
+            <td>{stBadge(po.status)}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtDate(po.created_at)}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
+          </tr>})}
+        </tbody>
+      </table></div>
+    </>}
+  </div></div>;
+}
 
 
 // ─── TAXCLOUD SETTINGS COMPONENT ───
@@ -350,6 +397,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
+  const[logoUp,setLogoUp]=useState(false);
+  const pickLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{const file=inp.files&&inp.files[0];if(!file)return;setLogoUp(true);try{const url=await cloudUpload(file,'nsa-school-logos');sv('logo_url',url)}catch(e){setValMsg('Logo upload failed: '+e.message)}finally{setLogoUp(false)}};inp.click()};
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
     // Alpha tag must be unique — it's the portal URL identifier.
     const dupTag=f.alpha_tag&&(allCustomers||[]).find(c=>c.id!==f.id&&(c.alpha_tag||'').trim().toLowerCase()===f.alpha_tag.trim().toLowerCase());
@@ -423,6 +472,15 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Customer Portal Payment</div>
     <div><label className="form-label">Online Pay (Credit Card / ACH)</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.disable_cc_pay?'#166534':'#f8fafc',color:!f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',false)}>Enabled</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.disable_cc_pay?'#dc2626':'#f8fafc',color:f.disable_cc_pay?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('disable_cc_pay',true)}>Disabled (Check/ACH only)</button></div><div style={{fontSize:10,color:f.disable_cc_pay?'#dc2626':'#64748b',marginTop:4}}>{f.disable_cc_pay?'"Pay Now" button hidden in the portal — customer remits offline by check or ACH.':'Coach sees the "Pay Now" button in their portal.'}{ct==='parent'?' Setting cascades to all sub-accounts on save.':''}</div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Logo</div>
+    <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      {f.logo_url
+        ?<img src={f.logo_url} alt="School logo" style={{height:54,maxWidth:170,objectFit:'contain',border:'1px solid #e2e8f0',borderRadius:10,padding:6,background:'#fff'}}/>
+        :<div style={{height:54,width:54,borderRadius:10,border:'1px dashed #cbd5e1',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:22}}>🏫</div>}
+      <button type="button" className="btn btn-sm btn-secondary" disabled={logoUp} onClick={pickLogo}>{logoUp?'Uploading…':(f.logo_url?'Replace logo':'Upload logo')}</button>
+      {f.logo_url&&<button type="button" className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca'}} onClick={()=>sv('logo_url',null)}>Remove</button>}
+    </div>
+    <div style={{fontSize:10,color:'#94a3b8',marginTop:5,marginBottom:4}}>Shown in the coach portal hero. A transparent PNG/SVG looks best. Saves when you hit Save.</div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Colors (Pantone)</div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
       {(f.pantone_colors||[]).map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';
@@ -472,8 +530,10 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
   React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
-  const isNumeric=!isFw&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
-  const sizePool=isFw?FOOTWEAR_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES);
+  // Ball run (3/4/5, …) checked before numeric — ball sizes are all-digits like the waist run.
+  const isBall=!isFw&&avail.length>0&&avail.every(s=>BALL_SIZES.includes(s));
+  const isNumeric=!isFw&&!isBall&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
+  const sizePool=isFw?FOOTWEAR_SIZES:(isBall?BALL_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES));
   const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
