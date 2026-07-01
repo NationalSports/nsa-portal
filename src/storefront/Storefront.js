@@ -25,6 +25,14 @@ if (typeof window !== 'undefined') _getStripePromise();
 const cartKey = (slug) => 'nsa_cart_' + slug;
 const loadCart = (slug) => { try { return JSON.parse(localStorage.getItem(cartKey(slug)) || '[]'); } catch { return []; } };
 const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JSON.stringify(items)); } catch {} };
+
+// ── Player roster link (per-store) ───────────────────────────────────
+// A player arrives via /shop/<slug>?player=<token>. We stash the token so it
+// survives in-store navigation (navTo builds clean paths without the query),
+// then resolve it to the player's name/number for greeting + prefill.
+const playerKey = (slug) => 'nsa_player_' + slug;
+const loadPlayerToken = (slug) => { try { return localStorage.getItem(playerKey(slug)) || ''; } catch { return ''; } };
+const savePlayerToken = (slug, tok) => { try { if (tok) localStorage.setItem(playerKey(slug), tok); else localStorage.removeItem(playerKey(slug)); } catch {} };
 const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
@@ -271,6 +279,29 @@ export default function Storefront() {
   const updateCart = useCallback((items) => { setCart(items); saveCart(route.slug, items); }, [route.slug]);
   const addToCart = useCallback((line) => { const next = [...loadCart(route.slug), { ...line, key: Math.random().toString(36).slice(2) }]; updateCart(next); }, [route.slug, updateCart]);
 
+  // Roster player context, resolved from ?player=<token> (or a previously
+  // stashed token for this store). null = shopping as a normal guest.
+  const [playerCtx, setPlayerCtx] = useState(null);
+  useEffect(() => {
+    if (!route.slug) { setPlayerCtx(null); return; }
+    const qsTok = (new URLSearchParams(window.location.search).get('player') || '').trim();
+    if (qsTok) savePlayerToken(route.slug, qsTok);
+    const tok = qsTok || loadPlayerToken(route.slug);
+    if (!tok) { setPlayerCtx(null); return; }
+    let cancelled = false;
+    (async () => {
+      const r = await checkoutCall({ action: 'roster_lookup', storeSlug: route.slug, token: tok });
+      if (cancelled) return;
+      if (r && r.player) setPlayerCtx({ token: tok, ...r.player });
+      // Only forget the token when the server says it's genuinely invalid — a
+      // transient network error shouldn't wipe a real player's link.
+      else if (r && r.code === 'roster_not_found') { savePlayerToken(route.slug, ''); setPlayerCtx(null); }
+      else setPlayerCtx(null);
+    })();
+    return () => { cancelled = true; };
+  }, [route.slug]);
+  const clearPlayer = useCallback(() => { savePlayerToken(route.slug, ''); setPlayerCtx(null); }, [route.slug]);
+
   const [store, setStore] = useState(null);
   const [products, setProducts] = useState([]);
   const [bundleItems, setBundleItems] = useState([]);
@@ -366,16 +397,17 @@ export default function Storefront() {
         <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
+      {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
-          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
-        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
+        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
       </main>
       <Footer store={store} theme={theme} />
@@ -475,6 +507,25 @@ function PreviewBanner({ status }) {
   return <div style={{ background: '#fde68a', color: '#92400e', textAlign: 'center', fontSize: 13, fontWeight: 700, padding: '8px 16px', letterSpacing: 0.3 }}>
     PREVIEW · This store is {(status || 'draft').toUpperCase()} and not open to shoppers yet.
   </div>;
+}
+
+// Shown when a player follows their personal roster link. Greets them by name,
+// tells them personalization is prefilled, and offers an escape hatch if the
+// wrong person is at the keyboard (a parent ordering for a different kid).
+function PlayerBanner({ player, theme, onClear }) {
+  const label = [player.player_name, player.player_number ? '#' + player.player_number : ''].filter(Boolean).join(' ');
+  return (
+    <div style={{ background: theme.ink, color: '#fff', padding: '9px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap', fontSize: 14 }}>
+      <span style={{ fontWeight: 700 }}>
+        {player.ordered ? '✓ ' : '👟 '}
+        You’re shopping for <span style={{ color: theme.accent }}>{label || 'your player'}</span>
+        {player.ordered ? ' — already ordered (you can order again).' : '. Name & number are filled in for you.'}
+      </span>
+      <button onClick={onClear} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.5)', color: '#fff', borderRadius: 4, padding: '3px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Not you?
+      </button>
+    </div>
+  );
 }
 
 // Diagonal hash texture for team-color heroes.
@@ -969,7 +1020,7 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd }) {
+function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null }) {
   const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
@@ -979,6 +1030,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
   useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  // Prefill personalization from the player's roster link — jersey number is the
+  // high-value bit; name is prefilled too but stays editable.
+  useEffect(() => {
+    if (!player || !rep) return;
+    if (rep.takes_number && player.player_number) setNum(String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3));
+    if (rep.takes_name && player.player_name) setPname(String(player.player_name).slice(0, 20));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, rep ? rep.webstore_product_id : null]);
   if (!rep) return <Splash>Product not found.</Splash>;
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
@@ -1146,11 +1205,18 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd, player = null }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
   const [added, setAdded] = useState(false);
+  // Prefill every numbered/named component from the player's roster link.
+  useEffect(() => {
+    if (!player || !components) return;
+    if (player.player_number) { const n = String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3); setNums((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_number && !next[c.id]) next[c.id] = n; }); return next; }); }
+    if (player.player_name) { const nm = String(player.player_name).slice(0, 20); setNames((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_name && !next[c.id]) next[c.id] = nm; }); return next; }); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, p ? p.webstore_product_id : null]);
   const wpById = buildWpById(products);
   const meta = (c) => compMeta(c, wpById, compInfo);
   if (!p) return <Splash>Package not found.</Splash>;
@@ -1401,7 +1467,7 @@ function couponDiscount(coupon, cart, shipping = 0) {
   return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
-function CheckoutPage({ store, theme, cart, onClear }) {
+function CheckoutPage({ store, theme, cart, onClear, player = null }) {
   const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [stripePromise, setStripePromise] = useState(null);
@@ -1456,7 +1522,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const submitUnpaid = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), rosterToken: player ? player.token : null });
     setBusy(false);
     if (r.error) { setErr(r.error.message); return; }
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
@@ -1469,7 +1535,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const startCard = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), rosterToken: player ? player.token : null });
     if (r.error) { setErr(r.error.message); setBusy(false); return; }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
     setPendingOrder(r.order);

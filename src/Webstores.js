@@ -1848,6 +1848,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // ── Roster: add players (each gets a unique link token), remove players ──
+  // A url-safe 32-hex token per player backs /shop/<slug>?player=<token>. The DB
+  // has a UNIQUE index on token, so a collision would surface as an insert error.
+  const addRoster = useCallback(async (players) => {
+    const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: sel.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return { error: true }; }
+    const { data, error } = await supabase.from('webstore_roster').insert(rows).select();
+    if (error) { flash('Could not add players: ' + error.message); return { error }; }
+    flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    return { data };
+  }, [sel, flash, loadDetail]);
+
+  const removeRoster = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_roster').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
   // Edit an order's line items (size/qty/remove), then recompute its totals.
   const saveOrderEdits = useCallback(async (order, edited) => {
     for (const it of edited) {
@@ -2380,6 +2402,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
+          onAddRoster={addRoster} onRemoveRoster={removeRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
@@ -3743,7 +3766,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onRemoveRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -3921,7 +3944,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
-          {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
+          {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onRemove={onRemoveRoster} onFlash={onFlash} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
@@ -9472,21 +9495,106 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   );
 }
 
-function RosterTab({ roster, notOrdered }) {
-  if (!roster.length) return <Empty msg="No roster uploaded. Upload one (coming in a later step) to track who hasn't ordered." />;
+// Roster management: add players (each gets a private /shop link), copy links to
+// hand out, and track who has ordered. Marking "ordered" happens automatically
+// when a player checks out through their link (webstore-checkout.place_order).
+function RosterTab({ store, roster, notOrdered, orders = [], onAdd, onRemove, onFlash }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '' });
+  const [bulk, setBulk] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
+  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => onFlash && onFlash(m);
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyMany = (rows, label) => {
+    const withLinks = rows.filter((r) => r.token);
+    if (!withLinks.length) { flash('No links to copy yet.'); return; }
+    const text = withLinks.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n');
+    navigator.clipboard?.writeText(text); flash(`Copied ${withLinks.length} ${label}`);
+  };
+
+  const addSingle = async () => {
+    if (!single.player_name.trim()) { flash('Enter a player name.'); return; }
+    setBusy(true); const r = await onAdd([single]); setBusy(false);
+    if (!r || !r.error) setSingle({ player_name: '', player_number: '', parent_email: '' });
+  };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => {
+      const parts = line.split(/[,\t]/).map((s) => s.trim());
+      return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '' } : null;
+    }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    setBusy(true); const r = await onAdd(players); setBusy(false);
+    if (!r || !r.error) { setBulk(''); setShowAdd(false); }
+  };
+
+  const orderById = {}; orders.forEach((o) => { orderById[o.id] = o; });
+  const fmtDate = (s) => { if (!s) return ''; const d = new Date(s); return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+
+  const addPanel = showAdd && (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Add players</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+        <div><div style={rLbl}>Player name</div><input className="form-input" value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Jane Smith" style={{ width: 200 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Number</div><input className="form-input" value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={{ width: 70 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Parent email (optional)</div><input className="form-input" type="email" value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={{ width: 220 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <button className="btn btn-sm btn-primary" disabled={busy} onClick={addSingle}>Add</button>
+      </div>
+      <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+        <div style={rLbl}>Or paste a list — one player per line, <code>Name, Number, Email</code> (number &amp; email optional)</div>
+        <textarea className="form-input" value={bulk} onChange={(e) => setBulk(e.target.value)} rows={5} placeholder={'Jane Smith, 10, parent@email.com\nAlex Kim, 7\nSam Rivera'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }} />
+        <div style={{ marginTop: 8 }}><button className="btn btn-sm btn-primary" disabled={busy} onClick={addBulk}>Add from list</button></div>
+      </div>
+    </div>
+  );
+
+  if (!roster.length) {
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: '#64748b' }}>Set up a roster so the club can track who’s ordered — each player gets their own store link.</div>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+        {addPanel}
+        {!showAdd && <Empty msg="No players yet. Add a roster to hand each player a private link and see who hasn’t ordered." />}
+      </>
+    );
+  }
+
   return (
     <>
-      <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>{notOrdered.length} of {roster.length} players have not ordered yet.</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>{notOrdered.length} of {roster.length} player{roster.length === 1 ? '' : 's'} {notOrdered.length === 1 ? 'has' : 'have'} not ordered yet.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-secondary" onClick={() => copyMany(roster, 'links')}>Copy all links</button>
+          <button className="btn btn-sm btn-secondary" onClick={() => copyMany(notOrdered, 'not-ordered links')}>Copy not-ordered</button>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+      </div>
+      {addPanel}
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Parent email</th><th style={th}>Ordered?</th>
+            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Parent email</th><th style={th}>Ordered?</th><th style={th}>Player link</th><th style={th}></th>
           </tr></thead>
           <tbody>
             {roster.map((r) => (
               <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={td}>{r.player_name}</td><td style={td}>{r.player_number || '—'}</td><td style={td}>{r.parent_email || '—'}</td>
-                <td style={td}>{r.ordered ? <Chip label="Ordered" tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>{r.player_name}</td>
+                <td style={td}>{r.player_number || '—'}</td>
+                <td style={td}>{r.parent_email || '—'}</td>
+                <td style={td}>{r.ordered ? <Chip label={r.ordered_at ? `Ordered ${fmtDate(r.ordered_at)}` : 'Ordered'} tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>
+                  {r.token
+                    ? <button className="btn btn-sm btn-secondary" onClick={() => copyOne(r)} title={linkFor(r)}>{copiedId === r.id ? '✓ Copied' : 'Copy link'}</button>
+                    : <span style={{ color: '#94a3b8' }}>—</span>}
+                </td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <button onClick={() => { if (window.confirm(`Remove ${r.player_name} from the roster?`)) onRemove(r.id); }} title="Remove player" style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -9495,6 +9603,7 @@ function RosterTab({ roster, notOrdered }) {
     </>
   );
 }
+const rLbl = { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4, fontWeight: 600 };
 
 function SettingsTab({ store: s }) {
   const dlv = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
