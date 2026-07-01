@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
+import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
@@ -7163,6 +7164,92 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
+// Live vendor-catalog lookup. Searches SanMar/District, S&S, Richardson and Momentec APIs
+// for any style (even ones not in the local catalog), then imports the picked colorways into
+// `products` so they can be dropped into a store. Returns the imported product rows.
+function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
+  const [q, setQ] = useState(initialQuery || '');
+  const [loading, setLoading] = useState(false);
+  const [styles, setStyles] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [ran, setRan] = useState(false);
+  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
+  const [importing, setImporting] = useState(false);
+  // Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
+  // a valid id (or null). Map api_provider → id.
+  const [vendorMap, setVendorMap] = useState(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2 || vendorMap == null) { setStyles([]); setRan(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try { const { results, errors } = await searchVendorCatalogs(query, { vendorMap }); if (!cancelled) { setStyles(results); setErrors(errors || {}); } }
+      catch (e) { if (!cancelled) { setStyles([]); setErrors({ Search: String(e?.message || e) }); } }
+      finally { if (!cancelled) { setLoading(false); setRan(true); } }
+    }, 550);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, vendorMap]);
+  const SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
+  const keyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
+  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = keyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  const add = async () => {
+    if (!selected.size) return;
+    setImporting(true);
+    const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
+    const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
+    setImporting(false);
+    if (error) { alert('Could not import from vendor: ' + error.message); return; }
+    onAdd((data && data.length ? data : rows));
+    onClose();
+  };
+  const errList = Object.entries(errors || {});
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 800, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Search live vendor catalogs</div><div style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec. Picked items are imported so they can go into a {destLabel}.</div></div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Style number or name — e.g. DM130, PC61, 112, C2 Tee" style={{ width: '100%', marginBottom: 12 }} />
+          {errList.length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {errList.map(([v]) => v).join(', ')}.</div>}
+          <div style={{ maxHeight: '54vh', overflowY: 'auto' }}>
+            {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Searching vendor catalogs…</div>
+              : q.trim().length < 2 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Type a style number or name to search.</div>
+              : styles.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>{ran ? 'No vendor styles matched. Try the exact style number (e.g. DM130).' : ''}</div>
+              : styles.map((s) => (
+                <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
+                    <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{SRC[s.source] || s.source}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {s.colors.map((c) => { const on = selected.has(keyOf(s, c)); return (
+                      <button key={c.colorName || c.sku} type="button" onClick={() => toggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+                        <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
+                        <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
+                        <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+                        {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                      </button>
+                    ); })}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={importing || !selected.size} onClick={add}>{importing ? 'Importing…' : `Add ${selected.size} to ${destLabel}`}</button>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <span style={{ fontSize: 11.5, color: '#9AA1AC', marginLeft: 'auto' }}>Imported at ~50% margin — reprice after.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
@@ -7181,6 +7268,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const toggleColorFam = (f) => setColorSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [vendorOpen, setVendorOpen] = useState(false);
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -7256,6 +7344,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
           if (error) throw error;
           rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
+          // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
+          // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
+          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
           if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
           if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
         } catch (e) { rows = null; /* fall through to the table query */ }
@@ -7270,11 +7361,11 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           // so the rep's + team's picks always show, regardless of color/stock filters.
           if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
           query = query.in('name', favNames);
-          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
           if (brandSel) query = query.eq('brand', brandSel);
           if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
         } else {
-          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
           if (brandSel) query = query.eq('brand', brandSel);
           if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
           // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
@@ -7358,6 +7449,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
+      {vendorOpen && <VendorSearchModal initialQuery={q} destLabel={destLabel} onClose={() => setVendorOpen(false)} onAdd={(rows) => { if (onPickMany && rows && rows.length) onPickMany(rows, [], {}); }} />}
       <CatalogKitStyles />
       <KitScope style={{ padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -7368,8 +7460,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search by name or SKU — or pick a category below to browse…" aria-label="Search products" />
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12, alignItems: 'center' }}>
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
+          <button type="button" onClick={() => setVendorOpen(true)} title="Look up any style from SanMar, S&S, Richardson or Momentec — even if it's not in the catalog yet" style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#3730a3', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 999, padding: '5px 12px', cursor: 'pointer' }}>🔎 Search vendor catalogs</button>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
