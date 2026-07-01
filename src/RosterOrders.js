@@ -1324,6 +1324,7 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
   const [openSession, setOpenSession] = useState(null);
   const [coaches, setCoaches] = useState([]); // account-level coach access list
   const [catalog, setCatalog] = useState(null); // the customer's item catalog (for the on-page summary)
+  const [cloningId, setCloningId] = useState(null); // session being cloned for a new season
 
   const loadCatalog = useCallback(async () => {
     if (!customer?.id) return;
@@ -1373,6 +1374,52 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
     setSessions(prev => [sess, ...prev]);
     setShowCreate(false);
     setOpenSession(sess);
+  };
+
+  // Clone a session into a new season: same kit, same teams + players (names,
+  // numbers, GK, category carried over), sizes intentionally blank so coaches
+  // re-enter this season's sizes. Coach team assignments carry over too.
+  const cloneSession = async (src) => {
+    const suggested = (src.season && /\d{4}/.test(src.name))
+      ? src.name.replace(/\d{4}/, y => String(Number(y) + 1))
+      : src.name + ' (copy)';
+    const name = window.prompt('New season/order name:', suggested);
+    if (!name || !name.trim()) return;
+    const nextSeason = src.season && /^\d{4}$/.test(String(src.season)) ? String(Number(src.season) + 1) : src.season;
+    setCloningId(src.id);
+    try {
+      const { data: newSess, error: se } = await supabase.from('roster_order_sessions').insert({
+        customer_id: customer.id, name: name.trim(), season: nextSeason || null,
+        kit_template_id: src.kit_template_id || null, kit_items: src.kit_items || null,
+        status: 'open', notes: src.notes || null,
+      }).select().single();
+      if (se) throw se;
+
+      const { data: srcTeams } = await supabase.from('roster_teams').select('*').eq('session_id', src.id).order('sort_order');
+      for (const t of (srcTeams || [])) {
+        const { data: newTeam } = await supabase.from('roster_teams')
+          .insert({ session_id: newSess.id, name: t.name, sort_order: t.sort_order }).select().single();
+        if (!newTeam) continue;
+        const { data: srcPlayers } = await supabase.from('roster_players').select('*').eq('team_id', t.id);
+        if (srcPlayers && srcPlayers.length) {
+          await supabase.from('roster_players').insert(srcPlayers.map(p => ({
+            team_id: newTeam.id, first_name: p.first_name, last_name: p.last_name,
+            jersey_number: p.jersey_number, is_gk: p.is_gk, is_loaner: p.is_loaner,
+            category: p.category, sort_order: p.sort_order,
+          })));
+        }
+        const { data: srcCoaches } = await supabase.from('roster_team_coaches').select('coach_id, role').eq('team_id', t.id);
+        if (srcCoaches && srcCoaches.length) {
+          await supabase.from('roster_team_coaches').insert(srcCoaches.map(c => ({ team_id: newTeam.id, coach_id: c.coach_id, role: c.role })));
+        }
+      }
+      setSessions(prev => [newSess, ...prev]);
+      setOpenSession(newSess);
+    } catch (e) {
+      console.error('[cloneSession]', e);
+      window.alert('Could not clone the session — ' + (e.message || 'unknown error'));
+    }
+    setCloningId(null);
   };
 
   if (openSession) {
@@ -1514,6 +1561,11 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
                 <span style={{ background: '#f1f5f9', color: STATUS_COLORS[sess.status] || '#64748b', borderRadius: 999, padding: '3px 12px', fontSize: 11, fontWeight: 700 }}>
                   {STATUS_LABELS[sess.status] || sess.status}
                 </span>
+                <button onClick={e => { e.stopPropagation(); cloneSession(sess); }} disabled={cloningId === sess.id}
+                  title="Clone for a new season (carries teams & players, blanks sizes)"
+                  style={{ border: '1px solid #e2e8f0', background: '#fff', color: '#475569', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  {cloningId === sess.id ? '…' : '⧉ New season'}
+                </button>
                 <span style={{ color: '#94a3b8', fontSize: 16 }}>›</span>
               </div>
             </div>

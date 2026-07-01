@@ -109,3 +109,9 @@
 # to populate on the first run.
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
+
+# Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
+# whose roster deadline is within 3 days and whose team isn't locked yet, once
+# per session (deadline_reminded_at).
+[functions."roster-deadline-reminders"]
+  schedule = "0 17 * * *"
