@@ -1578,80 +1578,6 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
   );
 }
 
-// ─── Coach sign-in card ───────────────────────────────────────────────────────
-// Shown inside CoachPortal when the coach isn't authenticated. Reads ?signin=
-// from the URL so the invite email can pre-fill the address. Sends a Supabase
-// OTP magic link that redirects back to the same portal URL. Also teases any
-// open roster orders (anon-readable) so a coach sees evidence one is waiting
-// BEFORE signing in — the roster itself stays gated until they authenticate.
-function CoachSignInCard({ customer }) {
-  const preEmail = (() => {
-    try { return new URLSearchParams(window.location.search).get('signin') || ''; } catch { return ''; }
-  })();
-  const [email, setEmail] = useState(preEmail);
-  const [state, setState] = useState('idle'); // idle | sending | sent | error
-  const [pending, setPending] = useState([]); // open sessions awaiting (teaser)
-
-  useEffect(() => {
-    if (!customer?.id) return;
-    let cancel = false;
-    (async () => {
-      const { data } = await supabase.from('roster_order_sessions')
-        .select('id,name,season').eq('customer_id', customer.id).neq('status', 'draft')
-        .order('created_at', { ascending: false });
-      if (!cancel) setPending(data || []);
-    })();
-    return () => { cancel = true; };
-  }, [customer?.id]);
-
-  const send = async () => {
-    const em = email.trim();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || state === 'sending') return;
-    setState('sending');
-    const redirectTo = window.location.origin + window.location.pathname + window.location.search;
-    const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: redirectTo } });
-    setState(error ? 'error' : 'sent');
-  };
-
-  if (state === 'sent') {
-    return (
-      <div style={{ marginTop: 16, padding: 18, border: '1px solid #d1fae5', borderRadius: 12, background: '#f0fdf4', textAlign: 'center' }}>
-        <div style={{ fontSize: 22, marginBottom: 6 }}>📬</div>
-        <div style={{ fontWeight: 700, fontSize: 13, color: '#15803d', marginBottom: 4 }}>Check your email</div>
-        <div style={{ fontSize: 12, color: '#64748b' }}>We sent a sign-in link to <strong>{email.trim()}</strong>. Tap it to open the roster.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginTop: 16, padding: 16, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc' }}>
-      <div style={{ fontSize: 12.5, fontWeight: 800, color: '#0b1220', marginBottom: 4 }}>📋 Coach sign in — Roster Orders</div>
-      {pending.length > 0 ? (
-        <div style={{ fontSize: 12, color: '#0b1220', marginBottom: 12 }}>
-          You have <strong>{pending.length} roster order{pending.length === 1 ? '' : 's'}</strong> to fill out
-          {pending.length <= 3 && <span style={{ color: '#64748b' }}> — {pending.map(s => s.name).filter(Boolean).join(', ')}</span>}.
-          {' '}Sign in with your email to add player sizes &amp; numbers.
-        </div>
-      ) : (
-        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Sign in with your email to access your team's roster orders, fill in player sizes, and view the buy-sheet.</div>
-      )}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <input
-          type="email" value={email} placeholder="your@email.com"
-          onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && send()}
-          style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, outline: 'none' }}
-        />
-        <button onClick={send} disabled={state === 'sending'}
-          style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
-          {state === 'sending' ? 'Sending…' : 'Send sign-in link'}
-        </button>
-      </div>
-      {state === 'error' && <div style={{ fontSize: 11.5, color: '#dc2626', marginTop: 6 }}>Couldn't send — check your email address and try again.</div>}
-    </div>
-  );
-}
-
 // ─── Coach: exported component (embeds in CoachPortal) ───────────────────────
 // Self-serve: a coach who belongs to this customer can create sessions + teams,
 // build the kit from NSA's item catalog, fill rosters, and invite other coaches.
@@ -1672,21 +1598,17 @@ export function RosterOrdersCoach({ customer }) {
 
   const reload = useCallback(async () => {
     if (!customer?.coach_roster) { setLoading(false); return; } // roster module off for this account
+    // No sign-in required — the portal link (?portal=<tag>) is the gate, same as
+    // the rest of the coach portal. We still best-effort resolve the signed-in
+    // coach (if any) purely to stamp created_by / show their name; a visitor with
+    // the link can view and fill the roster anonymously.
+    let c = null;
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user?.email) { setCoach(null); setLoading(false); return; }
-    const { data: c } = await supabase.from('coach_accounts').select('id,email,name,customer_id')
-      .ilike('email', user.email).maybeSingle();
-    if (!c?.id) { setCoach(null); setLoading(false); return; }
-    // Access to this account: an explicit coach_customer_access grant, the legacy
-    // single customer_id match, or a null customer_id (global). A coach can work
-    // with several clubs, so coach_accounts.customer_id alone isn't enough.
-    let hasAccess = !c.customer_id || c.customer_id === customer.id;
-    if (!hasAccess) {
-      const { data: acc } = await supabase.from('coach_customer_access')
-        .select('customer_id').eq('coach_id', c.id).eq('customer_id', customer.id).maybeSingle();
-      hasAccess = !!acc;
+    if (user?.email) {
+      const { data: acc } = await supabase.from('coach_accounts').select('id,email,name,customer_id')
+        .ilike('email', user.email).maybeSingle();
+      c = acc || null;
     }
-    if (!hasAccess) { setCoach(null); setLoading(false); return; }
     setCoach(c);
     const [{ data: ss }, cat] = await Promise.all([
       supabase.from('roster_order_sessions').select('*')
@@ -1785,8 +1707,6 @@ export function RosterOrdersCoach({ customer }) {
 
   if (!customer?.coach_roster) return null; // gated per-customer on the Catalog tab
   if (loading) return null;
-  if (!coach) return <CoachSignInCard customer={customer} />;
-
 
   const kitFor = (session) => ({ items: effectiveKit(session, catalog) });
 

@@ -81,15 +81,16 @@ exports.handler = async (event) => {
     if (!brevoKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: !!coachId, coach_id: coachId, emailed: false, error: 'Email not configured' }) };
 
     // Look up the customer's alpha_tag so we can link to the coach portal
-    // (?portal=<tag>) rather than the generic LiveLook catalog. Falls back to
-    // /adidas if the customer can't be found (e.g. no customer_id supplied).
+    // (?portal=<tag>) rather than the generic LiveLook catalog. The portal link
+    // is the gate — no sign-in needed. Falls back to /adidas if the customer
+    // can't be found (e.g. no customer_id supplied).
     const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
     let link = `${portal}/adidas?signin=${encodeURIComponent(email)}`;
     if (customerId) {
       const admin = getSupabaseAdmin();
       if (admin) {
         const { data: cust } = await admin.from('customers').select('alpha_tag').eq('id', customerId).maybeSingle();
-        if (cust?.alpha_tag) link = `${portal}/?portal=${encodeURIComponent(cust.alpha_tag)}&signin=${encodeURIComponent(email)}`;
+        if (cust?.alpha_tag) link = `${portal}/?portal=${encodeURIComponent(cust.alpha_tag)}`;
       }
     }
     const hello = name ? `Hi ${esc(name.split(' ')[0])},` : 'Hi Coach,';
@@ -111,13 +112,12 @@ exports.handler = async (event) => {
                 ${hello}
               </p>
               <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 16px">
-                National Sports Apparel set up your access to the team portal${team ? ` for <strong>${esc(team)}</strong>` : ''}.
-                View orders &amp; invoices, fill out roster sizes, and shop the live adidas catalog — because you're signed in, you'll see <strong>your team's pricing</strong>.
+                National Sports Apparel set up your team portal${team ? ` for <strong>${esc(team)}</strong>` : ''}.
+                Fill out roster sizes, view your orders &amp; invoices, and browse the live catalog — all in one place.
               </p>
-              <a href="${esc(link)}" style="display:inline-block;background:#191919;color:#fff;border-radius:8px;padding:12px 26px;font-weight:700;text-decoration:none;font-size:15px">Open my portal &amp; sign in</a>
+              <a href="${esc(link)}" style="display:inline-block;background:#191919;color:#fff;border-radius:8px;padding:12px 26px;font-weight:700;text-decoration:none;font-size:15px">Open my team portal</a>
               <p style="font-size:12.5px;color:#64748b;line-height:1.6;margin:18px 0 0">
-                Tap the button, then "Coach sign in" — we'll email you a one-tap link (no password to remember).
-                Sign in with this same address (<strong>${esc(email)}</strong>) so we recognize you.
+                Just tap the button — no password to remember. Bookmark the page so you can jump back in anytime.
               </p>
               <p style="font-size:11.5px;color:#94a3b8;margin-top:16px">Questions? Just reply to this email and your rep will help.</p>
             </div>
