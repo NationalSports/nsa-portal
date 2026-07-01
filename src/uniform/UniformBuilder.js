@@ -341,7 +341,7 @@ export default function UniformBuilder({ onExit }) {
   const [showPhotoreal, setShowPhotoreal] = useState(false);
   const [prFiles, setPrFiles] = useState({});
   const [view3d, setView3d] = useState(false); // live 3D preview toggle
-  const [spin, setSpin] = useState(true);
+  const [spin, setSpin] = useState(false); // drag-to-rotate is primary; Spin is opt-in auto-rotate
   const svgRef = useRef(null);
   const historyRef = useRef([]);
   const fileRef = useRef(null);
@@ -609,9 +609,12 @@ export default function UniformBuilder({ onExit }) {
           </div>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: view3d ? 0 : 40, minHeight: 0, background: '#ffffff' }}>
             {view3d && tpl.model3d
-              ? <React.Suspense fallback={<div style={{ color: NSA.textLight, fontSize: 14 }}>Loading 3D…</div>}>
-                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} />
-                </React.Suspense>
+              ? <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
+                  <React.Suspense fallback={<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: NSA.textLight, fontSize: 14 }}>Loading 3D…</div>}>
+                    <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} />
+                  </React.Suspense>
+                  <div style={{ textAlign: 'center', padding: '8px 0 12px', fontSize: 12, color: NSA.textLight, fontFamily: F_BODY }}>Drag to rotate · scroll to zoom{spin ? ' · auto-spin on' : ''}</div>
+                </div>
               : <div style={{ height: '100%', maxHeight: 720, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
                   {tpl.type === 'raster'
                     ? <RasterStage spec={spec} view={view} onSelectZone={selectZone}
