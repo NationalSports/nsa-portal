@@ -9469,7 +9469,12 @@ export default function App(){
   // Returns the batch PO number, or null if the vendor has nothing queued.
   const orderVendorBatch=({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
-    const pos=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
+    // Read the live queue + SOs from the flush ref, not this closure. This runs from a deferred
+    // callback (a vendor API modal's onSubmitted, fired seconds after the modal opened), by which
+    // point the closed-over batchPOs/sos can be stale — using the ref keeps the promotion correct.
+    const _batchPOsNow=_visFlushRefs.current.batchPOs||batchPOs;
+    const _sosNow=_visFlushRefs.current.sos||sos;
+    const pos=(_batchPOsNow||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
     if(pos.length===0)return null;
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
@@ -9489,9 +9494,9 @@ export default function App(){
     // Group by SO so an order with several batch entries gets a single save — per-entry saves
     // would each read the stale pre-save SO from sos and drop the previous entry's promotion.
     const bySo={};pos.forEach(bp=>{(bySo[bp.so_id]=bySo[bp.so_id]||[]).push(bp)});
-    Object.entries(bySo).forEach(([soId,bps])=>{
+    Object.entries(bySo).forEach(([soId,bps])=>{try{
       if(skipSoId&&soId===skipSoId)return;
-      const so=sos.find(x=>x.id===soId);if(!so)return;
+      const so=_sosNow.find(x=>x.id===soId);if(!so)return;
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
       bps.forEach(bp=>{
         let promoted=false;
@@ -9508,13 +9513,13 @@ export default function App(){
             const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
             const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(apiStamp||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
-            Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+            Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
             updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
           });
         }
       });
       savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
-    });
+    }catch(_promoErr){console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);}});
     setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
     setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return poNum;
