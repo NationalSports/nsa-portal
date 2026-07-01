@@ -151,6 +151,56 @@ function updateDecals(st, rawSpec) {
   placeOne(spec.text.front.name, 'name', 'front');
   placeOne(spec.text.back.number, 'number', 'back');
   placeOne(spec.text.back.name, 'name', 'back');
+
+  // Uploaded logos → surface decals. Images decode async; we cache the decoded
+  // canvas per src (keyed on the data URL) so dragging the logo (same src, new
+  // x/y) re-projects synchronously without reloading or flickering. A per-call
+  // generation token drops decals from a superseded spec once its image loads.
+  st._decalGen = (st._decalGen || 0) + 1;
+  const gen = st._decalGen;
+  const canvasCache = st._logoCanvas || (st._logoCanvas = {});
+  const drawLogo = (cv, logo, view) => {
+    const aspect = (logo.aspect && logo.aspect > 0) ? logo.aspect : (cv._aspect || 1);
+    const front = view === 'front';
+    const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
+    const wx = (front ? (logo.x - 0.5) : (0.5 - logo.x)) * size.x;
+    const wy = (0.5 - logo.y) * size.y;
+    const origin = new THREE.Vector3(wx, wy, front ? size.z * 3 : -size.z * 3);
+    raycaster.set(origin, dir);
+    const hits = raycaster.intersectObject(body, true);
+    if (!hits.length) return;
+    const hit = hits[0];
+    const normal = hit.face.normal.clone().transformDirection(body.matrixWorld).normalize();
+    const helper = new THREE.Object3D();
+    helper.position.copy(hit.point);
+    helper.lookAt(hit.point.clone().add(normal));
+    if (logo.rotation) helper.rotateZ((logo.rotation * Math.PI / 180) * (front ? 1 : -1));
+    const decalW = Math.max(0.02, (logo.w || 0.22)) * size.x;
+    const decalH = decalW / aspect;
+    const dsize = new THREE.Vector3(decalW, decalH, Math.max(size.x, size.y, size.z) * 0.6);
+    let geo;
+    try { geo = new DecalGeometry(body, hit.point, helper.rotation, dsize); } catch (e) { return; }
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+    const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -10, roughness: 0.75, metalness: 0.0, side: THREE.FrontSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    st.scene.add(mesh); st.decals.push(mesh);
+  };
+  const placeLogo = (logo, view) => {
+    if (!logo || !logo.src) return;
+    const cached = canvasCache[logo.src];
+    if (cached) { drawLogo(cached, logo, view); return; }
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const w = img.naturalWidth || img.width || 256, h = img.naturalHeight || img.height || 256;
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(img, 0, 0, w, h); cv._aspect = w / h;
+      canvasCache[logo.src] = cv;
+      if (st._decalGen === gen && st.mounted && st.bodyMesh) drawLogo(cv, logo, view);
+    };
+    img.src = logo.src;
+  };
+  ((spec.logos && spec.logos.front) || []).forEach((l) => placeLogo(l, 'front'));
+  ((spec.logos && spec.logos.back) || []).forEach((l) => placeLogo(l, 'back'));
 }
 
 export default function Viewer3D({ spec, modelUrl, autoRotate }) {

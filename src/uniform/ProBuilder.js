@@ -68,7 +68,7 @@ const DEFAULT_CONFIG = {
   secondary: '#FFFFFF', // stripes / secondary
   trim: '#192853',      // collar + sleeves/cuffs
   pattern: 'boldstripe',
-  logoSrc: null, logoX: 0.5, logoY: 0.4, logoScale: 1,
+  logoSrc: null, logoX: 0.5, logoY: 0.4, logoScale: 1, logoRot: 0, logoAspect: 1,
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
 };
@@ -88,7 +88,8 @@ function specFromConfig(cfg) {
   if (cfg.logoSrc) {
     logos.front = [{
       id: 'team-logo', src: cfg.logoSrc,
-      x: cfg.logoX, y: cfg.logoY, w: 0.22 * (cfg.logoScale || 1), aspect: 1, rotation: 0, opacity: 1,
+      x: cfg.logoX, y: cfg.logoY, w: 0.22 * (cfg.logoScale || 1),
+      aspect: cfg.logoAspect || 1, rotation: cfg.logoRot || 0, opacity: 1,
     }];
   }
   return ds.normalizeSpec({
@@ -219,14 +220,46 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // ── logo upload ──
+  // ── logo upload + placement pad ──
+  const padRef = useRef(null);
+  const draggingRef = useRef(false);
+  const [padBg, setPadBg] = useState(null);
+
   const onLogoFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => set({ logoSrc: ev.target.result });
+    reader.onload = (ev) => {
+      const src = ev.target.result;
+      const img = new Image();
+      img.onload = () => set({ logoSrc: src, logoAspect: (img.naturalWidth / img.naturalHeight) || 1, logoX: 0.5, logoY: 0.4, logoScale: 1, logoRot: 0 });
+      img.onerror = () => set({ logoSrc: src, logoAspect: 1 });
+      img.src = src;
+    };
     reader.readAsDataURL(file);
   };
+
+  // Pad background = the jersey front proof WITHOUT the logo (the draggable box
+  // shows the logo on top). Depends only on colors/pattern, so dragging the
+  // logo doesn't re-render it.
+  useEffect(() => {
+    if (step !== 'jersey' || !config.logoSrc) { setPadBg(null); return; }
+    let alive = true;
+    renderToDataURL(specFromConfig({ ...config, logoSrc: null }), { view: 'front' })
+      .then((d) => { if (alive) setPadBg(d); }).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line
+  }, [step, config.logoSrc, config.primary, config.secondary, config.trim, config.pattern]);
+
+  const padPoint = (e) => {
+    const rect = padRef.current.getBoundingClientRect();
+    const x = Math.min(0.92, Math.max(0.08, (e.clientX - rect.left) / rect.width));
+    const y = Math.min(0.92, Math.max(0.08, (e.clientY - rect.top) / rect.height));
+    set({ logoX: x, logoY: y });
+  };
+  const onPadDown = (e) => { draggingRef.current = true; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {} padPoint(e); };
+  const onPadMove = (e) => { if (draggingRef.current) padPoint(e); };
+  const onPadUp = (e) => { draggingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {} };
 
   // ── finalize: render 2D proof images for the review ──
   useEffect(() => {
@@ -347,15 +380,27 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <div style={railLabel}>Team Logo</div>
                   {config.logoSrc ? (
                     <div>
-                      <div style={{ position: 'relative', width: '100%', height: 160, background: C.offWhite, border: '2px dashed ' + C.mid, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                        <img src={config.logoSrc} alt="logo" style={{ maxWidth: '70%', maxHeight: '70%', objectFit: 'contain' }} />
+                      <div ref={padRef} onPointerDown={onPadDown} onPointerMove={onPadMove} onPointerUp={onPadUp} onPointerLeave={onPadUp}
+                        style={{ position: 'relative', width: '100%', aspectRatio: '760 / 940', background: (padBg ? `#fff url(${padBg}) center/contain no-repeat` : C.offWhite), border: '1px solid ' + C.mid, borderRadius: 8, overflow: 'hidden', touchAction: 'none', cursor: 'grab' }}>
+                        <img src={config.logoSrc} alt="logo" draggable={false} style={{ position: 'absolute', left: (config.logoX * 100) + '%', top: (config.logoY * 100) + '%', width: (22 * (config.logoScale || 1)) + '%', transform: `translate(-50%,-50%) rotate(${config.logoRot || 0}deg)`, pointerEvents: 'none', userSelect: 'none' }} />
+                        <div style={{ position: 'absolute', bottom: 6, left: 0, right: 0, textAlign: 'center', fontFamily: F_BODY, fontSize: 11, color: C.textLight, textShadow: '0 1px 2px #fff' }}>drag to reposition</div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14 }}>
-                        <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Size</span>
+                        <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Size</span>
                         <input type="range" min="0.4" max="1.8" step="0.05" value={config.logoScale} onChange={(e) => set({ logoScale: parseFloat(e.target.value) })} style={{ flex: 1 }} />
                       </div>
-                      <button onClick={() => set({ logoSrc: null })} style={{ marginTop: 12, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove Logo</button>
-                      <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Logo shows on the front proof; 3D placement follows in the advanced editor.</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+                        <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Rotate</span>
+                        <input type="range" min="-180" max="180" step="1" value={config.logoRot} onChange={(e) => set({ logoRot: parseInt(e.target.value, 10) })} style={{ flex: 1 }} />
+                        <button onClick={() => set({ logoRot: 0 })} title="Reset rotation" style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '3px 7px', cursor: 'pointer' }}>0°</button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 14, marginTop: 12 }}>
+                        <label style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy, cursor: 'pointer' }}>
+                          Replace<input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
+                        </label>
+                        <button onClick={() => set({ logoSrc: null })} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove Logo</button>
+                      </div>
+                      <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag the logo to place it; it appears live on the 3D jersey and the production proof.</div>
                     </div>
                   ) : (
                     <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%', height: 150, border: '2px dashed ' + C.mid, borderRadius: 8, cursor: 'pointer', color: C.textLight, fontFamily: F_BODY, fontSize: 13, textAlign: 'center', padding: 16, boxSizing: 'border-box' }}>
