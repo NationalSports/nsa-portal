@@ -7,6 +7,7 @@ import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
+import { buildSsOrdersQuery } from './ssOrders';
 import { normSzName } from './pricing';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
@@ -995,6 +996,15 @@ const ssGetStyles = async () => await ssApiCall('/Styles');
 const ssGetBrands = async () => await ssApiCall('/Brands');
 const ssGetCategories = async () => await ssApiCall('/Categories');
 
+// Fetch S&S orders (the bill source for S&S — see ssOrders.js). Defaults to the last 3
+// months (?All=True); pass {startDate,endDate} or an identifier to narrow. Always requests
+// lines. S&S returns an array for a listing, or a single object for an identifier lookup —
+// normalize to an array so callers can always map over it.
+const ssGetOrders = async (filter = {}) => {
+  const data = await ssApiCall(buildSsOrdersQuery(filter));
+  return Array.isArray(data) ? data : (data ? [data] : []);
+};
+
 // ─── S&S Activewear SKU resolution + order submit ───
 // S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
 // order lines carry style/color/size, so resolve the Sku live from the Products API.
@@ -1553,4 +1563,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

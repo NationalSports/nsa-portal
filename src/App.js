@@ -273,8 +273,9 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
+import { mapSsOrderToBill } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -23584,6 +23585,18 @@ export default function App(){
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
   const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
   const[siQueueLoading,setSiQueueLoading]=useState(false);
+  const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
+  // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
+  // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
+  // or the DB is down, the badge just stays hidden — it never blocks the screen.
+  useEffect(()=>{
+    if(!supabase||billView!=='import')return;
+    let cancelled=false;
+    supabase.from('ss_documents').select('order_number',{count:'exact',head:true}).eq('status','new')
+      .then(({count})=>{if(!cancelled)setSsNewCount(count||0)})
+      .catch(()=>{if(!cancelled)setSsNewCount(0)});
+    return ()=>{cancelled=true};
+  },[billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
@@ -24990,6 +25003,57 @@ export default function App(){
       _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
     };
 
+    // Pull supplier bills straight from S&S Activewear's own Orders API (NOT Sports Inc, which
+    // only delivers S&S as scanned/header-only PDFs with no usable lines). S&S returns clean
+    // structured lines, and `yourSku` echoes OUR SKU back, so they match our Sales Orders
+    // exactly with no normalization. Drops into the same review/apply pipeline as the SportsLink
+    // and PDF paths — nothing writes to Billed tracking until staff click "Push to Portal".
+    const pullFromSS=async(filters={})=>{
+      setBillImport(x=>({...x,uploading:true}));
+      let orders=[];
+      try{
+        // Default (no filters) pulls ?All=True — every S&S order from the last 3 months — with
+        // lines. Covers ALL S&S orders, not just API-placed ones (direct ssactivewear.com orders too).
+        orders=await ssGetOrders(filters);
+      }catch(e){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('S&S pull failed: '+(e.message||'connection error'),'error');
+        return;
+      }
+      if(!orders.length){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('No S&S orders found (nothing in the last 3 months)','success');
+        return;
+      }
+      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let idx=0;
+      orders.forEach(order=>{
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        // No shipped lines (backordered / not yet shipped) → nothing to bill; leave it.
+        if(!parsed.has_usable_lines){empty++;return}
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        // Two-key dedup, same as the SportsLink pull: an order applied before S&S assigned its
+        // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
+        // re-add it. Checking both the invoice # and the order # catches it either way.
+        const sdn=String(parsed.si_doc_number||'').trim();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        if(dn)seenDocs.add(dn);
+        const label='S&S Activewear · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
+        idx++;
+      });
+      const extraNote=empty?' — '+empty+' order(s) with no shipped lines skipped':'';
+      _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
+      _markSsReviewed();// staff have now seen these → clear the "new" badge from the daily cron
+    };
+    // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
+    // review, so the Import & Review badge clears. Best-effort: the dedup (_docAlreadyApplied)
+    // still prevents any double-bill on push, so a failed status write can't cause harm.
+    const _markSsReviewed=async()=>{
+      setSsNewCount(0);
+      if(!supabase)return;
+      try{await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new')}catch(e){/* badge cleared locally; DB retried on next open */}
+    };
+
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
     // Build PO-match candidates from the live orders: every portal PO line + deco PO, tagged
     // with its customer alpha_tag and the SO's SKUs, so the matcher can triangulate (PO# +
@@ -25088,6 +25152,9 @@ export default function App(){
     const _canonBillSize=raw=>{
       if(raw==null)return raw;
       let s=String(raw).trim();
+      // Bare waist/numeric size that carries an inch mark: "32\"" → "32" (the number IS the size, not a
+      // trailing inseam to drop). Handled before the inseam strip, which would otherwise null it out.
+      if(/^\d{1,3}\s*["”″]$/.test(s))return s.replace(/["”″]/g,'').trim();
       // Drop a trailing inseam/length spec so apparel sizes line up: adidas bills volleyball shorts as
       // "XS3\""/"S 3\"" (a 3-inch inseam) where the order carries plain "XS"/"S".
       const noInseam=s.replace(/\s*\d+\s*["”″]\s*$/,'').trim();
@@ -25097,6 +25164,13 @@ export default function App(){
       // lines up with a PO's "11½" instead of reading as a phantom 0 ordered.
       const half=s.match(/^(\d{1,2})\s*(?:[-–]|½|1\/2)$/);
       if(half)return half[1]+'.5';
+      // Slash-form size range ("M/L") → the dash form the orders/SIZES list carry ("M-L").
+      if(/^[A-Za-z0-9]{1,3}\/[A-Za-z0-9]{1,3}$/.test(s))s=s.replace('/','-');
+      // adidas appends a fit-code digit to a real size ("2XL7", "3XL9", "LT2") — strip the trailing
+      // digit when it follows a letter so it aligns to the base size the order carries. No standard
+      // apparel size ends letter-then-digit, so this can't clobber a real one (and "3T"/"18M" are
+      // digit-then-letter, untouched).
+      if(/[A-Za-z]\d$/.test(s))s=s.slice(0,-1);
       return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
     };
     // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
@@ -25237,14 +25311,21 @@ export default function App(){
       const updated={...bill,matchedPO:null,matchedPOSource:null};
       if(!bill.po_number)return updated;
       const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
-      const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      // Sports Inc bills often arrive without the "PO "/"DPO " prefix the order carries (the bill says
+      // "3083 OLuSPL" where the PO is "PO 3083 OLuSPL"). Also compare with that prefix stripped from
+      // both sides — still requiring the rest to match exactly, so it recovers those without a looser
+      // numeric collision. Guarded to ≥3 chars so a bare "PO" can't match everything.
+      const stripPO=s=>s.replace(/^d?po/,'');
+      const poStrip=stripPO(poLc);
+      const stripEq=pid=>poStrip.length>=3&&stripPO(pid)===poStrip;
+      const batchMatch=submittedBatches.find(sb=>{if(!sb.po_number)return false;const n=sb.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
-      const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      const invMatch=invPOs.find(p=>{if(!p.po_number)return false;const n=p.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
       // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
       for(const so of sos){for(const dp of (so.deco_pos||[])){
         const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
           updated.matchedPOSource='so_deco_po';return updated;
         }
@@ -25253,7 +25334,7 @@ export default function App(){
       for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
         const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
         const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
           updated.matchedPOSource='so_po';return updated;
         }
@@ -27069,11 +27150,23 @@ export default function App(){
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Scanned/OCR documents (e.g. S&amp;S Activewear) are left for the manual PDF parse below.</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
               </div>
               <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
                 onClick={()=>pullFromSportsInc()}>
                 {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
+              </button>
+            </div>
+          </div>
+          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#0891b2',background:'#ecfeff'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+                onClick={()=>pullFromSS()}>
+                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
               </button>
             </div>
           </div>
