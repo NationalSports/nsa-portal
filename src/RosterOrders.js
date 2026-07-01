@@ -236,6 +236,14 @@ function KitItemRow({ ki, idx, patchItem, removeItem }) {
         <input value={ki.color || ''} placeholder="e.g. White" onChange={e => patchItem(idx, { color: e.target.value })}
           style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '3px 6px', width: 78, outline: 'none' }} />
       </td>
+      <td style={{ padding: '8px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>$</span>
+          <input type="number" min={0} step="0.01" value={ki.price ?? ''} placeholder="0.00"
+            onChange={e => patchItem(idx, { price: e.target.value === '' ? '' : parseFloat(e.target.value) })}
+            style={{ border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11.5, padding: '3px 6px', width: 62, outline: 'none' }} />
+        </div>
+      </td>
       <td style={{ padding: '8px 6px', minWidth: 280 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           {variant('Adult', '#0b1220', <ProductPicker value={ki.product_id} sku={ki.sku} productName={ki.product_name} onPick={pickAdult} />)}
@@ -279,7 +287,7 @@ function KitItemsTableEditor({ items, setItems }) {
       <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
         <thead>
           <tr style={{ background: '#f8fafc' }}>
-            {['Item', 'Slot key', 'Color', 'Products / SKU', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
+            {['Item', 'Slot key', 'Color', 'Price', 'Products / SKU', 'Qty', '#?', 'GK', 'Socks', ''].map(h => (
               <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#64748b', whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
@@ -739,10 +747,22 @@ function RosterTotals({ session, teams, kitTemplate }) {
     return result;
   }, [kitItems, allPlayers, allSizes]);
 
+  // Units per item (respecting qty-per-player) and the estimated order value from
+  // any per-item prices set in the catalog. Items with no price contribute 0.
+  const unitsFor = (ki) => {
+    const byCat = totals[ki.slot] || {};
+    return ['YM', 'WM', 'AM'].reduce((sum, cat) =>
+      sum + Object.values(byCat[cat] || {}).reduce((a, ps) => a + ps.length * (ki.qty || 1), 0), 0);
+  };
+  const orderValue = useMemo(() => kitItems.reduce((sum, ki) => sum + unitsFor(ki) * (Number(ki.price) || 0), 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [kitItems, totals]);
+
   const exportCSV = () => {
-    const rows = [['Item', 'Color', 'Category', 'Size', 'Count', 'Players', 'Available', 'Incoming', 'ETA']];
+    const rows = [['Item', 'Color', 'Category', 'Size', 'Count', 'Unit $', 'Line $', 'Players', 'Available', 'Incoming', 'ETA']];
     kitItems.forEach(ki => {
       const byCat = totals[ki.slot] || {};
+      const price = Number(ki.price) || 0;
       ['YM', 'WM', 'AM'].forEach(cat => {
         const bySz = byCat[cat] || {};
         const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id) :
@@ -751,9 +771,10 @@ function RosterTotals({ session, teams, kitTemplate }) {
         sizeKeys.forEach(sz => {
           const ps = bySz[sz] || [];
           if (!ps.length) return;
+          const need = ps.length * (ki.qty || 1);
           const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
           const playerStr = ps.map(p => `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${p.first_name || ''} ${p.last_name || ''}`.trim()).join('; ');
-          rows.push([ki.label, ki.color || '', cat, sz, ps.length, playerStr, stock.avail, stock.incoming, stock.eta || '']);
+          rows.push([ki.label, ki.color || '', cat, sz, ps.length, price ? price.toFixed(2) : '', price ? (need * price).toFixed(2) : '', playerStr, stock.avail, stock.incoming, stock.eta || '']);
         });
       });
     });
@@ -778,6 +799,7 @@ function RosterTotals({ session, teams, kitTemplate }) {
           <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
             {(teams || []).length} team{(teams || []).length !== 1 ? 's' : ''} · {totalPlayers} players
             · {lockedTeams} of {(teams || []).length} locked
+            {orderValue > 0 && <span> · <strong style={{ color: '#0b1220' }}>Est. value ${orderValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>}
           </div>
         </div>
         <button onClick={exportCSV}
@@ -819,7 +841,10 @@ function RosterTotals({ session, teams, kitTemplate }) {
               {ki.color && <span style={{ fontSize: 10, opacity: 0.75, background: 'rgba(255,255,255,.12)', borderRadius: 4, padding: '2px 7px' }}>{ki.color}</span>}
               {ki.takes_number && <span style={{ fontSize: 10, opacity: 0.7, fontWeight: 400 }}>w/ number</span>}
               {ki.qty > 1 && <span style={{ fontSize: 10, opacity: 0.7 }}>×{ki.qty} per player</span>}
-              <div style={{ marginLeft: 'auto', fontWeight: 700, fontSize: 13 }}>{totalUnits} units total</div>
+              {Number(ki.price) > 0 && <span style={{ fontSize: 10, opacity: 0.7 }}>${Number(ki.price).toFixed(2)} ea</span>}
+              <div style={{ marginLeft: 'auto', fontWeight: 700, fontSize: 13 }}>
+                {totalUnits} units{Number(ki.price) > 0 ? ` · $${(totalUnits * Number(ki.price)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ' total'}
+              </div>
             </div>
 
             {activeCats.map(cat => {
@@ -923,11 +948,12 @@ function RosterTotals({ session, teams, kitTemplate }) {
 }
 
 // ─── Staff: Session Detail ────────────────────────────────────────────────────
-function SessionDetail({ session, customer, onBack }) {
+function SessionDetail({ session, customer, onBack, onNewEst }) {
   const [sess, setSess] = useState(session); // local copy so kit_items edits re-render
   const [teams, setTeams] = useState([]);
   const [kitTemplate, setKitTemplate] = useState(null); // the customer's item catalog
   const [loading, setLoading] = useState(true);
+  const [buildingEst, setBuildingEst] = useState(false);
   const [addingTeam, setAddingTeam] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [view, setView] = useState('teams'); // teams | totals
@@ -990,6 +1016,95 @@ function SessionDetail({ session, customer, onBack }) {
     await supabase.from('roster_order_sessions').update({ status }).eq('id', session.id);
   };
 
+  // Build a draft estimate from this session's rosters. Each kit item becomes one
+  // line per category-resolved product (Youth/Women's/Adult SKU), with sizes{}
+  // aggregated from the players and — for numbered items — Names + Numbers
+  // decorations pre-filled per size. Hands the seeded items to the app's newE()
+  // which opens the estimate editor; the rep reviews/prices from there.
+  const buildEstimate = async () => {
+    if (!onNewEst) return;
+    setBuildingEst(true);
+    try {
+      const kitItems = kit.items || [];
+      const teamIds = teams.map(t => t.id);
+      if (!teamIds.length) { window.alert('Add a team with players first.'); setBuildingEst(false); return; }
+      const { data: players } = await supabase.from('roster_players').select('*').in('team_id', teamIds);
+      const playerList = players || [];
+      const { data: sizeRows } = playerList.length
+        ? await supabase.from('roster_player_sizes').select('*').in('player_id', playerList.map(p => p.id))
+        : { data: [] };
+      const sizeMap = {};
+      (sizeRows || []).forEach(r => { (sizeMap[r.player_id] = sizeMap[r.player_id] || {})[r.kit_slot] = r.size; });
+
+      // Fetch the real product records for every linked SKU (pricing/sizes).
+      const pidSet = new Set();
+      kitItems.forEach(ki => [ki.product_id, ki.product_youth_id, ki.product_womens_id].forEach(id => { if (id) pidSet.add(id); }));
+      let prodById = {};
+      if (pidSet.size) {
+        const { data: prods } = await supabase.from('products').select('*').in('id', [...pidSet]);
+        (prods || []).forEach(p => { prodById[p.id] = p; });
+      }
+
+      const seedItems = [];
+      kitItems.forEach(ki => {
+        const resolvePid = (cat) => cat === 'YM' ? (ki.product_youth_id || ki.product_id)
+          : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+        const skuFor = (pid) => pid === ki.product_youth_id ? ki.sku_youth
+          : pid === ki.product_womens_id ? ki.sku_womens : ki.sku;
+        const byProduct = {}; // pid|slot -> { pid, sizes, names, numbers }
+        playerList.forEach(p => {
+          if (ki.gk_only && !p.is_gk) return;
+          const sz = (sizeMap[p.id] || {})[ki.slot];
+          if (!sz || sz === '-') return;
+          const cat = p.category || 'AM';
+          const pid = resolvePid(cat) || '';
+          const key = pid || ('__' + ki.slot);
+          const bp = byProduct[key] || (byProduct[key] = { pid, sizes: {}, names: {}, numbers: {} });
+          bp.sizes[sz] = (bp.sizes[sz] || 0) + (ki.qty || 1);
+          if (ki.takes_number) {
+            const nm = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+            (bp.names[sz] = bp.names[sz] || []).push(nm);
+            (bp.numbers[sz] = bp.numbers[sz] || []).push(p.jersey_number != null ? String(p.jersey_number) : '');
+          }
+        });
+        Object.values(byProduct).forEach(bp => {
+          if (!Object.keys(bp.sizes).length) return;
+          const prod = bp.pid ? prodById[bp.pid] : null;
+          const unitSell = Number(ki.price) || Number(prod?.retail_price) || 0;
+          const decorations = [];
+          if (ki.takes_number) {
+            decorations.push({ kind: 'names', position: 'Back Center', name_method: 'heat_press', sell_override: null, sell_each: 6, cost_each: 3, names: bp.names });
+            decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: bp.numbers });
+          }
+          seedItems.push({
+            product_id: bp.pid || '',
+            sku: prod?.sku || skuFor(bp.pid) || '',
+            name: ki.label + (ki.color ? ` (${ki.color})` : ''),
+            brand: prod?.brand || null,
+            vendor_id: prod?.vendor_id || null,
+            pricing_group: prod?.pricing_group || null,
+            color: ki.color || prod?.color || '',
+            nsa_cost: prod?.nsa_cost ?? null,
+            retail_price: prod?.retail_price ?? null,
+            unit_sell: unitSell,
+            available_sizes: Array.isArray(prod?.available_sizes) ? [...prod.available_sizes] : Object.keys(bp.sizes),
+            _colors: null,
+            sizes: bp.sizes,
+            decorations,
+            _is_clearance: prod?.is_clearance || false,
+          });
+        });
+      });
+
+      if (!seedItems.length) { window.alert('No player sizes entered yet — nothing to put on an estimate.'); setBuildingEst(false); return; }
+      onNewEst(customer, null, seedItems);
+    } catch (e) {
+      console.error('[buildEstimate]', e);
+      window.alert('Could not build the estimate — ' + (e.message || 'unknown error'));
+    }
+    setBuildingEst(false);
+  };
+
   const inviteCoach = async (teamId) => {
     const f = inviteForm[teamId] || {};
     const email = (f.email || '').trim();
@@ -1045,6 +1160,12 @@ function SessionDetail({ session, customer, onBack }) {
               background: view === 'totals' ? '#0b1220' : '#fff', color: view === 'totals' ? '#fff' : '#374151' }}>
             Totals / Buy-Sheet
           </button>
+          {onNewEst && (
+            <button onClick={buildEstimate} disabled={buildingEst} title="Build a draft estimate from these rosters"
+              style={{ padding: '6px 14px', borderRadius: 7, border: 'none', fontWeight: 700, fontSize: 12, cursor: 'pointer', background: '#2563eb', color: '#fff' }}>
+              {buildingEst ? 'Building…' : '📄 Create estimate'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1194,7 +1315,7 @@ function CreateSessionModal({ customer, onCreated, onClose }) {
 }
 
 // ─── Staff: exported component (embeds in CustDetail roster tab) ──────────────
-export function RosterOrdersStaff({ customer, nf }) {
+export function RosterOrdersStaff({ customer, nf, onNewEst }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -1257,7 +1378,7 @@ export function RosterOrdersStaff({ customer, nf }) {
   if (openSession) {
     return (
       <div style={{ padding: 20 }}>
-        <SessionDetail session={openSession} customer={customer} onBack={() => setOpenSession(null)} />
+        <SessionDetail session={openSession} customer={customer} onBack={() => setOpenSession(null)} onNewEst={onNewEst} />
       </div>
     );
   }

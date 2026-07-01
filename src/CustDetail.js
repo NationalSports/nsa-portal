@@ -1259,7 +1259,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div>}
     </div>})()}
   {tab==='catalog'&&<CoachCatalogAccess customer={customer} nf={nf} onUpdateCustomer={(nc)=>{setCustLocal(nc);onRefreshCustomer&&onRefreshCustomer(nc)}}/>}
-  {tab==='roster'&&<RosterOrdersStaff customer={customer} nf={nf}/>}
+  {tab==='roster'&&<RosterOrdersStaff customer={customer} nf={nf} onNewEst={onNewEst}/>}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
     // allOrders already merges portal invs with NetSuite hist_invoices, so hist rows
