@@ -305,7 +305,9 @@ const AI_EXAMPLES = [
 ];
 
 export default function UniformBuilder({ onExit }) {
-  const [spec, setSpec] = useState(() => ds.makeDefaultSpec('crew_jersey'));
+  // Open on the photoreal jersey — it reads as a real garment, unlike the flat
+  // vector templates (which stay available in the garment picker).
+  const [spec, setSpec] = useState(() => ds.makeDefaultSpec('octa_jersey'));
   const [view, setView] = useState('front');
   const [selectedZone, setSelectedZone] = useState('body');
   const [selectedLogoId, setSelectedLogoId] = useState(null);

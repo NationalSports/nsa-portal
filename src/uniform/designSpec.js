@@ -143,7 +143,7 @@ function makeDefaultSpec(garmentId = 'crew_jersey') {
       yoke: { ...DEFAULT_ZONE, color: '#962C32' },
       sleeveL: { ...DEFAULT_ZONE, color: '#962C32' },
       sleeveR: { ...DEFAULT_ZONE, color: '#962C32' },
-      collar: { ...DEFAULT_ZONE, color: '#962C32' },
+      collar: { ...DEFAULT_ZONE, color: '#1f2a44' },
       sidePanelL: { ...DEFAULT_ZONE, color: '#ffffff' },
       sidePanelR: { ...DEFAULT_ZONE, color: '#ffffff' },
       waistband: { ...DEFAULT_ZONE, color: '#962C32' },

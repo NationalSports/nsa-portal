@@ -204,7 +204,11 @@ const TEMPLATES = {
 };
 
 export function getTemplate(id) { return TEMPLATES[id] || TEMPLATES.crew_jersey; }
-export function listTemplates() { return Object.values(TEMPLATES); }
+// Photoreal (raster) templates first so the picker leads with the realistic one.
+export function listTemplates() {
+  const all = Object.values(TEMPLATES);
+  return [...all.filter((t) => t.type === 'raster'), ...all.filter((t) => t.type !== 'raster')];
+}
 
 // Register a template at runtime (used by the custom-SVG importer). Returns the
 // stored template. Kept in the same module-level map so getTemplate() finds it.
