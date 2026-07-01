@@ -14151,11 +14151,20 @@ export default function App(){
     const omgMismatch=omgSettlements.filter(p=>p.status==='mismatch');
     const omgBlocked=omgSettlements.filter(p=>p.status==='blocked');
     // Pre-fill the existing payment modal with the store funds; the modal's
-    // "Record $X" button is accounting's one-click confirm. Amount defaults to
-    // what actually came in (net remit); it's editable there for exceptions.
+    // "Record $X" button is accounting's one-click confirm. Amount is still
+    // editable there for exceptions. For a MATCHED store we apply the exact
+    // invoice balance so it closes cleanly to 'paid' — net remit can be a few
+    // cents under the balance (within the $1 match tolerance), and applying
+    // that instead would strand the invoice at 'partial' with a residual
+    // balance that never clears in AR or QuickBooks. For a MISMATCH we apply
+    // what actually came in (net remit) so a genuine shortfall stays visible
+    // as a partial balance for accounting to chase rather than being papered
+    // over. Payment method is inert to commissions and QB sync (neither reads
+    // it), so 'store' behaves exactly like a check for downstream accounting.
     const proposeOmgSettlement=(p)=>{
       if(!p||!p.inv)return;
-      setPayModal({inv:{...p.inv,_bal:p.inv._bal},amount:_r2(p.netRemit),method:'store',ref:p.ref});
+      const amount=p.status==='matched'?_r2(p.inv._bal):_r2(p.netRemit);
+      setPayModal({inv:{...p.inv,_bal:p.inv._bal},amount,method:'store',ref:p.ref});
     };
     const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
