@@ -11,6 +11,8 @@ import { supabase } from './lib/supabase';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
+// Lazy so the uniform designer (and its jsPDF/canvas deps) only loads when opened.
+const UniformBuilder = React.lazy(() => import('./uniform/UniformBuilder'));
 
 // The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
@@ -273,6 +275,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[invs,setInvs]=useState(initInvs);
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
+  const[uniformBuilder,setUniformBuilder]=useState(false);// coach self-serve uniform designer
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
@@ -1305,6 +1308,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Coach store builder — full-screen guided flow
   if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
+  // Coach uniform designer — full-screen builder
+  if(uniformBuilder) return <React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder onExit={()=>setUniformBuilder(false)}/></React.Suspense>;
+
   // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
   if(spendView&&adData){
     const{period,teams,totalSpend,adidasTotal,allocated,used,remaining,remainingDisplay,overspent,hasPromo,deptName,teamCount,usedPct,money,money2}=adData;
@@ -2009,6 +2015,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
           </button>}
+
+          {/* Design a uniform — self-serve custom uniform builder */}
+          <button onClick={()=>setUniformBuilder(true)} style={{width:'100%',textAlign:'left',border:'none',cursor:'pointer',background:`linear-gradient(135deg,${tPrimary},${tNavyMid})`,color:'#fff',borderRadius:8,padding:'18px 24px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,boxShadow:'0 2px 10px rgba(15,23,42,.12)'}}>
+            <div>
+              <div className="nsa-disp" style={{fontSize:11,fontWeight:800,letterSpacing:'.1em',textTransform:'uppercase',opacity:.7}}>New</div>
+              <div className="nsa-disp" style={{fontSize:20,fontWeight:800,marginTop:2,textTransform:'uppercase'}}>Design a Uniform</div>
+              <div style={{fontSize:13,opacity:.85,marginTop:3}}>Colors, patterns, numbers &amp; logos — build it yourself or design one with AI, then send it to us.</div>
+            </div>
+            <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
+          </button>
 
           {/* Shop & Order section */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
