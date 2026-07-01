@@ -6475,7 +6475,7 @@ function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
           </div>
 
           {/* Catalog search / picker — the main way to add items */}
-          <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" standardCategories={[...new Set(items.map((it) => it.category).filter(Boolean))]} />
+          <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" initialInStock={false} standardCategories={[...new Set(items.map((it) => it.category).filter(Boolean))]} />
 
           {/* Who it's for */}
           <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, margin: '14px 0' }}>
@@ -7163,7 +7163,7 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store' }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -7173,7 +7173,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(300);
-  const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
+  const [inStockOnly, setInStockOnly] = useState(initialInStock); // school stores default to fulfillable; templates don't
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
@@ -7245,30 +7245,47 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      // Hide retired products (archived) so the store builder can't add what the catalog
-      // live-look already hides, while still including legacy rows whose is_active is null.
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
-        .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
-      if (favOnly) {
-        // Favorites view — load every colorway of each starred STYLE (across all categories)
-        // so the rep's + team's picks always show, regardless of color/stock filters.
-        if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
-        query = query.in('name', favNames);
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-      } else {
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-        // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
-        // category like Tees doesn't bury the school's colors past the row limit.
-        // School colors only narrow when BROWSING; a typed search overrides them so a
-        // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
-        if (colorOnly && colorWords.length && q.trim().length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      const typed = q.trim();
+      let rows = null;
+      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
+      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
+      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
+      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      if (!favOnly && typed.length >= 2) {
+        try {
+          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          if (error) throw error;
+          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
+          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
+          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+        } catch (e) { rows = null; /* fall through to the table query */ }
       }
-      const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
-      const rows = data || [];
+      if (rows == null) {
+        // Hide retired products (archived) so the store builder can't add what the catalog
+        // live-look already hides, while still including legacy rows whose is_active is null.
+        let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+          .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
+        if (favOnly) {
+          // Favorites view — load every colorway of each starred STYLE (across all categories)
+          // so the rep's + team's picks always show, regardless of color/stock filters.
+          if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+          query = query.in('name', favNames);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+        } else {
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+          // category like Tees doesn't bury the school's colors past the row limit.
+          // School colors only narrow when BROWSING; a typed search overrides them so a
+          // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
+          if (colorOnly && colorWords.length && typed.length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+        }
+        const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
+        rows = data || [];
+      }
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
