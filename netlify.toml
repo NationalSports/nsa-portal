@@ -80,6 +80,13 @@
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
 
+# Automated follow-up sweep — hourly. Sends the rep's scheduled follow-up emails for
+# estimates, invoices, and art (so_jobs) whose follow_up_at has arrived, then re-arms
+# the next send (repeat cadence) or stops once resolved / capped. See
+# netlify/functions/followup-sweep.js.
+[functions."followup-sweep"]
+  schedule = "0 * * * *"
+
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.

@@ -2054,8 +2054,8 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -8342,7 +8342,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
           if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
-          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
@@ -8467,8 +8467,9 @@ export default function App(){
     // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
-      // If follow_up_at is set and due, show specific follow-up todo
-      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+      // If follow_up_at is set and due, show specific follow-up todo (skipped when the
+      // server sweep is auto-sending — no need to nag the rep to do it by hand).
+      if(!e.follow_up_auto&&e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
         todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2,date:e.email_sent_at||e.updated_at||e.created_at});
@@ -8482,8 +8483,8 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    // Invoice follow-up alerts (uses follow_up_at when set)
-    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
+    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
@@ -11256,7 +11257,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
@@ -11309,7 +11310,7 @@ export default function App(){
     });
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
-      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+      if(!e.follow_up_auto&&e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
         todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
@@ -11323,7 +11324,7 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});

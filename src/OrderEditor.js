@@ -7,7 +7,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
+import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
@@ -252,7 +252,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _cwForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return deco.color_way_id;const light=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(garmentColor||'');const byLD=cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return light?/white|light/.test(gc):/dark|black/.test(gc)});return (byLD||cws[0]).id};
   // Open the existing "Send to Coach for Approval" modal for a job index (same initializer as
   // the waiting-approval banner's Send to Coach button).
-  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})};
+  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:{auto:false,firstDays:3,intervalDays:0,max:4,message:''}})};
   // Apply a chosen prior mock to a garment on this order's art file, tagged with the CW inherited
   // from the item. sendToCoach=true also moves the job to Waiting Approval and opens the send
   // modal; otherwise the art stays approved/complete.
@@ -416,6 +416,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);const[invSendingState,setInvSendingState]=useState(null);const[invSendReview,setInvSendReview]=useState(false);
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
+  const[invFollowUp,setInvFollowUp]=useState({auto:false,firstDays:3,intervalDays:0,max:4,message:''});
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[splitArtModal,setSplitArtModal]=useState(null);// {itemIdx, designs:[{art_file_id,position,sizes:{S:n,...}}]} — split a line's garments between two logos
   const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
@@ -5821,10 +5822,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ...(_ecApp>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_ecApp)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms,companyInfo:_ci});
-    }} repUser={cu} companyInfo={_ci} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,toEmails:_toEmails,messageId:_msgId}={})=>{
-      const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
+    }} repUser={cu} companyInfo={_ci} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,followUp:_fu,toEmails:_toEmails,messageId:_msgId}={})=>{
+      const now=new Date().toLocaleString();
+      // Estimates support automated follow-ups (server sweep); SOs keep the manual reminder (fuDays).
+      const _auto=isE&&_fu&&_fu.auto;
+      const fuAt=_auto?new Date(Date.now()+((_fu.firstDays||3)*86400000)).toISOString():(fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null);
       const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||'',messageId:_msgId||null};
-      const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry]};
+      const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry],
+        // Automation columns only exist on estimates — SOs don't get them (sales_orders has no such columns).
+        ...(isE?{follow_up_auto:!!_auto,follow_up_interval_days:_auto?(_fu.intervalDays||0):null,follow_up_message:_auto?(_fu.message||''):null,follow_up_to:_auto?(_toEmails||''):null,follow_up_max:_auto?(_fu.max||4):null,follow_up_count:0,follow_up_last_sent_at:null}:{})};
       if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
       else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
@@ -6341,7 +6347,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const contact=(cust?.contacts||[])[0];
             const invPortalUrl=cust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust.alpha_tag:'';
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
-            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvSendAt(_invDateStr);
+            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvFollowUp({auto:false,firstDays:3,intervalDays:0,max:4,message:''});setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nationalsportsapparel.com/coach?portal='+(cust?.alpha_tag||''));
             }finally{setInvCreating(false)}
           }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):invType==='final'&&invTotal===0?'Close Sales Order — Fully Paid':(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')+' — $'+invTotal.toFixed(2)}</button>
@@ -6492,7 +6498,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
             <button className="btn btn-secondary" onClick={downloadInvoice}>📥 Download PDF</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendReview(false);setInvSendModal(true)}}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendReview(false);setInvFollowUp({auto:false,firstDays:3,intervalDays:0,max:4,message:''});setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -6567,15 +6573,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {invSendAt&&invSendAt!==_today&&<button type="button" onClick={()=>setInvSendAt(_today)} style={{fontSize:11,background:'none',border:'none',color:'#64748b',cursor:'pointer',padding:0,textDecoration:'underline'}}>Send now</button>}
             <span style={{fontSize:11,color:_isFuture?'#1e40af':'#64748b',flex:1,minWidth:200}}>{_isFuture?'📅 Will be queued and sent automatically on '+invSendAt:'Will send immediately'}</span>
           </div>})()}
-          {/* Follow-up reminder */}
-          <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
-            <select className="form-input" value={invFollowUpDays} onChange={e=>setInvFollowUpDays(parseInt(e.target.value))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
-              <option value={0}>Never</option>
-              {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
-            </select>
-            {invFollowUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
-          </div>
+          {/* Automated follow-ups */}
+          <FollowUpAutoPanel value={invFollowUp} onChange={setInvFollowUp} defaultMessage={'Hi '+((contacts[0]&&contacts[0].name)||'Coach')+',\n\nJust a friendly reminder that invoice '+ir.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
         </div>
         {invSendingState&&<div style={{padding:'12px 16px',background:invSendingState==='success'?'#f0fdf4':invSendingState==='sending'?'#eff6ff':'#fef2f2',borderTop:'1px solid '+(invSendingState==='success'?'#86efac':invSendingState==='sending'?'#93c5fd':'#fecaca'),display:'flex',alignItems:'center',gap:10,fontSize:13}}>
           <span style={{fontSize:18}}>{invSendingState==='success'?'✅':invSendingState==='sending'?'⏳':'❌'}</span>
@@ -6721,9 +6720,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
             if(!res.ok)return;// don't record history on failure
             // Update invoice email status with follow-up and history
-            const invNow=new Date().toLocaleString();const invFuAt=invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null;
+            const invNow=new Date().toLocaleString();
+            // Automated follow-ups (server sweep) take priority; else fall back to the manual reminder.
+            // Base the first follow-up on the ACTUAL initial-send time — for a future-dated invoice the
+            // email goes out on invSendAt, so counting from now could fire a follow-up before it.
+            const _invAuto=invFollowUp&&invFollowUp.auto;
+            const _invFuBase=_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now();
+            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null);
             const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null,...(_scheduleFuture?{scheduled_for:invSendAt,scheduled_id:res.scheduledId}:{})};
-            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
+            const _invAutoCols=_invAuto?{follow_up_auto:true,follow_up_interval_days:invFollowUp.intervalDays||0,follow_up_message:invFollowUp.message||'',follow_up_to:toEmail,follow_up_max:invFollowUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
+            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist],..._invAutoCols}:i));
             // Also post to messages
             const _msgVerb=_scheduleFuture?('Scheduled to send on '+invSendAt+' to '):'Sent to ';
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] '+_msgVerb+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
@@ -8592,7 +8598,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));if(_apArtIds.length===0||_allConfirmed){_approveArtTo(j.id,_apArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:{auto:false,firstDays:3,intervalDays:0,max:4,message:''}})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -9213,10 +9219,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               actions.push('text opened');
             }
           }
-          // Record sent_to_coach_at timestamp, follow-up, and history on the job
-          const fuAt=cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null;
+          // Record sent_to_coach_at timestamp, follow-up, and history on the job.
+          // Automated follow-ups (server sweep) take priority; else fall back to the manual reminder.
+          const _artAuto=cam.followUp&&cam.followUp.auto&&allTargets.length>0;
+          const fuAt=_artAuto?new Date(Date.now()+((cam.followUp.firstDays||3)*86400000)).toISOString():(cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null);
           const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null};
-          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
+          const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
+          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry],..._artAutoCols}:jj);
           const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
           setCoachApprovalModal(null);
           nf(actions.length>0?'Sent to coach — '+actions.join(' + '):'No notification method selected');
@@ -9283,15 +9292,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div className="form-label" style={{fontSize:11}}>Message</div>
               <textarea className="form-input" rows={6} value={cam.message} onChange={e=>setCoachApprovalModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
             </div>
-            {/* ── Follow-up ── */}
-            <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-              <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
-              <select className="form-input" value={cam.followUpDays==null?7:cam.followUpDays} onChange={e=>setCoachApprovalModal(m=>({...m,followUpDays:parseInt(e.target.value)}))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
-                <option value={0}>Never</option>
-                {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
-              </select>
-              {(cam.followUpDays==null?7:cam.followUpDays)>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
-            </div>
+            {/* ── Automated follow-ups ── */}
+            <FollowUpAutoPanel value={cam.followUp} onChange={val=>setCoachApprovalModal(m=>({...m,followUp:val}))} defaultMessage={'Hi '+((cam.contact&&cam.contact.name)||'Coach')+',\n\nJust a friendly reminder that your artwork mockup for "'+_emailLabel+'" is ready for your review and approval. We can\'t move it into production until it\'s approved — let us know if you\'d like any changes!\n\n'+(cu.name||'National Sports Apparel')+'\nNational Sports Apparel'}/>
           </div>
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
             <button className="btn btn-secondary" onClick={()=>setCoachApprovalModal(null)}>Cancel</button>
