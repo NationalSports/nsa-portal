@@ -19,32 +19,35 @@
 const seam = (d, opts = {}) => ({ d, ...opts });
 
 // ── Crew / soccer-style jersey ──────────────────────────────────────────────
+// Athletic jersey with a real cut: shallow V-neck, curved cap sleeves, a torso
+// that tapers at the waist and flares to a rounded hem. Curves (not straight
+// lines) are what read as "garment" rather than "icon".
 const JERSEY_FRONT = {
   viewBox: '0 0 400 480',
   zones: [
     { id: 'body', label: 'Body',
-      d: 'M150 122 L170 104 Q200 130 230 104 L250 122 L250 430 L150 430 Z' },
+      d: 'M150 120 Q138 142 146 200 Q140 322 152 432 Q200 448 248 432 Q260 322 254 200 Q262 142 250 120 Q224 132 200 152 Q176 132 150 120 Z' },
     { id: 'sidePanelL', label: 'Left Side Panel',
-      d: 'M150 178 L174 202 L174 430 L150 430 Z' },
+      d: 'M146 202 Q140 322 152 432 L170 432 Q160 322 166 206 Z' },
     { id: 'sidePanelR', label: 'Right Side Panel',
-      d: 'M250 178 L226 202 L226 430 L250 430 Z' },
+      d: 'M254 202 Q260 322 248 432 L230 432 Q240 322 234 206 Z' },
     { id: 'yoke', label: 'Shoulder Yoke',
-      d: 'M150 122 L250 122 L250 150 Q200 170 150 150 Z' },
+      d: 'M150 120 Q200 150 250 120 Q259 140 250 160 Q200 180 150 160 Q141 140 150 120 Z' },
     { id: 'sleeveL', label: 'Left Sleeve',
-      d: 'M150 122 L104 150 L112 200 L150 178 Z' },
+      d: 'M150 122 Q128 132 120 160 Q114 186 122 208 L150 200 Q142 152 150 122 Z' },
     { id: 'sleeveR', label: 'Right Sleeve',
-      d: 'M250 122 L296 150 L288 200 L250 178 Z' },
+      d: 'M250 122 Q272 132 280 160 Q286 186 278 208 L250 200 Q258 152 250 122 Z' },
     { id: 'collar', label: 'Collar',
-      d: 'M166 100 Q200 134 234 100 L230 110 Q200 124 170 110 Z' },
+      d: 'M174 126 Q200 152 226 126 L234 134 Q200 168 166 134 Z' },
   ],
   seams: [
-    seam('M150 178 L174 202 L174 430'), seam('M250 178 L226 202 L226 430'),
-    seam('M150 122 L112 200'), seam('M250 122 L288 200'),
+    seam('M148 200 Q140 322 152 432'), seam('M252 200 Q260 322 248 432'),
+    seam('M150 122 Q128 152 122 206'), seam('M250 122 Q272 152 278 206'),
   ],
   // cx/cy/size expressed as fractions of the viewBox (0–1).
   anchors: {
-    number: { x: 0.5, y: 0.42, size: 120 },
-    name: { x: 0.5, y: 0.30, size: 40 },
+    number: { x: 0.5, y: 0.46, size: 120 },
+    name: { x: 0.5, y: 0.31, size: 40 },
   },
 };
 
@@ -52,22 +55,22 @@ const JERSEY_BACK = {
   viewBox: '0 0 400 480',
   zones: [
     { id: 'body', label: 'Body',
-      d: 'M150 122 L170 106 Q200 120 230 106 L250 122 L250 430 L150 430 Z' },
+      d: 'M150 120 Q138 142 146 200 Q140 322 152 432 Q200 448 248 432 Q260 322 254 200 Q262 142 250 120 Q224 130 200 134 Q176 130 150 120 Z' },
     { id: 'sidePanelL', label: 'Left Side Panel',
-      d: 'M150 178 L174 202 L174 430 L150 430 Z' },
+      d: 'M146 202 Q140 322 152 432 L170 432 Q160 322 166 206 Z' },
     { id: 'sidePanelR', label: 'Right Side Panel',
-      d: 'M250 178 L226 202 L226 430 L250 430 Z' },
+      d: 'M254 202 Q260 322 248 432 L230 432 Q240 322 234 206 Z' },
     { id: 'yoke', label: 'Shoulder Yoke',
-      d: 'M150 122 L250 122 L250 148 Q200 160 150 148 Z' },
+      d: 'M150 120 Q200 136 250 120 Q259 140 250 158 Q200 170 150 158 Q141 140 150 120 Z' },
     { id: 'sleeveL', label: 'Left Sleeve',
-      d: 'M150 122 L104 150 L112 200 L150 178 Z' },
+      d: 'M150 122 Q128 132 120 160 Q114 186 122 208 L150 200 Q142 152 150 122 Z' },
     { id: 'sleeveR', label: 'Right Sleeve',
-      d: 'M250 122 L296 150 L288 200 L250 178 Z' },
+      d: 'M250 122 Q272 132 280 160 Q286 186 278 208 L250 200 Q258 152 250 122 Z' },
     { id: 'collar', label: 'Collar',
-      d: 'M168 106 Q200 120 232 106 L230 116 Q200 128 170 116 Z' },
+      d: 'M172 122 Q200 140 228 122 L230 132 Q200 150 170 132 Z' },
   ],
   seams: [
-    seam('M150 178 L174 202 L174 430'), seam('M250 178 L226 202 L226 430'),
+    seam('M148 200 Q140 322 152 432'), seam('M252 200 Q260 322 248 432'),
   ],
   anchors: {
     name: { x: 0.5, y: 0.30, size: 46 },

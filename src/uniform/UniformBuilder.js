@@ -156,8 +156,18 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
         {defs}
         <clipPath id="silo"><path d={silD} /></clipPath>
         <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx="0" dy="6" stdDeviation="6" floodColor="#0F1A38" floodOpacity="0.28" />
+          <feDropShadow dx="0" dy="10" stdDeviation="9" floodColor="#0F1A38" floodOpacity="0.22" />
         </filter>
+        {/* Volumetric shading: darkened edges (ambient occlusion) + top sheen give
+            the flat vector a sense of body/fabric without any raster assets. */}
+        <radialGradient id="uAO" cx="50%" cy="40%" r="62%">
+          <stop offset="52%" stopColor="#000000" stopOpacity="0" />
+          <stop offset="100%" stopColor="#000000" stopOpacity="0.42" />
+        </radialGradient>
+        <linearGradient id="uHi" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#ffffff" stopOpacity="0.5" />
+          <stop offset="0.3" stopColor="#ffffff" stopOpacity="0" />
+        </linearGradient>
       </defs>
       {/* shadow pass */}
       <path d={silD} fill="#ffffff" filter="url(#soft)" />
@@ -168,6 +178,11 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
       ))}
       {/* fabric texture */}
       {fabricFill && <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill={fabricFill} clipPath="url(#silo)" pointerEvents="none" />}
+      {/* volumetric shading (clipped to the garment) */}
+      <g clipPath="url(#silo)" pointerEvents="none">
+        <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill="url(#uAO)" style={{ mixBlendMode: 'multiply' }} />
+        <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill="url(#uHi)" style={{ mixBlendMode: 'soft-light' }} />
+      </g>
       {/* seams */}
       {(v.seams || []).map((s, i) => <path key={i} d={s.d} fill="none" stroke="rgba(15,26,56,0.32)" strokeWidth="1.2" pointerEvents="none" />)}
       {/* edge */}
@@ -418,8 +433,8 @@ export default function UniformBuilder({ onExit }) {
             <button style={btn(false)} onClick={exportProof}>⤓ Proof PNG</button>
             <button style={cta} onClick={exportPDF}>Production PDF</button>
           </div>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, minHeight: 0, background: 'radial-gradient(circle at 50% 35%, #fff 0%, ' + NSA.light + ' 100%)' }}>
-            <div style={{ height: '100%', maxHeight: 620, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, minHeight: 0, background: '#ffffff' }}>
+            <div style={{ height: '100%', maxHeight: 720, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
               <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
                 selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />
             </div>

@@ -194,6 +194,23 @@ export function renderUniform(canvas, spec, opts = {}) {
     ctx.restore();
   }
 
+  // Volumetric shading: ambient-occlusion at the edges + a top sheen, clipped to
+  // the garment — matches the SVG editor's #uAO/#uHi overlays.
+  ctx.save();
+  ctx.clip(sil);
+  const ao = ctx.createRadialGradient(vb.x + vb.w * 0.5, vb.y + vb.h * 0.4, vb.w * 0.12, vb.x + vb.w * 0.5, vb.y + vb.h * 0.4, vb.h * 0.62);
+  ao.addColorStop(0.52, 'rgba(0,0,0,0)');
+  ao.addColorStop(1, 'rgba(0,0,0,0.42)');
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = ao; ctx.fillRect(vb.x, vb.y, vb.w, vb.h);
+  const hi = ctx.createLinearGradient(0, vb.y, 0, vb.y + vb.h * 0.3);
+  hi.addColorStop(0, 'rgba(255,255,255,0.42)');
+  hi.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = hi; ctx.fillRect(vb.x, vb.y, vb.w, vb.h);
+  ctx.restore();
+  ctx.globalCompositeOperation = 'source-over';
+
   // Seams.
   ctx.strokeStyle = 'rgba(15,26,56,0.32)';
   ctx.lineWidth = 1.2;
