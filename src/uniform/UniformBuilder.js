@@ -18,6 +18,8 @@ import { makePatternTile, makeFabricOverlay } from './patterns';
 import { renderToDataURL, renderProductionSheet, renderProductionPDF, renderUniform } from './renderCanvas';
 import { makeRasterTemplate, RASTER_ZONE_MAP, loadImage, preloadRasterAssets, zoneAtPoint } from './raster';
 import * as ds from './designSpec';
+// Lazy — three.js is heavy, only loads when the 3D tab is opened.
+const Viewer3D = React.lazy(() => import('./Viewer3D'));
 
 // ── palette / tiny style kit (mirrors the app's NSA design tokens) ───────────
 const NSA = {
@@ -338,6 +340,8 @@ export default function UniformBuilder({ onExit }) {
   const [flash, setFlash] = useState('');
   const [showPhotoreal, setShowPhotoreal] = useState(false);
   const [prFiles, setPrFiles] = useState({});
+  const [view3d, setView3d] = useState(false); // live 3D preview toggle
+  const [spin, setSpin] = useState(true);
   const svgRef = useRef(null);
   const historyRef = useRef([]);
   const fileRef = useRef(null);
@@ -592,8 +596,10 @@ export default function UniformBuilder({ onExit }) {
         {/* ── center stage ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderBottom: '1px solid ' + NSA.light, background: '#fff' }}>
-            <button style={btn(view === 'front')} onClick={() => setView('front')}>Front</button>
-            <button style={btn(view === 'back')} onClick={() => setView('back')}>Back</button>
+            <button style={btn(!view3d && view === 'front')} onClick={() => { setView3d(false); setView('front'); }}>Front</button>
+            <button style={btn(!view3d && view === 'back')} onClick={() => { setView3d(false); setView('back'); }}>Back</button>
+            {tpl.model3d && <button style={btn(view3d)} onClick={() => setView3d(true)}>◈ 3D</button>}
+            {view3d && <button style={{ ...btn(spin), fontSize: 12 }} onClick={() => setSpin((s) => !s)}>⟳ Spin</button>}
             <div style={{ flex: 1 }} />
             <button style={btn(false)} onClick={exportPNG}>⤓ PNG</button>
             {tpl.type !== 'raster' && <button style={btn(false)} onClick={exportSVG}>⤓ SVG</button>}
@@ -601,14 +607,18 @@ export default function UniformBuilder({ onExit }) {
             <button style={btn(false)} onClick={exportProof}>⤓ Proof PNG</button>
             <button style={cta} onClick={exportPDF}>Production PDF</button>
           </div>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, minHeight: 0, background: '#ffffff' }}>
-            <div style={{ height: '100%', maxHeight: 720, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
-              {tpl.type === 'raster'
-                ? <RasterStage spec={spec} view={view} onSelectZone={selectZone}
-                    selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onDragText={dragText} />
-                : <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
-                    selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />}
-            </div>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: view3d ? 0 : 40, minHeight: 0, background: '#ffffff' }}>
+            {view3d && tpl.model3d
+              ? <React.Suspense fallback={<div style={{ color: NSA.textLight, fontSize: 14 }}>Loading 3D…</div>}>
+                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} />
+                </React.Suspense>
+              : <div style={{ height: '100%', maxHeight: 720, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
+                  {tpl.type === 'raster'
+                    ? <RasterStage spec={spec} view={view} onSelectZone={selectZone}
+                        selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onDragText={dragText} />
+                    : <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
+                        selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />}
+                </div>}
           </div>
           {(busy || flash) && (
             <div style={{ padding: '8px 16px', background: busy ? NSA.navy : NSA.green, color: '#fff', fontSize: 13, fontWeight: 600 }}>{busy || flash}</div>

@@ -188,6 +188,9 @@ const TEMPLATES = {
   octa_jersey: {
     id: 'octa_jersey', name: 'Photoreal Jersey', category: 'Photoreal', type: 'raster',
     credit: '3D model “Octa Asa 6” by Sebastian Zayas — CC BY',
+    // Live 3D model (GLB, Draco-compressed) — meshes named by zone so the viewer
+    // recolors each section. Vendor-delivered garments plug in here the same way.
+    model3d: PUB('/uniform/octa-jersey.glb'),
     views: {
       front: {
         base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
