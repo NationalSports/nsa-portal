@@ -376,10 +376,18 @@ export default function Storefront() {
   if (status === 'error') return <Splash>Something went wrong.<div style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>{errMsg}</div></Splash>;
 
   const isOpen = store.status === 'open';
+  // Bifurcate by roster position: a positioned player (e.g. goalkeeper) sees only
+  // items tagged for everyone ('all') or their position; guests and unassigned
+  // players see the full catalog and self-select. Everything downstream — the
+  // category nav, browse grid, hero, and direct product/package links — reads
+  // from this filtered list so the store is consistently scoped to the player.
+  const shownProducts = (playerCtx && playerCtx.position)
+    ? products.filter((p) => { const a = (p.roster_audience || 'all'); return a === 'all' || a === playerCtx.position; })
+    : products;
   // Category list for the sub-nav: ordered by the builder's sort order, "All Gear" first.
   const categories = (() => {
     const seen = new Map();
-    for (const p of groupProducts(products)) {
+    for (const p of groupProducts(shownProducts)) {
       const c = (p.rep.store_category || '').trim();
       if (!c) continue;
       if (!seen.has(c)) seen.set(c, p.rep.sort_order || 0);
@@ -399,13 +407,13 @@ export default function Storefront() {
       {!isOpen && <PreviewBanner status={store.status} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
-          const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
+          const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
@@ -513,12 +521,14 @@ function PreviewBanner({ status }) {
 // tells them personalization is prefilled, and offers an escape hatch if the
 // wrong person is at the keyboard (a parent ordering for a different kid).
 function PlayerBanner({ player, theme, onClear }) {
+  const posLabel = player.position === 'gk' ? 'Goalkeeper' : player.position === 'field' ? 'Field player' : '';
   const label = [player.player_name, player.player_number ? '#' + player.player_number : ''].filter(Boolean).join(' ');
   return (
     <div style={{ background: theme.ink, color: '#fff', padding: '9px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap', fontSize: 14 }}>
       <span style={{ fontWeight: 700 }}>
         {player.ordered ? '✓ ' : '👟 '}
         You’re shopping for <span style={{ color: theme.accent }}>{label || 'your player'}</span>
+        {posLabel ? <span style={{ opacity: 0.85, fontWeight: 600 }}> · {posLabel} kit</span> : null}
         {player.ordered ? ' — already ordered (you can order again).' : '. Name & number are filled in for you.'}
       </span>
       <button onClick={onClear} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.5)', color: '#fff', borderRadius: 4, padding: '3px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 0.5 }}>

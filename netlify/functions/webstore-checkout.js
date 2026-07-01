@@ -605,11 +605,19 @@ async function rosterLookup(sb, body) {
   const store = stores && stores[0];
   if (!store) return bad(404, 'Store not found');
   const { data: rows, error } = await sb.from('webstore_roster')
-    .select('player_name,player_number,ordered').eq('store_id', store.id).eq('token', tok).limit(1);
+    .select('id,player_name,player_number,position,ordered,open_count,first_opened_at').eq('store_id', store.id).eq('token', tok).limit(1);
   if (error) return bad(500, error.message);
   const p = rows && rows[0];
   if (!p) return bad(404, 'This player link is not valid for this store.', { code: 'roster_not_found' });
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ player: { player_name: p.player_name, player_number: p.player_number || null, ordered: !!p.ordered } }) };
+  // Record the open — first + last seen, and a running count. Best-effort: a
+  // tracking hiccup must not break the shopper's page load.
+  try {
+    const now = new Date().toISOString();
+    await sb.from('webstore_roster')
+      .update({ last_opened_at: now, first_opened_at: p.first_opened_at || now, open_count: (Number(p.open_count) || 0) + 1 })
+      .eq('id', p.id);
+  } catch (e) { console.warn('[webstore-checkout] roster open-tracking failed:', e.message); }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ player: { player_name: p.player_name, player_number: p.player_number || null, position: p.position || null, ordered: !!p.ordered } }) };
 }
 
 // Mark the roster player behind `token` as ordered and link their order. Never
