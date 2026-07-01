@@ -25,6 +25,14 @@
   <meta name="twitter:description" content="Custom team apparel, spirit wear, and coach team stores — designed, decorated, and delivered." />
   <meta name="twitter:image" content="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png" />
 
+  <!-- Athletic/jersey webfonts for the Uniform Builder (src/uniform/fonts.js).
+       Loaded here so both the on-screen SVG editor and the Canvas production
+       export share the same faces. display=swap keeps the app painting while
+       fonts fetch. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Bebas+Neue&family=Saira+Condensed:wght@700&family=Oswald:wght@600&family=Graduate&family=Squada+One&family=Rye&family=Pirata+One&family=Pacifico&family=Baloo+2:wght@800&display=swap" rel="stylesheet" />
+
   <link rel="icon" href="%PUBLIC_URL%/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" sizes="32x32" href="%PUBLIC_URL%/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="%PUBLIC_URL%/favicon-16x16.png" />
