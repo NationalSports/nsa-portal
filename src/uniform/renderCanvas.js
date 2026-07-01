@@ -15,6 +15,7 @@ import { makePatternTile, makeFabricOverlay } from './patterns';
 import { fontShorthand, ensureFontsReady } from './fonts';
 import { getTemplate } from './templates';
 import * as ds from './designSpec';
+import { preloadRasterAssets, compositeRaster } from './raster';
 
 function parseViewBox(vb) {
   const [x, y, w, h] = String(vb).split(/[\s,]+/).map(Number);
@@ -150,6 +151,23 @@ export function renderUniform(canvas, spec, opts = {}) {
     ctx.fillRect(0, 0, width, height);
   }
 
+  // Photoreal path: composite tinted zones onto the base render, then draw logos
+  // and lettering on top (in viewBox/image space). Assets must be preloaded by
+  // the caller (the async export wrappers and the editor both do this).
+  if (tpl.type === 'raster') {
+    if (opts.assets) compositeRaster(ctx, view, spec, opts.assets, width, height);
+    ctx.save();
+    ctx.scale(s, s);
+    drawLogos(ctx, (spec.logos && spec.logos[viewName]) || [], opts.images, vb);
+    if (opts.showText !== false) {
+      const t = spec.text[viewName] || {};
+      if (t.name) drawText(ctx, { ...t.name, _role: 'name' }, view, vb);
+      if (t.number) drawText(ctx, { ...t.number, _role: 'number' }, view, vb);
+    }
+    ctx.restore();
+    return { width, height };
+  }
+
   ctx.save();
   ctx.scale(s, s);
   ctx.translate(-vb.x, -vb.y);
@@ -240,9 +258,13 @@ export function renderUniform(canvas, spec, opts = {}) {
 // webfonts first so the export never captures a fallback face.
 export async function renderToDataURL(spec, opts = {}) {
   await ensureFontsReady();
-  const images = await preloadLogos(ds.normalizeSpec(spec));
+  const nspec = ds.normalizeSpec(spec);
+  const images = await preloadLogos(nspec);
+  const tpl = getTemplate(nspec.garmentId);
+  const view = tpl.views[opts.view || 'front'] || tpl.views.front;
+  const assets = tpl.type === 'raster' ? await preloadRasterAssets(view) : undefined;
   const canvas = document.createElement('canvas');
-  renderUniform(canvas, spec, { ...opts, images });
+  renderUniform(canvas, spec, { ...opts, images, assets });
   return canvas.toDataURL('image/png');
 }
 
@@ -250,12 +272,16 @@ export async function renderToDataURL(spec, opts = {}) {
 // prints from. Includes a small colorway legend strip beneath each side.
 export async function renderProductionSheet(spec, opts = {}) {
   await ensureFontsReady();
-  const images = await preloadLogos(ds.normalizeSpec(spec));
+  const nspec = ds.normalizeSpec(spec);
+  const images = await preloadLogos(nspec);
+  const tpl = getTemplate(nspec.garmentId);
+  const assetsF = tpl.type === 'raster' ? await preloadRasterAssets(tpl.views.front) : undefined;
+  const assetsB = tpl.type === 'raster' ? await preloadRasterAssets(tpl.views.back) : undefined;
   const per = opts.width || 700;
   const front = document.createElement('canvas');
   const back = document.createElement('canvas');
-  const f = renderUniform(front, spec, { ...opts, images, view: 'front', width: per, background: '#ffffff' });
-  const b = renderUniform(back, spec, { ...opts, images, view: 'back', width: per, background: '#ffffff' });
+  const f = renderUniform(front, spec, { ...opts, images, assets: assetsF, view: 'front', width: per, background: '#ffffff' });
+  const b = renderUniform(back, spec, { ...opts, images, assets: assetsB, view: 'back', width: per, background: '#ffffff' });
 
   const pad = 40; const gap = 40; const headH = 70;
   const out = document.createElement('canvas');
@@ -268,7 +294,6 @@ export async function renderProductionSheet(spec, opts = {}) {
   ctx.fillStyle = '#192853';
   ctx.font = "700 30px 'Saira Condensed', Arial, sans-serif";
   ctx.textBaseline = 'middle';
-  const tpl = getTemplate(ds.normalizeSpec(spec).garmentId);
   ctx.fillText(`${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name}`, pad, headH / 2);
   ctx.font = "400 16px Arial, sans-serif";
   ctx.fillStyle = '#5A6075';

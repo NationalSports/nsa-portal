@@ -13,9 +13,10 @@
 
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { listTemplates, getTemplate, registerTemplate, parseUploadedSvg } from './templates';
-import { FONTS, fontStack, fontWeight } from './fonts';
+import { FONTS, fontStack, fontWeight, fontShorthand } from './fonts';
 import { makePatternTile, makeFabricOverlay } from './patterns';
-import { renderToDataURL, renderProductionSheet, renderProductionPDF } from './renderCanvas';
+import { renderToDataURL, renderProductionSheet, renderProductionPDF, renderUniform } from './renderCanvas';
+import { makeRasterTemplate, RASTER_ZONE_MAP, loadImage, preloadRasterAssets, zoneAtPoint } from './raster';
 import * as ds from './designSpec';
 
 // ── palette / tiny style kit (mirrors the app's NSA design tokens) ───────────
@@ -198,6 +199,93 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
   );
 }
 
+// ── photoreal (raster) stage ─────────────────────────────────────────────────
+// Renders a composited garment onto a <canvas> and mirrors the SVG editor's
+// interactions: click a zone (hit-tested against the ID mask) to select it, and
+// drag the number / name / a selected logo to reposition. Colors, patterns,
+// fonts, and exports all flow through the same design spec.
+function RasterStage({ spec, view, onSelectZone, selectedLogoId, onSelectLogo, onDragLogo, onDragText }) {
+  const canvasRef = useRef(null);
+  const [assets, setAssets] = useState(null);
+  const [logoImgs, setLogoImgs] = useState({});
+  const dragRef = useRef(null);
+  const measureRef = useRef(null);
+  const tpl = getTemplate(spec.garmentId);
+  const v = tpl.views[view] || tpl.views.front;
+  const vb = { x: 0, y: 0, w: v.w, h: v.h };
+
+  useEffect(() => { let alive = true; setAssets(null); preloadRasterAssets(v).then((a) => { if (alive) setAssets(a); }); return () => { alive = false; }; }, [spec.garmentId, view]); // eslint-disable-line
+  useEffect(() => {
+    let alive = true;
+    const logos = spec.logos[view] || [];
+    Promise.all(logos.map(async (l) => [l.id, await loadImage(l.src)])).then((pairs) => { if (alive) setLogoImgs(Object.fromEntries(pairs)); });
+    return () => { alive = false; };
+  }, [spec.logos, view]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !assets) return;
+    renderUniform(canvas, spec, { view, width: 900, assets, images: logoImgs, background: 'transparent' });
+  }, [spec, view, assets, logoImgs]);
+
+  const clientToFrac = (e) => {
+    const c = canvasRef.current; if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return { x: ds.clamp((e.clientX - r.left) / r.width, 0, 1), y: ds.clamp((e.clientY - r.top) / r.height, 0, 1) };
+  };
+  // Which draggable (text/logo) is under the point, else null.
+  const pick = (f) => {
+    const px = f.x * vb.w, py = f.y * vb.h;
+    const t = spec.text[view] || {};
+    if (!measureRef.current) measureRef.current = document.createElement('canvas').getContext('2d');
+    const mx = measureRef.current;
+    for (const role of ['number', 'name']) {
+      const el = t[role]; if (!el || !(el.value || '').trim()) continue;
+      const anchor = v.anchors[role] || { x: 0.5, y: 0.45, size: 100 };
+      const cx = (Number.isFinite(el.x) ? el.x : anchor.x) * vb.w;
+      const cy = (Number.isFinite(el.y) ? el.y : anchor.y) * vb.h;
+      const size = anchor.size * (el.size || 1);
+      mx.font = fontShorthand(el.font, size);
+      const w = mx.measureText(el.value).width;
+      if (Math.abs(px - cx) < w / 2 + 6 && Math.abs(py - cy) < size / 2 + 6) return { kind: 'text', role };
+    }
+    for (const l of [...(spec.logos[view] || [])].reverse()) {
+      const cx = l.x * vb.w, cy = l.y * vb.h, w = l.w * vb.w, h = w * (l.aspect || 1);
+      if (Math.abs(px - cx) < w / 2 && Math.abs(py - cy) < h / 2) return { kind: 'logo', id: l.id };
+    }
+    return null;
+  };
+  const onDown = (e) => {
+    const f = clientToFrac(e); if (!f) return;
+    const hit = pick(f);
+    if (hit && hit.kind === 'logo') { onSelectLogo(hit.id); dragRef.current = hit; return; }
+    if (hit && hit.kind === 'text') { dragRef.current = hit; return; }
+    const zid = assets ? zoneAtPoint(v, assets, f.x, f.y) : null;
+    if (zid) onSelectZone(zid);
+  };
+  const onMove = (e) => {
+    const d = dragRef.current; if (!d) return;
+    const f = clientToFrac(e); if (!f) return;
+    if (d.kind === 'logo') onDragLogo(d.id, f); else onDragText(d.role, f);
+  };
+  const end = () => { dragRef.current = null; };
+
+  const sel = (spec.logos[view] || []).find((l) => l.id === selectedLogoId);
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={end} onPointerLeave={end}
+        style={{ maxWidth: '100%', maxHeight: '100%', touchAction: 'none', filter: 'drop-shadow(0 12px 14px rgba(15,26,56,0.22))' }} />
+      {/* selected-logo outline overlay */}
+      {sel && (
+        <svg viewBox={`0 0 ${vb.w} ${vb.h}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} preserveAspectRatio="xMidYMid meet">
+          <rect x={sel.x * vb.w - (sel.w * vb.w) / 2} y={sel.y * vb.h - (sel.w * vb.w * (sel.aspect || 1)) / 2}
+            width={sel.w * vb.w} height={sel.w * vb.w * (sel.aspect || 1)} fill="none" stroke={NSA.redBright} strokeWidth="3" strokeDasharray="6 4" />
+        </svg>
+      )}
+    </div>
+  );
+}
+
 // ── swatch chip ──────────────────────────────────────────────────────────────
 const Swatch = ({ hex, size = 22, active, onClick, title }) => (
   <button type="button" title={title} onClick={onClick}
@@ -229,6 +317,8 @@ export default function UniformBuilder({ onExit }) {
   const [saved, setSaved] = useState(() => loadSaved());
   const [busy, setBusy] = useState('');
   const [flash, setFlash] = useState('');
+  const [showPhotoreal, setShowPhotoreal] = useState(false);
+  const [prFiles, setPrFiles] = useState({});
   const svgRef = useRef(null);
   const historyRef = useRef([]);
   const fileRef = useRef(null);
@@ -331,6 +421,30 @@ export default function UniformBuilder({ onExit }) {
     } catch (_e) { flashMsg('Upload failed.'); }
   };
 
+  // ── photoreal (raster) template import ───────────────────────────────────────
+  const readImg = (file) => new Promise((res, rej) => {
+    if (!file) { res(null); return; }
+    const fr = new FileReader();
+    fr.onload = () => { const src = fr.result; const im = new Image(); im.onload = () => res({ src, w: im.naturalWidth, h: im.naturalHeight }); im.onerror = () => rej(new Error('bad image')); im.src = src; };
+    fr.onerror = rej; fr.readAsDataURL(file);
+  });
+  const createPhotoreal = async () => {
+    if (!prFiles.baseF || !prFiles.maskF) { flashMsg('Front base + mask images are required.'); return; }
+    setBusy('Importing photoreal template…');
+    try {
+      const bF = await readImg(prFiles.baseF), mF = await readImg(prFiles.maskF);
+      const bB = await readImg(prFiles.baseB), mB = await readImg(prFiles.maskB);
+      const front = { base: bF.src, mask: mF.src, w: bF.w, h: bF.h };
+      const back = (bB && mB) ? { base: bB.src, mask: mB.src, w: bB.w, h: bB.h } : front;
+      const id = 'photoreal_' + Date.now();
+      const t = makeRasterTemplate(id, prFiles.name || 'Photoreal Jersey', front, back);
+      registerTemplate(t); setTemplates(listTemplates());
+      setGarment(id);
+      setShowPhotoreal(false); setPrFiles({});
+      flashMsg('Photoreal template added — tap zones to color it');
+    } catch (_e) { flashMsg('Import failed — check the images.'); } finally { setBusy(''); }
+  };
+
   // ── exports ──────────────────────────────────────────────────────────────────
   const exportPNG = async () => {
     setBusy('Rendering PNG…');
@@ -376,6 +490,39 @@ export default function UniformBuilder({ onExit }) {
   // ── render ───────────────────────────────────────────────────────────────────
   return (
     <div style={{ position: 'fixed', inset: 0, background: NSA.offWhite, display: 'flex', flexDirection: 'column', fontFamily: F_BODY, color: NSA.text, zIndex: 50 }}>
+      {/* photoreal template import modal */}
+      {showPhotoreal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,26,56,0.55)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={() => setShowPhotoreal(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, width: 580, maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
+            <div style={{ fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: NSA.navy }}>Add Photoreal Template</div>
+            <div style={{ fontSize: 13, color: NSA.textLight, margin: '8px 0 16px', lineHeight: 1.5 }}>
+              Upload a <b>base render</b> (garment in one neutral gray, keeping real fabric, folds &amp; shadows) and a <b>zone mask</b> (each zone a flat solid color). Your picked colors get tinted <i>through</i> the base, so it looks real. Produce these in Blender/CLO or a layered mockup PSD, using the color convention below.
+            </div>
+            <div style={railLabel}>Mask color convention</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+              {RASTER_ZONE_MAP.map((z) => (
+                <div key={z.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                  <span style={{ width: 14, height: 14, borderRadius: 3, background: z.maskColor, border: '1px solid rgba(0,0,0,0.2)' }} />{z.label} <code style={{ color: NSA.textMuted }}>{z.maskColor}</code>
+                </div>
+              ))}
+            </div>
+            <input style={{ ...field, marginBottom: 12 }} placeholder="Template name (e.g. Adizero Jersey)" value={prFiles.name || ''} onChange={(e) => setPrFiles((p) => ({ ...p, name: e.target.value }))} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {[['baseF', 'Front — Base render *'], ['maskF', 'Front — Zone mask *'], ['baseB', 'Back — Base render'], ['maskB', 'Back — Zone mask']].map(([k, label]) => (
+                <label key={k} style={{ fontSize: 12, color: NSA.textLight }}>
+                  {label}
+                  <input type="file" accept="image/*" style={{ display: 'block', marginTop: 4, fontSize: 11 }} onChange={(e) => setPrFiles((p) => ({ ...p, [k]: e.target.files[0] }))} />
+                  {prFiles[k] && <span style={{ color: NSA.green, fontSize: 11 }}>✓ {prFiles[k].name}</span>}
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+              <button style={btn(false)} onClick={() => { setShowPhotoreal(false); setPrFiles({}); }}>Cancel</button>
+              <button style={cta} onClick={createPhotoreal}>Create Template</button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* top bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: NSA.navy, color: '#fff', flexShrink: 0 }}>
         <div style={{ fontFamily: F_DISPLAY, fontWeight: 800, fontSize: 22, letterSpacing: .5, textTransform: 'uppercase' }}>Uniform Builder</div>
@@ -398,6 +545,7 @@ export default function UniformBuilder({ onExit }) {
           </div>
           <input ref={fileRef} type="file" accept="image/svg+xml,.svg" style={{ display: 'none' }} onChange={(e) => { onUploadSvg(e.target.files[0]); e.target.value = ''; }} />
           <button style={{ ...btn(false), width: '100%', marginTop: 8, fontSize: 12 }} onClick={() => fileRef.current && fileRef.current.click()}>⭱ Upload SVG Template</button>
+          <button style={{ ...btn(false), width: '100%', marginTop: 6, fontSize: 12, borderColor: NSA.red, color: NSA.red }} onClick={() => setShowPhotoreal(true)}>✦ Photoreal (Beta)</button>
 
           <div style={{ ...railLabel, marginTop: 20 }}>Fabric</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -428,15 +576,18 @@ export default function UniformBuilder({ onExit }) {
             <button style={btn(view === 'back')} onClick={() => setView('back')}>Back</button>
             <div style={{ flex: 1 }} />
             <button style={btn(false)} onClick={exportPNG}>⤓ PNG</button>
-            <button style={btn(false)} onClick={exportSVG}>⤓ SVG</button>
+            {tpl.type !== 'raster' && <button style={btn(false)} onClick={exportSVG}>⤓ SVG</button>}
             <button style={btn(false)} onClick={exportSpec}>⤓ Spec</button>
             <button style={btn(false)} onClick={exportProof}>⤓ Proof PNG</button>
             <button style={cta} onClick={exportPDF}>Production PDF</button>
           </div>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, minHeight: 0, background: '#ffffff' }}>
             <div style={{ height: '100%', maxHeight: 720, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
-              <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
-                selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />
+              {tpl.type === 'raster'
+                ? <RasterStage spec={spec} view={view} onSelectZone={selectZone}
+                    selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onDragText={dragText} />
+                : <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
+                    selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />}
             </div>
           </div>
           {(busy || flash) && (
