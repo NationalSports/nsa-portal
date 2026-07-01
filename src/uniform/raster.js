@@ -47,30 +47,28 @@ function newCanvas(w, h) {
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
 
-// Build a per-zone alpha mask (white where the ID map matches the zone's color)
-// plus keep the raw mask ImageData for click hit-testing. tol is squared-RGB.
-function computeZoneAlpha(maskImg, zones, w, h, tol = 60) {
+// Build a per-zone alpha mask from the ID map. Every garment pixel (mask alpha
+// present) is assigned to its NEAREST zone color — winner-take-all — so there are
+// no unassigned pixels at anti-aliased zone/silhouette edges (which used to show
+// as speckles/gaps). Also returns the raw mask ImageData for click hit-testing.
+function computeZoneAlpha(maskImg, zones, w, h) {
   const mc = newCanvas(w, h);
   const mx = mc.getContext('2d', { willReadFrequently: true });
   mx.drawImage(maskImg, 0, 0, w, h);
   const md = mx.getImageData(0, 0, w, h);
   const data = md.data;
-  const zoneAlpha = {};
-  const t2 = tol * tol;
-  for (const z of zones) {
-    const { r, g, b } = ds.hexToRgb(z.maskColor);
-    const a = newCanvas(w, h);
-    const ax = a.getContext('2d');
-    const id = ax.createImageData(w, h);
-    const od = id.data;
-    let hits = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const dr = data[i] - r, dg = data[i + 1] - g, db = data[i + 2] - b;
-      if (dr * dr + dg * dg + db * db < t2) { od[i] = od[i + 1] = od[i + 2] = od[i + 3] = 255; hits++; }
-    }
-    ax.putImageData(id, 0, 0);
-    if (hits) zoneAlpha[z.id] = a; // skip zones absent from this garment's mask
+  const zc = zones.map((z) => ({ id: z.id, ...ds.hexToRgb(z.maskColor) }));
+  const bufs = {};
+  for (const z of zones) { const a = newCanvas(w, h); const ctx = a.getContext('2d'); bufs[z.id] = { canvas: a, ctx, img: ctx.createImageData(w, h), any: false }; }
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue; // transparent background -> no zone
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    let best = null, bestD = Infinity;
+    for (const z of zc) { const dr = r - z.r, dg = g - z.g, db = b - z.b; const dd = dr * dr + dg * dg + db * db; if (dd < bestD) { bestD = dd; best = z.id; } }
+    if (best != null) { const buf = bufs[best]; const od = buf.img.data; od[i] = od[i + 1] = od[i + 2] = od[i + 3] = 255; buf.any = true; }
   }
+  const zoneAlpha = {};
+  for (const z of zones) { const buf = bufs[z.id]; if (buf.any) { buf.ctx.putImageData(buf.img, 0, 0); zoneAlpha[z.id] = buf.canvas; } }
   return { zoneAlpha, maskData: md };
 }
 
