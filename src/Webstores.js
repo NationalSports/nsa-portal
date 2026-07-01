@@ -3020,6 +3020,9 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
       {/* ══════════ TEMPLATES VIEW ══════════ */}
       {view === 'templates' && (
         <>
+          <TemplateManager REPS={REPS} />
+
+          <div style={{ borderTop: '1px solid #E5E9F0', margin: '38px 0 26px' }} />
           <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
           <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
@@ -3062,9 +3065,6 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
               <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
             )}
           </div>
-
-          <div style={{ borderTop: '1px solid #E5E9F0', margin: '34px 0 24px' }} />
-          <TemplateManager REPS={REPS} />
         </>
       )}
 
@@ -6579,11 +6579,8 @@ function TemplateManager({ REPS = [] }) {
     <div style={{ marginBottom: 34 }}>
       {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={myEmail} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
       {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} />}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-        <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px' }}>Item Templates</div>
-        <button className="btn btn-sm btn-primary" onClick={() => setBuilder('new')}>＋ Create Template</button>
-      </div>
-      <div style={{ marginBottom: 14, fontSize: 13.5, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Reusable sets of items. Build one here, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Item Templates</div>
+      <div style={{ marginBottom: 16, fontSize: 15, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Build a reusable set of items from the catalog, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
 
       {(hasGeneral || repChips.length > 0) && (
         <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
@@ -6594,14 +6591,18 @@ function TemplateManager({ REPS = [] }) {
         </div>
       )}
 
-      {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
-        : shown.length === 0 ? (
-          <div style={{ padding: '22px 16px', fontSize: 14, color: '#8A93A8', background: '#fff', border: '1px dashed #DBE0E8', borderRadius: 10 }}>
-            {templates.length === 0 ? 'No item templates yet. Click “＋ Create Template” to build one.' : 'No templates for this owner.'}
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
-            {shown.map((t) => (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
+            {/* Build a Template — the primary action: opens the catalog picker */}
+            <button onClick={() => setBuilder('new')} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 12, padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 168, gap: 10, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 18, color: '#192853', letterSpacing: '.5px' }}>Build a Template</div>
+              <div style={{ fontSize: 12.5 }}>Pick items from the catalog</div>
+            </button>
+            {loading ? <div style={{ gridColumn: '1/-1', color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
+              : shown.length === 0 ? <div style={{ gridColumn: '1/-1', color: '#8A93A8', fontSize: 13.5, padding: '18px 4px' }}>{templates.length === 0 ? 'No item templates yet — click “Build a Template” to create your first one.' : 'No templates for this owner.'}</div>
+              : shown.map((t) => (
               <div key={t.id} onClick={() => setViewing(t)} title="View items" style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff', cursor: 'pointer' }}>
                 <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
@@ -6618,8 +6619,7 @@ function TemplateManager({ REPS = [] }) {
                 </div>
               </div>
             ))}
-          </div>
-        )}
+      </div>
     </div>
   );
 }
