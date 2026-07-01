@@ -68,14 +68,22 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const doSubmit = async () => {
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
+    let r;
     try {
-      const r = await momentecSubmitOrder(built.order, env);
-      setResult(r); setSubmitState('success');
-      // Only a LIVE (prod) order should mark the batch as ordered; stage validates only.
-      if (live) onSubmitted && onSubmitted(r);
+      r = await momentecSubmitOrder(built.order, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on momentecbrands.com.');
       setSubmitState('error');
+      return;
+    }
+    // Momentec accepted the order — success regardless of local bookkeeping.
+    setResult(r); setSubmitState('success');
+    // Only a LIVE (prod) order should mark the batch as ordered; stage validates only.
+    // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order.
+    try {
+      if (live) onSubmitted && onSubmitted(r);
+    } catch (e) {
+      console.error('[Momentec] order placed but post-order bookkeeping failed:', e);
     }
   };
 
