@@ -3020,8 +3020,6 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
       {/* ══════════ TEMPLATES VIEW ══════════ */}
       {view === 'templates' && (
         <>
-          <TemplateManager REPS={REPS} />
-
           <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
           <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
@@ -3064,6 +3062,9 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
               <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
             )}
           </div>
+
+          <div style={{ borderTop: '1px solid #E5E9F0', margin: '34px 0 24px' }} />
+          <TemplateManager REPS={REPS} />
         </>
       )}
 
@@ -6396,27 +6397,10 @@ function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         <div style={{ padding: 16 }}>
-          {/* Template details */}
+          {/* Lead: name the template, then jump straight into the catalog finder */}
           <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              {[['store', 'Full store', 'Bolt every item onto a store'], ['section', 'Section', 'A bolt-on section, e.g. Football Cleats']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
-                <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
-                  <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
-                </button>
-              ); })}
-            </div>
-            {isSection && (
-              <div style={{ marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
-                <Row label="Section name (every item lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={isSection ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
-              <Row label="Sport"><input className="form-input" list="tplb-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tplb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
-              <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
-              <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
-            </div>
+            <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={isSection ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
+            <div style={{ fontSize: 12.5, color: '#6A7180', marginTop: 2 }}>Search the catalog below and add the items this template should include. Set who it's for and how it applies at the bottom.</div>
           </div>
 
           {/* Captured items */}
@@ -6446,14 +6430,116 @@ function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
             )}
           </div>
 
-          {/* Catalog search / picker */}
+          {/* Catalog search / picker — the main way to add items */}
           <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" standardCategories={isSection ? [] : [...new Set(items.map((it) => it.category).filter(Boolean))]} />
+
+          {/* How it applies + who it's for */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, margin: '14px 0' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>How this template applies</div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              {[['store', 'Full store', 'Adds every item onto the store'], ['section', 'Section', 'Drops all items into one named section']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
+                <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
+                  <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
+                </button>
+              ); })}
+            </div>
+            {isSection && (
+              <div style={{ marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
+                <Row label="Section name (every item lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Row label="Sport"><input className="form-input" list="tplb-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tplb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+              <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+              <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+            </div>
+          </div>
 
           <div style={{ display: 'flex', gap: 10, marginTop: 4, position: 'sticky', bottom: 0, background: '#f7f8fa', padding: '12px 0 4px' }}>
             <button className="btn btn-primary" disabled={!canSave || saving} onClick={save}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Save template'}</button>
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
             {!canSave && <span style={{ fontSize: 12, color: '#94a3b8', alignSelf: 'center' }}>{!meta.name.trim() ? 'Name the template' : !items.length ? 'Add at least one item' : 'Name the section'}</span>}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only detail view for one template — resolves its saved SKUs to live products so you
+// can see every item (image, name, section, price, fundraising, mandatory) in one place.
+function TemplateDetail({ template, owner, canEdit, onClose, onEdit, onDelete }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const isSection = template?.kind === 'section';
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const items = Array.isArray(template?.items) ? template.items : [];
+      const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,brand,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      const built = items.map((it) => ({ ...it, product: bySku.get(String(it.sku || '').trim().toUpperCase()) || null }));
+      if (!cancelled) { setRows(built); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [template]);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+  const missing = rows.filter((r) => !r.product).length;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1050, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{template.name}</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+              {owner && (owner.scope === 'rep' ? chip(owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9'))}
+              {isSection ? chip('Section', '#ecfdf5', '#047857') : chip('Full store', '#eff6ff', '#1d4ed8')}
+              {template.sport && chip(template.sport, '#eff6ff', '#1d4ed8')}
+              {template.brand_focus && chip(template.brand_focus)}
+              {template.gender && chip(template.gender)}
+              {isSection && template.section && chip('→ ' + template.section, '#ecfdf5', '#047857')}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '12px 16px', maxHeight: '62vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 10 }}>{rows.length} item{rows.length === 1 ? '' : 's'} in this template.{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> {missing} no longer in the catalog.</span>}</div>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading items…</div>
+            : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>This template has no items.</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {rows.map((r, i) => {
+                  const price = (r.price != null && r.price !== '') ? r.price : (r.product ? r.product.retail_price : null);
+                  return (
+                    <div key={(r.sku || '') + i} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px', opacity: r.product ? 1 : 0.6 }}>
+                      <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.product?.image_front_url ? <img src={r.product.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(r.sku || '').slice(0, 8)}</span>}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.product?.name || r.sku}{!r.product && <span style={{ color: '#b45309', fontWeight: 700, fontSize: 11 }}> · not found</span>}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{r.sku}{r.product?.brand ? ` · ${r.product.brand}` : ''}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        {!isSection && r.category && chip(r.category)}
+                        {r.kit && chip('Kit: ' + r.kit, '#eff6ff', '#1d4ed8')}
+                        {r.required && chip('Mandatory', '#fef2f2', '#b91c1c')}
+                        {Number(r.fundraise) > 0 && chip('+' + money(r.fundraise) + ' fund', '#ecfdf5', '#047857')}
+                        <span style={{ fontSize: 13, fontWeight: 800, color: '#191919', minWidth: 54, textAlign: 'right' }}>{price != null ? money(price) : '—'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          {canEdit && <button className="btn btn-primary" onClick={onEdit}>Edit template</button>}
+          {canEdit && <button className="btn btn-secondary" onClick={onDelete} style={{ color: '#b91c1c' }}>Delete</button>}
+          <button className="btn btn-secondary" onClick={onClose} style={{ marginLeft: canEdit ? 'auto' : 0 }}>Close</button>
+          <span style={{ fontSize: 11.5, color: '#9AA1AC', marginLeft: canEdit ? 0 : 'auto' }}>Add this to a store from its catalog → “Add template”.</span>
         </div>
       </div>
     </div>
@@ -6469,6 +6555,7 @@ function TemplateManager({ REPS = [] }) {
   const [myEmail, setMyEmail] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('all'); // 'all' | 'general' | rep id
   const [builder, setBuilder] = useState(null);           // null | 'new' | template object (edit)
+  const [viewing, setViewing] = useState(null);           // template being inspected (detail view)
   const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
 
   const load = useCallback(async () => {
@@ -6491,6 +6578,7 @@ function TemplateManager({ REPS = [] }) {
   return (
     <div style={{ marginBottom: 34 }}>
       {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={myEmail} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
+      {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} />}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px' }}>Item Templates</div>
         <button className="btn btn-sm btn-primary" onClick={() => setBuilder('new')}>＋ Create Template</button>
@@ -6514,7 +6602,7 @@ function TemplateManager({ REPS = [] }) {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
             {shown.map((t) => (
-              <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
+              <div key={t.id} onClick={() => setViewing(t)} title="View items" style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff', cursor: 'pointer' }}>
                 <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                   {t._owner.scope === 'rep' ? chip(t._owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9')}
@@ -6524,9 +6612,9 @@ function TemplateManager({ REPS = [] }) {
                 </div>
                 <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{t.kind === 'section' && t.section ? ` · → ${t.section}` : ''}</div>
                 <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                  {canEdit(t) && <button className="btn btn-sm btn-secondary" onClick={() => setBuilder(t)} style={{ flex: 1 }}>Edit</button>}
-                  {canEdit(t) && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
-                  {!canEdit(t) && <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Added to stores via “Add template”.</span>}
+                  <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setViewing(t); }} style={{ flex: 1 }}>View items</button>
+                  {canEdit(t) && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setBuilder(t); }}>Edit</button>}
+                  {canEdit(t) && <button title="Delete template" onClick={(e) => { e.stopPropagation(); del(t.id); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                 </div>
               </div>
             ))}
