@@ -307,6 +307,10 @@ export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'ord
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+// Digitizer design code — the digitizing house stamps a "DG" number into every delivered
+// file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
+// "DG648617"; null when the name carries no DG number.
+export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
 // Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached)
 // or, for embroidery, a .dst attached anywhere on the art. Approval flows use this to decide whether a
 // job may SKIP the production-files stage — a file merely sitting in prod_files (e.g. an order PDF) is
