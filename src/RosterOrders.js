@@ -985,6 +985,11 @@ function SessionDetail({ session, customer, onBack }) {
     if (openTeam?.id === id) setOpenTeam(null);
   };
 
+  const changeStatus = async (status) => {
+    setSess(s => ({ ...s, status }));
+    await supabase.from('roster_order_sessions').update({ status }).eq('id', session.id);
+  };
+
   const inviteCoach = async (teamId) => {
     const f = inviteForm[teamId] || {};
     const email = (f.email || '').trim();
@@ -1022,7 +1027,14 @@ function SessionDetail({ session, customer, onBack }) {
             {session.deadline && <span> · Deadline: {session.deadline}</span>}
           </div>
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select value={sess.status || 'open'} onChange={e => changeStatus(e.target.value)}
+            title="Order status"
+            style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid #e2e8f0', fontWeight: 700, fontSize: 12, cursor: 'pointer', color: STATUS_COLORS[sess.status] || '#374151', background: '#fff' }}>
+            {['open', 'submitted', 'processing', 'fulfilled'].map(s => (
+              <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>
+            ))}
+          </select>
           <button onClick={() => setView('teams')}
             style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #e2e8f0', fontWeight: 700, fontSize: 12, cursor: 'pointer',
               background: view === 'teams' ? '#0b1220' : '#fff', color: view === 'teams' ? '#fff' : '#374151' }}>
@@ -1273,6 +1285,15 @@ export function RosterOrdersStaff({ customer, nf }) {
         </div>
       </div>
 
+      {!customer.coach_roster && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 12, padding: '10px 14px', marginBottom: 16 }}>
+          <span style={{ fontSize: 16 }}>👁️</span>
+          <div style={{ flex: 1, fontSize: 12.5, color: '#92400e' }}>
+            <strong>Coaches can't see this yet.</strong> You can build rosters here, but the section stays hidden in their portal until you turn on <strong>📋 Roster orders</strong> under the <strong>Catalog</strong> tab.
+          </div>
+        </div>
+      )}
+
       {catalog && Array.isArray(catalog.items) && catalog.items.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, border: '1px solid #e2e8f0', borderRadius: 12, padding: '11px 14px', marginBottom: 16, background: '#fff' }}>
           <div style={{ fontSize: 18 }}>🧩</div>
@@ -1474,8 +1495,10 @@ export function RosterOrdersCoach({ customer }) {
   const [newSession, setNewSession] = useState({ name: '', season: new Date().getFullYear().toString(), open: false, saving: false });
   const [newTeam, setNewTeam] = useState({}); // { sessionId: {name, saving} }
   const [invite, setInvite] = useState({});   // { teamId: {email, name, sending} }
+  const [submittingId, setSubmittingId] = useState(null); // session id currently submitting
 
   const reload = useCallback(async () => {
+    if (!customer?.coach_roster) { setLoading(false); return; } // roster module off for this account
     const { data: { user } } = await supabase.auth.getUser();
     if (!user?.email) { setCoach(null); setLoading(false); return; }
     const { data: c } = await supabase.from('coach_accounts').select('id,email,name,customer_id')
@@ -1514,11 +1537,33 @@ export function RosterOrdersCoach({ customer }) {
       } else setCoachesByTeam({});
     } else { setTeams([]); setCoachesByTeam({}); }
     setLoading(false);
-  }, [customer.id]);
+  }, [customer.id, customer.coach_roster]);
 
   useEffect(() => { let c = false; (async () => { await reload(); })(); return () => { c = true; }; }, [reload]);
 
   const patchSession = (next) => setSessions(prev => prev.map(s => s.id === next.id ? next : s));
+
+  // Submit a finished session to the rep: flip status → submitted and fire the
+  // notification email (server-side). Optimistic; the function is the source of
+  // truth for the email but the status also persists here.
+  const submitSession = async (session) => {
+    const locked = teams.filter(t => t.session_id === session.id && t.locked).length;
+    const total = teams.filter(t => t.session_id === session.id).length;
+    const msg = total && locked < total
+      ? `Submit "${session.name}" to your rep? ${locked} of ${total} team rosters are locked — you can still submit, but unlocked teams may change.`
+      : `Submit "${session.name}" to your rep? They'll be emailed to build the order.`;
+    if (!window.confirm(msg)) return;
+    setSubmittingId(session.id);
+    patchSession({ ...session, status: 'submitted' });
+    try {
+      await supabase.from('roster_order_sessions').update({ status: 'submitted' }).eq('id', session.id);
+      await fetch('/.netlify/functions/roster-order-submit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
+      });
+    } catch (e) { console.error('[submitSession]', e); }
+    setSubmittingId(null);
+  };
 
   const createSession = async () => {
     if (!newSession.name.trim()) return;
@@ -1565,6 +1610,7 @@ export function RosterOrdersCoach({ customer }) {
     setInvite(prev => ({ ...prev, [team.id]: { email: '', name: '', sending: false } }));
   };
 
+  if (!customer?.coach_roster) return null; // gated per-customer on the Catalog tab
   if (loading) return null;
   if (!coach) return <CoachSignInCard customer={customer} />;
 
@@ -1663,14 +1709,29 @@ export function RosterOrdersCoach({ customer }) {
         return (
           <div key={session.id} style={{ border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', marginBottom: 12 }}>
             <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-              <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 800 }}>📋 {session.name}</span>
-                {session.deadline && <span style={{ marginLeft: 10, fontSize: 11, opacity: 0.7 }}>Deadline: {session.deadline}</span>}
+                {session.status && session.status !== 'open' && (
+                  <span style={{ background: 'rgba(255,255,255,.15)', border: '1px solid rgba(255,255,255,.3)', borderRadius: 999, padding: '1px 9px', fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>
+                    {STATUS_LABELS[session.status] || session.status}
+                  </span>
+                )}
+                {session.deadline && <span style={{ fontSize: 11, opacity: 0.7 }}>Deadline: {session.deadline}</span>}
               </div>
-              <button onClick={() => setViewTotals(session)}
-                style={{ background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
-                View totals
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button onClick={() => setViewTotals(session)}
+                  style={{ background: 'none', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
+                  View totals
+                </button>
+                {['open', 'draft'].includes(session.status) ? (
+                  <button onClick={() => submitSession(session)} disabled={submittingId === session.id}
+                    style={{ background: '#22c55e', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 14px', fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>
+                    {submittingId === session.id ? 'Submitting…' : '✓ Submit to rep'}
+                  </button>
+                ) : (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#86efac' }}>✓ Submitted</span>
+                )}
+              </div>
             </div>
             <div style={{ padding: 12 }}>
               {/* Build the kit by adding items from the catalog */}
