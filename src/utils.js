@@ -6,7 +6,7 @@ import { supabase as _sbAuthClient } from './lib/supabase';
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
 // refunds, create-quote-request), which verify the caller server-side.
-export const authFetch=async(url,opts={})=>{
+const _getAuthHeader=async()=>{
   let auth={};
   try{
     let{data:{session}}=await _sbAuthClient.auth.getSession();
@@ -18,7 +18,22 @@ export const authFetch=async(url,opts={})=>{
     }
     if(session?.access_token)auth={Authorization:'Bearer '+session.access_token};
   }catch{}
-  return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  return auth;
+};
+export const authFetch=async(url,opts={})=>{
+  const auth=await _getAuthHeader();
+  const res=await fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  // The proactive expiry check above still misses cases (silent refresh failed,
+  // clock skew, session refreshed by another tab). If the server rejects the token,
+  // force a hard refresh and retry once before giving up.
+  if(res.status===401){
+    try{
+      const{data}=await _sbAuthClient.auth.refreshSession();
+      const retryAuth=data?.session?.access_token?{Authorization:'Bearer '+data.session.access_token}:{};
+      if(retryAuth.Authorization)return fetch(url,{...opts,headers:{...(opts.headers||{}),...retryAuth}});
+    }catch{}
+  }
+  return res;
 };
 
 // ── Brevo Email ──
@@ -99,7 +114,15 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};return{ok:true,messageId:d.messageId}}
+    const d=await r.json();
+    if(!r.ok){
+      // authFetch already retried once with a hard session refresh; a 401 that
+      // survives that means the user's session is genuinely gone (signed out
+      // elsewhere, revoked, etc.) rather than just a stale-token blip.
+      if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+      return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
+    }
+    return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
 
