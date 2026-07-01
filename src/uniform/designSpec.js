@@ -6,8 +6,9 @@
 // function, and the saved-design persistence all speak this exact shape, so the
 // same object round-trips from AI → editor → production render → database.
 //
-// Everything here is pure (no React, no DOM) so it can be require()'d from the
-// Netlify function that validates AI output as well as imported by the client.
+// Everything here is pure (no React, no DOM). It's an ES module imported by the
+// client; the Netlify AI function keeps its own copy of the vocab rather than
+// importing this, so this file never has to support CommonJS require().
 
 // ── Color vocabulary ────────────────────────────────────────────────────────
 // Team-apparel color names → hex. Mirrors QuickMockBuilder's list (kept local so
@@ -164,7 +165,31 @@ function makeDefaultSpec(garmentId = 'crew_jersey') {
         name: { ...DEFAULT_TEXT, value: 'JOHNSON', size: 0.62, font: 'saira' },
       },
     },
+    // Uploaded artwork / team logos, per view. Each is placed, sized, and rotated
+    // over the garment and rendered by both the SVG editor and the Canvas export.
+    logos: { front: [], back: [] },
     meta: { teamName: '', notes: '' },
+  };
+}
+
+// Sanitize one logo layer. src must be a data: or http(s) image URL (a coach
+// upload is a data URL; a vectorized logo is a data:image/svg+xml URL). x/y are
+// the center as viewBox fractions; w is width as a fraction of the viewBox width;
+// aspect is height/width so the renderer can derive height.
+let _logoSeq = 0;
+function cleanLogo(l) {
+  if (!l || typeof l !== 'object') return null;
+  const src = typeof l.src === 'string' && /^(data:image\/|https?:)/i.test(l.src) ? l.src : null;
+  if (!src) return null;
+  return {
+    id: typeof l.id === 'string' && l.id ? l.id : `logo_${Date.now().toString(36)}_${_logoSeq++}`,
+    src,
+    x: Number.isFinite(l.x) ? clamp(l.x, 0, 1) : 0.5,
+    y: Number.isFinite(l.y) ? clamp(l.y, 0, 1) : 0.3,
+    w: Number.isFinite(l.w) ? clamp(l.w, 0.03, 1) : 0.25,
+    aspect: Number.isFinite(l.aspect) && l.aspect > 0 ? l.aspect : 1,
+    rotation: Number.isFinite(l.rotation) ? clamp(l.rotation, -180, 180) : 0,
+    opacity: Number.isFinite(l.opacity) ? clamp(l.opacity, 0, 1) : 1,
   };
 }
 
@@ -221,6 +246,11 @@ function normalizeSpec(input, base) {
       out.text[view][el] = cleanText(src, out.text[view][el]);
     }
   }
+  for (const v of ['front', 'back']) {
+    const arr = (input && input.logos && Array.isArray(input.logos[v])) ? input.logos[v]
+      : ((b.logos && b.logos[v]) || []);
+    out.logos[v] = arr.map(cleanLogo).filter(Boolean).slice(0, 8);
+  }
   if (input && input.meta && typeof input.meta === 'object') {
     if (typeof input.meta.teamName === 'string') out.meta.teamName = input.meta.teamName.slice(0, 80);
     if (typeof input.meta.notes === 'string') out.meta.notes = input.meta.notes.slice(0, 500);
@@ -228,9 +258,13 @@ function normalizeSpec(input, base) {
   return out;
 }
 
-module.exports = {
+// Pure ESM export (the client bundles this as an ES module — assigning
+// module.exports here crashes at runtime with "ES Modules may not assign
+// module.exports"). The Netlify AI function keeps its own copy of the
+// vocab, so nothing consumes this via CommonJS require().
+export {
   COLOR_HEX, PALETTE, PATTERNS, PATTERN_IDS, FABRICS, FABRIC_IDS,
   DEFAULT_ZONE, DEFAULT_TEXT,
   toHex, nameForHex, hexToRgb, luminance, isDark, contrastInk, clamp,
-  makeDefaultSpec, normalizeSpec, cleanZone, cleanText,
+  makeDefaultSpec, normalizeSpec, cleanZone, cleanText, cleanLogo,
 };

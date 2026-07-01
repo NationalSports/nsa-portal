@@ -15,8 +15,8 @@ import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { listTemplates, getTemplate, registerTemplate, parseUploadedSvg } from './templates';
 import { FONTS, fontStack, fontWeight } from './fonts';
 import { makePatternTile, makeFabricOverlay } from './patterns';
-import { renderToDataURL, renderProductionSheet } from './renderCanvas';
-const ds = require('./designSpec');
+import { renderToDataURL, renderProductionSheet, renderProductionPDF } from './renderCanvas';
+import * as ds from './designSpec';
 
 // ── palette / tiny style kit (mirrors the app's NSA design tokens) ───────────
 const NSA = {
@@ -34,7 +34,7 @@ const field = { width: '100%', boxSizing: 'border-box', border: '1.5px solid ' +
 function parseVB(vb) { const [x, y, w, h] = String(vb).split(/[\s,]+/).map(Number); return { x: x || 0, y: y || 0, w: w || 400, h: h || 480 }; }
 
 // ── interactive SVG proof ────────────────────────────────────────────────────
-function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef }) {
+function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef, selectedLogoId, onSelectLogo, onDragLogo, onResizeLogo }) {
   const tpl = getTemplate(spec.garmentId);
   const v = tpl.views[view] || tpl.views.front;
   const vb = parseVB(v.viewBox);
@@ -93,8 +93,17 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
     return { x: ds.clamp((p.x - vb.x) / vb.w, 0, 1), y: ds.clamp((p.y - vb.y) / vb.h, 0, 1) };
   };
   const onMove = (e) => {
-    if (!dragRef.current) return;
-    const f = clientToFrac(e); if (f) onDragText(dragRef.current, f);
+    const d = dragRef.current; if (!d) return;
+    const f = clientToFrac(e); if (!f) return;
+    if (d.kind === 'text') { onDragText(d.role, f); return; }
+    if (d.kind === 'logo' && d.mode === 'move') { onDragLogo(d.id, f); return; }
+    if (d.kind === 'logo' && d.mode === 'resize') {
+      const logo = (spec.logos[view] || []).find((l) => l.id === d.id); if (!logo) return;
+      // width fraction from radial distance of the pointer to the logo center
+      const dx = (f.x - logo.x) * vb.w, dy = (f.y - logo.y) * vb.h;
+      const w = ds.clamp((2 * Math.hypot(dx, dy)) / (vb.w * Math.hypot(1, logo.aspect || 1)), 0.03, 1);
+      onResizeLogo(d.id, w);
+    }
   };
   const endDrag = () => { dragRef.current = null; };
 
@@ -113,9 +122,29 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
         fontFamily={fontStack(el.font)} fontWeight={fontWeight(el.font)} fontSize={size}
         fill={fill} stroke={stroke} strokeWidth={stroke === 'none' ? 0 : el.outlineWidth * 2}
         paintOrder="stroke" style={{ letterSpacing: (el.letterSpacing || 0) + 'px', cursor: 'move', userSelect: 'none' }}
-        onPointerDown={(e) => { e.preventDefault(); dragRef.current = role; }}>
+        onPointerDown={(e) => { e.preventDefault(); dragRef.current = { kind: 'text', role }; }}>
         {el.value}
       </text>
+    );
+  };
+
+  const logos = spec.logos[view] || [];
+  const renderLogo = (l) => {
+    const w = l.w * vb.w, h = w * (l.aspect || 1);
+    const cx = l.x * vb.w, cy = l.y * vb.h;
+    const sel = selectedLogoId === l.id;
+    return (
+      <g key={l.id} transform={`rotate(${l.rotation || 0} ${cx} ${cy})`} opacity={l.opacity} style={{ cursor: 'move' }}
+        onPointerDown={(e) => { e.preventDefault(); onSelectLogo(l.id); dragRef.current = { kind: 'logo', id: l.id, mode: 'move' }; }}>
+        <image href={l.src} xlinkHref={l.src} x={cx - w / 2} y={cy - h / 2} width={w} height={h} preserveAspectRatio="xMidYMid meet" />
+        {sel && (
+          <g pointerEvents="visiblePainted">
+            <rect x={cx - w / 2} y={cy - h / 2} width={w} height={h} fill="none" stroke={NSA.redBright} strokeWidth="2" strokeDasharray="5 4" />
+            <rect x={cx + w / 2 - 7} y={cy + h / 2 - 7} width="14" height="14" fill={NSA.navy} stroke="#fff" strokeWidth="1.5" style={{ cursor: 'nwse-resize' }}
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); onSelectLogo(l.id); dragRef.current = { kind: 'logo', id: l.id, mode: 'resize' }; }} />
+          </g>
+        )}
+      </g>
     );
   };
 
@@ -146,6 +175,8 @@ function UniformSvg({ spec, view, selectedZone, onSelectZone, onDragText, svgRef
       {/* selection highlight */}
       {selectedZone && v.zones.find((z) => z.id === selectedZone) &&
         <path d={v.zones.find((z) => z.id === selectedZone).d} fill="none" stroke={NSA.redBright} strokeWidth="3" strokeDasharray="7 5" pointerEvents="none" />}
+      {/* uploaded logos (above garment, below lettering) */}
+      {logos.map(renderLogo)}
       {renderText('name')}
       {renderText('number')}
     </svg>
@@ -174,7 +205,8 @@ export default function UniformBuilder({ onExit }) {
   const [spec, setSpec] = useState(() => ds.makeDefaultSpec('crew_jersey'));
   const [view, setView] = useState('front');
   const [selectedZone, setSelectedZone] = useState('body');
-  const [tab, setTab] = useState('design'); // design | text | ai | saved
+  const [selectedLogoId, setSelectedLogoId] = useState(null);
+  const [tab, setTab] = useState('design'); // design | text | art | ai | saved
   const [templates, setTemplates] = useState(() => listTemplates());
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
@@ -185,6 +217,7 @@ export default function UniformBuilder({ onExit }) {
   const svgRef = useRef(null);
   const historyRef = useRef([]);
   const fileRef = useRef(null);
+  const logoFileRef = useRef(null);
 
   const tpl = getTemplate(spec.garmentId);
   const view0 = tpl.views[view] || tpl.views.front;
@@ -201,6 +234,44 @@ export default function UniformBuilder({ onExit }) {
   const dragText = (role, frac) => setSpec((prev) => ({ ...prev, text: { ...prev.text, [view]: { ...prev.text[view], [role]: { ...prev.text[view][role], x: frac.x, y: frac.y } } } }));
   const setGarment = (id) => commit((prev) => ({ ...prev, garmentId: id }));
   const setFabric = (id) => commit((prev) => ({ ...prev, fabric: id }));
+
+  // ── logo layers ─────────────────────────────────────────────────────────────
+  const selectZone = (id) => { setSelectedZone(id); setSelectedLogoId(null); };
+  const dragLogo = (id, frac) => setSpec((prev) => ({ ...prev, logos: { ...prev.logos, [view]: prev.logos[view].map((l) => l.id === id ? { ...l, x: frac.x, y: frac.y } : l) } }));
+  const resizeLogo = (id, w) => setSpec((prev) => ({ ...prev, logos: { ...prev.logos, [view]: prev.logos[view].map((l) => l.id === id ? { ...l, w } : l) } }));
+  const updateLogo = (id, patch) => commit((prev) => ({ ...prev, logos: { ...prev.logos, [view]: prev.logos[view].map((l) => l.id === id ? { ...l, ...patch } : l) } }));
+  const removeLogo = (id) => { commit((prev) => ({ ...prev, logos: { ...prev.logos, [view]: prev.logos[view].filter((l) => l.id !== id) } })); if (selectedLogoId === id) setSelectedLogoId(null); };
+
+  const addLogo = async (file) => {
+    if (!file) return;
+    try {
+      const src = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
+      const aspect = await new Promise((res) => { const im = new Image(); im.onload = () => res(im.naturalHeight && im.naturalWidth ? im.naturalHeight / im.naturalWidth : 1); im.onerror = () => res(1); im.src = src; });
+      const logo = ds.cleanLogo({ src, aspect, x: 0.5, y: 0.32, w: 0.28 });
+      if (!logo) { flashMsg('Unsupported image.'); return; }
+      commit((prev) => ({ ...prev, logos: { ...prev.logos, [view]: [...prev.logos[view], logo].slice(0, 8) } }));
+      setSelectedLogoId(logo.id); setTab('art');
+      flashMsg('Logo added — drag it onto the jersey');
+    } catch (_e) { flashMsg('Could not add that image.'); }
+  };
+
+  // Vectorize a raster logo client-side (imagetracerjs) into a crisp SVG so it's
+  // production-ready. Skips SVGs (already vector).
+  const vectorizeLogo = async (id) => {
+    const logo = (spec.logos[view] || []).find((l) => l.id === id); if (!logo) return;
+    if (/^data:image\/svg/i.test(logo.src)) { flashMsg('Already a vector logo.'); return; }
+    setBusy('Vectorizing…');
+    try {
+      const ImageTracer = (await import('imagetracerjs')).default;
+      const svg = await new Promise((res, rej) => {
+        ImageTracer.imageToSVG(logo.src, (s) => res(s), { scale: 1, ltres: 1, qtres: 1, numberofcolors: 16, pathomit: 8 });
+        setTimeout(() => rej(new Error('timeout')), 15000);
+      });
+      const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      updateLogo(id, { src: dataUrl });
+      flashMsg('Logo vectorized');
+    } catch (_e) { flashMsg('Vectorize failed — keeping original.'); } finally { setBusy(''); }
+  };
 
   // ensure selected zone exists on the current garment
   useEffect(() => {
@@ -265,6 +336,10 @@ export default function UniformBuilder({ onExit }) {
   const exportSpec = () => {
     const str = JSON.stringify(buildProductionSpec(spec), null, 2);
     download('data:application/json;charset=utf-8,' + encodeURIComponent(str), `uniform-${spec.garmentId}-spec.json`);
+  };
+  const exportPDF = async () => {
+    setBusy('Building PDF proof…');
+    try { const doc = await renderProductionPDF(spec); doc.save(`uniform-${spec.garmentId}-proof.pdf`); } catch (e) { flashMsg('PDF export failed.'); } finally { setBusy(''); }
   };
 
   // ── save / load ──────────────────────────────────────────────────────────────
@@ -340,11 +415,13 @@ export default function UniformBuilder({ onExit }) {
             <button style={btn(false)} onClick={exportPNG}>⤓ PNG</button>
             <button style={btn(false)} onClick={exportSVG}>⤓ SVG</button>
             <button style={btn(false)} onClick={exportSpec}>⤓ Spec</button>
-            <button style={cta} onClick={exportProof}>Production Proof</button>
+            <button style={btn(false)} onClick={exportProof}>⤓ Proof PNG</button>
+            <button style={cta} onClick={exportPDF}>Production PDF</button>
           </div>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, minHeight: 0, background: 'radial-gradient(circle at 50% 35%, #fff 0%, ' + NSA.light + ' 100%)' }}>
             <div style={{ height: '100%', maxHeight: 620, aspectRatio: `${parseVB(view0.viewBox).w} / ${parseVB(view0.viewBox).h}` }}>
-              <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={setSelectedZone} onDragText={dragText} svgRef={svgRef} />
+              <UniformSvg spec={spec} view={view} selectedZone={selectedZone} onSelectZone={selectZone} onDragText={dragText} svgRef={svgRef}
+                selectedLogoId={selectedLogoId} onSelectLogo={setSelectedLogoId} onDragLogo={dragLogo} onResizeLogo={resizeLogo} />
             </div>
           </div>
           {(busy || flash) && (
@@ -355,7 +432,7 @@ export default function UniformBuilder({ onExit }) {
         {/* ── right rail ── */}
         <div style={{ width: 320, flexShrink: 0, background: '#fff', borderLeft: '1px solid ' + NSA.light, display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', borderBottom: '1px solid ' + NSA.light }}>
-            {['design', 'text', 'ai', 'saved'].map((t) => (
+            {['design', 'text', 'art', 'ai', 'saved'].map((t) => (
               <button key={t} onClick={() => setTab(t)} style={{ flex: 1, cursor: 'pointer', border: 'none', background: tab === t ? NSA.offWhite : '#fff', color: tab === t ? NSA.navy : NSA.textLight,
                 padding: '11px 4px', fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: .5, textTransform: 'uppercase', borderBottom: '3px solid ' + (tab === t ? NSA.red : 'transparent') }}>
                 {t === 'ai' ? '✨ AI' : t}
@@ -427,6 +504,47 @@ export default function UniformBuilder({ onExit }) {
                   );
                 })}
                 <div style={{ fontSize: 12, color: NSA.textMuted }}>Tip: drag the number or name right on the jersey to reposition it.</div>
+              </div>
+            )}
+
+            {tab === 'art' && (
+              <div>
+                <div style={railLabel}>Logos & Artwork ({view})</div>
+                <input ref={logoFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { addLogo(e.target.files[0]); e.target.value = ''; }} />
+                <button style={{ ...cta, width: '100%' }} onClick={() => logoFileRef.current && logoFileRef.current.click()}>⭱ Upload Logo</button>
+                <div style={{ fontSize: 12, color: NSA.textMuted, margin: '8px 0 14px' }}>PNG, JPG, or SVG. Drag it on the jersey to place; drag the corner handle to resize.</div>
+
+                {(() => {
+                  const logos = spec.logos[view] || [];
+                  if (!logos.length) return <div style={{ fontSize: 13, color: NSA.textMuted }}>No logos on the {view} yet.</div>;
+                  const sel = logos.find((l) => l.id === selectedLogoId);
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+                        {logos.map((l) => (
+                          <div key={l.id} onClick={() => setSelectedLogoId(l.id)} title="Select"
+                            style={{ width: 54, height: 54, border: '2px solid ' + (selectedLogoId === l.id ? NSA.navy : NSA.light), borderRadius: 8, background: '#fff url(' + l.src + ') center/contain no-repeat', cursor: 'pointer' }} />
+                        ))}
+                      </div>
+                      {sel && (
+                        <div style={{ borderTop: '1px solid ' + NSA.light, paddingTop: 12 }}>
+                          <div style={railLabel}>Selected Logo</div>
+                          <label style={{ fontSize: 12, color: NSA.textLight }}>Size</label>
+                          <input type="range" min="0.05" max="0.85" step="0.01" value={sel.w} onChange={(e) => updateLogo(sel.id, { w: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                          <label style={{ fontSize: 12, color: NSA.textLight }}>Rotation</label>
+                          <input type="range" min="-180" max="180" step="1" value={sel.rotation} onChange={(e) => updateLogo(sel.id, { rotation: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                          <label style={{ fontSize: 12, color: NSA.textLight }}>Opacity</label>
+                          <input type="range" min="0.1" max="1" step="0.05" value={sel.opacity} onChange={(e) => updateLogo(sel.id, { opacity: parseFloat(e.target.value) })} style={{ width: '100%' }} />
+                          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                            <button style={{ ...btn(false), flex: 1, fontSize: 12 }} onClick={() => vectorizeLogo(sel.id)} title="Trace to vector for production">Vectorize</button>
+                            <button style={{ ...btn(false), flex: 1, fontSize: 12, color: NSA.red, borderColor: NSA.mid }} onClick={() => removeLogo(sel.id)}>Delete</button>
+                          </div>
+                          <div style={{ marginTop: 10, fontSize: 11, color: NSA.textMuted }}>Vectorize traces a raster logo into clean SVG paths for cutting/printing. Vector logos scale with no fuzzy edges.</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

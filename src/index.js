@@ -71,6 +71,10 @@ const isAuthFlow = _path === '/auth/setup' || _path === '/auth/reset';
 // LoginGate, which is exactly what a logged-out new hire (and the /welcome
 // iframe) was hitting.
 const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
+// /uniform-builder is the login-free custom-uniform designer. App short-circuits
+// to it BEFORE any login gate, so — like the auth/onboarding flows — it must load
+// App directly rather than falling through to MainApp → LoginGate.
+const isUniformBuilder = _path === '/uniform-builder' || _path === '/uniform-builder/';
 // Public coach portal at /?portal=<alpha_tag> — also embedded on the marketing
 // site at /coach. It's login-free: App short-circuits to the read-only
 // CoachPortal for this param (data via anon RLS), so like the auth flows it must
@@ -195,7 +199,7 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
-        : isAuthFlow || isCoachPortal || isOnboarding
+        : isAuthFlow || isCoachPortal || isOnboarding || isUniformBuilder
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>
