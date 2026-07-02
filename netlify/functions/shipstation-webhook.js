@@ -31,6 +31,17 @@ exports.handler = async (event) => {
   const skey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!KEY || !SECRET || !url || !skey) return { statusCode: 500, body: 'Webhook not configured' };
 
+  // Authenticate the caller. The endpoint is otherwise open to the internet, so we
+  // require a shared secret that only ShipStation's configured webhook URL carries
+  // (append ?token=<SHIPSTATION_WEBHOOK_SECRET> to the URL in ShipStation's settings).
+  // Enforced whenever the secret is configured.
+  const whSecret = process.env.SHIPSTATION_WEBHOOK_SECRET;
+  if (whSecret) {
+    const q = event.queryStringParameters || {};
+    const provided = q.token || q.secret || '';
+    if (provided !== whSecret) return { statusCode: 401, body: 'Unauthorized' };
+  }
+
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, body: 'Bad JSON' }; }
   // Only act on shipment events.
@@ -40,10 +51,20 @@ exports.handler = async (event) => {
   const auth = Buffer.from(`${KEY}:${SECRET}`).toString('base64');
   const sb = createClient(url, skey, { auth: { autoRefreshToken: false, persistSession: false } });
 
+  // SSRF guard: resource_url is attacker-controllable, and we attach the ShipStation
+  // Basic-auth credentials to the fetch. Only ever call ShipStation's own API host,
+  // over https, and never follow a redirect off it — otherwise a caller could point
+  // resource_url at their own server (or an open redirect) and capture the credentials.
+  let apiUrl;
+  try { apiUrl = new URL(body.resource_url); } catch { return { statusCode: 400, body: 'Bad resource_url' }; }
+  if (apiUrl.protocol !== 'https:' || apiUrl.hostname.toLowerCase() !== 'ssapi.shipstation.com') {
+    return { statusCode: 400, body: 'resource_url host not allowed' };
+  }
+  apiUrl.searchParams.set('includeShipmentItems', 'true');
+
   try {
     // Pull the shipments referenced by this event, with their line items.
-    const fetchUrl = body.resource_url + (body.resource_url.includes('?') ? '&' : '?') + 'includeShipmentItems=true';
-    const res = await fetch(fetchUrl, { headers: { Authorization: `Basic ${auth}` } });
+    const res = await fetch(apiUrl.toString(), { headers: { Authorization: `Basic ${auth}` }, redirect: 'error' });
     const data = await res.json();
     const shipments = data.shipments || [];
 

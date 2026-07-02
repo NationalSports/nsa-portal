@@ -1885,27 +1885,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     try {
       const cents = Math.round((Number(amount) || 0) * 100);
       if (cents <= 0) return { error: 'Enter an amount' };
-      const { data: live, error: readErr } = await supabase.from('webstore_orders').select('refunded_amt,total,status,stripe_pi_id').eq('id', order.id).single();
-      if (readErr) { flash('Refund blocked: could not verify order — ' + readErr.message); return { error: readErr.message }; }
-      const already = Number(live.refunded_amt) || 0;
-      const total = Number(live.total) || 0;
-      if (already + cents / 100 > total + 0.005) {
-        flash(`Refund blocked: ${money(cents / 100)} would exceed the order total (${money(already)} already refunded of ${money(total)})`);
-        return { error: 'over_refund' };
-      }
-      if (live.stripe_pi_id) {
-        try {
-          const res = await authFetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: live.stripe_pi_id, amount_cents: cents }) });
-          const d = await res.json();
-          if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
-        } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
-      }
-      const refunded = already + cents / 100;
-      const status = refunded >= total - 0.005 ? 'refunded' : live.status;
-      const { error } = await supabase.from('webstore_orders').update({ refunded_amt: refunded, status }).eq('id', order.id);
-      if (error) { flash('Refund record failed: ' + error.message); return { error: error.message }; }
-      flash(live.stripe_pi_id ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
-      loadDetail(sel); return { ok: true };
+      // Server-side, recorded, capped, idempotent. The endpoint resolves the
+      // PaymentIntent from the order itself, issues the Stripe refund with an
+      // idempotency key (attempt_id), and atomically records the refund + updates
+      // refunded_amt/status via the apply_webstore_refund RPC. The browser no longer
+      // writes refund state directly (RLS blocks it now; the server is the source of truth).
+      const attemptId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2));
+      let d;
+      try {
+        const res = await authFetch('/.netlify/functions/stripe-payment', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId }),
+        });
+        d = await res.json();
+      } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
+      if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
+      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+      loadDetail(sel); return { ok: true, ...d };
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
