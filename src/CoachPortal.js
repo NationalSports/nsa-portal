@@ -1243,7 +1243,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{textAlign:'right'}}>
                     <div style={{fontWeight:700,fontSize:13}}>{qty} units</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
+                    {/* Prefer the invoice's stored line rate (garment + decoration, what the customer is
+                        actually billed) — it.unit_sell is garment-only, which made lines not add up to
+                        the invoice total (INV-63089: $16 shown for an $18 all-in item). */}
+                    <div style={{fontSize:10,color:'#64748b'}}>${(()=>{const lis=inv.line_items||[];const li=lis.find(l=>l._so_line_key===((it.sku||'')+'|'+(it.color||'')+'|'+ii))||lis.find(l=>(l._sku||l.sku)===it.sku&&safeNum(l.qty)===qty);return safeNum(li&&li.rate!=null?li.rate:it.unit_sell)})().toFixed(2)}/ea</div>
                   </div>
                 </div>
                 {allDecoLabels.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>

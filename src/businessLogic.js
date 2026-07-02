@@ -868,8 +868,16 @@ function itemEditReconciles(clientItems, dbItems) {
   };
   const subset = (a, b) => { for (const [k, n] of a) { if ((b.get(k) || 0) < n) return false; } return true; };
   const c = toMs(clientItems), d = toMs(dbItems);
-  if (c.size === 0) return false; // client has items but none carry a SKU/name — can't verify; stay safe (blocked)
-  return subset(c, d) || subset(d, c);
+  if (c.size > 0 && (subset(c, d) || subset(d, c))) return true;
+  // Custom lines have no stable identity — no product_id, and their sku/name is exactly what reps edit —
+  // so a renamed custom line plus any count change defeats the multiset match above and blocked the whole
+  // save (EST-1351 / EST-1353 "won't save"). Fall back to reconciling only the catalog rows (those with a
+  // product_id): if they prove the client held the real estimate, the custom-line churn is a deliberate
+  // edit. Still requires at least one catalog row on the client — an all-custom or phantom-empty client
+  // list can never verify this way, so the phantom-load protection is unchanged.
+  const hasPid = (x) => !!(x && x.product_id);
+  const cCat = toMs(clientItems.filter(hasPid)), dCat = toMs((dbItems || []).filter(hasPid));
+  return cCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
 }
 
 // ─── Per-item quantity-wipe detection (data-loss guard helper) ───

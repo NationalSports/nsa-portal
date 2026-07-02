@@ -2553,6 +2553,27 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
     expect(itemEditReconciles(null, db)).toBe(false);
     expect(itemEditReconciles(undefined, db)).toBe(false);
   });
+
+  // ── Custom-line fallback: catalog rows (product_id) prove the client held the estimate ──
+  const dbMixed = [{ sku: 'A', product_id: 'p1' }, { sku: 'B', product_id: 'p2' }, { sku: 'CUSTOM', name: 'Custom Jersey', product_id: null }];
+
+  test('renamed custom line + count change reconciles via the catalog rows (allow)', () => {
+    // User renamed the custom line (identity key changed) and deleted B — the full multiset no
+    // longer matches either way, but the catalog rows verify the client held the real estimate.
+    expect(itemEditReconciles([{ sku: 'A', product_id: 'p1' }, { sku: 'CUSTOM', name: 'Custom Jersey v2', product_id: null }], dbMixed)).toBe(true);
+  });
+
+  test('added custom line with a colliding generic sku reconciles via catalog rows (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A', product_id: 'p1' }, { sku: 'B', product_id: 'p2' }, { sku: 'CUSTOM', product_id: null }, { sku: 'CUSTOM', product_id: null }], dbMixed)).toBe(true);
+  });
+
+  test('custom churn with NON-matching catalog rows stays blocked', () => {
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }, { sku: 'CUSTOM', product_id: null }], dbMixed)).toBe(false);
+  });
+
+  test('all-custom client (no catalog rows) cannot verify through the fallback (block)', () => {
+    expect(itemEditReconciles([{ name: 'Fresh custom row', product_id: null }], dbMixed)).toBe(false);
+  });
 });
 
 describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {

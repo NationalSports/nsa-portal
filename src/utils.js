@@ -847,7 +847,11 @@ export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id)
 export const pdfDecoLabel = (d, artF) => {
   if (!d) return '';
   if (d.kind === 'numbers') {
-    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"')) + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
+    // Sublimated numbers have no size (the editor hides the size picker), so
+    // don't apply the 4" fallback — printing a size would be wrong.
+    const _sub = d.num_method === 'sublimated';
+    const _szPart = _sub ? '' : ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"'));
+    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + _szPart + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
   }
   if (d.kind === 'names') {
     return ('Names' + (d.print_color ? ' ('+d.print_color+')' : '')).replace(/_/g,' ');
