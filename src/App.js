@@ -2716,7 +2716,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
     const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
     const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
-    results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
+    results.push({item_idx:gi.item_idx,sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
   });return results})();
   const infoBoxes=[
     {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
@@ -2758,7 +2758,9 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const itemNumDecos=safeDecos(it).filter(d=>d.kind==='numbers');
     const itemNameDecos=safeDecos(it).filter(d=>d.kind==='names');
     const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-    const ndData=numbersData.find(n=>n.sku===gi.sku);
+    // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey in two
+    // colors) with numbers on only one of them; a sku match leaks the roster onto both.
+    const ndData=numbersData.find(n=>n.item_idx===gi.item_idx);
     const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
     let sHtml='';
     // Size table
@@ -12077,7 +12079,7 @@ export default function App(){
           const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
           const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
           const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
-          results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
+          results.push({item_idx:gi.item_idx,sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
         });return results})();
 
         // Print Production PDF — delegates to the shared buildProdSheetOpts (top of file) so
@@ -12196,7 +12198,9 @@ export default function App(){
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                   const itemSizes=SZ_ORD.filter(sz=>gi.sizes[sz]>0);
-                  const ndData=numbersData.find(n=>n.sku===gi.sku);
+                  // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey
+                  // in two colors) with numbers on only one of them; a sku match leaks the roster onto both.
+                  const ndData=numbersData.find(n=>n.item_idx===gi.item_idx);
                   const itemProdFiles=[];
                   artDecos.forEach(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);(artF?.prod_files||[]).forEach(f=>{itemProdFiles.push({f,artName:artF?.name||''})})});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
@@ -21681,6 +21685,15 @@ export default function App(){
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
+        // An art deco still on the Art TBD placeholder (or pointing at a deleted art file) means
+        // there is NO artwork — jobLiveArtIds returns [] for it, which used to make the
+        // production-files check below pass vacuously and let the job read "Ready for Production".
+        const _unresolved=(j.items||[]).some(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return false;
+          // Only this job's own decorations count — a sibling job's TBD art must not block a numbers/names job.
+          const _dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:null);
+          return safeDecos(it).some((d,di)=>{if(_dis&&!_dis.includes(di))return false;
+            return d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||!safeArt(so).find(f=>f.id===d.art_file_id))})});
+        if(_unresolved){nf('This job still has Art TBD — assign real artwork before marking it complete','error');return false;}
         const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
         const missing=afs.filter(a=>!artProdFilesReady(a));
         if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}

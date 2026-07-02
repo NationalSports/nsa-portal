@@ -233,15 +233,18 @@ const buildJobs = (o) => {
     if (it.no_deco) return;
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
-      if (d.kind === 'art' && d.art_file_id) {
-        const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
+      if (d.kind === 'art') {
+        const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
-        const part = 'art_' + d.art_file_id;
+        // Art TBD saves to the DB with a null art_file_id (see _sanitizeDeco), so an unassigned
+        // deco must still form a job — keyed by position, mirroring syncJobs in OrderEditor —
+        // instead of silently vanishing from the production board.
+        const part = d.art_file_id ? 'art_' + d.art_file_id : 'unassigned@' + (d.position || '');
         // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
         // split across several lines — and a standalone copy of it — all consolidate into ONE job.
         // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
         // bundle into a single combined job (the established Split-Art behavior).
-        const bk = d.split_group ? 'art::' + d.art_file_id : dt;
+        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : dt;
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
@@ -275,9 +278,18 @@ const buildJobs = (o) => {
     const firstEntry = grp.items[0];
     const positions = new Set();
     const artNames = []; const artIds = []; const decoTypes = [];
-    let worstArtSt = 'art_complete';
+    let worstArtSt = 'art_complete'; let hasArtDeco = false;
     firstEntry.decos.forEach(({ d }) => {
-      if (d.kind === 'art' && d.art_file_id) {
+      if (d.kind === 'art' && !d.art_file_id) {
+        // Art TBD (null id after _sanitizeDeco) — there is no artwork yet, so the job can never
+        // read as complete/ready. Mirrors the unassigned branch in OrderEditor's syncJobs.
+        hasArtDeco = true;
+        positions.add(d.position || '');
+        artNames.push('Unassigned Art (' + (d.position || '') + ')');
+        decoTypes.push(d.deco_type || 'screen_print');
+        worstArtSt = 'needs_art';
+      } else if (d.kind === 'art' && d.art_file_id) {
+        hasArtDeco = true;
         positions.add(d.position || '');
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
@@ -302,6 +314,9 @@ const buildJobs = (o) => {
         decoTypes.push(d.name_method || 'heat_press');
       }
     });
+    // Numbers/names-only jobs (no art decoration) still need a mockup / setup — they start in
+    // 'needs_art' so someone submits them, never at 'art_complete'. Mirrors syncJobs in OrderEditor.
+    if (!hasArtDeco) worstArtSt = 'needs_art';
     const items = grp.items.map(({ idx, it, decos }) => {
       const decoIdxs = decos.map(x => x.di);
       // Split-art job: this group is one design carrying its own per-size allocation.

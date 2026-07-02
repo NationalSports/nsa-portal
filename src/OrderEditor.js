@@ -2458,7 +2458,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const jobMap={};
     Object.values(sigGroups).forEach(grp=>{
       const firstEntry=grp.items[0];
-      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';let hasArtDeco=false;
+      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';let hasArtDeco=false;let hasUnresolvedArt=false;
       firstEntry.decos.forEach(({d})=>{
         if(d.kind==='art'){
           hasArtDeco=true;
@@ -2468,12 +2468,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
+            if(!artF)hasUnresolvedArt=true;// '__tbd' placeholder or a deleted art file — no real artwork behind this deco
             const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');
             decoTypes.push(d.deco_type||'screen_print');
             worstArtSt='needs_art';
+            hasUnresolvedArt=true;
           }
         } else if(d.kind==='numbers'){
           positions.add(safeStr(d.position));
@@ -2494,7 +2496,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _splitGrp=null;// per-item split group lives on each job item (giItem.split_group) for received-unit apportioning
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
-        total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp};
+        total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp,_unresolved_art:hasUnresolvedArt};
       // Add each item in the group
       grp.items.forEach(({ii,it,decos})=>{
         // Split-art job: a single design carrying its own per-size allocation. Receipts apportion
@@ -2555,12 +2557,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Approve / Send to Coach / send-back-to-artist choice instead of it silently going to
       // "Art Approved". Existing jobs keep their human-advanced status via the merge below.
       const _newArtSt=(!existing&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
+      // Preserve human-advanced states; 'needs_art' is the auto-computed default and
+      // must be re-derived so a fixed art file immediately unlocks to art_complete.
+      const _preservedArtSt=(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt;
+      // A job whose art is still TBD / unresolved has no artwork that could have been approved,
+      // so a stale preserved 'art_complete' (or a production-files stage) must never survive —
+      // otherwise the job reads "Ready for Production" with no real art applied. Queue states the
+      // rep/artist set by hand (art_requested, art_in_progress, waiting_approval, …) still stick.
+      const _artSt=(j._unresolved_art&&(_preservedArtSt==='art_complete'||PROD_FILES_STATUSES.includes(_preservedArtSt)))?j.art_status:_preservedArtSt;
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
-        // Preserve human-advanced states; 'needs_art' is the auto-computed default and
-        // must be re-derived so a fixed art file immediately unlocks to art_complete.
-        art_status:(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt,item_status:itemSt,prod_status:prodSt,
+        art_status:_artSt,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
@@ -2728,7 +2736,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const currentJobs=safeJobs(o);
     const synced=syncJobs();
     const _keySig=js=>js.map(j=>j.key).sort().join(',');
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units).sort().join(',');
+    // art_status is part of the signature so a status heal (e.g. a stale 'art_complete' downgraded
+    // because the job's art went back to Art TBD) actually lands — syncJobs is a fixed point over
+    // its own output, so this can't ping-pong.
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
     }
