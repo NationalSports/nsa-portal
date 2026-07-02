@@ -132,6 +132,13 @@ function tint(lx, zoneSpec, w, h) {
     let img = patternImgCache[zoneSpec.patternImage];
     if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2, ds.toHex(zoneSpec.color3, '#ffffff'), zoneSpec.patternTintMode);
     const cp = img ? lx.createPattern(img, 'repeat') : null;
+    // Tile a fixed ~4 times across the garment width so the print reads at the
+    // same physical scale as the 3D preview (which repeats the body 4×) and the
+    // same size across every zone. Without this the tile drew ~1× (way too big).
+    if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
+      const iw = img.naturalWidth || img.width || 1024;
+      try { cp.setTransform(new DOMMatrix().scale((w / 3) / iw)); } catch (_e) { /* older browsers */ }
+    }
     lx.fillStyle = cp || color; lx.fillRect(0, 0, w, h); return; // flat fallback until loaded
   }
   if (pat === 'solid') { lx.fillStyle = color; lx.fillRect(0, 0, w, h); return; }

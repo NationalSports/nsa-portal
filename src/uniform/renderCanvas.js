@@ -43,7 +43,10 @@ function fillZone(ctx, path, zone, vb, s) {
     if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2, ds.toHex(zone.color3, '#ffffff'), zone.patternTintMode);
     const cp = img ? ctx.createPattern(img, 'repeat') : null;
     if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
-      try { cp.setTransform(new DOMMatrix().scale(1 / s)); } catch (_e) { /* older browsers */ }
+      // Fixed ~6 repeats across the view width → consistent physical scale in
+      // every zone and a match to the 3D preview (was natural-size ≈ 1 repeat).
+      const iw = img.naturalWidth || img.width || 1024;
+      try { cp.setTransform(new DOMMatrix().scale((vb.w / 6) / iw)); } catch (_e) { /* older browsers */ }
     }
     ctx.fillStyle = cp || color;
     ctx.fill(path);
