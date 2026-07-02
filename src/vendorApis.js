@@ -7,6 +7,8 @@ import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
+import { buildSsOrdersQuery } from './ssOrders';
+import { normSzName } from './pricing';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -149,12 +151,38 @@ const fetchRecentShipments = async () => {
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions, shipToOverride) => {
-  // Resolve and validate the ship-to. shipToOverride (Manual Ship → warehouse/decorator)
-  // takes precedence over the SO-selected address or customer default.
+  // Resolve and validate the ship-to. shipToOverride (Manual Ship → typed address /
+  // warehouse / decorator) takes precedence over the SO-selected address or customer default.
   const shipTo = shipToOverride || ssShipToAddress(so, customer);
   if (!shipTo.street1 || !shipTo.city || !shipTo.state || !shipTo.postalCode) throw new Error('Ship-to address is incomplete (needs street, city, state, zip). Check the address selected on the SO or the customer record.');
-  // Upsert the order in ShipStation (createorder updates by orderKey) — the label prints
-  // the ORDER's ship-to, so an already-pushed order must be refreshed with the resolved address.
+  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
+  const carrierLower = (carrier || 'fedex').toLowerCase();
+  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
+  const dims = dimensions && dimensions.length && dimensions.width && dimensions.height
+    ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
+    : undefined;
+  const shipFrom = { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone };
+
+  // ── Explicit ship-to override → ORDERLESS label (/shipments/createlabel) ──
+  // CRITICAL: /orders/createlabelfororder prints the ORDER's stored recipient and IGNORES
+  // any shipTo we pass — so an order previously pushed with a decorator/customer address
+  // would silently mis-ship a manually-typed address. /shipments/createlabel has no order
+  // and ships to EXACTLY the shipTo given, guaranteeing the parcel goes where it was typed.
+  if (shipToOverride) {
+    const directPayload = {
+      carrierCode: cm.carrierCode, serviceCode: cm.serviceCode, packageCode: 'package',
+      confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+      weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+      shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+      internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` }, testLabel: false
+    };
+    console.log('[ShipStation] Orderless label payload (shipToOverride):', JSON.stringify(directPayload, null, 2));
+    return await shipStationCall('/shipments/createlabel', { method: 'POST', body: JSON.stringify(directPayload) });
+  }
+
+  // ── No override → ship to the order's resolved address (keeps ShipStation order linkage) ──
+  // Upsert the order (createorder updates by orderKey) so the label prints the resolved address.
   let ssOrderId = so._shipstation_order_id;
   try {
     const ssOrder = await pushSOToShipStation(so, customer, shipToOverride);
@@ -164,19 +192,11 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
     console.warn('[ShipStation] Order refresh failed, using existing order:', e.message);
   }
   if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
-  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
-  const carrierLower = (carrier || 'fedex').toLowerCase();
-  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
   const labelPayload = {
     orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' },
-    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
-      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : undefined,
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
-    shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+    weight: { value: weight || 5, units: 'pounds' }, dimensions: dims,
+    shipFrom, shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
   };
@@ -879,6 +899,11 @@ const sanmarSubmitPO = async (payload, env = 'test') => {
 // line's — we never guess, so an unmatched line stays blocked (caller falls back to
 // manual ordering) rather than risk shipping the wrong item.
 const _smNorm = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Size match key. Run the size through normSzName first so an order's gendered
+// label ("Mens S", "Women's L", "Youth M") collapses to the bare size SanMar
+// returns ("S"/"L"/"M") before stripping punctuation — otherwise "MENSS" never
+// equals "S" and every gendered line is left without a partId (blocked PO).
+const _smSizeNorm = (s) => _smNorm(normSzName(s));
 const _smColor = (bi) => bi.catalogColor || bi.color || bi.colorName || bi.millColor || bi.colorCode || '';
 const _smSize = (bi) => bi.size || bi.sizeName || bi.apparelSize || bi.sizeCode || '';
 const _smKey = (r, bi) => String(bi.uniqueKey || bi.Unique_Key || bi.UniqueKey || r.uniqueKey || r.Unique_Key || '');
@@ -901,7 +926,7 @@ const sanmarResolvePartIds = async (descriptors) => {
         const uk = _smKey(r, bi); if (!uk) continue;
         const color = _smColor(bi), size = _smSize(bi);
         cand.push({ color, size, uniqueKey: uk });
-        const mk = _smNorm(color) + '|' + _smNorm(size);
+        const mk = _smNorm(color) + '|' + _smSizeNorm(size);
         if (color && size && !(mk in map)) map[mk] = uk;
       }
     };
@@ -910,7 +935,7 @@ const sanmarResolvePartIds = async (descriptors) => {
     catch (e) { console.warn('[SanMar] partId lookup failed for', style, e.message); }
     const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
     for (const d of mine) {
-      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
       if (map[mk]) resolved[d.key] = map[mk];
     }
     // Fallback: size-specific query for any line the bulk lookup didn't resolve
@@ -923,7 +948,7 @@ const sanmarResolvePartIds = async (descriptors) => {
         addItems(items);
         for (const r of items) {
           const bi = r.productBasicInfo || r;
-          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smNorm(_smSize(bi)) === _smNorm(d.size)) {
+          if (_smNorm(_smColor(bi)) === _smNorm(d.color) && _smSizeNorm(_smSize(bi)) === _smSizeNorm(d.size)) {
             const uk = _smKey(r, bi); if (uk) { resolved[d.key] = uk; break; }
           }
         }
@@ -971,6 +996,15 @@ const ssGetStyles = async () => await ssApiCall('/Styles');
 const ssGetBrands = async () => await ssApiCall('/Brands');
 const ssGetCategories = async () => await ssApiCall('/Categories');
 
+// Fetch S&S orders (the bill source for S&S — see ssOrders.js). Defaults to the last 3
+// months (?All=True); pass {startDate,endDate} or an identifier to narrow. Always requests
+// lines. S&S returns an array for a listing, or a single object for an identifier lookup —
+// normalize to an array so callers can always map over it.
+const ssGetOrders = async (filter = {}) => {
+  const data = await ssApiCall(buildSsOrdersQuery(filter));
+  return Array.isArray(data) ? data : (data ? [data] : []);
+};
+
 // ─── S&S Activewear SKU resolution + order submit ───
 // S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
 // order lines carry style/color/size, so resolve the Sku live from the Products API.
@@ -1003,13 +1037,13 @@ const ssResolveSkus = async (descriptors) => {
       const color = r.colorName || r.color || '';
       const size = r.sizeName || r.size || '';
       cand.push({ color, size, sku });
-      const mk = _smNorm(color) + '|' + _smNorm(size);
+      const mk = _smNorm(color) + '|' + _smSizeNorm(size);
       if (color && size && !(mk in map)) map[mk] = sku;
     }
     candidates[style] = cand;
     for (const d of descriptors) {
       if (String(d.style || '').toUpperCase().trim() !== style) continue;
-      const mk = _smNorm(d.color) + '|' + _smNorm(d.size);
+      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
       if (map[mk]) resolved[d.key] = map[mk];
     }
     // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
@@ -1029,10 +1063,10 @@ const ssResolveSkus = async (descriptors) => {
         const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
         const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
         candidates[style].push({ color, size, sku });
-        const mk2 = _smNorm(color) + '|' + _smNorm(size);
+        const mk2 = _smNorm(color) + '|' + _smSizeNorm(size);
         for (const d of descriptors) {
           if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
-          if (_smNorm(d.color) + '|' + _smNorm(d.size) === mk2) resolved[d.key] = sku;
+          if (_smNorm(d.color) + '|' + _smSizeNorm(d.size) === mk2) resolved[d.key] = sku;
         }
       }
     }
@@ -1489,10 +1523,11 @@ const sportsLinkApiCall = async (path, options = {}) => {
   } catch (error) { console.error('[SportsLink] API call failed:', path, error); throw error; }
 };
 
-// Fetch dealer documents, following pagination (the API caps a single call at 1000
-// docs). Returns a flat array of raw SportsLink document objects.
+// Fetch dealer documents, following pagination. The API rejects pageSize >= 1000
+// ("Page Size must be less than 1000"), so we page in 500s. Returns a flat array of
+// raw SportsLink document objects.
 const sportsLinkGetDocuments = async (filters = {}) => {
-  const pageSize = filters.pageSize || 1000;
+  const pageSize = filters.pageSize || 500;
   let page = 1, all = [], guard = 0;
   while (guard++ < 50) {
     const p = buildSportsLinkDocsQuery(filters);
@@ -1528,4 +1563,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

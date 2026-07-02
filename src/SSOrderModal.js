@@ -63,14 +63,22 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const doSubmit = async () => {
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
+    let r;
     try {
-      const r = await ssSubmitOrder(built.order);
-      setResult(r); setSubmitState('success');
-      // Only a LIVE order should mark the batch as ordered; a test order places nothing.
-      if (live) onSubmitted && onSubmitted(r);
+      r = await ssSubmitOrder(built.order);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on ssactivewear.com.');
       setSubmitState('error');
+      return;
+    }
+    // S&S accepted the order — success regardless of local bookkeeping.
+    setResult(r); setSubmitState('success');
+    // Only a LIVE order should mark the batch as ordered; a test order places nothing.
+    // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order.
+    try {
+      if (live) onSubmitted && onSubmitted(r);
+    } catch (e) {
+      console.error('[S&S] order placed but post-order bookkeeping failed:', e);
     }
   };
 

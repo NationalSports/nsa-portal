@@ -3,8 +3,9 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
-import { isBotOwner, buildBotCartPayload, botRowUI } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
+import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
@@ -16,10 +17,10 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 
@@ -265,13 +266,16 @@ const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
+const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
+const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
+import { mapSsOrderToBill } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -456,6 +460,11 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
+
+// Global request circuit breaker (see ./lib/requestBreaker): short-circuits any /rest/v1 endpoint
+// a render/effect bug puts into a runaway loop, so a stale tab can never flood the DB again.
+const _breakerFetch = makeBreakerFetch({ label: 'circuit-breaker' });
+
 // Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
 // client and the lib client (same Supabase storage key) serialize auth ops
 // through ONE lock, instead of contending on the cross-tab Navigator
@@ -470,6 +479,7 @@ try {
         detectSessionInUrl: true,
         lock: _sbAuthLock,
       },
+      global: { fetch: _breakerFetch },
     });
   }
 }
@@ -526,6 +536,14 @@ const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_l
 // these vendors server-side. Null-vendor products (Artwork, Wilson balls) are explicitly preserved.
 const API_CATALOG_VENDOR_IDS=['v8','v4','v3'];
 const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_VENDOR_IDS.join(',')+')';
+// Catalog-load column allowlist: every products column EXCEPT description / description_ai. Those two
+// text columns are ~51% of the row width (483B + 257B of ~1460B) yet are never read off the in-memory
+// `prod` catalog — the storefront product pages fetch their own rows (PROD_SELECT) and the client save
+// path (_dbSaveProduct, ~line 2242) writes an explicit column set that already omits them, so trimming
+// the load here can neither break a read nor null a description on write-back. This roughly halves the
+// heaviest recurring query (the full-catalog products fetch, historically ~58% of DB CPU) on heap
+// fetches, JSON serialization and transfer. Keep this list in sync with the products table columns.
+const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_price,nsa_cost,is_active,available_sizes,_colors,created_at,updated_at,image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,size_costs,pricing_group,bin,catalog_sell_price,inventory_source,is_featured,description_ai_at';
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -535,7 +553,7 @@ const _safeQuery=(table,opts)=>{
   // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
   const fetchPage=(start)=>{
-    let q=supabase.from(table).select('*');
+    let q=supabase.from(table).select(opts?.select||'*');
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
@@ -772,7 +790,9 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
   if (brand !== 'Adidas') return null;
   if (loading) return <div style={{fontSize:10,color:'#059669',marginTop:4}}>Loading Adidas B2B stock...</div>;
   if (!ai || Object.keys(ai.sizes || {}).length === 0) return <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>No Adidas B2B data — run inventory sync</div>;
-  const b2bTotal = Object.values(ai.sizes).reduce((a, s) => a + (s.qty || 0), 0);
+  // Sum only recognized sizes so the feed's duplicate internal size codes (e.g. 700/710/720 that
+  // mirror ball sizes 3/4/5) don't double-count the B2B total.
+  const b2bTotal = Object.entries(ai.sizes).reduce((a, [sz, s]) => a + (SZ_ORD.includes(sz) ? (s.qty || 0) : 0), 0);
   const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
   const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
   return (<div style={{marginTop:6}}>
@@ -838,7 +858,7 @@ const _dbLoad = async (opts={}) => {
       // essential (tier-1 homepage) load skips the heavy ~47k catalog + its inventory; they stream in
       // via a tier-2 background load right after first paint (see the init effect). Realtime/poll keep
       // them fresh as before.
-      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR}),true),
+      essential?_skip:_grp('products',()=>_safeQuery('products',{order:'name',or:_API_CATALOG_VENDOR_OR,select:_CATALOG_PROD_COLS}),true),
       essential?_skip:_grp('products',()=>_safeQuery('product_inventory'),true),
       _grp('estimates',()=>_safeQuery('estimates',{order:'id'})),
       _grp('estimates',()=>_safeQuery('estimate_art_files')),
@@ -940,7 +960,7 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
@@ -971,7 +991,7 @@ const _dbLoad = async (opts={}) => {
       const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
       const _carryArtIds=new Set();
       _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
-      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
@@ -1040,7 +1060,11 @@ const _dbLoad = async (opts={}) => {
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
     // so transient empty results don't pollute client state and trigger destructive saves
-    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
+    // so_item_pick_lines / so_item_po_lines MUST be included: a timeout on either loads SOs with empty pick_lines/
+    // po_lines, and if the poll/realtime reload doesn't bail here it overwrites the snapshot with un-hydrated SOs,
+    // diffing every SO as "changed" → a mass background re-save whose stale (childless) payloads trip the per-SO
+    // restore guard and fire one data-loss alert per SO (the 2026-06-30 ~340-email storm).
+    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files')||_lastLoadTimedOut.has('so_item_pick_lines')||_lastLoadTimedOut.has('so_item_po_lines');
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
@@ -1159,7 +1183,7 @@ const _checkVersion=async(table,id,localVersion)=>{
 // ─── Normalized Save Helpers ───
 // Art rows map `stitches` to an INT column. An empty string (or any non-numeric value) must
 // become null or Postgres rejects the whole upsert ("invalid input syntax for type integer").
-const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}return r};
+const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}if('mock_links' in r&&r.mock_links==null)r.mock_links={};return r};
 // ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
 // When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
 // unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
@@ -1168,7 +1192,7 @@ const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);
 // filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
 // changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
 // lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','notes','archived','prod_files_attached'];
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','notes','archived','prod_files_attached'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
@@ -1186,6 +1210,9 @@ const _mergeArtConflict=(clientArt,dbRow)=>{
   const im={...(dbRow.item_mockups||{})};// per-item mockup map: union each item's url list
   Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],v)});
   merged.item_mockups=im;
+  // mock_links: small {garmentKey -> sourceKey} map. Shallow-merge so neither side's reuse links are
+  // dropped on a concurrent edit; the client's link wins for any key it set.
+  merged.mock_links={...(dbRow.mock_links||{}),...(clientArt.mock_links||{})};
   if(!merged.preview_url&&clientArt.preview_url)merged.preview_url=clientArt.preview_url;
   return merged;
 };
@@ -1224,6 +1251,12 @@ const _dbSaveEstimateInner = async (est) => {
   // selecting a customer fires another _diffSave that persists it. This also blocks a stale save from
   // nulling an already-saved estimate's customer.
   if(!est.customer_id){if(!_bgSync&&typeof _dbNotify==='function')_dbNotify('Add a customer before this estimate can be saved.','error');return;}
+  // Stale-write circuit breaker: if a recent save for this estimate was rejected as STALE, don't re-POST
+  // until the cooldown elapses (realtime/poll should have healed the copy by then). Prevents a re-firing
+  // save effect from flooding the DB with STALE_ESTIMATE_WRITE rejections. Treated as a non-failure 'stale'
+  // result so it clears pending and never lands in the failed banner.
+  const _cd=_dbStaleCooldown.get(est.id);
+  if(_cd&&Date.now()<_cd){return 'stale';}
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
@@ -1382,6 +1415,7 @@ const _dbSaveEstimateInner = async (est) => {
         // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
         // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
         return 'stale';
       }
       if(_rpcErr){
@@ -1396,6 +1430,18 @@ const _dbSaveEstimateInner = async (est) => {
         _dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_m);_persistFailedIds();
         if(_dbNotify)_dbNotify(_friendly,'error');
         return false;
+      }
+      // Stale via return value (migration 00156): save_estimate now RETURNS {stale:true} instead of raising
+      // STALE_ESTIMATE_WRITE, so an out-of-date tab can't retry a rejected save into a DB CPU storm (a raised
+      // error gets retried with no backoff by old tabs — thousands/sec). Handle identically to the raised-error
+      // path above: do NOT advance _version (keep optimistic concurrency protecting the local copy), clear
+      // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
+      if(_rpcRes.data&&_rpcRes.data.stale===true){
+        console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
+        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);
+        return 'stale';
       }
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
       if(_rpcRes.data&&typeof _rpcRes.data.version==='number')est._version=_rpcRes.data.version;
@@ -1439,7 +1485,7 @@ const _dbSaveEstimateInner = async (est) => {
     // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
     // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
     if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
-    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(est._version)est._version=est._version+1;
     return true;
@@ -2008,8 +2054,8 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -2512,6 +2558,13 @@ const _dbRecentSaves={};// {id: timestamp}
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
 // letting another user's/tab's legitimate art deletions reconcile normally instead of being resurrected.
 const _recentlySavedByMe=id=>!!_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000;
+// Stale-write circuit breaker. When save_estimate rejects a write as STALE (the client's copy is older
+// than the DB), re-POSTing the same copy can never succeed — only reloading the newer rows (realtime/poll)
+// heals it. A save effect that keeps re-firing on a stale estimate therefore floods the API with rejected
+// writes (the ~1000/sec STALE_ESTIMATE_WRITE storms). After a stale rejection we skip further save attempts
+// for that estimate until the cooldown elapses, capping a misbehaving tab at a trickle instead of a storm.
+const _dbStaleCooldown=new Map();// {estimateId: epoch-ms until which to skip saving}
+const _STALE_COOLDOWN_MS=10000;
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
 // not real server-side errors. Backoff: 400ms, 1.2s.
 const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
@@ -3297,7 +3350,16 @@ const parseNetSuitePdfMulti=(pages,docType,products)=>{
     return parseNetSuitePdf(text,docType,products);
   });
 };
-const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
+// Gender/audience qualifiers OMG (and some vendors) prepend to a size label —
+// e.g. "Mens S", "Women's Large", "Youth M". The size itself is the same, so we
+// strip the qualifier and normalize the bare size. Adult/unisex collapse to the
+// plain size (S/M/L…); youth-class map to the Y-prefixed size (S→YS, M→YM…).
+// Without this, an OMG-ordered "Mens L" never matched a vendor's "L", so
+// genuinely in-stock items read as out. Mirrors normSzName in pricing.js.
+const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
+const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
+const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
@@ -3361,8 +3423,8 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override||npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
@@ -3681,7 +3743,7 @@ function AuthSetupPage({mode}){
       <div style={{width:420,padding:0}}>
         <div style={{textAlign:'center',marginBottom:32}}>
           <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
-          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
+          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Connect</div>
         </div>
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
           {checking?(
@@ -3761,6 +3823,8 @@ export default function App(){
   const _path=typeof window!=='undefined'?window.location.pathname:'';
   if(_path==='/auth/setup')return<AuthSetupPage mode="setup"/>;
   if(_path==='/auth/reset')return<AuthSetupPage mode="reset"/>;
+  // /onboarding is the invite-only new-hire packet — token-gated, no portal login.
+  if(_path==='/onboarding')return<React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><OnboardingWizard/></React.Suspense>;
 
   const[pg,setPg]=useState(()=>_pgFromUrl()||'dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
@@ -4439,6 +4503,14 @@ export default function App(){
           if(localPickCount>0&&dbPickCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
           }
+          // Same protection for po_lines (this guard was missing — a timed-out/mid-save so_item_po_lines read would
+          // drop them from state, then the next save's restore guard re-injected them from the DB and fired a
+          // data-loss alert per SO). Deliberate PO deletions still reconcile via _hydratedPoIds in the save path.
+          const localPoCount=(local.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
+          if(localPoCount>0&&dbPoCount===0&&m.items?.length){
+            m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
+          }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];return li?.decorations?.length&&!si.decorations?.length?{...si,decorations:li.decorations}:si});
@@ -4626,6 +4698,42 @@ export default function App(){
     fetchAdidasInventoryBulk(adidasSkus).then(data=>{if(data)setAdidasInvBulk(data)}).catch(e=>console.warn('[Adidas B2B] Bulk fetch error:',e));
     fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync fetch error:',e));
   },[prod]);
+  // Auto-apply accurate vendor sizes from the scrape. Once the synced B2B feed
+  // (inventory_unified, already loaded into adidasInvBulk) is available, any Adidas
+  // item still on an empty/generic size default gets its real size run applied — e.g.
+  // a soccer ball defaulted to S–2XL becomes 3/4/5. Only recognized sizes are kept, so
+  // the feed's internal size codes (700/710/720 duplicating 3/4/5, cm codes, _na, …) are
+  // dropped; items whose feed yields no recognizable sizes, and items a rep has already
+  // sized to something non-generic, are left untouched. Persisted via the products
+  // diff-save effect above (available_sizes is part of _prodDiffCmp). Runs once/session.
+  const _adidasSizeReconciled=useRef(false);
+  React.useEffect(()=>{
+    if(_adidasSizeReconciled.current)return;
+    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    if(!prod||!prod.length)return;
+    const bulkSkus=Object.keys(adidasInvBulk);
+    if(!bulkSkus.length)return;// wait for the B2B feed to load
+    _adidasSizeReconciled.current=true;
+    const byUp={};bulkSkus.forEach(sku=>{byUp[String(sku).toUpperCase()]=adidasInvBulk[sku]});
+    const GENERIC='S,M,L,XL,2XL';
+    const changes={};
+    prod.forEach(p=>{
+      if((p.brand||'')!=='Adidas'||!p.sku)return;
+      const cur=p.available_sizes||[];
+      if(cur.length!==0&&cur.join(',')!==GENERIC)return;// respect deliberate (non-default) sizing
+      const ai=byUp[String(p.sku).toUpperCase()];
+      if(!ai||!ai.sizes)return;
+      const cleaned=SZ_ORD.filter(s=>ai.sizes[s]!==undefined);// keep recognized sizes only, in SZ_ORD order
+      if(!cleaned.length)return;// feed had only unrecognized codes → leave as-is
+      if(cleaned.join(',')===cur.join(','))return;// no change
+      changes[p.id]=cleaned;
+    });
+    const ids=Object.keys(changes);
+    if(!ids.length)return;
+    setProd(prev=>prev.map(x=>changes[x.id]?{...x,available_sizes:changes[x.id]}:x));
+    console.log('[Adidas size sync] applied vendor sizes to '+ids.length+' Adidas product(s) from the B2B feed');
+    nf('Applied vendor sizes to '+ids.length+' Adidas item'+(ids.length>1?'s':'')+' from the stock feed');
+  },[adidasInvBulk,prod]);// eslint-disable-line
 
   // ─── Adidas B2B CSV Upload Handler ───
   const handleAdidasCSVUpload=async(file)=>{
@@ -4754,10 +4862,23 @@ export default function App(){
   // with art already complete, so the person checking in knows it can move to decoration now.
   const notifyDecoReady=(readyJobs)=>{if(readyJobs&&readyJobs.length)nf('🎽 Ready for decoration: '+readyJobs.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   _onEstStatusMerge=(id,status,approved_by,approved_at)=>setEsts(prev=>prev.map(e=>e.id===id?{...e,status,...(approved_by?{approved_by}:{}),...(approved_at?{approved_at}:{})}:e));
-  // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
+  // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min, with a global
+  // per-window email cap so a mass re-save can't flood the inbox. Auto-restores are logged only (data preserved).
   const _alertDedupeRef=React.useRef({});
-  _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
+  // Global flood backstop — a bulk/background re-save can trip a save guard on hundreds of distinct SOs in a row;
+  // per-SO dedupe doesn't help (each SO is a different key), so cap total emails per rolling window. Tracks the
+  // current window and how many alert emails were sent vs suppressed within it.
+  const _alertFloodRef=React.useRef({windowStart:0,sent:0,suppressed:0,noticed:false});
+  _dataLossAlert=({kind,soId,prevCount,newCount,reason,restored})=>{
     try{
+      // Auto-restore is a SUCCESS, not a loss: the DB save layer re-injected PO/pick lines the client's save
+      // omitted (stale/un-hydrated in-memory state), so nothing was actually lost. Record it for audit but never
+      // email — on a bulk/background re-save this fires once per SO and would otherwise flood the admin inbox with
+      // false "Items lost" alarms (the 2026-06-30 storm: ~340 emails across as many SOs, every SO's data intact).
+      if(kind==='po_restored'||kind==='picks_restored'){
+        logChange('data_restored','SO',soId,'Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)');
+        return;
+      }
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
       const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked'||kind==='qty_wipe_blocked';
       const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
@@ -4766,6 +4887,19 @@ export default function App(){
       // bg_shrink_blocked falls through so admin gets a heads-up that stale state nearly wiped an estimate
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
       if(now-last<5*60*1000)return; // already emailed within 5 min
+      // Global flood cap: never send more than MAX alert emails per WINDOW, no matter how many distinct SOs trip a
+      // guard. Past the cap the event is still logged above (audit intact) but the email is suppressed; one digest
+      // notice is sent per window so the admin knows alerts are being throttled and where to look.
+      const fr=_alertFloodRef.current;const WINDOW=10*60*1000,MAX=8;
+      if(now-fr.windowStart>WINDOW){fr.windowStart=now;fr.sent=0;fr.suppressed=0;fr.noticed=false;}
+      if(fr.sent>=MAX){
+        fr.suppressed++;_alertDedupeRef.current[dedupeKey]=now;
+        if(!fr.noticed){fr.noticed=true;
+          sendBrevoEmail({to:[{email:'steve@nationalsportsapparel.com',name:'Steve Peterson'}],subject:'⚠️ NSA Portal — data-loss alerts throttled (possible bulk re-save)',htmlContent:'<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a"><p>More than '+MAX+' save-guard alerts fired within 10 minutes, so further alert emails are being suppressed to protect your inbox. This pattern usually means a bulk or background re-save is tripping the guards across many orders rather than a single genuine loss.</p><p>No alerts are lost — every event is still recorded in <strong>System Health &rarr; Change Log</strong>. Please review it there.</p></div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] throttle notice failed:',e));
+        }
+        return;
+      }
+      fr.sent++;
       _alertDedupeRef.current[dedupeKey]=now;
       const adminEmail='steve@nationalsportsapparel.com';
       const ccEmail=companyInfo?.email&&companyInfo.email!==adminEmail?companyInfo.email:null;
@@ -5217,17 +5351,29 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('batch_vendor_counters',batchVendorCounters)},[batchVendorCounters]);
-  // Auto-assign a unique PO number to each vendor group when new vendors appear in the queue
+  // Assign each queued vendor group a unique PO number that can't regress or collide.
+  // PO numbers are derived from the high-water mark of every number already used by an
+  // ordered batch (submittedBatches), so a client that boots with a stale/low batch_counter
+  // can never reissue a number that's already taken or slot one *below* the latest PO — the
+  // "NSA 4503 jumped ahead / duplicate PO#" bug. Orphaned counters (vendor no longer queued)
+  // are dropped, and any pending assignment at/below the high-water mark is re-minted above it.
   React.useEffect(()=>{
-    const vendorKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key))];
-    const unassigned=vendorKeys.filter(vk=>batchVendorCounters[vk]==null);
-    if(unassigned.length===0)return;
-    let next=batchCounter;
-    const updates={};
-    unassigned.forEach(vk=>{updates[vk]=next++});
-    setBatchVendorCounters(prev=>({...prev,...updates}));
-    setBatchCounter(next);
-  },[batchPOs,batchVendorCounters]);// eslint-disable-line react-hooks/exhaustive-deps
+    const groupKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'')))];
+    const parseNo=v=>{const n=parseInt(String(v).replace(/[^0-9]/g,''),10);return isNaN(n)?null:n};
+    let hi=4500;// NSA 4501 is the first PO number ever issued
+    (submittedBatches||[]).forEach(sb=>{const n=parseNo(sb.po_number);if(n!=null&&n>hi)hi=n;});
+    // Keep an existing assignment only if it's unique and strictly above every ordered PO#;
+    // re-mint anything missing, duplicated, or at/below the high-water mark. Drop counters for
+    // groups no longer in the queue.
+    const next={};const taken=new Set();
+    groupKeys.forEach(gk=>{const n=parseNo(batchVendorCounters[gk]);if(n!=null&&n>hi&&!taken.has(n)){next[gk]=n;taken.add(n);}});
+    let n=Math.max(hi,(parseNo(batchCounter)||0)-1)+1;
+    groupKeys.forEach(gk=>{if(next[gk]!=null)return;while(taken.has(n))n++;next[gk]=n;taken.add(n);n++;});
+    const keys=Object.keys(next);
+    if(keys.length!==Object.keys(batchVendorCounters).length||keys.some(k=>batchVendorCounters[k]!==next[k]))setBatchVendorCounters(next);
+    const newCounter=Math.max(hi+1,n,...Object.values(next).map(v=>v+1));
+    if(newCounter!==batchCounter)setBatchCounter(newCounter);
+  },[batchPOs,batchVendorCounters,submittedBatches]);// eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('est_history',estHistory)},[estHistory]);
@@ -6455,7 +6601,17 @@ export default function App(){
   const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_todos',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
   const[todoFilter,setTodoFilter]=useState('all');// all|art|follow_up|order|deadline|booking|delivery|issue|est
   const[snoozeOpenKey,setSnoozeOpenKey]=useState(null);
+  // Generic time-based snooze for any to-do (hides it until the chosen date). Follow-up
+  // types keep their own follow_up_at logic via snoozeTodo; everything else uses this map.
+  const[snoozedTodos,setSnoozedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_snoozed_todos')||'{}')}catch{return{}}});
+  const _todoSnoozed=(key)=>{const u=key&&snoozedTodos[key];return!!u&&u>Date.now()};
+  const snoozeTodoUntil=(t,days)=>{const key=t.dismissKey;if(!key){nf('Cannot snooze this item','error');return}
+    const until=Date.now()+days*86400000;
+    setSnoozedTodos(prev=>{const n={...prev};Object.keys(n).forEach(k=>{if(n[k]<=Date.now())delete n[k]});n[key]=until;_lsSet('nsa_snoozed_todos',JSON.stringify(n));return n});
+    setSnoozeOpenKey(null);nf('Snoozed for '+days+' day'+(days!==1?'s':''))};
   const _todoIsFollowUp=(t)=>t.type==='follow_up'||t.type==='inv_followup'||t.type==='coach_followup';
+  // Unified snooze: follow-ups push their source date; all other to-dos use the snooze map.
+  const doSnooze=(t,days)=>{if(_todoIsFollowUp(t))snoozeTodo(t,days);else snoozeTodoUntil(t,days)};
   const _todoCategory=(t)=>{
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
     if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
@@ -6470,6 +6626,61 @@ export default function App(){
   const _CAT_LABELS={deadline:'📅 Deadlines',art:'🎨 Art / Approvals',follow_up:'⏰ Follow-ups',est:'✅ Estimates',order:'🛒 Orders / Deposits',firm:'📌 Firm Dates',delivery:'🚗 Delivery',issue:'🔴 Issues',other:'📋 Other'};
   const _CAT_ORDER=['deadline','art','follow_up','est','order','firm','delivery','issue','other'];
   const _groupTodos=(arr)=>{const g={};arr.forEach(t=>{const c=_todoCategory(t);(g[c]=g[c]||[]).push(t)});return _CAT_ORDER.filter(c=>g[c]?.length).map(c=>({cat:c,label:_CAT_LABELS[c],items:g[c]}))};
+  // ── Notification grouping (by type) ─────────────────────────────────────────
+  // Each notification has a `type` (items_received, ready_for_deco, art_approved, …).
+  // Group by type for a tidy "by type, then by date" view; unknown types fall through to 'other'.
+  const _NOTIF_TYPE_META={
+    art_approved:{label:'✅ Coach Approved Art',order:1},
+    ready_for_deco:{label:'🎽 Ready for Decoration',order:2},
+    items_received:{label:'📦 Items Received',order:3},
+    job_completed:{label:'🏭 Jobs Completed',order:4},
+    if_pulled:{label:'📦 IFs Pulled',order:5},
+    inv_paid:{label:'💰 Invoices Paid',order:6},
+    _task:{label:'📌 Task Updates',order:7},
+    other:{label:'🔔 Other',order:99},
+  };
+  const _notifTypeKey=(t)=>t.isTaskComplete?'_task':(_NOTIF_TYPE_META[t.type]?t.type:'other');
+  const _notifTs=(t)=>{const d=t.date?new Date(t.date).getTime():0;return isNaN(d)?0:d};
+  // Group notifications by type, order the groups, and sort each group's items newest-first.
+  const _groupNotifs=(arr)=>{const g={};arr.forEach(t=>{const k=_notifTypeKey(t);(g[k]=g[k]||[]).push(t)});
+    return Object.keys(g).sort((a,b)=>(_NOTIF_TYPE_META[a]?.order||50)-(_NOTIF_TYPE_META[b]?.order||50))
+      .map(k=>({cat:k,label:_NOTIF_TYPE_META[k]?.label||'🔔 '+k,items:g[k].slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}))};
+  // Activity Center popup (expanded notifications + to-dos)
+  const[acOpen,setAcOpen]=useState(false);
+  const[acTab,setAcTab]=useState('notifs');// notifs | todos
+  const[acNotifSort,setAcNotifSort]=useState('type');// type | date
+  const[acTodoSort,setAcTodoSort]=useState('category');// category | date | priority
+  const[acTodoCats,setAcTodoCats]=useState([]);// selected to-do categories ([] = show all)
+  const[acSearch,setAcSearch]=useState('');
+  const[acMsgKey,setAcMsgKey]=useState(null);// dismissKey of the row whose message composer is open
+  const[acMsgText,setAcMsgText]=useState('');
+  const[acDateKey,setAcDateKey]=useState(null);// dismissKey of the row whose expected-date editor is open
+  const[acDateVal,setAcDateVal]=useState('');
+  const openActivityCenter=(tab)=>{setAcTab(tab||'notifs');setAcSearch('');setAcTodoCats([]);setAcMsgKey(null);setAcMsgText('');setAcDateKey(null);setAcDateVal('');setAcOpen(true)};
+  // Change a to-do's linked sales order's "expected by" date (e.g. custom uniforms need a longer lead time).
+  // Applies immediately (val passed in) so it doesn't depend on a separate Save click — native date
+  // pickers can swallow the first click after the calendar closes.
+  const acSetExpectedDate=(t,val,close)=>{
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const v=(val!==undefined?val:acDateVal)||'';
+    setAcDateVal(v);
+    setSOs(prev=>prev.map(s=>s.id===so.id?{...s,expected_date:v,updated_at:new Date().toISOString()}:s));
+    if(close)setAcDateKey(null);
+    nf(v?('Expected date set to '+v):'Expected date cleared');
+  };
+  // Post a quick message to a to-do/notification's related sales-order thread (reuses the messages system).
+  const acSendMessage=(t)=>{
+    const txt=(acMsgText||'').trim();if(!txt){nf('Type a message first','error');return}
+    const so=t.so||(t.so_id?sos.find(s=>s.id===t.so_id):null);
+    if(!so){nf('No order linked to this item','error');return}
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    const rep=so.created_by&&so.created_by!==cu.id?[so.created_by]:[];
+    const soMsg={id:'m'+Date.now(),so_id:so.id,author_id:cu.id,text:txt,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'general',tagged_members:rep,entity_type:'so',entity_id:so.id};
+    setMsgs(prev=>[...prev,soMsg]);
+    setAcMsgKey(null);setAcMsgText('');
+    nf('Message sent to '+(c?.name||so.id)+' thread');
+  };
   const snoozeTodo=(t,days)=>{
     const fuAt=new Date(Date.now()+days*86400000).toISOString();
     const nowIso=new Date().toISOString();
@@ -6478,7 +6689,7 @@ export default function App(){
     }else if(t.type==='inv_followup'&&t.inv){
       setInvs(prev=>prev.map(i=>i.id===t.inv.id?{...i,follow_up_at:fuAt,updated_at:nowIso}:i));
     }else if(t.type==='coach_followup'&&t.so&&t.jobId){
-      setSos(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
+      setSOs(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
     }
     setSnoozeOpenKey(null);
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
@@ -6651,7 +6862,7 @@ export default function App(){
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
-      ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
+      ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
@@ -6672,6 +6883,23 @@ export default function App(){
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
+  const changeDocRep=(customer,newRepId,docId)=>{
+    const oldRepId=customer.primary_rep_id;
+    if(!newRepId||oldRepId===newRepId)return;
+    const oldRepName=REPS.find(r=>r.id===oldRepId)?.name||'None';
+    const newRepName=REPS.find(r=>r.id===newRepId)?.name||'Unknown';
+    savC({...customer,primary_rep_id:newRepId});
+    const adminUser=REPS.find(r=>(r.role==='admin'||r.role==='super_admin')&&r.id!==cu.id);
+    if(adminUser){
+      const ts=new Date().toISOString();
+      const todo={id:'todo-rc-'+Date.now(),title:'Rep change: '+customer.name+' → '+newRepName,
+        description:'__rep_change__:'+JSON.stringify({old_rep_id:oldRepId,new_rep_id:newRepId,customer_id:customer.id})+'\nPreviously: '+oldRepName+'. Changed by '+cu.name+' on '+docId+'.',
+        created_by:cu.id,assigned_to:adminUser.id,customer_id:customer.id,priority:1,status:'open',created_at:ts,updated_at:ts};
+      setAssignedTodos(prev=>[...prev,todo]);
+      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').upsert([todo],{onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] rep change todo:',r.error.message)}));
+    }
+    nf('Rep updated to '+newRepName);
+  };
   const savC=async c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     // Is this a brand-new customer (e.g. created inline while building an estimate)? If so we confirm it
@@ -6857,6 +7085,21 @@ export default function App(){
     const _artSaveP=_dbSaveArtFiles(merged);
     Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{_dbSavePendingIds.delete(merged.id)});
     return _artSaveP;
+  };
+  // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
+  // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
+  // of the fire-and-forget onSave that silently claims "saved". Runs savSO's local-state update + all its
+  // data-loss guards, syncs the diff snapshot so the [sos] effect doesn't ALSO fire a full save, and protects
+  // the SO from a mid-write poll merge — same pattern as savArtFiles above, but for the entire order.
+  const savSONow=(s,opts)=>{
+    const sl=savSO(s,opts);
+    if(!sl||!sl.id)return Promise.resolve(false);
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===sl.id))_dbSnap.current.sos=snap.map(x=>x.id===sl.id?sl:x);
+    _dbSavePendingIds.add(sl.id);
+    const _p=_dbSaveSO(sl);
+    Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{_dbSavePendingIds.delete(sl.id)});
+    return _p;
   };
   const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
@@ -7156,7 +7399,20 @@ export default function App(){
 
   // ─── ShipStation Handlers ───
   React.useEffect(() => {
-    testShipStationConnection().then(setSSConnected).catch(() => setSSConnected(false));
+    let cancelled = false;
+    // The Supabase session is restored asynchronously on first load (see stale-session guard above).
+    // Without waiting, authFetch sends no Bearer token and verifyUser returns 401 → false "Offline".
+    (async () => {
+      if (supabase) {
+        for (let i = 0; i < 15 && !cancelled; i++) {
+          const { data } = await supabase.auth.getSession();
+          if (data?.session) break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      if (!cancelled) testShipStationConnection().then(v => { if (!cancelled) setSSConnected(v); }).catch(() => { if (!cancelled) setSSConnected(false); });
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleShipToShipStation = async (so) => {
@@ -7759,9 +8015,19 @@ export default function App(){
     </div>
   </div>;
 
+  // Stop a Claude bot task from being silently checked off before the bot actually
+  // placed the order. Returns false (abort) if the user declines the warning. Used
+  // by every completion entry point so the guard can't be bypassed by surface.
+  const _confirmTodoComplete=(id)=>{
+    const t=(assignedTodos||[]).find(x=>x.id===id);
+    const warn=botCompleteNeedsConfirm(t);
+    if(!warn)return true;
+    return window.confirm('⚠️ This is a Claude bot task and the bot has NOT finished it (status: '+warn+').\n\nMarking it complete only checks the task off — it does NOT place the order, and the PO will look ordered when it isn\'t.\n\nComplete it anyway?');
+  };
   // Mark an assigned TODO complete from anywhere (e.g. the open-tasks banner on a sales order).
   // Mirrors the dashboard's _todoComplete: optimistic local update + snapshot sync + DB write.
   const completeTodo = (id) => {
+    if(!_confirmTodoComplete(id))return;
     const ts=new Date().toISOString();
     const upd={status:'completed',completed_at:ts,completed_by:cu?.id,updated_at:ts};
     setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
@@ -8062,7 +8328,7 @@ export default function App(){
       }
       if(!so)return false;
       if(cu.role==='rep')return msgRepId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
       return true;
     };
     const unreadMsgs=allUnread.filter(isMyMsg);
@@ -8076,7 +8342,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
           if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
-          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
@@ -8089,10 +8355,14 @@ export default function App(){
         // Notify rep when all items received for a job
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at});
+          // "When did the items arrive?" — derive the real receive moment from the fulfilling receipts
+          // (see jobReceivedAt) instead of updated_at, which drifts to the last edit and mislabels
+          // long-received jobs as "Yesterday". items_received_at is honored if ever persisted.
+          const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
-            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
         // Notify rep when a job is completed (decoration done)
         if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
@@ -8201,8 +8471,9 @@ export default function App(){
     // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
-      // If follow_up_at is set and due, show specific follow-up todo
-      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+      // If follow_up_at is set and due, show specific follow-up todo (skipped when the
+      // server sweep is auto-sending — no need to nag the rep to do it by hand).
+      if(!e.follow_up_auto&&e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
         todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2,date:e.email_sent_at||e.updated_at||e.created_at});
@@ -8216,8 +8487,8 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    // Invoice follow-up alerts (uses follow_up_at when set)
-    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
+    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
@@ -8257,7 +8528,7 @@ export default function App(){
       if(t.role==='all')return true;
       if(t.role==='gm'&&(cu.role==='gm'||cu.role==='admin'||cu.role==='super_admin'))return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
       return true;
     });
     // Admin-view todos: filterable by rep selector
@@ -8276,6 +8547,7 @@ export default function App(){
     const _fmtDueDate=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
     const _todoDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#2563eb'};
     const _todoComplete=(id,note)=>{
+      if(!_confirmTodoComplete(id))return;
       const ts=new Date().toISOString();
       const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
       if(note)upd.completion_note=note;
@@ -8305,7 +8577,11 @@ export default function App(){
     const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
     // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
-    const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();const t=dt.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(dt.toDateString()===now.toDateString())return'Today '+t;const y=new Date(now);y.setDate(now.getDate()-1);if(dt.toDateString()===y.toDateString())return'Yesterday '+t;return dt.toLocaleDateString([],{month:'short',day:'numeric'})+' '+t}catch{return''}};
+    const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();
+      // A date-only receipt stamp (e.g. a PO shipment date) parses to local midnight — show just the day, not a misleading "12:00 AM".
+      const dateOnly=dt.getHours()===0&&dt.getMinutes()===0&&dt.getSeconds()===0;
+      const t=dateOnly?'':' '+dt.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+      if(dt.toDateString()===now.toDateString())return'Today'+t;const y=new Date(now);y.setDate(now.getDate()-1);if(dt.toDateString()===y.toDateString())return'Yesterday'+t;return dt.toLocaleDateString([],{month:'short',day:'numeric'})+t}catch{return''}};
     // Dashboard sales box. scopeRepId set → that rep's own sales by month (period-scoped). For admin
     // (scopeRepId=null) it's a mini multi-report panel: By Rep (leaderboard), Top Customers (filterable
     // by rep), and KPIs (revenue, gross margin %, orders, avg order, customers, top rep, margin-by-rep).
@@ -8316,6 +8592,7 @@ export default function App(){
       const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const NAVY='#1e3a8a',NAVY2='#1e40af',RED='#dc2626',SLATE='#475569';
       const _saleDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))};
+      const _invDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}const dt=new Date(d);return isNaN(dt)?null:dt};
       const now=new Date(),cY=now.getFullYear(),cM=now.getMonth();
       const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
       const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
@@ -8335,7 +8612,7 @@ export default function App(){
       // ── Rep view: own sales by month within the period ──
       if(scopeRepId){
         const byMonth=new Map();
-        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so))return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byMonth.set(key,seg)});
+        sos.forEach(so=>{if(repOf(so)!==scopeRepId||!inPeriod(so)||so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const dt=_saleDate(so.created_at);const key=dt.getFullYear()*12+dt.getMonth();const seg=byMonth.get(key)||{label:MONTHS[dt.getMonth()],sortKey:key,rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byMonth.set(key,seg)});
         const rows=[...byMonth.values()].sort((a,b)=>a.sortKey-b.sortKey);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         return(<div className="card">
@@ -8347,9 +8624,9 @@ export default function App(){
         </div>);
       }
       // ── Admin view: multi-report panel ──
-      const periodSOs=sos.filter(inPeriod);
+      const periodSOs=sos.filter(so=>inPeriod(so)&&so.status!=='cancelled'&&so.status!=='deleted'&&!so.deleted_at);
       const report=dashSalesReport;
-      const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs'};
+      const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs',sales_vs_billed:'💰 Sales vs Billed'};
       let body=null;
       if(report==='top_customers'){
         const byCust=new Map();
@@ -8380,6 +8657,32 @@ export default function App(){
             <div style={{width:42,textAlign:'right',fontSize:12,fontWeight:700,color:NAVY,flexShrink:0}}>{r.pct}%</div>
           </div>)}</div></>}
         </>;
+      }else if(report==='sales_vs_billed'){
+        const byRep=new Map();
+        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),sales:0,billed:0,orders:0};seg.sales+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
+        invs.forEach(inv=>{if(inv.status==='void')return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;const linkedSO=sos.find(s=>s.id===inv.so_id);const repId=linkedSO?repOf(linkedSO):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id);if(!repId)return;const seg=byRep.get(repId)||{label:repName(repId),sales:0,billed:0,orders:0};seg.billed+=Number(inv.total)||0;byRep.set(repId,seg)});
+        const rows=[...byRep.values()].filter(s=>s.sales>0||s.billed>0).sort((a,b)=>b.sales-a.sales);
+        const tSales=rows.reduce((a,s)=>a+s.sales,0),tBilled=rows.reduce((a,s)=>a+s.billed,0);
+        const maxVal=Math.max(...rows.map(r=>Math.max(r.sales,r.billed)),1);
+        const GREEN='#166534';
+        body=<>
+          {_summary([['Sold',_$(tSales),NAVY],['Billed',_$(tBilled),GREEN],['Gap',_$(tBilled-tSales),tBilled>=tSales?GREEN:RED]])}
+          {rows.length===0?<div className="empty" style={{padding:'24px 8px'}}>No data in this period</div>:
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {rows.map((s,i)=><div key={i} style={{display:'flex',flexDirection:'column',gap:3}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}} title={s.label+' Sold: '+_$(s.sales)+' · '+s.orders+' order'+(s.orders!==1?'s':'')}>
+                <div style={{width:96,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{i===0?'🥇 ':''}{s.label}</div>
+                <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:14,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.sales/maxVal)*100)+'%',background:NAVY2,borderRadius:6}}/></div>
+                <div style={{width:58,textAlign:'right',fontSize:11,fontWeight:700,color:NAVY,flexShrink:0}}>{_$k(s.sales)}</div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8}} title={s.label+' Billed: '+_$(s.billed)}>
+                <div style={{width:96,fontSize:10,color:'#94a3b8',flexShrink:0}}>Billed</div>
+                <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:14,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.billed/maxVal)*100)+'%',background:GREEN,borderRadius:6}}/></div>
+                <div style={{width:58,textAlign:'right',fontSize:11,fontWeight:700,color:GREEN,flexShrink:0}}>{_$k(s.billed)}</div>
+              </div>
+            </div>)}
+          </div>}
+        </>;
       }else{
         const byRep=new Map();
         periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
@@ -8391,7 +8694,7 @@ export default function App(){
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{titles[report]}</h2>{periodSelect}</div>
         <div className="card-body" style={{padding:'12px 14px',maxHeight:392,overflow:'auto'}}>
           <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-            {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
+            {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs'],['sales_vs_billed','Sales vs Billed']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
             {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin'||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
           </div>
           {body}
@@ -8410,6 +8713,112 @@ export default function App(){
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
 
     return(<>
+    {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
+    {acOpen&&(()=>{
+      const _src=isAdmin?adminTodos:myTodos;
+      const _completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((Date.now()-new Date(t.completed_at))/864e5)<=7).map(t=>{const cb=REPS.find(r=>r.id===t.completed_by);const da=Math.floor((Date.now()-new Date(t.completed_at))/864e5);return{type:'_task',isNotification:true,isTaskComplete:true,todoId:t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(cb?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(da===0?' · Today':' · '+da+'d ago'),action:'View',date:t.completed_at}});
+      const _allNotifs=[..._src.filter(t=>t.isNotification),..._completedTaskNotifs].filter(t=>!dismissedNotifs.includes(t.dismissKey));
+      const _allTodos=_src.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+      const _q=acSearch.trim().toLowerCase();
+      const _matchQ=t=>!_q||((t.msg||'').toLowerCase().includes(_q)||(t.detail||'').toLowerCase().includes(_q));
+      const notifs=_allNotifs.filter(_matchQ);
+      // To-do category filter chips ([] = show all). Counts come from the pre-search set so chips stay stable.
+      const _todoCatCounts={};_allTodos.forEach(t=>{const c=_todoCategory(t);_todoCatCounts[c]=(_todoCatCounts[c]||0)+1});
+      const _todoCatChips=_CAT_ORDER.filter(c=>_todoCatCounts[c]).map(c=>({cat:c,label:_CAT_LABELS[c],n:_todoCatCounts[c]}));
+      const todos=_allTodos.filter(_matchQ).filter(t=>!acTodoCats.length||acTodoCats.includes(_todoCategory(t)));
+      const _rk=t=>t.dismissKey||((t.type||'')+':'+(t.so?.id||t.so_id||'')+':'+(t.date||''));
+      const _hasSO=t=>!!(t.so||t.so_id);
+      // Build display groups for the active tab
+      let groups;
+      if(acTab==='notifs'){
+        groups=acNotifSort==='date'?[{cat:'all',label:'',items:notifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a))}]:_groupNotifs(notifs);
+      }else{
+        if(acTodoSort==='date')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(b.date?new Date(b.date).getTime():0)-(a.date?new Date(a.date).getTime():0))}];
+        else if(acTodoSort==='priority')groups=[{cat:'all',label:'',items:todos.slice().sort((a,b)=>(a.priority||9)-(b.priority||9))}];
+        else groups=_groupTodos(todos);
+      }
+      const _navNotif=t=>{setAcOpen(false);if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _navTodo=t=>{setAcOpen(false);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _msgRow=t=>{const open=acMsgKey===_rk(t);return _hasSO(t)?<div style={{marginTop:open?8:0}}>
+        {!open?<button title="Send a message about this" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setAcMsgKey(_rk(t));setAcMsgText('')}}>💬 Message</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:6,alignItems:'flex-start',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8}}>
+          <textarea autoFocus value={acMsgText} onChange={e=>setAcMsgText(e.target.value)} placeholder={'Message the rep / CSR on '+(t.so?.id||t.so_id)+'…'} rows={2} style={{flex:1,fontSize:12,padding:'6px 8px',border:'1px solid #cbd5e1',borderRadius:6,resize:'vertical',fontFamily:'inherit'}} onKeyDown={e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){acSendMessage(t)}}}/>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSendMessage(t)}>Send</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcMsgKey(null);setAcMsgText('')}}>Cancel</button>
+          </div>
+        </div>}
+      </div>:null};
+      // "Expected by" date editor — for order/deadline to-dos tied to a sales order (e.g. custom uniforms with longer lead times).
+      const _expectedBy=t=>!!(t.so&&(t.type==='order'||t.type==='deadline'||t.type==='firm'));
+      const _dateRow=t=>{const open=acDateKey===_rk(t);const cur=t.so?.expected_date||'';return _expectedBy(t)?<div style={{marginTop:open?8:0,display:'inline-block'}}>
+        {!open?<button title="Change the expected-by date on this order" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fff7ed',color:'#c2410c',border:'1px solid #fed7aa',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer',marginRight:6}} onClick={e=>{e.stopPropagation();setAcDateKey(_rk(t));setAcDateVal(cur)}}>📅 {cur?'Expected '+cur:'Set expected date'}</button>:
+        <div onClick={e=>e.stopPropagation()} style={{display:'inline-flex',gap:6,alignItems:'center',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 8px'}}>
+          <span style={{fontSize:11,fontWeight:700,color:'#c2410c'}}>Expected by:</span>
+          <input type="date" autoFocus value={acDateVal} onChange={e=>acSetExpectedDate(t,e.target.value,false)} style={{fontSize:12,padding:'4px 6px',border:'1px solid #fdba74',borderRadius:6}}/>
+          <button type="button" className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>acSetExpectedDate(t,acDateVal,true)}>Save</button>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>{setAcDateKey(null);setAcDateVal('')}}>Done</button>
+        </div>}
+      </div>:null};
+      const _markAllRead=()=>{notifs.forEach(t=>t.dismissKey&&dismissNotif(t.dismissKey))};
+      return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'4vh 16px',overflowY:'auto'}} onClick={()=>setAcOpen(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:'white',borderRadius:14,width:'100%',maxWidth:920,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 60px rgba(0,0,0,.35)',overflow:'hidden'}}>
+          {/* Header + tabs */}
+          <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:14}}>
+            <h2 style={{margin:0,fontSize:18}}>📥 Activity Center</h2>
+            <div style={{display:'flex',gap:4,background:'#f1f5f9',padding:4,borderRadius:10,marginLeft:6}}>
+              <button onClick={()=>{setAcTab('notifs');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='notifs'?'white':'transparent',color:acTab==='notifs'?'#0f172a':'#64748b',boxShadow:acTab==='notifs'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>🔔 Notifications ({notifs.length})</button>
+              <button onClick={()=>{setAcTab('todos');setAcMsgKey(null)}} style={{fontSize:13,fontWeight:700,padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',background:acTab==='todos'?'white':'transparent',color:acTab==='todos'?'#0f172a':'#64748b',boxShadow:acTab==='todos'?'0 1px 3px rgba(0,0,0,.12)':'none'}}>📋 To-Do ({todos.length})</button>
+            </div>
+            <button onClick={()=>setAcOpen(false)} style={{marginLeft:'auto',background:'none',border:'none',fontSize:26,lineHeight:1,color:'#94a3b8',cursor:'pointer'}}>×</button>
+          </div>
+          {/* Toolbar: sort + search + bulk */}
+          <div style={{padding:'10px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>Sort:</span>
+            {acTab==='notifs'?<select value={acNotifSort} onChange={e=>setAcNotifSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="type">By type, then date</option><option value="date">By date (newest)</option>
+            </select>:<select value={acTodoSort} onChange={e=>setAcTodoSort(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+              <option value="category">By category</option><option value="date">By date (newest)</option><option value="priority">By priority</option>
+            </select>}
+            <input value={acSearch} onChange={e=>setAcSearch(e.target.value)} placeholder="🔍 Search…" style={{fontSize:12,padding:'5px 10px',borderRadius:6,border:'1px solid #e2e8f0',minWidth:180,flex:'0 1 240px'}}/>
+            {acTab==='notifs'&&notifs.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}} onClick={_markAllRead}>✓ Mark all read</button>}
+          </div>
+          {/* To-do type filter chips */}
+          {acTab==='todos'&&_todoCatChips.length>0&&<div style={{padding:'8px 20px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',background:'#fafbfc'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b',marginRight:2}}>Show:</span>
+            <button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(acTodoCats.length===0?'#1e293b':'#cbd5e1'),background:acTodoCats.length===0?'#1e293b':'white',color:acTodoCats.length===0?'white':'#475569'}}>All ({_allTodos.length})</button>
+            {_todoCatChips.map(ch=>{const on=acTodoCats.includes(ch.cat);return<button key={ch.cat} type="button" onClick={()=>setAcTodoCats(prev=>prev.includes(ch.cat)?prev.filter(c=>c!==ch.cat):[...prev,ch.cat])} style={{fontSize:11,padding:'3px 10px',borderRadius:999,cursor:'pointer',fontWeight:600,border:'1px solid '+(on?'#2563eb':'#cbd5e1'),background:on?'#eff6ff':'white',color:on?'#1e40af':'#475569'}}>{ch.label} ({ch.n})</button>})}
+            {acTodoCats.length>0&&<button type="button" onClick={()=>setAcTodoCats([])} style={{fontSize:11,padding:'3px 8px',borderRadius:6,cursor:'pointer',border:'none',background:'none',color:'#94a3b8',marginLeft:2}}>Clear</button>}
+          </div>}
+          {/* Body */}
+          <div style={{padding:0,overflowY:'auto',flex:1}}>
+            {groups.length===0||groups.every(g=>g.items.length===0)?<div className="empty" style={{padding:40,textAlign:'center',color:'#94a3b8'}}>{acTab==='notifs'?'No notifications':'All clear — no to-do items'}</div>:
+            groups.map(g=><div key={g.cat}>
+              {g.label&&<div style={{padding:'8px 20px',fontSize:11,fontWeight:800,color:'#475569',background:'#f1f5f9',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4,position:'sticky',top:0,zIndex:1}}>{g.label} <span style={{color:'#94a3b8'}}>({g.items.length})</span></div>}
+              {g.items.map((t,i)=>{const isN=acTab==='notifs';const _fmtD=isN?_fmtNotifDT:_fmtTodoDate;
+                return<div key={_rk(t)+i} style={{padding:'12px 20px',borderBottom:'1px solid #f1f5f9',background:isN?'#f0fdf4':'white'}}>
+                  <div style={{display:'flex',alignItems:'flex-start',gap:12,cursor:'pointer'}} onClick={()=>isN?_navNotif(t):_navTodo(t)}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:600,color:'#0f172a'}}>{t.msg}</div>
+                      <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div>
+                      {!isN&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:6,alignItems:'center'}}>{_msgRow(t)}{_dateRow(t)}</div>}
+                      {isN&&_msgRow(t)}
+                    </div>
+                    {_fmtD(t.date)&&<span style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',marginTop:2}}>{_fmtD(t.date)}</span>}
+                    <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                      {t.action&&<span style={{fontSize:10,padding:'3px 9px',borderRadius:8,background:isN?'#dcfce7':(t.type==='art'?'#fef3c7':'#eff6ff'),color:isN?'#166534':(t.type==='art'?'#92400e':'#2563eb'),fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>isN?_navNotif(t):(t.type==='rep_delivery'?_repDeliver(t):_navTodo(t))}>{t.action}</span>}
+                      {!isN&&t.type!=='rep_delivery'&&(snoozeOpenKey===_rk(t)?<span style={{display:'flex',gap:2,alignItems:'center'}}><button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={()=>setSnoozeOpenKey(null)}>←</button>{[1,3,5,7].map(d=><button key={d} title={'Snooze '+d+'d'} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={()=>doSnooze(t,d)}>{d}d</button>)}</span>:<button title="Snooze — hide for a few days" style={{fontSize:10,padding:'3px 8px',background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer',fontWeight:600,whiteSpace:'nowrap'}} onClick={()=>setSnoozeOpenKey(_rk(t))}>💤 Snooze</button>)}
+                      {!isN&&t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button title="Assign this to a CSR" style={{fontSize:10,padding:'3px 9px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',cursor:'pointer',fontWeight:600}} onClick={()=>{setAcOpen(false);setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
+                      {isN?<button title="Mark read" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:13,color:'#16a34a'}} onClick={()=>t.dismissKey&&dismissNotif(t.dismissKey)}>✓</button>:
+                      <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'3px 7px',fontSize:12,color:'#94a3b8'}} onClick={()=>dismissTodo(t.dismissKey)}>✕</button>}
+                    </div>
+                  </div>
+                </div>})}
+            </div>)}
+          </div>
+        </div>
+      </div>;
+    })()}
     {/* Role Selector — only show tabs relevant to the user's role */}
     {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
       {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
@@ -8422,7 +8831,7 @@ export default function App(){
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8430,7 +8839,8 @@ export default function App(){
         </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
-        </select></div></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8451,14 +8861,17 @@ export default function App(){
       {_renderSalesBox(null)}
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return<div className="card"><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
-          visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          notifGroups.map(g=><div key={g.cat}>
+            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            </div>)}
           </div>)}
         </div>
       </div>})()}
@@ -8500,7 +8913,8 @@ export default function App(){
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
-              <button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
+              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
               <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
             </div>
           </div>})}
@@ -8537,12 +8951,13 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option>
-        </select></div>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{marginLeft:6,fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
@@ -8571,13 +8986,16 @@ export default function App(){
     </div>
     <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
-    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
+    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-          {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+        {notifGroups.map(g=><div key={g.cat}>
+          {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+          {g.items.map((t,i)=><div key={t._key||g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
         </div>)}
       </div>
     </div>})()}
@@ -8930,13 +9348,13 @@ export default function App(){
     {dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
-      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&(myReps.length===0||myReps.includes(c?.primary_rep_id||s.created_by))}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
     </div>
     {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
       <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
@@ -9096,13 +9514,19 @@ export default function App(){
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
   // Returns the batch PO number, or null if the vendor has nothing queued.
-  const orderVendorBatch=({vendorKey:vk,skipSoId=null,apiResult=null})=>{
-    const pos=(batchPOs||[]).filter(bp=>bp.vendor_key===vk);
+  const orderVendorBatch=({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
+    const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
+    // Read the live queue + SOs from the flush ref, not this closure. This runs from a deferred
+    // callback (a vendor API modal's onSubmitted, fired seconds after the modal opened), by which
+    // point the closed-over batchPOs/sos can be stale — using the ref keeps the promotion correct.
+    const _batchPOsNow=_visFlushRefs.current.batchPOs||batchPOs;
+    const _sosNow=_visFlushRefs.current.sos||sos;
+    const pos=(_batchPOsNow||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
     if(pos.length===0)return null;
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    const poNum='NSA '+(batchVendorCounters[vk]??batchCounter);
+    const poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
     // When this batch was submitted through the vendor's API, the order modal hands back the
     // vendor's order id (orderId / orderNumber / transactionId). Stamp it on every promoted
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
@@ -9117,9 +9541,9 @@ export default function App(){
     // Group by SO so an order with several batch entries gets a single save — per-entry saves
     // would each read the stale pre-save SO from sos and drop the previous entry's promotion.
     const bySo={};pos.forEach(bp=>{(bySo[bp.so_id]=bySo[bp.so_id]||[]).push(bp)});
-    Object.entries(bySo).forEach(([soId,bps])=>{
+    Object.entries(bySo).forEach(([soId,bps])=>{try{
       if(skipSoId&&soId===skipSoId)return;
-      const so=sos.find(x=>x.id===soId);if(!so)return;
+      const so=_sosNow.find(x=>x.id===soId);if(!so)return;
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
       bps.forEach(bp=>{
         let promoted=false;
@@ -9136,22 +9560,22 @@ export default function App(){
             const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
             const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(apiStamp||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
-            Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+            Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
             updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
           });
         }
       });
       savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
-    });
-    setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
-    setBatchVendorCounters(prev=>{const n={...prev};delete n[vk];return n;});
+    }catch(_promoErr){console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);}});
+    setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
+    setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return poNum;
   };
 
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -9208,11 +9632,11 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={vk=>'NSA '+(batchVendorCounters[vk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend}/></React.Suspense></ComponentErrorBoundary>
+      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} onChangeRep={newRepId=>{if(eSOC)changeDocRep(eSOC,newRepId,eSO.id)}}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
@@ -9301,7 +9725,7 @@ export default function App(){
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
-      onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
+      onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}}
       onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
       onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name,alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
@@ -9437,7 +9861,64 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})}/>;
+  function rVend(){if(selV){
+    // ── Phase 4: PO tracking per vendor ── gather every PO that names this vendor,
+    // mirroring the aggregation on the main Purchase Orders page (rPOs) but scoped
+    // to one vendor: SO po_lines, SO-level decoration POs, submitted batches, inv POs.
+    // PO lines store the vendor as EITHER the vendor's display name (e.g. "Momentec",
+    // "SanMar") OR the vendor's id (e.g. "v1780447907300", "ns_100") depending on which
+    // code path created the PO — so match against both keys, case/space-insensitively.
+    const vKeys=new Set([selV.id,selV.name].filter(Boolean).map(s=>String(s).trim().toLowerCase()));
+    const vMatch=v=>{const k=(v==null?'':String(v)).trim().toLowerCase();return !!k&&vKeys.has(k)};
+    const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','tracking_numbers'];
+    const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+    const vPOs=[];
+    sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);const cName=c2?.alpha_tag||c2?.name||'';
+      const soIsBooking=isBookingOrder(so);
+      safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
+        if(!vMatch(po.vendor)&&!vMatch(po.deco_vendor))return;
+        const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!PO_NON.includes(k)&&typeof po[k]==='number').sort(szSort);
+        const rcvd=po.received||{};const cncl=po.cancelled||{};
+        const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
+        const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+        const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+        if(totalOrd<=0)return;
+        const st=po.status==='cancelled'?'cancelled':totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
+        const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);
+        vPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,status:st,so_id:so.id,so,customer:cName,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',poTotal:totalOrd*uc,dropShip:!!po.drop_ship,source:'so',isBooking:soIsBooking});
+      })});
+      (so.deco_pos||[]).forEach(dp=>{
+        if(!vMatch(dp.vendor))return;
+        const totalOrd=safeNum(dp.qty||0);const st=dp.status||'waiting';
+        const actual=safeNum(dp._bill_cost||0);const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
+        const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+        vPOs.push({po_id:dp.po_id,status:st==='billed'?'received':st,so_id:so.id,so,customer:cName,itemSku:skus.join(', '),itemName:'Decoration'+(dp.deco_type?' — '+dp.deco_type.replace(/_/g,' '):''),totalOrd,totalRcvd:st==='received'||st==='billed'?totalOrd:0,totalOpen:st==='received'||st==='billed'?0:totalOrd,created_at:dp.created_at||so.created_at||'',expected_date:dp.expected_date||'',poTotal:actual>0?actual:expected,source:'deco',isDeco:true});
+      });
+    });
+    submittedBatches.forEach(sb=>{
+      if(!vMatch(sb.vendor_name))return;
+      const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
+      const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+      const customers=(sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean);
+      vPOs.push({po_id:sb.po_number,status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),itemSku:'',itemName:`Batch: ${totalOrd} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',poTotal:sb.total_cost||0,source:'batch'});
+    });
+    (invPOs||[]).forEach(ip=>{
+      if(!vMatch(ip.vendor_name))return;
+      const totalOrd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalRcvd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.received||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalOpen=Math.max(0,totalOrd-totalRcvd);
+      const st=ip.status==='received'?'received':totalRcvd>0?'partial':'waiting';
+      const itemCount=(ip.items||[]).length;const firstItem=(ip.items||[])[0];
+      const poTotal=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0)*safeNum(it.nsa_cost||0),0);
+      vPOs.push({po_id:ip.po_number,status:st,so_id:'',so:null,customer:'',itemSku:firstItem?.sku||'',itemName:itemCount>1?`${itemCount} items`:(firstItem?.name||''),totalOrd,totalRcvd,totalOpen,created_at:ip.created_at||'',expected_date:ip.expected_date||'',poTotal,source:'inv',isInvPO:true,isBooking:!!ip.is_booking,invPOId:ip.id});
+    });
+    const seen=new Set();const dV=[];vPOs.forEach(p=>{if(!seen.has(p.po_id)){seen.add(p.po_id);dV.push(p)}});
+    dV.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
+    const openPoPage=(po)=>{if(po.source==='inv'){setInvPOSearch(po.po_id);setInvTab('pos');setPg('inventory')}
+      else if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}
+      else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}};
+    return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} onEdit={()=>setVM({open:true,v:selV})} vendorPOs={dV} onOpenPO={openPoPage} fmtCreatedAt={fmtCreatedAt}/>;
+  }
     const vToks=vendQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const fv=vToks.length?vend.filter(v=>{const hay=((v.name||'')+' '+(v.contact_name||'')+' '+(v.contact_email||'')+' '+(v.contact_phone||'')+' '+(v.rep_name||'')+' '+(v.api_provider||'')+' '+(v.vendor_type||'')+' '+(v.payment_terms||'')+' '+(v.notes||'')).toLowerCase();return vToks.every(t=>hay.includes(t))}):vend;
     const nCols=isA?7:6;
@@ -9535,8 +10016,23 @@ export default function App(){
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
+    const _av=ep.available_sizes||[];
     const _isFootwear=(ep.category||'').toLowerCase()==='footwear';
-    const _displaySz=SZ_ORD.filter(sz=>(!_isFootwear&&_coreSz.includes(sz))||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
+    // Standard letter-sized apparel shows the full core grid (even empty sizes). Footwear shows its
+    // declared sizes that carry stock. Ball / numeric / OSFA / custom runs show their own declared
+    // sizes so the real scale (e.g. a ball's 3/4/5) is visible instead of an apparel grid.
+    const _isApparel=!_isFootwear&&(_av.length===0||_av.some(s=>_coreSz.includes(s)));
+    let _displaySz;
+    if(_isApparel){
+      _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||(_av.includes(sz)&&(ep._inv?.[sz]||0)>0));
+    }else if(_isFootwear){
+      _displaySz=SZ_ORD.filter(sz=>_av.includes(sz)&&(ep._inv?.[sz]||0)>0);
+    }else{
+      _displaySz=[..._av].filter((s,i,a)=>a.indexOf(s)===i).sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?999:ia)-(ib<0?999:ib)});
+    }
+    // Surface any size that actually carries stock but isn't already shown (custom labels, or
+    // footwear/ball sizes with stock outside the declared run) so inventory is never hidden.
+    Object.keys(ep._inv||{}).forEach(sz=>{if((ep._inv?.[sz]||0)>0&&!_displaySz.includes(sz))_displaySz.push(sz)});
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -9605,16 +10101,21 @@ export default function App(){
                 <div><label className="form-label">📍 Bin / Location</label><input className="form-input" list="nsa-bins" placeholder="e.g. A-12" value={ep.bin||''} onChange={e=>setEp(x=>({...x,bin:e.target.value}))}/><datalist id="nsa-bins">{BINS.map(b=><option key={b} value={b}/>)}</datalist></div>
                 <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
-                {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';const isNum=!isFw&&curAvail.length>0&&curAvail.every(s=>/^\d+$/.test(s));const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':(isNum?'numeric':'apparel'));
+                {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';
+                  // Ball run (3/4/5, 5/6/7, …) checked before numeric: ball sizes are all-digits and
+                  // would otherwise read as the waist "Numeric" mode.
+                  const isBall=!isFw&&curAvail.length>0&&curAvail.every(s=>BALL_SIZES.includes(s));
+                  const isNum=!isFw&&!isBall&&curAvail.length>0&&curAvail.every(s=>/^\d+$/.test(s));const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':(isBall?'ball':(isNum?'numeric':'apparel')));
                   const switchMode=(mode)=>{
                     if(mode==='footwear')setEp(x=>({...x,category:'Footwear',available_sizes:[...FOOTWEAR_DEFAULT_SIZES]}));
                     else if(mode==='osfa')setEp(x=>({...x,available_sizes:['OSFA']}));
+                    else if(mode==='ball')setEp(x=>({...x,available_sizes:[...BALL_DEFAULT_SIZES]}));
                     else if(mode==='numeric'){const cat=(ep.category||'').toLowerCase()==='footwear'?'Shorts':(ep.category||'Shorts');setEp(x=>({...x,category:cat,available_sizes:[...NUMERIC_DEFAULT_SIZES]}))}
                     else{const cat=(ep.category||'').toLowerCase()==='footwear'?'Tees':(ep.category||'Tees');setEp(x=>({...x,category:cat,available_sizes:['S','M','L','XL','2XL']}))}
                   };
                   return<div style={{gridColumn:'1/3'}}><label className="form-label">Size Mode</label>
                     <div style={{display:'flex',gap:6}}>
-                      {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'numeric',l:'📐 Numeric'}].map(m=>
+                      {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'},{k:'numeric',l:'📐 Numeric'},{k:'ball',l:'⚽ Ball'}].map(m=>
                         <button key={m.k} type="button" onClick={()=>switchMode(m.k)} style={{flex:1,padding:'6px 8px',fontSize:12,fontWeight:700,borderRadius:6,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
                     </div>
                   </div>;
@@ -10764,15 +11265,17 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at});
+          // Real receive moment from the fulfilling receipts (see jobReceivedAt), not updated_at.
+          const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
-            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
         if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
@@ -10817,7 +11320,7 @@ export default function App(){
     });
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
-      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+      if(!e.follow_up_auto&&e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
         todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
@@ -10831,7 +11334,7 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
@@ -10853,7 +11356,7 @@ export default function App(){
     const filtered=todos.filter(t=>{
       if(t.role==='all')return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
       return t.role==='production';
     });
     return filtered;
@@ -11963,7 +12466,7 @@ export default function App(){
   };
   function rBatchPOs(){
     const byVendor={};
-    batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
+    batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]}}byVendor[_gk].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
     // Universal PO lookup — searches submitted batches AND all PO lines across every SO
     const q2=batchScan.trim().toLowerCase();
@@ -12237,16 +12740,17 @@ export default function App(){
       </div></div>}
       {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12,alignItems:'start',marginBottom:16}}>
-      {vendorGroups.map(([vk,vg])=>{
+      {vendorGroups.map(([gk,vg])=>{
+        const vk=vg.vendor_key||gk;
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
-        const expanded=!!expandedVendors[vk];
+        const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
+        const expanded=!!expandedVendors[gk];
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        return<div key={vk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
-          <div className="card-header" onClick={()=>setExpandedVendors(p=>({[vk]:!p[vk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
+        return<div key={gk} className="card" style={{marginBottom:0,background:expanded?'#f8fbff':undefined,boxShadow:expanded?'0 0 0 2px #93c5fd':undefined,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+          <div className="card-header" onClick={()=>setExpandedVendors(p=>({[gk]:!p[gk]}))} style={{flexDirection:'column',alignItems:'stretch',gap:10,cursor:'pointer'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
               <div><h2>{expanded?'▾':'▸'} {vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
               <div style={{textAlign:'right',flexShrink:0}}>
@@ -12267,17 +12771,18 @@ export default function App(){
         </div>})}
       </div>
       {/* Expanded vendor detail — opens below the tile grid so the tiles stay on top */}
-      {vendorGroups.filter(([k2])=>!!expandedVendors[k2]).map(([vk,vg])=>{
+      {vendorGroups.filter(([k2])=>!!expandedVendors[k2]).map(([gk,vg])=>{
+        const vk=vg.vendor_key||gk;
         const total=vg.pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+(bp.items||[]).reduce((a2,it)=>a2+(it.qty||0),0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
+        const nextPO='NSA '+(batchVendorCounters[gk]??batchCounter);
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
-        return<div key={vk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+        return<div key={gk+'-detail'} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fbff'}}>
             <strong style={{fontSize:14,color:'#0f172a'}}>{vg.name} — order detail</strong>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[vk]:false}))}>Collapse ▲</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setExpandedVendors(p=>({...p,[gk]:false}))}>Collapse ▲</button>
           </div>
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
@@ -12376,27 +12881,27 @@ export default function App(){
                 <button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
-                  setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
+                  setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>
               </div>
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={()=>{
-                const poNum=orderVendorBatch({vendorKey:vk});
+                const poNum=orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
-            {vk==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r})})}>
               🚀 Submit SanMar Order (API)
             </button>}
-            {vk==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
               🚀 Order via S&S API
             </button>}
-            {vk==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,apiResult:r})})}>
+            {vg.vendor_key==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -12450,7 +12955,7 @@ export default function App(){
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
-      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}/>}
+      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vend.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setSanMarPreview(null)}/>}
       {ssOrder&&<SSOrderModal {...ssOrder} onClose={()=>setSSOrder(null)}/>}
       {momentecOrder&&<MomentecOrderModal {...momentecOrder} onClose={()=>setMomentecOrder(null)}/>}
     </>);
@@ -12550,6 +13055,7 @@ export default function App(){
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
   const[viewInvoice,setViewInvoice]=useState(null);
+  const[editingInvRep,setEditingInvRep]=useState(false);
   const[splitModal,setSplitModal]=useState(null);// {inv, selItems:[indices], memo:''}
   const[invEditModal,setInvEditModal]=useState(null);// {inv, memo, due_date}
   const[invSendModalDirect,setInvSendModalDirect]=useState(null);// {inv, email, msg}
@@ -12765,6 +13271,18 @@ export default function App(){
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Rep field */}
+          <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
+            {editingInvRep
+              ?<><select className="form-select" style={{width:180,fontSize:12,padding:'2px 6px'}} defaultValue={repObj?.id||''} onChange={e=>{changeDocRep(ic,e.target.value,inv.id);setEditingInvRep(false)}}>
+                <option value="">— None —</option>
+                {REPS.filter(r=>r.is_active!==false&&(r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button></>
+              :<><span style={{fontSize:12,color:'#1e293b'}}>{repObj?.name||'—'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change rep" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
           </div>
 
           {/* Sent History */}
@@ -14075,7 +14593,7 @@ export default function App(){
   const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true,newVsReturning:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -14095,6 +14613,7 @@ export default function App(){
   const[ssDir,setSsDir]=useState('desc');
   const[ssSearch,setSsSearch]=useState('');
   const[ssFilter,setSsFilter]=useState('all');// all | reordered | pending
+  const[newCustPeriod,setNewCustPeriod]=useState('ytd');
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -14678,6 +15197,92 @@ export default function App(){
 
       {/* CUSTOMER HEALTH */}
       {/* SAME-SEASON CUSTOMER RETENTION — who we sold to in this 3-month window last year, and whether they've reordered yet */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="newVsReturning" title="New vs Returning Customers" icon="🆕"/>
+        {rptWidgets.newVsReturning&&(()=>{
+          const now=new Date();const curY=now.getFullYear();const curM=now.getMonth();
+          const perMap={ytd:[new Date(curY,0,1),new Date(curY,curM+1,1)],last_12:[new Date(curY-1,curM+1,1),new Date(curY,curM+1,1)],this_month:[new Date(curY,curM,1),new Date(curY,curM+1,1)],last_month:[new Date(curY,curM-1,1),new Date(curY,curM,1)]};
+          const[pStart,pEnd]=perMap[newCustPeriod]||perMap.ytd;
+          const soDate=(so)=>{const dt=_parseDtLB(so.created_at);return dt?new Date(dt.y,dt.m,dt.d):null};
+          const activeSOs=filtSOs.filter(so=>so.status!=='cancelled'&&so.status!=='deleted'&&!so.deleted_at);
+          const custOrders=new Map();
+          activeSOs.forEach(so=>{if(!so.customer_id)return;const dt=soDate(so);if(!dt)return;if(!custOrders.has(so.customer_id))custOrders.set(so.customer_id,[]);custOrders.get(so.customer_id).push({date:dt,so})});
+          const newCusts=[],retCusts=[];
+          custOrders.forEach((orders,custId)=>{
+            const inPer=orders.filter(o=>o.date>=pStart&&o.date<pEnd);if(!inPer.length)return;
+            const before=orders.filter(o=>o.date<pStart);
+            const c=cust.find(x=>x.id===custId);
+            const rev=inPer.reduce((a,o)=>a+soCalc(o.so).rev,0);
+            const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+            const firstSO=[...inPer].sort((a,b)=>a.date-b.date)[0];
+            const obj={custId,name:c?.name||'Unknown',rep:rep?.name?.split(' ')[0]||'—',rev,orders:inPer.length,firstDate:firstSO.date};
+            if(before.length===0)newCusts.push(obj);else retCusts.push(obj);
+          });
+          newCusts.sort((a,b)=>b.rev-a.rev);retCusts.sort((a,b)=>b.rev-a.rev);
+          const tNewRev=newCusts.reduce((a,c)=>a+c.rev,0),tRetRev=retCusts.reduce((a,c)=>a+c.rev,0);
+          const total=newCusts.length+retCusts.length,totalRev2=tNewRev+tRetRev;
+          const fmtK=(n)=>n>=1000?'$'+(n/1000).toFixed(1)+'k':'$'+Math.round(n);
+          const fmtD=(d)=>d?(d.getMonth()+1)+'/'+(d.getDate())+'/'+String(d.getFullYear()).slice(2):'—';
+          return<div className="card-body">
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+              {[['ytd','YTD'],['last_12','Last 12 Mo'],['this_month','This Month'],['last_month','Last Month']].map(([v,l])=>
+                <button key={v} onClick={()=>setNewCustPeriod(v)} style={{fontSize:11,padding:'3px 10px',borderRadius:6,border:'1px solid '+(newCustPeriod===v?'#1e3a8a':'#e2e8f0'),background:newCustPeriod===v?'#1e3a8a':'white',color:newCustPeriod===v?'white':'#475569',fontWeight:700,cursor:'pointer'}}>{l}</button>)}
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:14}}>
+              <div style={{flex:1,padding:10,background:'#dbeafe',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{newCusts.length}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>NEW CUSTOMERS</div>
+                <div style={{fontSize:12,color:'#1e40af',marginTop:2}}>{fmtK(tNewRev)}</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#dcfce7',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{retCusts.length}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#166534'}}>RETURNING</div>
+                <div style={{fontSize:12,color:'#166534',marginTop:2}}>{fmtK(tRetRev)}</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#f8fafc',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{total>0?Math.round(newCusts.length/total*100):0}%</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>% NEW</div>
+                <div style={{fontSize:12,color:'#64748b',marginTop:2}}>of customers</div>
+              </div>
+              <div style={{flex:1,padding:10,background:'#f8fafc',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:22,fontWeight:800,color:'#475569'}}>{totalRev2>0?Math.round(tNewRev/totalRev2*100):0}%</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>NEW REV</div>
+                <div style={{fontSize:12,color:'#64748b',marginTop:2}}>of total sold</div>
+              </div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:6,textTransform:'uppercase',letterSpacing:0.4}}>New Customers — {newCusts.length}</div>
+                {newCusts.length===0?<div style={{color:'#94a3b8',fontSize:12,padding:8}}>None in this period</div>:
+                <div style={{maxHeight:220,overflow:'auto'}}>
+                  <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>Rep</th><th style={{textAlign:'right'}}>1st SO</th><th style={{textAlign:'right'}}>Rev</th><th style={{textAlign:'right'}}>#</th></tr></thead>
+                  <tbody>{newCusts.map(c=><tr key={c.custId} style={{cursor:'pointer'}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.custId));setPg('customers')}}>
+                    <td style={{fontWeight:600,maxWidth:100,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={c.name}>{c.name}</td>
+                    <td style={{color:'#64748b'}}>{c.rep}</td>
+                    <td style={{textAlign:'right',color:'#64748b'}}>{fmtD(c.firstDate)}</td>
+                    <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmtK(c.rev)}</td>
+                    <td style={{textAlign:'right',color:'#94a3b8'}}>{c.orders}</td>
+                  </tr>)}</tbody></table>
+                </div>}
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6,textTransform:'uppercase',letterSpacing:0.4}}>Returning Customers — {retCusts.length}</div>
+                {retCusts.length===0?<div style={{color:'#94a3b8',fontSize:12,padding:8}}>None in this period</div>:
+                <div style={{maxHeight:220,overflow:'auto'}}>
+                  <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>Rep</th><th style={{textAlign:'right'}}>Rev</th><th style={{textAlign:'right'}}>#</th></tr></thead>
+                  <tbody>{retCusts.map(c=><tr key={c.custId} style={{cursor:'pointer'}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.custId));setPg('customers')}}>
+                    <td style={{fontWeight:600,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={c.name}>{c.name}</td>
+                    <td style={{color:'#64748b'}}>{c.rep}</td>
+                    <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>{fmtK(c.rev)}</td>
+                    <td style={{textAlign:'right',color:'#94a3b8'}}>{c.orders}</td>
+                  </tr>)}</tbody></table>
+                </div>}
+              </div>
+            </div>
+          </div>;
+        })()}
+      </div>}
+
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="sameSeason" title="Same-Season Customers — Retention Tracker" icon="🎯"/>
         {rptWidgets.sameSeason&&(()=>{
@@ -15718,7 +16323,7 @@ export default function App(){
         const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
 
         // Tax expected from open SOs (not yet invoiced)
-        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
+        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0&&so.source!=='webstore'}).map(so=>{
           const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
           const taxAmt=m.rev*(c.tax_rate||0);
           return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
@@ -16225,12 +16830,12 @@ export default function App(){
       const invLines=invs.filter(inv=>{
         if(inv.status==='paid')return false;
         const so=sos.find(s=>s.id===inv.so_id);
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(cc?.primary_rep_id||so?.created_by)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(so?.created_by||cc?.primary_rep_id)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so?.created_by));
+        const rep=REPS.find(r=>r.id===(so?.created_by||c?.primary_rep_id));
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
@@ -16238,7 +16843,7 @@ export default function App(){
         const expRate=willBeLate?0.15:0.30;
         const expComm=Math.round(gp.gp*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(c?.primary_rep_id||so?.created_by),type:'invoice'};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(so?.created_by||c?.primary_rep_id),type:'invoice'};
       });
       // IDs of SOs that already have invoices
       const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
@@ -17810,6 +18415,7 @@ export default function App(){
   const[clearShipModal,setClearShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  const[emailLabelModal,setEmailLabelModal]=useState(null);// {soId,labelUrl,tracking,trackingUrl,carrier,custName,suggestions:[{email,label}],checked:{},custom,sending} — pick who to email a label to
   const[pickupEdit,setPickupEdit]=useState(null);// {shp, tracking_number, carrier, weight, dimensions, busy} — edit/relabel an awaiting-pickup package
   const[deliverModal,setDeliverModal]=useState(null);// deliver task whose item list / mark-delivered popup is open
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
@@ -17874,7 +18480,7 @@ export default function App(){
     const _whDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_whTodayStr)return'#dc2626';if(ds===_whTodayStr)return'#d97706';return'#2563eb'};
     const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
     const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
-    const _whTodoComplete=(id)=>{const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
+    const _whTodoComplete=(id)=>{if(!_confirmTodoComplete(id))return;const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
     // Open the Assign-Task modal pre-tied to a warehouse document (SO / IF / job), warehouse-only assignees.
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
@@ -18373,6 +18979,15 @@ export default function App(){
           onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
+        {!ssConnected&&<div style={{display:'flex',alignItems:'center',gap:8,marginLeft:'auto',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,padding:'4px 10px'}}>
+          <span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>⚠️ ShipStation Offline</span>
+          <button style={{fontSize:10,background:'#dc2626',color:'white',border:'none',borderRadius:4,padding:'3px 10px',fontWeight:700,cursor:'pointer'}}
+            onClick={async(e)=>{e.stopPropagation();const btn=e.currentTarget;btn.textContent='Checking…';btn.disabled=true;
+              const ok=await testShipStationConnection().catch(()=>false);
+              setSSConnected(ok);
+              if(ok){nf('ShipStation connected')}else{btn.textContent='Retry';btn.disabled=false;nf('Still offline — check SHIPSTATION_API_KEY and SHIPSTATION_API_SECRET in Netlify env vars','error')}
+            }}>Retry</button>
+        </div>}
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
@@ -19054,17 +19669,39 @@ export default function App(){
                               setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                           } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                         }}>Print Label</button>}
+                      {shp.label_url&&<button style={{fontSize:9,background:'#0369a1',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{
+                          const _u=shp.label_url;
+                          if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
+                          else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
+                        }}>📄 Download</button>}
                       <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
+                      {shp.shipstation_shipment_id&&<button style={{fontSize:9,background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={async(e)=>{
+                          if(!window.confirm('Void this label in ShipStation (requests a refund) and clear it from this shipment? The shipment record stays so you can re-create a label.'))return;
+                          const btn=e.currentTarget;btn.disabled=true;btn.style.opacity='0.5';
+                          try{
+                            if(ssConnected)await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});
+                            const oldCost=safeNum(shp.shipping_cost||0);
+                            const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:'',tracking_url:'',label_url:null,shipstation_shipment_id:null,shipping_cost:0}:s);
+                            const firstShp=updatedShipments.find(s=>s.tracking_number);
+                            const newCost=Math.max(0,safeNum(shp.so._shipping_cost||shp.so._shipstation_cost||0)-oldCost);
+                            savSO({...shp.so,_shipments:updatedShipments,_tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',_tracking_url:firstShp?.tracking_url||'',_shipping_cost:newCost||null,_shipstation_cost:newCost||null});
+                            addWhAction({type:'label_voided',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',cost:oldCost?'$'+oldCost.toFixed(2):'',by:cu?.id||'warehouse'});
+                            nf('Label voided'+(ssConnected?' in ShipStation':'')+' & cleared'+(oldCost?' · refund $'+oldCost.toFixed(2)+' requested':''));
+                          }catch(err){btn.disabled=false;btn.style.opacity='1';nf('Void failed: '+err.message+' — void manually in ShipStation if needed','error')}
+                        }}>↩️ Void Label</button>}
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
+                        onClick={async()=>{
                           if(!window.confirm('Delete this shipment?'))return;
+                          if(shp.shipstation_shipment_id&&ssConnected&&window.confirm('This shipment has a ShipStation label. Void it (request a refund) before deleting?')){
+                            try{await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});nf('Label voided in ShipStation')}catch(err){nf('Could not void label ('+err.message+') — void manually in ShipStation if needed','error')}
+                          }
                           const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
-                          // Revert jobs from 'shipped' back to 'completed' and recalc shipping fields
                           const so2=shp.so;
                           const revertedJobs=safeJobs(so2).map(jj=>{
                             if(jj.prod_status!=='shipped')return jj;
-                            // Check if this job still has all units shipped after removing this shipment
                             const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
                               const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                             })});
@@ -19092,6 +19729,10 @@ export default function App(){
                         }}>Confirm Picked Up</button>
                     </div>
                   </div>
+                  {(shp.ship_to_label||shp.ship_to)&&<div style={{marginTop:4,fontSize:9,color:'#475569'}}>
+                    <span style={{fontWeight:700,color:'#92400e'}}>→ {shp.ship_to_label||'Customer'}</span>
+                    {shp.ship_to&&shp.ship_to.street1&&<span style={{marginLeft:6,color:'#64748b'}}>{[shp.ship_to.street1,shp.ship_to.street2,shp.ship_to.city,shp.ship_to.state,shp.ship_to.zip].filter(Boolean).join(', ')}</span>}
+                  </div>}
                 </div>})}
             </div>
           </div>})()}
@@ -20061,7 +20702,7 @@ export default function App(){
                   <input className="form-input" type="number" min="1" placeholder="H" value={(manualShipModal.dimensions||{}).height||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
                     onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),height:e.target.value}})}/>
                 </div>
-                {ssConnected&&manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other'&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
+                {manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other'&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
                   onClick={async()=>{
                     try{
                       const so=manualShipModal.so;
@@ -20161,9 +20802,8 @@ export default function App(){
             </div>
 
             {/* Actions */}
-            <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
-              <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
-                onClick={()=>{
+            {(()=>{
+              const _doConfirmManualShip=async(openEmail)=>{
                   const so=manualShipModal.so;
                   const cost=parseFloat(manualShipModal.cost)||0;
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
@@ -20217,11 +20857,73 @@ export default function App(){
                   const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
                   nf('Manual ship recorded → '+_destLabel+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
                   addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',dest:_destLabel,tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
+                  // After recording the ship: either open the recipient-picker modal to email
+                  // the label, or download it locally. Never auto-send to anyone.
+                  if(openEmail&&manualShipModal.labelUrl){
+                    const _sugg=[];const _seen=new Set();
+                    const _addSugg=(email,label)=>{const e=(email||'').trim();if(e&&/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)&&!_seen.has(e.toLowerCase())){_seen.add(e.toLowerCase());_sugg.push({email:e,label})}};
+                    if(cu?.email)_addSugg(cu.email,(cu.name||'Me')+' · me (rep)');
+                    const _soRep=REPS.find(r=>r.id===so.rep_id||r.id===so.created_by||r.id===so.rep);
+                    if(_soRep&&_soRep.email)_addSugg(_soRep.email,(_soRep.name||'Rep')+' · order rep');
+                    (manualShipModal.cust?.contacts||[]).forEach(c=>_addSugg(c.email,(c.name||'Contact')+(c.role?' · '+c.role:'')+' · customer'));
+                    setEmailLabelModal({soId:so.id,labelUrl:manualShipModal.labelUrl,tracking:shipment.tracking_number||'',trackingUrl:shipment.tracking_url||'',carrier:shipment.carrier||'',custName:manualShipModal.cust?.name||'',suggestions:_sugg,checked:{},custom:'',sending:false});
+                  } else if(manualShipModal.labelUrl){const _lUrl=manualShipModal.labelUrl;if(_lUrl.startsWith('data:application/pdf;base64,')){try{const _b64=_lUrl.replace('data:application/pdf;base64,','');const _bin=atob(_b64);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bUrl=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bUrl;_a.download='shipping-label-'+so.id+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bUrl),5000)}catch(_e){const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}else{const _a=document.createElement('a');_a.href=_lUrl;_a.download='label.pdf';_a.click()}}
                   setManualShipModal(null);
-                }}>⚡ Confirm Manual Ship</button>
-              <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
-            </div>
+              };
+              return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
+                <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
+                  onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Manual Ship</button>
+                {manualShipModal.labelUrl&&<button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
+                  onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
+                <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+              </div>;
+            })()}
           </>}
+        </div>
+      </div></div>}
+
+      {/* ── EMAIL LABEL MODAL — pick/type who receives the label PDF (renders on any warehouse tab) ── */}
+      {emailLabelModal&&<div className="modal-overlay" onClick={()=>!emailLabelModal.sending&&setEmailLabelModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+        <div className="modal-header" style={{background:'linear-gradient(135deg,#075985,#0369a1)',color:'white'}}>
+          <h2 style={{margin:0,color:'white'}}>📧 Email Shipping Label — {emailLabelModal.soId}</h2>
+          <button className="modal-close" onClick={()=>!emailLabelModal.sending&&setEmailLabelModal(null)} style={{color:'white'}}>×</button>
+        </div>
+        <div className="modal-body" style={{padding:16}}>
+          <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Choose who should receive the label PDF{emailLabelModal.tracking?' (tracking '+emailLabelModal.tracking+')':''}. Nothing is sent until you click <strong>Send Label</strong>.</div>
+          {emailLabelModal.suggestions.length>0&&<div style={{display:'grid',gap:4,marginBottom:12}}>
+            {emailLabelModal.suggestions.map((s,si)=><label key={si} style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer',padding:'4px 6px',borderRadius:6,background:emailLabelModal.checked[s.email]?'#e0f2fe':'#f8fafc',border:'1px solid '+(emailLabelModal.checked[s.email]?'#7dd3fc':'#e2e8f0')}}>
+              <input type="checkbox" checked={!!emailLabelModal.checked[s.email]} onChange={e=>setEmailLabelModal(m=>({...m,checked:{...m.checked,[s.email]:e.target.checked}}))}/>
+              <span style={{fontWeight:700,color:'#0f172a'}}>{s.label}</span>
+              <span style={{color:'#64748b',fontFamily:'monospace',fontSize:10,marginLeft:'auto'}}>{s.email}</span>
+            </label>)}
+          </div>}
+          <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:4}}>{emailLabelModal.suggestions.length>0?'Or type email(s)':'Type email(s)'} — comma-separated</label>
+          <input className="form-input" type="text" placeholder="name@example.com, other@example.com" value={emailLabelModal.custom}
+            onChange={e=>setEmailLabelModal(m=>({...m,custom:e.target.value}))} style={{fontSize:12,width:'100%'}} autoFocus={emailLabelModal.suggestions.length===0}/>
+        </div>
+        <div className="modal-footer" style={{display:'flex',gap:8}}>
+          <button className="btn btn-primary" disabled={emailLabelModal.sending} style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
+            onClick={async()=>{
+              const m=emailLabelModal;
+              const picked=m.suggestions.filter(s=>m.checked[s.email]).map(s=>s.email);
+              const typed=(m.custom||'').split(/[,;\s]+/).map(x=>x.trim()).filter(Boolean);
+              const all=[...new Set([...picked,...typed])].filter(e=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+              if(all.length===0){nf('Select or type at least one valid email address','error');return}
+              setEmailLabelModal(mm=>({...mm,sending:true}));
+              const _lUrl=m.labelUrl;
+              let _att=null;
+              if(_lUrl){_att=[_lUrl.startsWith('data:application/pdf;base64,')?{name:'shipping-label-'+m.soId+'.pdf',content:_lUrl.replace('data:application/pdf;base64,','')}:{name:'shipping-label-'+m.soId+'.pdf',url:_lUrl}]}
+              const _trk=m.tracking||'';const _trkUrl=m.trackingUrl||'';
+              const _bodyInner='<p>Hi,</p><p>A shipment for <strong>'+(m.custName||'your order')+'</strong> ('+m.soId+') is on its way.</p>'+(_trk?'<p><strong>Carrier:</strong> '+(m.carrier||'').toUpperCase()+'<br/><strong>Tracking #:</strong> '+(_trkUrl?'<a href="'+_trkUrl+'">'+_trk+'</a>':_trk)+'</p>':'')+'<p>The shipping label is attached as a PDF.</p>';
+              let _html=_bodyInner;try{_html=buildBrandedEmailHtml(_bodyInner,companyInfo)}catch(_e){}
+              const _senderEmail=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
+              try{
+                const _res=await sendBrevoEmail({to:all.map(e=>({email:e})),subject:'Shipping label — '+m.soId,htmlContent:_html,senderName:'National Sports Apparel',senderEmail:_senderEmail,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,attachment:_att||undefined});
+                if(_res.ok){nf('📧 Label emailed to '+all.join(', '));addWhAction({type:'manual_label_emailed',soId:m.soId,customer:m.custName,tracking:_trk,carrier:m.carrier||'',emailedTo:all.join(', '),by:cu?.id||'warehouse'});setEmailLabelModal(null)}
+                else{nf('Email failed: '+(_res.error||'unknown'),'error');setEmailLabelModal(mm=>({...mm,sending:false}))}
+              }catch(_e){nf('Email failed: '+_e.message,'error');setEmailLabelModal(mm=>({...mm,sending:false}))}
+            }}>{emailLabelModal.sending?'Sending…':'📧 Send Label'}</button>
+          <button className="btn btn-secondary" disabled={emailLabelModal.sending} onClick={()=>setEmailLabelModal(null)}>Cancel</button>
         </div>
       </div></div>}
 
@@ -20366,13 +21068,37 @@ export default function App(){
                             setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                         } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }}>Print Label</button>}
+                    {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#0369a1',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{
+                        const _u=shp.label_url;
+                        if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
+                        else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
+                      }}>📄 Download Label</button>}
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
+                    {shp.shipstation_shipment_id&&<button className="btn btn-sm" style={{fontSize:10,background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',fontWeight:700}}
+                      onClick={async(e)=>{
+                        if(!window.confirm('Void this label in ShipStation (requests a refund) and clear it from this shipment? The shipment record stays so you can re-create a label.'))return;
+                        const btn=e.currentTarget;btn.disabled=true;btn.style.opacity='0.5';
+                        try{
+                          if(ssConnected)await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});
+                          const oldCost=safeNum(shp.shipping_cost||0);
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:'',tracking_url:'',label_url:null,shipstation_shipment_id:null,shipping_cost:0}:s);
+                          const firstShp=updatedShipments.find(s=>s.tracking_number);
+                          const newCost=Math.max(0,safeNum(shp.so._shipping_cost||shp.so._shipstation_cost||0)-oldCost);
+                          savSO({...shp.so,_shipments:updatedShipments,_tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',_tracking_url:firstShp?.tracking_url||'',_shipping_cost:newCost||null,_shipstation_cost:newCost||null});
+                          addWhAction({type:'label_voided',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',cost:oldCost?'$'+oldCost.toFixed(2):'',by:cu?.id||'warehouse'});
+                          nf('Label voided'+(ssConnected?' in ShipStation':'')+' & cleared'+(oldCost?' · refund $'+oldCost.toFixed(2)+' requested':''));
+                        }catch(err){btn.disabled=false;btn.style.opacity='1';nf('Void failed: '+err.message+' — void manually in ShipStation if needed','error')}
+                      }}>↩️ Void Label</button>}
                     <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
+                      onClick={async()=>{
                         if(!window.confirm('Delete this shipment?'))return;
+                        if(shp.shipstation_shipment_id&&ssConnected&&window.confirm('This shipment has a ShipStation label. Void it (request a refund) before deleting?')){
+                          try{await shipStationCall('/shipments/voidlabel',{method:'POST',body:JSON.stringify({shipmentId:shp.shipstation_shipment_id})});nf('Label voided in ShipStation')}catch(err){nf('Could not void label ('+err.message+') — void manually in ShipStation if needed','error')}
+                        }
                         const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
                         const so2=shp.so;
                         const revertedJobs=safeJobs(so2).map(jj=>{
@@ -20404,6 +21130,10 @@ export default function App(){
                 </div>
                 {(shp.items||[]).length>0&&<div style={{marginTop:6,fontSize:10,color:'#64748b'}}>
                   {(shp.items||[]).map((it,ii)=><span key={ii} style={{marginRight:8}}><strong>{it.sku}</strong> {it.name} — {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ')}</span>)}
+                </div>}
+                {(shp.ship_to_label||shp.ship_to)&&<div style={{marginTop:4,fontSize:9,color:'#475569'}}>
+                  <span style={{fontWeight:700,color:'#92400e'}}>→ {shp.ship_to_label||'Customer'}</span>
+                  {shp.ship_to&&shp.ship_to.street1&&<span style={{marginLeft:6,color:'#64748b'}}>{[shp.ship_to.street1,shp.ship_to.street2,shp.ship_to.city,shp.ship_to.state,shp.ship_to.zip].filter(Boolean).join(', ')}</span>}
                 </div>}
               </div>})}
           </div>})()}
@@ -20577,6 +21307,12 @@ export default function App(){
         {filteredActions.map((a,i)=>{
           const origIdx=whRecentActions.indexOf(a);
           const isEditing=whEditActionIdx===origIdx;
+          // For shipping actions, find the live shipment (by tracking) so we can offer a
+          // label download and show the address it shipped to, right on the action row.
+          const _aSo=a.soId?sos.find(s=>s.id===(a.soId||'').split(',')[0].trim()):null;
+          const _aShp=_aSo&&a.tracking?(_aSo._shipments||[]).find(s=>s.tracking_number===a.tracking):null;
+          const _aLabelUrl=_aShp?.label_url||null;
+          const _downloadLabel=()=>{const _u=_aLabelUrl;if(!_u)return;if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _el=document.createElement('a');_el.href=_bu;_el.download='shipping-label-'+(_aSo?.id||'manual')+'.pdf';_el.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _el=document.createElement('a');_el.href=_u;_el.download='label.pdf';_el.click()}}else{const _el=document.createElement('a');_el.href=_u;_el.download='label.pdf';_el.click()}};
           return<div key={i} style={{padding:'10px 14px',background:isEditing?'#fffbeb':i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:isEditing?'2px solid #d97706':'1px solid #f1f5f9',transition:'background 0.15s'}}>
           {isEditing?<div>
             <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
@@ -20688,15 +21424,21 @@ export default function App(){
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='cleared'?'#0f766e':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',cleared:'Cleared (Marked Shipped)',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',cleared:'Cleared (Marked Shipped)',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',manual_label_emailed:'Label Emailed',label_voided:'Label Voided',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
                 <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
               </div>
               <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+              {(a.dest||_aShp?.ship_to_label||_aShp?.ship_to)&&<div style={{fontSize:10,color:'#475569',marginTop:2}}>
+                <span style={{fontWeight:700,color:'#92400e'}}>→ {_aShp?.ship_to_label||a.dest||'Customer'}</span>
+                {_aShp?.ship_to&&_aShp.ship_to.street1&&<span style={{marginLeft:6,color:'#64748b'}}>{[_aShp.ship_to.street1,_aShp.ship_to.street2,_aShp.ship_to.city,_aShp.ship_to.state,_aShp.ship_to.zip].filter(Boolean).join(', ')}</span>}
+              </div>}
             </div>
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
               <div style={{display:'flex',gap:4}}>
+                {_aLabelUrl&&<button style={{fontSize:9,color:'#0369a1',background:'#e0f2fe',border:'1px solid #7dd3fc',borderRadius:4,padding:'1px 6px',cursor:'pointer',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();_downloadLabel()}}>📄 Label</button>}
                 {a.type==='pulled'&&a.pickId&&a.soId&&<button style={{fontSize:9,color:'#1e40af',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:4,padding:'1px 6px',cursor:'pointer',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();
                     // Re-open IF: flip every pulled pick_line with this pick_id on this SO back to 'pick' status, restoring the original requested sizes (when known) and inventory.
@@ -21985,6 +22727,15 @@ export default function App(){
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
           const missing=skusMissingMockups(j,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
+          // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
+          // source — a web logo or any mockup the design already carries satisfies the visual requirement.
+          // (Mockups are already mandatory via skusMissingMockups above, so designs that get here normally
+          // have one; this gate only blocks a design that has no image of any kind at all.)
+          const _hasArtImage=(a)=>!!(a&&(a.preview_url||a.web_logo_url||safeArr(a.web_logos).length||safeArr(a.mockup_files).length||safeArr(a.sample_art).length||Object.values(safeObj(a.item_mockups)).some(v=>safeArr(v).length>0)));
+          const _jobArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!_hasArtImage(a));
+          if(_noImg.length){nf('Add a logo image before sending for approval: '+_noImg.map(a=>a.name||'art').join(', '),'error');return}
           if(!_confirmResendIfRejected(j))return;
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
@@ -22908,6 +23659,18 @@ export default function App(){
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
   const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
   const[siQueueLoading,setSiQueueLoading]=useState(false);
+  const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
+  // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
+  // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
+  // or the DB is down, the badge just stays hidden — it never blocks the screen.
+  useEffect(()=>{
+    if(!supabase||billView!=='import')return;
+    let cancelled=false;
+    supabase.from('ss_documents').select('order_number',{count:'exact',head:true}).eq('status','new')
+      .then(({count})=>{if(!cancelled)setSsNewCount(count||0)})
+      .catch(()=>{if(!cancelled)setSsNewCount(0)});
+    return ()=>{cancelled=true};
+  },[billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
@@ -24300,7 +25063,11 @@ export default function App(){
         // leave it for the manual PDF parse instead of cluttering review with an empty bill.
         if(!parsed.has_usable_lines){scanned++;return}
         const dn=(parsed.doc_number||'').trim().toLowerCase();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);return}
+        // Dedup on BOTH the supplier invoice # and the SI doc #: bills applied before the
+        // supplierDocNumber cutover recorded their siDocNumber on the PO line, so checking only
+        // doc_number would re-add — and let staff re-push — an already-billed invoice (double-bill).
+        const sdn=String(parsed.si_doc_number||'').trim();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
         const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
@@ -24308,6 +25075,57 @@ export default function App(){
       });
       const extraNote=scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'';
       _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
+    };
+
+    // Pull supplier bills straight from S&S Activewear's own Orders API (NOT Sports Inc, which
+    // only delivers S&S as scanned/header-only PDFs with no usable lines). S&S returns clean
+    // structured lines, and `yourSku` echoes OUR SKU back, so they match our Sales Orders
+    // exactly with no normalization. Drops into the same review/apply pipeline as the SportsLink
+    // and PDF paths — nothing writes to Billed tracking until staff click "Push to Portal".
+    const pullFromSS=async(filters={})=>{
+      setBillImport(x=>({...x,uploading:true}));
+      let orders=[];
+      try{
+        // Default (no filters) pulls ?All=True — every S&S order from the last 3 months — with
+        // lines. Covers ALL S&S orders, not just API-placed ones (direct ssactivewear.com orders too).
+        orders=await ssGetOrders(filters);
+      }catch(e){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('S&S pull failed: '+(e.message||'connection error'),'error');
+        return;
+      }
+      if(!orders.length){
+        setBillImport(x=>({...x,uploading:false}));
+        nf('No S&S orders found (nothing in the last 3 months)','success');
+        return;
+      }
+      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let idx=0;
+      orders.forEach(order=>{
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        // No shipped lines (backordered / not yet shipped) → nothing to bill; leave it.
+        if(!parsed.has_usable_lines){empty++;return}
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        // Two-key dedup, same as the SportsLink pull: an order applied before S&S assigned its
+        // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
+        // re-add it. Checking both the invoice # and the order # catches it either way.
+        const sdn=String(parsed.si_doc_number||'').trim();
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        if(dn)seenDocs.add(dn);
+        const label='S&S Activewear · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
+        idx++;
+      });
+      const extraNote=empty?' — '+empty+' order(s) with no shipped lines skipped':'';
+      _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
+      _markSsReviewed();// staff have now seen these → clear the "new" badge from the daily cron
+    };
+    // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
+    // review, so the Import & Review badge clears. Best-effort: the dedup (_docAlreadyApplied)
+    // still prevents any double-bill on push, so a failed status write can't cause harm.
+    const _markSsReviewed=async()=>{
+      setSsNewCount(0);
+      if(!supabase)return;
+      try{await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new')}catch(e){/* badge cleared locally; DB retried on next open */}
     };
 
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
@@ -24408,6 +25226,9 @@ export default function App(){
     const _canonBillSize=raw=>{
       if(raw==null)return raw;
       let s=String(raw).trim();
+      // Bare waist/numeric size that carries an inch mark: "32\"" → "32" (the number IS the size, not a
+      // trailing inseam to drop). Handled before the inseam strip, which would otherwise null it out.
+      if(/^\d{1,3}\s*["”″]$/.test(s))return s.replace(/["”″]/g,'').trim();
       // Drop a trailing inseam/length spec so apparel sizes line up: adidas bills volleyball shorts as
       // "XS3\""/"S 3\"" (a 3-inch inseam) where the order carries plain "XS"/"S".
       const noInseam=s.replace(/\s*\d+\s*["”″]\s*$/,'').trim();
@@ -24417,6 +25238,13 @@ export default function App(){
       // lines up with a PO's "11½" instead of reading as a phantom 0 ordered.
       const half=s.match(/^(\d{1,2})\s*(?:[-–]|½|1\/2)$/);
       if(half)return half[1]+'.5';
+      // Slash-form size range ("M/L") → the dash form the orders/SIZES list carry ("M-L").
+      if(/^[A-Za-z0-9]{1,3}\/[A-Za-z0-9]{1,3}$/.test(s))s=s.replace('/','-');
+      // adidas appends a fit-code digit to a real size ("2XL7", "3XL9", "LT2") — strip the trailing
+      // digit when it follows a letter so it aligns to the base size the order carries. No standard
+      // apparel size ends letter-then-digit, so this can't clobber a real one (and "3T"/"18M" are
+      // digit-then-letter, untouched).
+      if(/[A-Za-z]\d$/.test(s))s=s.slice(0,-1);
       return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
     };
     // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
@@ -24557,14 +25385,21 @@ export default function App(){
       const updated={...bill,matchedPO:null,matchedPOSource:null};
       if(!bill.po_number)return updated;
       const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
-      const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      // Sports Inc bills often arrive without the "PO "/"DPO " prefix the order carries (the bill says
+      // "3083 OLuSPL" where the PO is "PO 3083 OLuSPL"). Also compare with that prefix stripped from
+      // both sides — still requiring the rest to match exactly, so it recovers those without a looser
+      // numeric collision. Guarded to ≥3 chars so a bare "PO" can't match everything.
+      const stripPO=s=>s.replace(/^d?po/,'');
+      const poStrip=stripPO(poLc);
+      const stripEq=pid=>poStrip.length>=3&&stripPO(pid)===poStrip;
+      const batchMatch=submittedBatches.find(sb=>{if(!sb.po_number)return false;const n=sb.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
-      const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      const invMatch=invPOs.find(p=>{if(!p.po_number)return false;const n=p.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
       if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
       // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
       for(const so of sos){for(const dp of (so.deco_pos||[])){
         const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
           updated.matchedPOSource='so_deco_po';return updated;
         }
@@ -24573,7 +25408,7 @@ export default function App(){
       for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
         const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
         const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
-        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
+        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
           updated.matchedPOSource='so_po';return updated;
         }
@@ -26389,11 +27224,23 @@ export default function App(){
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. Scanned/OCR documents (e.g. S&amp;S Activewear) are left for the manual PDF parse below.</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
               </div>
               <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
                 onClick={()=>pullFromSportsInc()}>
                 {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
+              </button>
+            </div>
+          </div>
+          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#0891b2',background:'#ecfeff'}}>
+            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+              </div>
+              <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+                onClick={()=>pullFromSS()}>
+                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
               </button>
             </div>
           </div>
@@ -27509,7 +28356,7 @@ export default function App(){
       // Rep: see messages on their customer orders
       if(cu.role==='rep')return msgRepId===cu.id;
       // CSR: see messages on orders where their assigned rep is involved
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
       // Other roles: only tagged/authored (already handled above)
       return false;
     };
@@ -29071,7 +29918,8 @@ export default function App(){
         <div style={{display:'flex',gap:6}}>
           {isAdmin&&<button className={`btn btn-sm ${activeTab==='access'?'btn-primary':'btn-secondary'}`} onClick={()=>{setTeamTab('access');if(teamAuthData==null&&!teamAuthLoading)loadTeamAuth()}}>Access Management</button>}
           <button className={`btn btn-sm ${activeTab==='directory'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('directory')}>Team Directory</button>
-          {isAdmin&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>}
+          {isAdmin&&<button className={`btn btn-sm ${activeTab==='onboarding'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('onboarding')}>Onboarding</button>}
+          {isAdmin&&activeTab!=='onboarding'&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>}
         </div>
       </div>
 
@@ -29134,6 +29982,8 @@ export default function App(){
           </div>
         </div>
       </>}
+
+      {activeTab==='onboarding'&&<ComponentErrorBoundary name="Onboarding"><React.Suspense fallback={<LazyFallback/>}><OnboardingAdmin cu={cu}/></React.Suspense></ComponentErrorBoundary>}
 
       {activeTab==='directory'&&<>
         <div className="stats-row">

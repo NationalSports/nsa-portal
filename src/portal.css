@@ -273,6 +273,13 @@ tbody tr { cursor: pointer; }
 .hover-card { transition: box-shadow 0.15s; }
 .hover-card:hover { box-shadow: 0 4px 12px #0001; }
 
+/* Hover tooltip panel (e.g. covered items/sizes on a deco cost row) */
+.nsa-tip { position: relative; display: inline-block; cursor: help; white-space: nowrap; }
+.nsa-tip .nsa-tip-body { display: none; position: absolute; z-index: 60; left: 0; top: 100%; margin-top: 4px;
+  background: #0f172a; color: #f1f5f9; padding: 8px 10px; border-radius: 6px; font-size: 11px; line-height: 1.5;
+  white-space: normal; min-width: 200px; max-width: 380px; box-shadow: 0 6px 20px #00000040; font-weight: 500; }
+.nsa-tip:hover .nsa-tip-body { display: block; }
+
 /* ═══════════════════════════════════════════════════
    MOBILE PORTAL — Standalone mobile-first UI
    ═══════════════════════════════════════════════════ */

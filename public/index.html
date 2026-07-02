@@ -7,6 +7,24 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>National Sports Connect</title>
+
+  <!-- Default rich link preview (Open Graph + Twitter Card). These are the
+       fallback tags shown when a non-storefront link (coach portal, catalog,
+       etc.) is shared in iMessage / Slack / Facebook. Per-store pages under
+       /shop/<slug> get these REPLACED at request time with the store's own
+       name + banner/logo by netlify/edge-functions/og-storefront.js — link
+       preview bots don't run JS, so the tags must be in the served HTML. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="National Sports Apparel" />
+  <meta property="og:title" content="National Sports Apparel" />
+  <meta property="og:description" content="Custom team apparel, spirit wear, and coach team stores — designed, decorated, and delivered." />
+  <meta property="og:image" content="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png" />
+  <meta property="og:url" content="https://nationalsportsapparel.com" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="National Sports Apparel" />
+  <meta name="twitter:description" content="Custom team apparel, spirit wear, and coach team stores — designed, decorated, and delivered." />
+  <meta name="twitter:image" content="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png" />
+
   <link rel="icon" href="%PUBLIC_URL%/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" sizes="32x32" href="%PUBLIC_URL%/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="%PUBLIC_URL%/favicon-16x16.png" />

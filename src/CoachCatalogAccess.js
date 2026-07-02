@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
+import { cloudUpload } from './utils';
 
 // Catalog color families (must match src/storefront/AdidasInventory.js).
 const FAMILIES = ['Black', 'White', 'Grey', 'Navy', 'Royal', 'Blue', 'Red', 'Maroon', 'Orange', 'Gold', 'Yellow', 'Green', 'Purple', 'Pink', 'Brown'];
@@ -89,10 +90,43 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     else note(next ? 'Enabled' : 'Disabled', 'success');
   };
 
+  // School logo — uploaded to Cloudinary, saved on the customer, shown in the coach-portal hero.
+  const setLogo = async (file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type || '')) return note('Use an image file (PNG, JPG, SVG)', 'error');
+    note('Uploading logo…');
+    try {
+      const url = await cloudUpload(file, 'nsa-school-logos');
+      if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: url });
+      const { error } = await supabase.from('customers').update({ logo_url: url }).eq('id', customer.id);
+      if (error) throw error;
+      note('School logo saved', 'success');
+    } catch (e) { note('Logo upload failed: ' + (e.message || e), 'error'); }
+  };
+  const removeLogo = async () => {
+    if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: null });
+    const { error } = await supabase.from('customers').update({ logo_url: null }).eq('id', customer.id);
+    if (error) note(error.message, 'error'); else note('Logo removed', 'success');
+  };
+  const pickLogo = () => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) setLogo(f); }; inp.click(); };
+
   return (
     <div className="card">
       <div className="card-header"><h2>🎽 Catalog Access</h2></div>
       <div className="card-body">
+        {/* School logo — used in the coach-portal hero (monogram fallback when empty) */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>School logo</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {customer && customer.logo_url
+              ? <img src={customer.logo_url} alt="School logo" style={{ height: 54, maxWidth: 170, objectFit: 'contain', border: '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff' }} />
+              : <div style={{ height: 54, width: 54, borderRadius: 10, border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 22 }}>🏫</div>}
+            <button className="btn btn-sm btn-secondary" onClick={pickLogo}>{customer && customer.logo_url ? 'Replace logo' : 'Upload logo'}</button>
+            {customer && customer.logo_url && <button className="btn btn-sm" style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }} onClick={removeLogo}>Remove</button>}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shown in the coach portal hero. A transparent PNG/SVG looks best.</div>
+        </div>
+
         <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px', lineHeight: 1.5 }}>
           Invite this customer's coaches to the live adidas team catalog. They sign in with a one-tap email link (no password)
           and automatically see <strong>{customer && customer.name}</strong>'s pricing
@@ -124,6 +158,32 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
             })}
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Off by default — turn on per team. Saves automatically.</div>
+        </div>
+
+        {/* Athletic-director tools — only meaningful on a parent (AD) account, which
+            rolls up the teams beneath it. Same optimistic toggle as the portal caps. */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Athletic-director tools</div>
+          {(() => {
+            const field = 'ad_spend_tracking';
+            const on = !!(customer && customer[field]);
+            const isParent = !(customer && customer.parent_id);
+            return (
+              <button onClick={() => togglePortalCap(field)}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '9px 12px', cursor: 'pointer' }}>
+                <span style={{ width: 36, height: 20, borderRadius: 999, background: on ? '#22c55e' : '#cbd5e1', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
+                  <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .15s' }} />
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#1e293b' }}>📊 Team Spend &amp; Promo dashboard</span>
+                  <span style={{ display: 'block', fontSize: 11, color: '#94a3b8' }}>Shows the AD per-team spend (excl. shipping/tax) + promo balance in their portal.</span>
+                </span>
+              </button>
+            );
+          })()}
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
+            Off by default. When on, the portal shows spend for the whole department — the parent account and every team beneath it, broken down per team. Enable it on the account the athletic director logs into (the parent or a department sub-account both work).
+          </div>
         </div>
 
         {/* Brand access */}

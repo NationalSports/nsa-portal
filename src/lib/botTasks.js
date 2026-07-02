@@ -100,3 +100,17 @@ export function botRowUI(botStatus) {
     default:             return null;
   }
 }
+
+// Guard against silently checking off a bot task the worker never finished.
+// `needs_review` (cart filled, awaiting human submit) and `done` are the
+// expected states to complete *from* — return null there. Any other bot_status
+// (failed, blocked, in_progress, queued, scheduled, needs_input) means the bot
+// did NOT place the order, so marking the task done would falsely imply the PO
+// was ordered. Returns a human-readable status label to warn with, else null.
+// Non-bot tasks (no bot_status) always return null.
+export function botCompleteNeedsConfirm(todo) {
+  const bs = todo && todo.bot_status;
+  if (!bs || bs === 'done' || bs === 'needs_review') return null;
+  const ui = botRowUI(bs);
+  return ui ? ui.label : bs;
+}

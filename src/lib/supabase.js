@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { makeBreakerFetch } from './requestBreaker';
 
 // These come from your Supabase project settings
 // Set them in Netlify Environment Variables or .env.local for dev
@@ -40,6 +41,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
   global: {
     headers: { 'x-client-info': 'nsa-portal' },
+    fetch: makeBreakerFetch({ label: 'circuit-breaker:lib' }),
   },
   db: {
     schema: 'public',

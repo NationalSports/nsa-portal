@@ -87,6 +87,19 @@ C. In the cart, for each product row, type the quantities into the size cells �
    - After entering a row, re-read it and confirm each qty sits under the right
      header and the row total matches the line's total. Fix any mismatch.
 
+D. **Hatched / disabled size cells**: If ALL size cells for a product row appear
+   greyed-out or hatched (diagonal lines):
+   1. **Hover over one of the hatched cells first** — look for a tooltip with a
+      release or restock date (e.g. "Re-stock in Jul 1, 2026" or "Available Jul 1").
+   2. If a date appears → this is a **pre-release / backorder** item, not a
+      permanently unavailable one. Follow the **Backorders** section above:
+      set the delivery date to that date, attempt to enter the full quantities,
+      and stop with `needs_input` so the rep can confirm the plan.
+   3. If hovering shows **no date at all** → the item is genuinely unavailable.
+      Record it in `issues` (e.g., "KB5529: all sizes hatched, no restock date")
+      and continue with remaining lines. If EVERY line is blocked this way, use
+      status "blocked".
+
 # Work efficiently
 Move quickly and decisively — this is routine data entry, not research. Avoid
 re-snapshotting pages you've already seen; don't take screenshots except the
@@ -99,7 +112,14 @@ final cart.
    given; otherwise search by the product name/color in the task notes. Work
    from the notes like a CSR would. If a product is genuinely unavailable, record
    it in `issues` and continue. Only report "blocked" if you truly cannot proceed.
-3. In the cart, enter the PO number "{{PO_NUMBER}}" in the "Customer PO #" field.
+3. In the cart, update the "Customer PO #" field to "{{PO_NUMBER}}":
+   a. Click the "Customer PO #" field to focus it.
+   b. Press Ctrl+A (select all), then type "{{PO_NUMBER}}" to REPLACE whatever is there —
+      the field often pre-fills with an account name like "FPU Soccer"; clear it completely.
+   c. Press Tab (or click elsewhere) to commit the value.
+   d. Re-read the field to confirm it shows exactly "{{PO_NUMBER}}". If it still shows
+      the old value, click again, triple-click to select all, and retype.
+   Set `po_entered: true` only after you've confirmed the correct value is showing.
 3b. Delivery location:
    {{DELIVERY}}
 3c. Delivery date:
@@ -128,3 +148,9 @@ nothing after it, matching this shape:
 Use **needs_input** when you need the human to decide something (like a
 backorder) before finishing. Use **needs_review** when the cart is fully built
 and just needs human review/submit.
+
+Before outputting "needs_review", verify both of the following:
+1. The "Customer PO #" field shows exactly "{{PO_NUMBER}}" (not an account name or
+   previous value). If it doesn't, set `po_entered: false` and note it in `issues`.
+2. At least one line item has a non-zero quantity in the cart. If ALL lines show
+   0 (e.g., every product had hatched/unavailable size cells), use "blocked" instead.
