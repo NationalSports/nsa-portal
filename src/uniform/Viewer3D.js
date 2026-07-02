@@ -19,7 +19,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { makePatternTile } from './patterns';
+import { makePatternTile, tintedTile } from './patterns';
 import { fontShorthand } from './fonts';
 import { drawAthleticText, measureAthleticText } from './lettering';
 import { getTemplate } from './templates';
@@ -217,8 +217,14 @@ function applyDesign(st, rawSpec) {
       // drops stale loads if the design changed again before the image decoded.
       const gen = (entry._patGen = (entry._patGen || 0) + 1);
       mat.color.set(color); // flat placeholder while the tile decodes
-      new THREE.TextureLoader().load(zs.patternImage, (tex) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
         if (entry._patGen !== gen || !entry.mesh.material) return;
+        // Tintable tiles are grayscale: recolor with the zone's colors so one
+        // uploaded tile serves every colorway.
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2) : img;
+        const tex = new THREE.CanvasTexture(source);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         const rep = entry.zone === 'body' ? 4 : 2.5;
         tex.repeat.set(rep, rep);
@@ -226,7 +232,8 @@ function applyDesign(st, rawSpec) {
         const m = entry.mesh.material;
         if (m.map) m.map.dispose();
         m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
-      });
+      };
+      img.src = zs.patternImage;
     } else if (pat === 'solid') {
       entry._patGen = (entry._patGen || 0) + 1; // invalidate in-flight custom tiles
       mat.color.set(color);

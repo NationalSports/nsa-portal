@@ -173,3 +173,30 @@ function hx(h) {
   const m = String(h || '#000000').replace('#', '').match(/.{2}/g) || ['00', '00', '00'];
   return [parseInt(m[0], 16), parseInt(m[1], 16), parseInt(m[2], 16)];
 }
+
+// ── tintable print tiles ─────────────────────────────────────────────────────
+// Recolor a grayscale library tile with the team's colors: white → color1
+// (primary), black → color2 (secondary), grays blend. One uploaded tile then
+// serves every colorway. Cached per (src, colors); alpha is preserved.
+const _tintCache = new Map();
+export function tintedTile(img, src, color1, color2) {
+  const key = src + '|' + color1 + '|' + color2;
+  if (_tintCache.has(key)) return _tintCache.get(key);
+  const w = img.naturalWidth || img.width || 1, h = img.naturalHeight || img.height || 1;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  const id = x.getImageData(0, 0, w, h);
+  const d = id.data;
+  const A = hx(color1), B = hx(color2);
+  for (let i = 0; i < d.length; i += 4) {
+    const t = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+    d[i] = Math.round(B[0] + (A[0] - B[0]) * t);
+    d[i + 1] = Math.round(B[1] + (A[1] - B[1]) * t);
+    d[i + 2] = Math.round(B[2] + (A[2] - B[2]) * t);
+  }
+  x.putImageData(id, 0, 0);
+  if (_tintCache.size > 60) _tintCache.clear();
+  _tintCache.set(key, c);
+  return c;
+}

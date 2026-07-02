@@ -112,7 +112,7 @@ function effectiveBottomSections(cfg) {
   const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
-    const from = (z) => ({ color: z.color, color2: z.color2, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName });
+    const from = (z) => ({ color: z.color, color2: z.color2, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint });
     return { legs: from(S.body), waistband: from(S.collar), stripe: from(S.sleeveL) };
   }
   return { ...defaultBottomSections(), ...(bottom.sections || {}) };
@@ -121,7 +121,7 @@ function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint } : {}),
   });
   return ds.normalizeSpec({
     garmentId: 'shorts', fabric: cfg.fabric || 'sublimated',
@@ -298,7 +298,7 @@ function specFromConfig(cfg) {
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint } : {}),
   });
   return ds.normalizeSpec({
     garmentId: cfg.neckStyle === 'crew' ? 'octa_jersey' : 'sahrul_jersey', fabric: cfg.fabric || 'sublimated',
@@ -421,7 +421,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
               {printLib.map((p) => {
                 const on = active.pattern === 'custom' && active.patternImage === p.image;
                 return (
-                  <button key={p.id} title={p.name} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name })}
+                  <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable })}
                     style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
                       border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
                       boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
@@ -600,7 +600,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
         const mod = await import('../lib/supabase');
         if (!mod.supabase) return;
         const { data } = await mod.supabase.from('uniform_patterns')
-          .select('id,name,image').eq('active', true)
+          .select('id,name,image,tintable').eq('active', true)
           .order('created_at', { ascending: false }).limit(40);
         if (alive && Array.isArray(data)) setPrintLib(data);
       } catch (_e) { /* offline / table missing */ }

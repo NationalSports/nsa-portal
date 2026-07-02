@@ -11,7 +11,7 @@
 // canvas to three.js as a THREE.CanvasTexture. Nothing else has to change.
 
 import { jsPDF } from 'jspdf';
-import { makePatternTile, makeFabricOverlay } from './patterns';
+import { makePatternTile, makeFabricOverlay, tintedTile } from './patterns';
 import { fontShorthand, ensureFontsReady } from './fonts';
 import { drawAthleticText } from './lettering';
 import { getTemplate } from './templates';
@@ -39,7 +39,8 @@ function fillZone(ctx, path, zone, vb, s) {
   const pat = zone.pattern || 'solid';
 
   if (pat === 'custom' && zone.patternImage) {
-    const img = patternImgCache[zone.patternImage];
+    let img = patternImgCache[zone.patternImage];
+    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2);
     const cp = img ? ctx.createPattern(img, 'repeat') : null;
     if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
       try { cp.setTransform(new DOMMatrix().scale(1 / s)); } catch (_e) { /* older browsers */ }

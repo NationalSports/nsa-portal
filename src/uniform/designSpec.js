@@ -209,6 +209,7 @@ function cleanZone(z, base = DEFAULT_ZONE) {
       out.pattern = 'custom';
       out.patternImage = pimg;
       if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
+      if (z.patternTint) out.patternTint = true; // grayscale tile → recolor with zone colors
     }
   }
   return out;

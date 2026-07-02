@@ -37,13 +37,14 @@ export default function PatternLibraryAdmin() {
   const [err, setErr] = useState('');
   const [name, setName] = useState('');
   const [pendingImg, setPendingImg] = useState(null);
+  const [pendingTint, setPendingTint] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
 
   const load = async () => {
     try {
       const { data, error } = await supabase.from('uniform_patterns')
-        .select('id,name,image,active,created_at').order('created_at', { ascending: false });
+        .select('id,name,image,active,tintable,created_at').order('created_at', { ascending: false });
       if (error) throw error;
       setRows(data || []); setErr('');
     } catch (e) { setRows([]); setErr('Could not load patterns — ' + (e.message || e)); }
@@ -64,9 +65,9 @@ export default function PatternLibraryAdmin() {
     if (!pendingImg || !name.trim()) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from('uniform_patterns').insert({ name: name.trim(), image: pendingImg, active: true });
+      const { error } = await supabase.from('uniform_patterns').insert({ name: name.trim(), image: pendingImg, active: true, tintable: pendingTint });
       if (error) throw error;
-      setName(''); setPendingImg(null);
+      setName(''); setPendingImg(null); setPendingTint(false);
       await load();
     } catch (e) { setErr('Save failed — ' + (e.message || e) + '. Are you signed in?'); }
     setBusy(false);
@@ -113,6 +114,9 @@ export default function PatternLibraryAdmin() {
           {pendingImg && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div title="Tiled preview" style={{ width: 96, height: 48, borderRadius: 6, border: '1px solid #cbd5e1', backgroundImage: `url(${pendingImg})`, backgroundSize: '32px 32px', backgroundRepeat: 'repeat' }} />
+              <label title="Grayscale tile recolored with each team's colors: white = primary, black = secondary" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#334155', cursor: 'pointer' }}>
+                <input type="checkbox" checked={pendingTint} onChange={(e) => setPendingTint(e.target.checked)} /> Tintable (grayscale)
+              </label>
               <button className="btn btn-sm btn-primary" disabled={busy || !name.trim()} onClick={add}>{busy ? 'Saving…' : 'Add pattern'}</button>
               <button className="btn btn-sm btn-secondary" onClick={() => setPendingImg(null)}>Cancel</button>
             </div>
@@ -131,7 +135,7 @@ export default function PatternLibraryAdmin() {
                 <div style={{ height: 84, backgroundImage: `url(${r.image})`, backgroundSize: '42px 42px', backgroundRepeat: 'repeat' }} />
                 <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}{r.tintable && <span title="Recolors with team colors" style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: '#0B6E4F', border: '1px solid #0B6E4F', borderRadius: 3, padding: '1px 4px', verticalAlign: 'middle' }}>TINT</span>}</div>
                     <div style={{ fontSize: 11, color: r.active ? '#15803d' : '#64748b' }}>{r.active ? 'Live in builder' : 'Hidden'}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>

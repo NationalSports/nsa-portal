@@ -16,7 +16,7 @@
 // mask_front/back.png using the color convention below and import them.
 
 import * as ds from './designSpec';
-import { makePatternTile } from './patterns';
+import { makePatternTile, tintedTile } from './patterns';
 
 // Canonical zone → flat mask color. Matches the ids used in designSpec's default
 // zones so an imported template's colors apply immediately, and matches the flat
@@ -129,7 +129,8 @@ function tint(lx, zoneSpec, w, h) {
   const pat = zoneSpec.pattern || 'solid';
   lx.globalCompositeOperation = 'multiply';
   if (pat === 'custom' && zoneSpec.patternImage) {
-    const img = patternImgCache[zoneSpec.patternImage];
+    let img = patternImgCache[zoneSpec.patternImage];
+    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2);
     const cp = img ? lx.createPattern(img, 'repeat') : null;
     lx.fillStyle = cp || color; lx.fillRect(0, 0, w, h); return; // flat fallback until loaded
   }
