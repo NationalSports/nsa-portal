@@ -5333,6 +5333,9 @@ export default function App(){
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
       const so=sos.find(x=>x.omg_store_id===s.id);
+      // Settlement-aware: if the store's SO is invoiced and every invoice is
+      // already paid, the funds have been applied — no reminder needed.
+      if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
       const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
       const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
       const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
@@ -5341,32 +5344,34 @@ export default function App(){
       toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
     });
     if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen]);
-  // Webstore settlement funds — per sales order, sum the PREPAID (Stripe,
-  // payment_mode='paid') order totals net of refunds vs the TEAM-TAB
+  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen,invs]);
+  // Webstore settlement funds — per batched sales order, sum the PREPAID
+  // (Stripe, payment_mode='paid') order totals net of refunds vs the TEAM-TAB
   // (payment_mode='unpaid') totals still owed. The Invoices settlement queue
   // uses this to reconcile a webstore SO's collected funds against its invoice.
-  // webstore_orders aren't held in page state, so fetch just the money columns
-  // for webstore SOs that still have an open invoice, keyed by so_id. Guarded
-  // by a stable id key so it refetches only when that set changes, never loops.
+  // Membership comes from webstore_orders joined to GENUINE webstores
+  // (source='webstore') — sales_orders.source is 'portal' on every SO in
+  // practice, so it can't be the filter, and the join keeps OMG shadow-store
+  // orders out of this path entirely. Result set = batched orders of real
+  // webstores (tiny), keyed by so_id. Refetches only when the invoice/SO
+  // counts change, never loops.
   const[webstoreSettle,setWebstoreSettle]=useState({});
   const _wsSettleKey=React.useRef(null);
   React.useEffect(()=>{
     if(!supabase||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-    const openInvSoIds=new Set((invs||[]).filter(i=>i&&i.so_id&&i.status!=='paid').map(i=>i.so_id));
-    const wsSoIds=[...new Set((sos||[]).filter(s=>s&&s.source==='webstore'&&openInvSoIds.has(s.id)).map(s=>s.id))].sort();
-    const key=wsSoIds.join(',');
-    if(key===_wsSettleKey.current)return; // set unchanged — nothing new to fetch
+    const key=(invs||[]).length+':'+(sos||[]).length;
+    if(key===_wsSettleKey.current)return;
     _wsSettleKey.current=key;
-    if(!wsSoIds.length){setWebstoreSettle({});return}
     (async()=>{
       try{
-        const{data,error}=await supabase.from('webstore_orders').select('so_id,payment_mode,status,total,refunded_amt').in('so_id',wsSoIds);
+        const{data,error}=await supabase.from('webstore_orders')
+          .select('so_id,payment_mode,status,total,refunded_amt,webstores!inner(source,name)')
+          .eq('webstores.source','webstore').not('so_id','is',null);
         if(error){console.warn('[webstore settle] fetch failed:',error.message);return}
         const agg={};
         (data||[]).forEach(o=>{
           if(!o||!o.so_id||o.status==='cancelled')return;
-          const a=agg[o.so_id]||(agg[o.so_id]={prepaid:0,teamTab:0,refunded:0,orders:0});
+          const a=agg[o.so_id]||(agg[o.so_id]={prepaid:0,teamTab:0,refunded:0,orders:0,name:o.webstores?.name||''});
           a.orders++;const refunded=+o.refunded_amt||0;a.refunded+=refunded;
           if(o.status==='refunded')return; // fully refunded — not collected
           if(o.payment_mode==='paid')a.prepaid+=Math.max(0,(+o.total||0)-refunded);
@@ -14156,50 +14161,66 @@ export default function App(){
     // (neither reads it), so 'store' behaves exactly like a check downstream.
     const _r2=n=>Math.round((+n||0)*100)/100;
     // OMG: funds are collected in a lump by the OMG platform, which deducts its
-    // fees before remitting to NSA. So the settlement figure is the NET REMIT
-    // (collected − OMG & CC fees), mirroring the createOmgSO note math. Requires
-    // both reports entered and in agreement (same gate that lets the SO pull).
+    // fees before remitting to NSA. The settlement figure is the NET REMIT
+    // (collected − OMG & CC fees). COVERAGE model: the remit also contains the
+    // tax + processing the parents paid, which are deliberately NOT on the
+    // (tax-exempt, product-only) invoice — so remit ≥ balance is the healthy
+    // state, we apply the invoice balance, and the leftover surplus is NSA's
+    // processing revenue plus tax NSA must remit. Only a remit SHORT of the
+    // balance is a real discrepancy. Stores closed with missing data (no
+    // Accounting Report, SO never invoiced) surface as actionable rows instead
+    // of hiding — that's where the pipeline actually stalls.
     const omgProps=(omgStores||[]).map(s=>{
       if(!s||!s.id)return null;
       const grand=+s._omg_grand_total||0, acct=+s._omg_acct_collected||0;
       const omgFees=+s._omg_omg_fees||0, ccFees=+s._omg_cc_fees||0;
-      if(!(grand>0)||!(acct>0))return null; // funds not known yet
-      const name=s.store_name||s.id;
-      if(Math.abs(acct-grand)>=1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:'Dollar & Accounting reports disagree',so:null,inv:null,collected:null,teamTab:0};
-      const netRemit=_r2((acct||grand)-omgFees-ccFees);
+      const proc=+s._omg_processing||0, tax=+s._omg_tax||0;
+      if(!(grand>0))return null; // Dollar Report is entered at close — before that, nothing is known
+      // Two stores can share a name (e.g. two "Dana Hills Football 2026"), so
+      // always disambiguate with the sale code.
+      const name=(s.store_name||s.id)+(s._omg_sale_code?' · '+s._omg_sale_code:'');
       const so=(sos||[]).find(x=>x.omg_store_id===s.id);
-      // No SO / not invoiced yet are normal mid-pipeline states — leave those to
-      // the 4-week "Apply OMG funds" reminder and keep this queue to stores
-      // actually ready (or stuck) at payment.
-      if(!so)return null;
-      const ref='OMG '+(s._omg_sale_code||so.id);
-      const soInvs=enrichedInvs.filter(i=>i.so_id===so.id);
+      const ref='OMG '+(s._omg_sale_code||(so&&so.id)||s.id);
+      const soInvs=so?enrichedInvs.filter(i=>i.so_id===so.id):[];
       if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
+      if(!(acct>0))return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'report',reason:'Accounting Report missing — enter it on the OMG page',so:so||null,inv:null,collected:null,teamTab:0};
+      if(Math.abs(acct-grand)>=1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:'Dollar & Accounting reports disagree',so:so||null,inv:null,collected:null,teamTab:0};
+      const netRemit=_r2(acct-omgFees-ccFees);
+      if(!so)return null; // SO not pulled yet — the OMG page gate walks the rep through that
       const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
-      if(!openInvs.length)return null;
+      if(!openInvs.length){
+        if(soInvs.length)return null; // invoiced & fully paid some other way
+        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Ready to invoice — open the SO and create its invoice',so,inv:null,collected:netRemit,teamTab:0,ref};
+      }
       if(openInvs.length>1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:netRemit,teamTab:0,ref};
       const inv=openInvs[0];
-      const delta=_r2(netRemit-inv._bal);
-      const matched=Math.abs(delta)<=1;
-      // Matched → apply the exact balance for a clean close to 'paid' (net remit
-      // can be a few cents under the balance within tolerance, which would
-      // otherwise strand a residual 'partial' balance in AR/QuickBooks).
-      // Mismatch → apply what actually came in so a real shortfall stays visible.
-      return{key:'omg:'+s.id,source:'omg',name,status:matched?'matched':'mismatch',
-        reason:matched?'':('Net remit is '+(delta>0?'+$':'−$')+Math.abs(delta).toFixed(2)+' vs invoice balance'),
-        note:'',so,inv,collected:netRemit,teamTab:0,applyAmount:matched?_r2(inv._bal):netRemit,ref};
+      const surplus=_r2(netRemit-inv._bal);
+      if(surplus>=-1){ // covered (within $1) → apply the balance, close cleanly to 'paid'
+        return{key:'omg:'+s.id,source:'omg',name,status:'matched',reason:'',
+          note:surplus>1?('+$'+surplus.toFixed(2)+' surplus'+(tax>0?' (incl. $'+tax.toFixed(2)+' collected tax to remit)':proc>0?' (processing revenue)':'')):'',
+          so,inv,collected:netRemit,teamTab:0,surplus,applyAmount:_r2(inv._bal),ref};
+      }
+      // Remit is genuinely short of the invoice — apply what came in so the
+      // shortfall stays visible as an open partial balance to chase.
+      return{key:'omg:'+s.id,source:'omg',name,status:'mismatch',
+        reason:'Collected is $'+Math.abs(surplus).toFixed(2)+' short of the invoice balance',
+        note:'',so,inv,collected:netRemit,teamTab:0,surplus,applyAmount:netRemit,ref};
     }).filter(Boolean);
     // Webstore: orders are pre-paid per-order via Stripe at checkout, so the
     // collected figure is the sum of PREPAID order totals (payment_mode='paid',
     // net of refunds) — no fee subtraction (Stripe nets its cut before payout).
     // Team-tab orders (payment_mode='unpaid') were never charged, so we apply
     // only the prepaid funds and leave the team-tab portion as a real open
-    // balance the team pays later. Per-order sums come from webstoreSettle
-    // (fetched async, keyed by so_id) since webstore_orders aren't in page state.
-    const webProps=(sos||[]).map(so=>{
-      if(!so||so.source!=='webstore')return null;
-      const agg=webstoreSettle[so.id];
-      if(!agg)return null; // not fetched yet / no orders
+    // balance the team pays later. Keyed off webstoreSettle (batched orders of
+    // genuine source='webstore' stores, fetched async by so_id) — NOT off
+    // sales_orders.source, which is 'portal' on every SO in practice. OMG
+    // shadow-store orders are excluded by the fetch and by the omg_store_id
+    // guard, so a store can never settle through both paths.
+    const webProps=Object.keys(webstoreSettle).map(soId=>{
+      const so=(sos||[]).find(x=>x.id===soId);
+      if(!so||so.omg_store_id)return null; // OMG SOs settle via the OMG path
+      const agg=webstoreSettle[soId];
+      if(!agg)return null;
       const prepaid=_r2(agg.prepaid), teamTab=_r2(agg.teamTab);
       if(prepaid<=0.5)return null; // nothing collected via Stripe — normal AR, not a settlement
       const ref='WEB '+so.id;
@@ -14207,7 +14228,7 @@ export default function App(){
       if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
       const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
       if(!openInvs.length)return null;
-      const name=(soInvs[0]&&soInvs[0]._cname)||cust.find(c=>c.id===so.customer_id)?.name||so.id;
+      const name=agg.name||(soInvs[0]&&soInvs[0]._cname)||cust.find(c=>c.id===so.customer_id)?.name||so.id;
       if(openInvs.length>1)return{key:'web:'+so.id,source:'web',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:prepaid,teamTab,ref};
       const inv=openInvs[0];
       const accounted=_r2(prepaid+teamTab); // prepaid + still-owed team tab should equal the invoice
@@ -14215,7 +14236,9 @@ export default function App(){
       const hasTab=teamTab>1;
       if(Math.abs(delta)>1)return{key:'web:'+so.id,source:'web',name,status:'mismatch',
         reason:'Prepaid + team-tab ($'+accounted.toFixed(2)+') ≠ invoice balance',
-        note:hasTab?('incl. $'+teamTab.toFixed(2)+' team-tab'):'',so,inv,collected:prepaid,teamTab,applyAmount:prepaid,ref};
+        // Never pre-fill more than the open balance — an over-collection is a
+        // discrepancy to investigate, not extra money to post onto the invoice.
+        note:hasTab?('incl. $'+teamTab.toFixed(2)+' team-tab'):'',so,inv,collected:prepaid,teamTab,applyAmount:Math.min(prepaid,_r2(inv._bal)),ref};
       // Reconciles. With a team-tab remainder, apply only the prepaid funds (the
       // team-tab stays owed); otherwise close cleanly at the invoice balance.
       return{key:'web:'+so.id,source:'web',name,status:'matched',reason:'',
@@ -14224,6 +14247,7 @@ export default function App(){
     }).filter(Boolean);
     const storeSettlements=[...omgProps,...webProps];
     const stMatched=storeSettlements.filter(p=>p.status==='matched');
+    const stAction=storeSettlements.filter(p=>p.status==='action');
     const stMismatch=storeSettlements.filter(p=>p.status==='mismatch');
     const stBlocked=storeSettlements.filter(p=>p.status==='blocked');
     // Pre-fill the existing payment modal; the modal's "Record $X" button is
@@ -14356,17 +14380,18 @@ export default function App(){
         <div style={{fontSize:12,fontWeight:700,color:'#4338ca',marginBottom:2,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
           🏫 STORE SETTLEMENTS
           {stMatched.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534',padding:'1px 7px',borderRadius:10}}>{stMatched.length} ready</span>}
-          {stMismatch.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',padding:'1px 7px',borderRadius:10}}>{stMismatch.length} needs review</span>}
+          {stAction.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af',padding:'1px 7px',borderRadius:10}}>{stAction.length} needs action</span>}
+          {stMismatch.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',padding:'1px 7px',borderRadius:10}}>{stMismatch.length} short</span>}
           {stBlocked.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#f1f5f9',color:'#64748b',padding:'1px 7px',borderRadius:10}}>{stBlocked.length} blocked</span>}
         </div>
-        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>Store &amp; webstore orders are paid from funds the store already collected (not the coach). Confirm each match to apply those funds to its invoice. OMG applies the net remit (collected − OMG &amp; card fees); webstores apply the prepaid Stripe total and leave any team-tab balance owed.</div>
+        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>Store &amp; webstore orders are paid from funds the store already collected (not the coach). "Ready" means the collected funds cover the invoice — confirming applies the invoice balance, and the surplus shown is NSA's processing revenue plus collected tax to remit. OMG collected = net remit (collected − OMG &amp; card fees); webstores = prepaid Stripe total, leaving any team-tab balance owed.</div>
         <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
           <th style={{padding:'4px 8px'}}>SRC</th><th style={{padding:'4px 8px'}}>STORE / CUSTOMER</th><th style={{padding:'4px 8px'}}>SO</th><th style={{padding:'4px 8px'}}>INVOICE</th>
           <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED</th><th style={{padding:'4px 8px',textAlign:'right'}}>INVOICE BAL</th>
           <th style={{padding:'4px 8px'}}></th></tr></thead><tbody>
-          {[...stMatched,...stMismatch,...stBlocked].map(p=>{
-            const clr=p.status==='matched'?'#166534':p.status==='mismatch'?'#b45309':'#64748b';
-            const bg=p.status==='matched'?'#f0fdf4':p.status==='mismatch'?'#fffbeb':'#f8fafc';
+          {[...stMatched,...stAction,...stMismatch,...stBlocked].map(p=>{
+            const clr=p.status==='matched'?'#166534':p.status==='action'?'#1e40af':p.status==='mismatch'?'#b45309':'#64748b';
+            const bg=p.status==='matched'?'#f0fdf4':p.status==='action'?'#eff6ff':p.status==='mismatch'?'#fffbeb':'#f8fafc';
             const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
             return<tr key={p.key} style={{background:bg,borderTop:'1px solid #e2e8f0'}}>
               <td style={{padding:'6px 8px'}}><span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:p.source==='web'?'#e0f2fe':'#ede9fe',color:p.source==='web'?'#0369a1':'#6d28d9'}}>{p.source==='web'?'WEB':'OMG'}</span></td>
@@ -14377,8 +14402,11 @@ export default function App(){
               <td style={{padding:'6px 8px',textAlign:'right'}}>{p.inv?$(p.inv._bal):'—'}</td>
               <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
                 {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeSettlement(p)}>
-                  {p.status==='matched'?'Confirm & Apply':'Review & Apply'}</button>}
+                  {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
+                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{if(p.act==='invoice'&&p.so)_openSO(p.so);else setPg('omg')}}>
+                  {p.act==='invoice'?'Open SO':'OMG Page'}</button>}
                 {p.status==='matched'&&p.note&&<span style={{marginLeft:8,fontSize:10,color:'#64748b'}}>{p.note}</span>}
+                {p.status==='action'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>{p.reason}</span>}
                 {p.status==='mismatch'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>⚠ {p.reason}</span>}
                 {p.status==='blocked'&&<span style={{fontSize:11,color:clr}}>{p.reason}</span>}
               </td></tr>;
