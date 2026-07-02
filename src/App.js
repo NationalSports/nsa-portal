@@ -561,6 +561,12 @@ const _safeQuery=(table,opts)=>{
   };
   const _classifyPage=(r)=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204'))return'missing';
+    // RLS/grant denial (Postgres 42501): the table is intentionally unreadable for this role — e.g.
+    // `messages` after migration 00162 revoked anon access. Empty is the authoritative view for this
+    // role, NOT a load failure: the anonymous coach portal (?portal=) boots through _dbLoad, and a
+    // fatal error here blanked the whole load and broke every portal link. Matched narrowly by code/
+    // message (not HTTP 401) so expired-JWT errors still reach _isAuthError → _recoverSession.
+    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied'))return'denied';
     if(r.error)return'error';
     return'ok';
   };
@@ -569,6 +575,9 @@ const _safeQuery=(table,opts)=>{
     const first=await fetchPage(0);
     const c0=_classifyPage(first);
     if(c0==='missing'){_missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};}
+    // Not cached in _missing404Tables: after a staff login the same table becomes readable, and the
+    // next poll should pick it up immediately rather than after the missing-table TTL.
+    if(c0==='denied'){console.warn('[DB] '+table+' not readable by current role (permission denied) — treating as empty');return{data:[],error:null,status:200};}
     if(c0==='error'){
       // Partial/incomplete load: a page failed. Treat it exactly like a timeout — mark the table
       // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
@@ -590,7 +599,7 @@ const _safeQuery=(table,opts)=>{
       const results=await Promise.all(starts.map(s=>fetchPage(s)));
       for(const r of results){
         const c=_classifyPage(r);
-        if(c==='missing'){done=true;break;}// table vanished mid-page (unlikely) — stop, keep what we have
+        if(c==='missing'||c==='denied'){done=true;break;}// table vanished / access revoked mid-page (unlikely) — stop, keep what we have
         if(c==='error'){_lastLoadTimedOut.add(table);return r;}
         const rows=r.data||[];
         all.push(...rows);
