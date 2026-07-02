@@ -204,6 +204,40 @@ const TEMPLATES = {
       },
     },
   },
+  // Vendor-delivered garment #2 (Sahrul, CLO3D → Blender → GLB). Real sewn front
+  // and back panels (not one continuous mesh), so this is the model the
+  // whole-model raycast fix in Viewer3D was written for. Zone-mark renders use
+  // this artist's own flat mask colors (sampled from the delivered PNGs), not the
+  // shared RASTER_ZONE_MAP convention, since a different vendor/render can pick
+  // any colors as long as each view lists them here.
+  sahrul_jersey: {
+    id: 'sahrul_jersey', name: 'Photoreal Jersey II', category: 'Photoreal', type: 'raster',
+    model3d: PUB('/uniform/sahrul-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/sahrul-base-front.jpg'), mask: PUB('/uniform/sahrul-mask-front.png'),
+        w: 800, h: 939, viewBox: '0 0 800 939', seams: [],
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#94ffcb' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#1927a6' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#ff682a' },
+          { id: 'collar', label: 'Collar', maskColor: '#afbf00' },
+        ],
+        anchors: { number: { x: 0.5, y: 0.5, size: 150 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/sahrul-base-back.jpg'), mask: PUB('/uniform/sahrul-mask-back.png'),
+        w: 800, h: 939, viewBox: '0 0 800 939', seams: [],
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#ff5577' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#1927a6' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#f46a31' },
+          { id: 'collar', label: 'Collar', maskColor: '#bfd00a' },
+        ],
+        anchors: { number: { x: 0.5, y: 0.48, size: 190 }, name: { x: 0.5, y: 0.27, size: 70 } },
+      },
+    },
+  },
 };
 
 export function getTemplate(id) { return TEMPLATES[id] || TEMPLATES.crew_jersey; }
