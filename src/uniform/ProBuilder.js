@@ -1021,28 +1021,40 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {isBuilderStep && (
           <>
-            {/* CENTER STAGE — 3D */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, background: '#fff', padding: '24px 16px 0' }}>
-              <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
-              <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: '2px 0 2px' }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
-              <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, marginBottom: 6 }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeves.color)} / {nameForHex(SX.collar.color)}</div>
-              <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
+            {/* CENTER STAGE — 3D fills the whole stage; info floats over it so the
+                garment gets every available pixel instead of losing rows to a
+                stacked header/footer. */}
+            <div style={{ flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
+              <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
-                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} />
+                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.16} />
                 </React.Suspense>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '8px 0 12px' }}>
-                <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>
-                <button onClick={() => setSpin((v) => !v)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: spin ? '#fff' : C.navy, background: spin ? C.navy : '#fff', border: '1px solid ' + (spin ? C.navy : C.mid), borderRadius: 4, padding: '5px 11px', cursor: 'pointer' }}>{spin ? 'Pause Spin' : 'Auto-Spin'}</button>
+              {/* floating info card — top left */}
+              <div style={{ position: 'absolute', top: 18, left: 22, maxWidth: 300, pointerEvents: 'none' }}>
+                <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
+                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 21, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px', lineHeight: 1.15 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  {[SX.body.color, SX.sleeves.color, SX.collar.color].map((c, i) => (
+                    <span key={i} style={{ width: 13, height: 13, borderRadius: '50%', background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
+                  ))}
+                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeves.color)} / {nameForHex(SX.collar.color)}</span>
+                </div>
               </div>
+              {/* floating shorts chip — bottom left */}
               {bottom.enabled && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 14 }}>
-                  <div style={{ width: 52, height: 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: C.offWhite, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <div style={{ position: 'absolute', left: 22, bottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 52, height: 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 1px 5px rgba(15,23,42,.08)' }}>
                     {bottomPreview ? <img src={bottomPreview} alt="shorts" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: C.textLight }}>…</span>}
                   </div>
                   <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>+ Matching Shorts{bottom.linked ? '' : ' (custom)'}</span>
                 </div>
               )}
+              {/* floating viewer controls — bottom right */}
+              <div style={{ position: 'absolute', right: 22, bottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>
+                <button onClick={() => setSpin((v) => !v)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: spin ? '#fff' : C.navy, background: spin ? C.navy : '#fff', border: '1px solid ' + (spin ? C.navy : C.mid), borderRadius: 4, padding: '5px 11px', cursor: 'pointer' }}>{spin ? 'Pause Spin' : 'Auto-Spin'}</button>
+              </div>
             </div>
 
             {/* RIGHT PANEL */}

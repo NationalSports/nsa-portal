@@ -234,7 +234,9 @@ function updateDecals(st, rawSpec) {
   ((spec.logos && spec.logos.back) || []).forEach((l) => placeLogo(l, 'back'));
 }
 
-export default function Viewer3D({ spec, modelUrl, autoRotate }) {
+// `fit` scales the initial camera distance: 1.5 leaves generous margin (editor
+// default); smaller values frame the garment closer for hero/stage layouts.
+export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
   const [status, setStatus] = useState('loading');
@@ -286,7 +288,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate }) {
       const center = box.getCenter(new THREE.Vector3());
       rootObj.position.sub(center);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      const dist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * 1.5;
+      const dist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * fit;
       camera.position.set(0, size.y * 0.02, dist);
       camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix();
       controls.target.set(0, 0, 0);
