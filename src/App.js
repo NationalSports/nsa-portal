@@ -2780,11 +2780,22 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
         const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
         specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls)]});
       });
+      // Back numbers/names usually run in the same inks as the garment's front design.
+      // When the rep didn't pin a print color, hand the decorator the front's selected
+      // color-way inks (labeled as such) instead of an empty Colors cell.
+      const _frontInks=(()=>{for(const d of itemArtDecos){const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+        const cw=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+        const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
+      const _nnColors=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
+        if(own.length)return _chipsHtml(own);
+        if(_frontInks.length)return '<span style="font-size:9px;color:#92400e;font-weight:700">Not set — front inks:</span> '+_chipsHtml(_frontInks);
+        return '<span style="color:#dc2626;font-weight:700">⚠ Not specified</span>'};
       itemNumDecos.forEach(nd=>{
-        specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',_chipsHtml([nd.print_color])]});
+        const szTxt=(nd.num_size||'—')+(nd.front_and_back?' / Back: '+(nd.num_size_back||nd.num_size||'—'):'');
+        specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),szTxt,_nnColors(nd)]});
       });
       itemNameDecos.forEach(nd=>{
-        specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
+        specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),(nd.name_method||'heat_press').replace(/_/g,' '),'—',_nnColors(nd)]});
       });
       sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
     }
@@ -12325,14 +12336,27 @@ export default function App(){
                           </div>
                         </div>;
                       })}
+                      {(()=>{
+                        // Same fallback as the job-sheet PDF: numbers/names without a pinned print
+                        // color show the garment's front color-way inks so backs always carry a list.
+                        const _frontInks=(()=>{for(const d of artDecos){const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+                          const cw=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+                          const inks=cw?(cw.inks||[]).filter(c2=>c2&&c2.trim()):[];if(inks.length)return inks}return[]})();
+                        const _nnColorEl=nd=>{const own=[nd.print_color,nd.reversible?nd.print_color_b:null].filter(c2=>c2&&String(c2).trim());
+                          if(own.length)return<span style={{fontSize:11,color:'#1e293b'}}> — {own.join(' / ')}</span>;
+                          if(_frontInks.length)return<span style={{fontSize:10,color:'#92400e',fontWeight:600}}> — Not set, front inks: {_frontInks.join(', ')}</span>;
+                          return<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}> — ⚠ Color not specified</span>};
+                        return<>
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
                         <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:4}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                        <span style={{fontSize:11,color:'#1e293b'}}>{nd.position||'—'} — {nd.num_size||'—'}{nd.num_font?' — '+nd.num_font+' font':''} — {(nd.num_method||'heat_transfer').replace(/_/g,' ')}{nd.print_color?' — '+nd.print_color:''}</span>
+                        <span style={{fontSize:11,color:'#1e293b'}}>{nd.position||'—'} — {nd.num_size||'—'}{nd.front_and_back?' / Back: '+(nd.num_size_back||nd.num_size||'—'):''}{nd.num_font?' — '+nd.num_font+' font':''} — {(nd.num_method||'heat_transfer').replace(/_/g,' ')}{_nnColorEl(nd)}</span>
                       </div>)}
                       {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{display:'flex',alignItems:'baseline',gap:8,padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
                         <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 8px',borderRadius:4}}>Names</span>
                         {nd.front_and_back&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
+                        <span style={{fontSize:11,color:'#1e293b'}}>{(nd.name_method||'heat_press').replace(/_/g,' ')}{_nnColorEl(nd)}</span>
                       </div>)}
+                        </>})()}
                     </div>}
                     {/* Production files for this item */}
                     {itemProdFiles.length>0&&<div style={{padding:'8px 14px',background:'white'}}>
