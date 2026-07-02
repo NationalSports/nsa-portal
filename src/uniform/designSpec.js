@@ -202,6 +202,14 @@ function cleanZone(z, base = DEFAULT_ZONE) {
     const c = toHex(z.color); if (c) out.color = c;
     const c2 = toHex(z.color2); if (c2) out.color2 = c2;
     if (typeof z.pattern === 'string' && PATTERN_IDS.includes(z.pattern)) out.pattern = z.pattern;
+    // Admin-library print pattern: an image tile fills the zone. Only honored
+    // with a valid image URL; carries a display name for spec sheets/PDFs.
+    const pimg = typeof z.patternImage === 'string' && /^(data:image\/|https?:)/i.test(z.patternImage) ? z.patternImage : null;
+    if (pimg) {
+      out.pattern = 'custom';
+      out.patternImage = pimg;
+      if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
+    }
   }
   return out;
 }

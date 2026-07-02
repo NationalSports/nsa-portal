@@ -221,13 +221,19 @@ function specFromConfig(cfg) {
     (slot.view === 'back' ? logos.back : logos.front).push(item);
   }
   const S = cfg.sections || defaultSections();
+  // Only carry the print-pattern image when the section is actually set to it,
+  // so switching back to a built-in pattern fully clears the image fill.
+  const zoneOf = (z) => ({
+    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
+  });
   return ds.normalizeSpec({
     garmentId: 'octa_jersey', fabric: 'sublimated',
     zones: {
-      body: { color: S.body.color, color2: S.body.color2, pattern: S.body.pattern || 'solid' },
-      sleeveL: { color: S.sleeves.color, color2: S.sleeves.color2, pattern: S.sleeves.pattern || 'solid' },
-      sleeveR: { color: S.sleeves.color, color2: S.sleeves.color2, pattern: S.sleeves.pattern || 'solid' },
-      collar: { color: S.collar.color, color2: S.collar.color2, pattern: S.collar.pattern || 'solid' },
+      body: zoneOf(S.body),
+      sleeveL: zoneOf(S.sleeves),
+      sleeveR: zoneOf(S.sleeves),
+      collar: zoneOf(S.collar),
     },
     text: {
       front: {
@@ -358,6 +364,24 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     })();
     return () => { alive = false; };
   }, [screen]);
+
+  // Admin-curated print patterns (Settings → Uniform Patterns). Best-effort:
+  // the builder works fine with an empty library if Supabase is unreachable.
+  const [printLib, setPrintLib] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const mod = await import('../lib/supabase');
+        if (!mod.supabase) return;
+        const { data } = await mod.supabase.from('uniform_patterns')
+          .select('id,name,image').eq('active', true)
+          .order('created_at', { ascending: false }).limit(40);
+        if (alive && Array.isArray(data)) setPrintLib(data);
+      } catch (_e) { /* offline / table missing */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const pickSport = (key) => { set({ sport: key }); setScreen('designs'); };
   // A preset replaces the design (colors/pattern/number color) but keeps the
@@ -695,17 +719,34 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: '1px solid ' + C.light }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                       <div style={groupHead}>{(SECTIONS.find((s) => s.key === designSection) || {}).label}</div>
-                      <div style={groupVal}>{nameForHex(activeSection.color)} · {(PATTERNS.find((p) => p.id === activeSection.pattern) || {}).label || 'Solid'}</div>
+                      <div style={groupVal}>{nameForHex(activeSection.color)} · {activeSection.pattern === 'custom' ? (activeSection.patternName || 'Print') : ((PATTERNS.find((p) => p.id === activeSection.pattern) || {}).label || 'Solid')}</div>
                     </div>
                     <div style={{ ...railLabel, marginBottom: 8 }}>Pattern</div>
                     <div style={{ marginBottom: 14 }}>
                       <Pills options={PATTERNS} active={activeSection.pattern} onPick={(p) => setSection(designSection, { pattern: p })} />
                     </div>
+                    {printLib.length > 0 && (
+                      <>
+                        <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                          {printLib.map((p) => {
+                            const on = activeSection.pattern === 'custom' && activeSection.patternImage === p.image;
+                            return (
+                              <button key={p.id} title={p.name} onClick={() => setSection(designSection, { pattern: 'custom', patternImage: p.image, patternName: p.name })}
+                                style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
+                                  border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
+                                  boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
+                                  backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                     <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: activeSection.pattern !== 'solid' ? 14 : 0 }}>
                       {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(activeSection.color).toUpperCase() === p.hex.toUpperCase()} onClick={() => setSection(designSection, { color: p.hex })} />)}
                     </div>
-                    {activeSection.pattern !== 'solid' && (
+                    {activeSection.pattern !== 'solid' && activeSection.pattern !== 'custom' && (
                       <>
                         <div style={{ ...railLabel, marginBottom: 8 }}>Secondary Color</div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -896,8 +937,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               {[
                 ...SECTIONS.map((s) => {
                   const z = SX[s.key];
-                  const patLabel = (PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid';
-                  const v = z.pattern !== 'solid' ? `${nameForHex(z.color)} · ${patLabel} w/ ${nameForHex(z.color2)}` : nameForHex(z.color);
+                  let v;
+                  if (z.pattern === 'custom') v = `Print: ${z.patternName || 'Custom'}`;
+                  else if (z.pattern !== 'solid') v = `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.color2)}`;
+                  else v = nameForHex(z.color);
                   return { label: s.label, value: v, sw: z.color };
                 }),
                 { label: 'Number Fill', value: nameForHex(config.numberColor), sw: config.numberColor },

@@ -59,12 +59,30 @@ function applyDesign(st, rawSpec) {
     const color2 = ds.toHex(zs.color2, '#ffffff');
     const pat = zs.pattern || 'solid';
     if (mat.map) { mat.map.dispose(); mat.map = null; }
-    if (pat === 'solid') {
+    if (pat === 'custom' && zs.patternImage) {
+      // Admin-library print pattern: image tile loads async; a generation token
+      // drops stale loads if the design changed again before the image decoded.
+      const gen = (entry._patGen = (entry._patGen || 0) + 1);
+      mat.color.set(color); // flat placeholder while the tile decodes
+      new THREE.TextureLoader().load(zs.patternImage, (tex) => {
+        if (entry._patGen !== gen || !entry.mesh.material) return;
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        const rep = entry.zone === 'body' ? 4 : 2.5;
+        tex.repeat.set(rep, rep);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const m = entry.mesh.material;
+        if (m.map) m.map.dispose();
+        m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
+      });
+    } else if (pat === 'solid') {
+      entry._patGen = (entry._patGen || 0) + 1; // invalidate in-flight custom tiles
       mat.color.set(color);
     } else if (pat === 'fade') {
+      entry._patGen = (entry._patGen || 0) + 1;
       mat.color.set('#ffffff'); mat.map = gradientTexture(color, color2);
     } else {
       const tile = makePatternTile(pat, color, color2);
+      entry._patGen = (entry._patGen || 0) + 1; // invalidate in-flight custom tiles
       if (tile) {
         const tex = new THREE.CanvasTexture(tile);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;

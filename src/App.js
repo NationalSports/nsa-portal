@@ -269,6 +269,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
 const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
 const UniformBuilder = lazyRetry(() => import('./uniform/ProBuilder'));
+const UniformPatternsAdmin = lazyRetry(() => import('./uniform/PatternLibraryAdmin'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -30060,7 +30061,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration'],['payments','Financial'],['tiers','Customer Tiers'],['lists','Lists & Options'],['labor','Labor Rates'],['portal','Coach Portal'],['featured','Webstores']];
+    const tabs=[['company','Company Info'],['pricing','Decoration'],['payments','Financial'],['tiers','Customer Tiers'],['lists','Lists & Options'],['labor','Labor Rates'],['portal','Coach Portal'],['featured','Webstores'],['uniform_patterns','Uniform Patterns']];
     const TAB_GROUP={pricing:['pricing','deco_vendors'],payments:['payments','taxcloud'],featured:['featured','product_links']};
     const isActiveTab=(k)=>(TAB_GROUP[k]||[k]).includes(settingsTab);
     const handleTab=(k)=>{
@@ -30087,6 +30088,7 @@ export default function App(){
         <button className={`btn btn-xs ${settingsTab==='product_links'?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab('product_links')}>Product Links</button>
       </div>}
       {!(settingsTab==='pricing'||settingsTab==='deco_vendors'||settingsTab==='payments'||settingsTab==='taxcloud'||settingsTab==='featured'||settingsTab==='product_links')&&<div style={{marginBottom:16}}/>}
+      {settingsTab==='uniform_patterns'&&<ComponentErrorBoundary name="UniformPatterns"><React.Suspense fallback={<LazyFallback/>}><UniformPatternsAdmin/></React.Suspense></ComponentErrorBoundary>}
 
       {/* COMPANY INFO */}
       {settingsTab==='company'&&<>

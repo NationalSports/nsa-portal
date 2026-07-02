@@ -15,7 +15,7 @@ import { makePatternTile, makeFabricOverlay } from './patterns';
 import { fontShorthand, ensureFontsReady } from './fonts';
 import { getTemplate } from './templates';
 import * as ds from './designSpec';
-import { preloadRasterAssets, compositeRaster } from './raster';
+import { preloadRasterAssets, compositeRaster, preloadPatternImages, patternImgCache } from './raster';
 
 function parseViewBox(vb) {
   const [x, y, w, h] = String(vb).split(/[\s,]+/).map(Number);
@@ -37,6 +37,16 @@ function fillZone(ctx, path, zone, vb, s) {
   const color2 = ds.toHex(zone.color2, '#ffffff');
   const pat = zone.pattern || 'solid';
 
+  if (pat === 'custom' && zone.patternImage) {
+    const img = patternImgCache[zone.patternImage];
+    const cp = img ? ctx.createPattern(img, 'repeat') : null;
+    if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
+      try { cp.setTransform(new DOMMatrix().scale(1 / s)); } catch (_e) { /* older browsers */ }
+    }
+    ctx.fillStyle = cp || color;
+    ctx.fill(path);
+    return;
+  }
   if (pat === 'solid') {
     ctx.fillStyle = color;
     ctx.fill(path);
@@ -260,6 +270,7 @@ export async function renderToDataURL(spec, opts = {}) {
   await ensureFontsReady();
   const nspec = ds.normalizeSpec(spec);
   const images = await preloadLogos(nspec);
+  await preloadPatternImages(nspec);
   const tpl = getTemplate(nspec.garmentId);
   const view = tpl.views[opts.view || 'front'] || tpl.views.front;
   const assets = tpl.type === 'raster' ? await preloadRasterAssets(view) : undefined;
@@ -274,6 +285,7 @@ export async function renderProductionSheet(spec, opts = {}) {
   await ensureFontsReady();
   const nspec = ds.normalizeSpec(spec);
   const images = await preloadLogos(nspec);
+  await preloadPatternImages(nspec);
   const tpl = getTemplate(nspec.garmentId);
   const assetsF = tpl.type === 'raster' ? await preloadRasterAssets(tpl.views.front) : undefined;
   const assetsB = tpl.type === 'raster' ? await preloadRasterAssets(tpl.views.back) : undefined;
@@ -354,7 +366,9 @@ export async function renderProductionPDF(spec, opts = {}) {
   doc.setTextColor(40);
   tpl.views.front.zones.forEach((z) => {
     const zs = spec.zones[z.id]; if (!zs) return;
-    const pat = zs.pattern && zs.pattern !== 'solid' ? ` · ${zs.pattern} w/ ${ds.nameForHex(zs.color2)} (${zs.color2})` : '';
+    const pat = zs.pattern === 'custom'
+      ? ` · print pattern "${zs.patternName || 'custom'}" (see proof)`
+      : (zs.pattern && zs.pattern !== 'solid' ? ` · ${zs.pattern} w/ ${ds.nameForHex(zs.color2)} (${zs.color2})` : '');
     line(z.label, `${ds.nameForHex(zs.color)} (${zs.color})${pat}`);
   });
   y += 6;

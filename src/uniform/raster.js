@@ -109,6 +109,18 @@ export async function preloadRasterAssets(view) {
   return view._assets;
 }
 
+// Admin-library print patterns are image tiles. Canvas pattern fills need a
+// decoded image synchronously, so the async render entry points preload every
+// zone's patternImage into this cache first; tint() then reads it directly.
+export const patternImgCache = {};
+export function preloadPatternImages(spec) {
+  const urls = new Set();
+  Object.values((spec && spec.zones) || {}).forEach((z) => { if (z && z.patternImage) urls.add(z.patternImage); });
+  return Promise.all([...urls].map((u) => patternImgCache[u]
+    ? Promise.resolve()
+    : loadImage(u).then((im) => { if (im) patternImgCache[u] = im; })));
+}
+
 // Tint a full-canvas layer (already holding the base) by a zone's color/pattern
 // using multiply so the base shading shows through.
 function tint(lx, zoneSpec, w, h) {
@@ -116,6 +128,11 @@ function tint(lx, zoneSpec, w, h) {
   const color2 = ds.toHex(zoneSpec.color2, '#ffffff');
   const pat = zoneSpec.pattern || 'solid';
   lx.globalCompositeOperation = 'multiply';
+  if (pat === 'custom' && zoneSpec.patternImage) {
+    const img = patternImgCache[zoneSpec.patternImage];
+    const cp = img ? lx.createPattern(img, 'repeat') : null;
+    lx.fillStyle = cp || color; lx.fillRect(0, 0, w, h); return; // flat fallback until loaded
+  }
   if (pat === 'solid') { lx.fillStyle = color; lx.fillRect(0, 0, w, h); return; }
   if (pat === 'fade') {
     const g = lx.createLinearGradient(0, 0, 0, h);
