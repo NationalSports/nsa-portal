@@ -273,7 +273,7 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
 import { mapSsOrderToBill, resolveSsBillLines } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
@@ -25197,16 +25197,38 @@ export default function App(){
     const approveSiDoc=async(row)=>{
       const t=row._t||_siTriage(row,_siBuildCandidates());
       const parsed={...t.parsed};
+      // Already billed (pushed from Import & Review, or approved earlier)? The queue and the
+      // review flow share ONE Billed tracking — capture the row instead of applying twice.
+      const _sdn=String(parsed.si_doc_number||row.si_doc_number||'').trim();
+      if(_docAlreadyApplied(parsed.doc_number)||(_sdn&&_docAlreadyApplied(_sdn))){
+        const dupUpd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
+          match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
+        try{await supabase.from('si_documents').update(dupUpd).eq('si_doc_number',row.si_doc_number)}catch(e){/* status sync retried on reload */}
+        setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...dupUpd,_t:{...r._t,bucket:'captured'}}:r));
+        nf('Already billed on the Portal — marked captured','success');
+        return true;
+      }
       // Use the matched portal PO's exact id string so the proven rematchBill/applyBillToSO path
       // writes billed qty, unit cost, freight and tracking onto the right PO line.
       if(t.match?.candidate?.po_id)parsed.po_number=t.match.candidate.po_id;
       const matched=rematchBill(parsed);
       if(!matched.matchedPO){nf('No portal PO matched — send to Review','error');return false}
+      // Same $0-freight trap as the review push (this path calls applyBillToSO directly): the
+      // default so_po apply writes billed qty only alongside freight, so auto-map to explicit
+      // line mappings — and refuse honestly if the lines can't be mapped, never a fake success.
+      if(matched.matchedPOSource==='so_po'&&matched.kind!=='decoration'&&!(matched._lineMappings||[]).length&&safeNum(matched.freight)<=0){
+        const auto=_soPoAutoMappings(matched);
+        if(auto)matched._lineMappings=auto;
+        else{nf('Nothing to apply: $0 freight and lines don\'t match the PO — match it manually in Import & Review','error');return false}
+      }
       applyBillToSO(matched);
       const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
         matched_so_id:matched.matchedPO.so_id||matched.matchedPO.so?.id||null,matched_po_id:matched.matchedPO.po_id||null,
         match_confidence:t.match?.confidence||'high',match_method:t.match?.method||'po_core',match_reason:(t.match?.reasons||[]).join(' · ')};
       try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){/* applied locally; status sync retried on reload */}
+      // "Mark as imported" in the SI Invoice Center (Active → Historical) so the daily active-docs
+      // pull stops re-scanning it. Best-effort: a failed flip is dedup-skipped next pull anyway.
+      sportsLinkSetStatus([row.si_doc_number],false).catch(()=>{/* stays Active; dedup covers it */});
       setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
       return true;
     };
@@ -26286,6 +26308,23 @@ export default function App(){
           .eq('order_number',String(b.parsed.si_doc_number))
           .then(()=>{},()=>{/* status sync retried on next cron/pull */});
       });
+      // Sports Inc housekeeping on successful pushes: mark the shared queue row approved (so the
+      // Sports Inc tab shows it captured, and its Approve button can't re-apply it) and flip the
+      // doc to Historical in the SI Invoice Center — SI's "mark as imported" lever — so tomorrow's
+      // active-docs pull stops re-scanning it as a duplicate. Best-effort: billing is already
+      // applied; a failed flip just means the doc shows up next pull and gets dedup-skipped.
+      const siPushed=bills.filter(b=>b.portalStatus==='success'&&b.parsed?.source==='sportsinc'&&b.parsed?.si_doc_number);
+      if(siPushed.length){
+        if(supabase)siPushed.forEach(b=>{
+          supabase.from('si_documents')
+            .update({status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()})
+            .eq('si_doc_number',b.parsed.si_doc_number)
+            .then(()=>{},()=>{/* row may not be mirrored yet — cron upsert preserves nothing-to-update */});
+        });
+        sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false)
+          .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
+          .catch(()=>nf('Bills applied, but marking '+siPushed.length+' Sports Inc doc(s) as imported failed — they\'ll be skipped as duplicates on the next pull','error'));
+      }
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       return applied;
