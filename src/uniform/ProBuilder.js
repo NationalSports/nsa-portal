@@ -17,6 +17,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
 import { SETTINGS_DEFAULTS, loadBuilderSettings } from './builderSettings';
+import { FABRIC_DETAILS, fabricSwatchDataURL } from './fabricInfo';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import * as ds from './designSpec';
 import { StripePaymentModal } from '../modals';
@@ -140,7 +141,7 @@ let FONTS = SETTINGS_DEFAULTS.numberStyles;
 const LOGO_SLOTS = [
   // Crest default: wearer's LEFT chest = image-right; the front number sits
   // over the wearer's right chest, so the two never stack.
-  { key: 'chest', label: 'Chest', view: 'front', x: 0.64, y: 0.3, scale: 0.55 },
+  { key: 'chest', label: 'Chest', view: 'front', x: 0.64, y: 0.3, scale: 0.52 },
   { key: 'leftSleeve', label: 'L Sleeve', view: 'front', x: 0.17, y: 0.33, scale: 0.5 },
   { key: 'rightSleeve', label: 'R Sleeve', view: 'front', x: 0.83, y: 0.33, scale: 0.5 },
   { key: 'back', label: 'Back', view: 'back', x: 0.5, y: 0.16, scale: 0.7 },
@@ -211,7 +212,7 @@ const SIZES = ['YS', 'YM', 'YL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
 const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
 const UNIT_PRICE = 80;
 const STEPS = [
-  { key: 'team', label: 'Team' }, { key: 'jersey', label: 'Jersey' }, { key: 'numbers', label: 'Numbers' },
+  { key: 'team', label: 'Team' }, { key: 'jersey', label: 'Jersey' }, { key: 'numbers', label: 'Embellish' },
   { key: 'roster', label: 'Roster' }, { key: 'finalize', label: 'Finalize' },
 ];
 
@@ -226,6 +227,7 @@ const DEFAULT_CONFIG = {
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
   outlineColor: 'auto', numberSize: 1, nameSize: 1,
+  neckStyle: 'vneck', frontNumber: 'right',
 };
 
 // ── persistence ──────────────────────────────────────────────────────────────
@@ -298,7 +300,7 @@ function specFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'sahrul_jersey', fabric: cfg.fabric || 'sublimated',
+    garmentId: cfg.neckStyle === 'crew' ? 'octa_jersey' : 'sahrul_jersey', fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
       sleeveL: zoneOf(S.sleeveL),
@@ -307,7 +309,12 @@ function specFromConfig(cfg) {
     },
     text: {
       front: {
-        number: { value: num, font, fill, outline, outlineWidth, size: 0.95 * numScale },
+        // Placement: right chest is the template anchor; left/center override
+        // the anchor per design; 'none' drops the front number entirely.
+        number: (cfg.frontNumber === 'none')
+          ? { value: '' }
+          : { value: num, font, fill, outline, outlineWidth, size: 0.95 * numScale,
+              ...(cfg.frontNumber === 'left' ? { x: 0.64, y: 0.3 } : cfg.frontNumber === 'center' ? { x: 0.5, y: 0.33 } : {}) },
         name: { value: '', font: 'saira' },
       },
       back: {
@@ -469,6 +476,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
+  const [fabricGuide, setFabricGuide] = useState(false);
 
   // Roster / sizes
   const [selectedSize, setSelectedSize] = useState('AM');
@@ -502,10 +510,9 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
   const set = (patch) => setConfig((c) => ({ ...c, ...patch }));
   const spec = useMemo(() => specFromConfig(config), [config]);
-  // Sahrul's commissioned garment: real sewn panels with clean seam
-  // boundaries, so section recolors stay crisp (the stock octa model bled at
-  // panel edges).
-  const tpl = getTemplate('sahrul_jersey');
+  // Neck style picks the garment: the commissioned V-neck (crisp sewn panels)
+  // or the crew-neck model. More cuts slot in here as the artist delivers them.
+  const tpl = getTemplate(config.neckStyle === 'crew' ? 'octa_jersey' : 'sahrul_jersey');
 
   // Per-section design: which section the Jersey step is editing, and a helper
   // that patches one section's {color, color2, pattern}.
@@ -1124,6 +1131,34 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '24px 22px', overflowY: 'auto' }}>
               {step === 'team' && (
                 <div>
+                  <LabeledInput label="Team / Design Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
+                  <div style={{ height: 18 }} />
+                  {/* Team colors — the working palette every later step leads with,
+                      and the seed for the jersey's sections. */}
+                  <SwatchGroup head="Primary Color" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
+                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
+                  <SwatchGroup head="Accent 2 · Secondary" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} />
+                  <div style={{ padding: '22px 0', borderBottom: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <div style={groupHead}>Cut &amp; Style</div>
+                      <div style={groupVal}>{config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}</div>
+                    </div>
+                    <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]} active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
+                  </div>
+                  <div style={{ padding: '22px 0' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <div style={groupHead}>Fabric</div>
+                      <button onClick={() => setFabricGuide(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Fabric guide →</button>
+                    </div>
+                    <Pills options={ds.FABRICS} active={config.fabric || 'sublimated'} onPick={(f) => set({ fabric: f })} />
+                    <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>
+                      {(FABRIC_DETAILS.find((f) => f.id === (config.fabric || 'sublimated')) || FABRIC_DETAILS[0]).blurb}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {step === 'jersey' && (
+                <div>
                   <div style={{ padding: '14px 16px', background: C.offWhite, border: '1px solid ' + C.light, borderRadius: 8, marginBottom: 20 }}>
                     <div style={{ ...railLabel, marginBottom: 8 }}>✨ AI Design Assist</div>
                     <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} maxLength={800}
@@ -1134,21 +1169,6 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
                     </div>
                     {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
-                  </div>
-                  <LabeledInput label="Team Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
-                  <div style={{ height: 18 }} />
-                  {/* Quick team colors — write through to the sections; the Jersey
-                      step offers full per-section pattern + color control. */}
-                  <SwatchGroup head="Primary · Body" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
-                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
-                  <SwatchGroup head="Accent 2 · Pattern" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} />
-                </div>
-              )}
-              {step === 'jersey' && (
-                <div>
-                  <div style={railLabel}>Fabric</div>
-                  <div style={{ marginBottom: 20 }}>
-                    <Pills options={ds.FABRICS} active={config.fabric || 'sublimated'} onPick={(f) => set({ fabric: f })} />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Section Design</div>
@@ -1165,6 +1185,34 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
                     onPatch={(patch) => setSection(sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection, patch)} printLib={printLib} teamColors={teamColors} />
+                  <div style={{ marginTop: 8, paddingTop: 20, borderTop: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: bottom.enabled ? 14 : 0 }}>
+                      <div style={{ ...railLabel, marginBottom: 0 }}>Shorts</div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
+                        <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Include shorts</span>
+                      </label>
+                    </div>
+                    {bottom.enabled && (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16, padding: '10px 12px', background: C.offWhite, borderRadius: 6 }}>
+                          <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.text }}>{bottom.linked ? 'Matching jersey design' : 'Custom shorts design'}</span>
+                          <button onClick={bottom.linked ? unlinkBottom : relinkBottom} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: '#fff', border: '1px solid ' + C.mid, borderRadius: 4, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>
+                            {bottom.linked ? 'Customize' : 'Match Jersey'}
+                          </button>
+                        </div>
+                        {!bottom.linked && (
+                          <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
+                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} teamColors={teamColors} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              {step === 'numbers' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+                  <div>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
                     {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
@@ -1189,7 +1237,11 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14 }}>
                         <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Size</span>
-                        <input type="range" min="0.3" max="1.8" step="0.05" value={activeLogo.scale || 1} onChange={(e) => setLogo({ scale: parseFloat(e.target.value) })} style={{ flex: 1 }} />
+                        {/* Sized in real inches (3" is the standard chest logo): the
+                            front image spans ~26" of garment, logo.w = 0.22 × scale
+                            of that width → 1 scale unit ≈ 5.72". */}
+                        <input type="range" min="1" max="6" step="0.25" value={Math.round(((activeLogo.scale || 1) * 5.72) * 4) / 4} onChange={(e) => setLogo({ scale: parseFloat(e.target.value) / 5.72 })} style={{ flex: 1 }} />
+                        <span style={{ width: 38, textAlign: 'right', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, color: C.red }}>{(((activeLogo.scale || 1) * 5.72)).toFixed(2).replace(/0$/, '')}"</span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                         <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Rotate</span>
@@ -1218,33 +1270,15 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     </label>
                   )}
 
-                  <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: bottom.enabled ? 14 : 0 }}>
-                      <div style={{ ...railLabel, marginBottom: 0 }}>Shorts</div>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
-                        <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Include shorts</span>
-                      </label>
-                    </div>
-                    {bottom.enabled && (
-                      <>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16, padding: '10px 12px', background: C.offWhite, borderRadius: 6 }}>
-                          <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.text }}>{bottom.linked ? 'Matching jersey design' : 'Custom shorts design'}</span>
-                          <button onClick={bottom.linked ? unlinkBottom : relinkBottom} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: '#fff', border: '1px solid ' + C.mid, borderRadius: 4, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>
-                            {bottom.linked ? 'Customize' : 'Match Jersey'}
-                          </button>
-                        </div>
-                        {!bottom.linked && (
-                          <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
-                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} teamColors={teamColors} />
-                        )}
-                      </>
-                    )}
                   </div>
-                </div>
-              )}
-              {step === 'numbers' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <div style={groupHead}>Front Number</div>
+                      <div style={groupVal}>{({ right: 'Right Chest', left: 'Left Chest', center: 'Center', none: 'None' })[config.frontNumber || 'right']}</div>
+                    </div>
+                    <Pills options={[{ id: 'right', label: 'Right Chest' }, { id: 'left', label: 'Left Chest' }, { id: 'center', label: 'Center' }, { id: 'none', label: 'None' }]}
+                      active={config.frontNumber || 'right'} onPick={(v) => set({ frontNumber: v })} />
+                  </div>
                   <LabeledInput label="Player Name (Back)" value={config.playerName} onChange={(v) => set({ playerName: v })} maxLength={14} />
                   <LabeledInput label="Player Number" value={config.playerNumber} onChange={(v) => set({ playerNumber: v.replace(/[^0-9]/g, '').slice(0, 2) })} maxLength={2} />
                   <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
@@ -1487,6 +1521,40 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
           </div>
         )}
       </div>
+
+      {/* FABRIC GUIDE — swatch close-ups + plain-language copy per fabric */}
+      {fabricGuide && (
+        <div onClick={() => setFabricGuide(false)} style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, maxWidth: 920, width: '100%', maxHeight: '86vh', overflowY: 'auto', padding: '26px 28px', boxShadow: '0 18px 60px rgba(15,23,42,.35)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
+              <h3 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: 0 }}>Fabric Guide</h3>
+              <button onClick={() => setFabricGuide(false)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer' }}>✕ Close</button>
+            </div>
+            <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, marginBottom: 18 }}>All fabrics are performance polyester, printed edge-to-edge with your design. The choice is about surface and feel.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+              {FABRIC_DETAILS.map((f) => {
+                const on = (config.fabric || 'sublimated') === f.id;
+                return (
+                  <div key={f.id} style={{ border: '1.5px solid ' + (on ? C.navy : C.light), borderRadius: 8, overflow: 'hidden' }}>
+                    <img src={fabricSwatchDataURL(f.id)} alt={f.label} style={{ display: 'block', width: '100%', height: 120, objectFit: 'cover' }} />
+                    <div style={{ padding: '12px 14px' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                        <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{f.label}</div>
+                        {on && <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', color: C.red }}>Selected</div>}
+                      </div>
+                      <div style={{ fontFamily: F_BODY, fontSize: 12.5, color: C.text, margin: '6px 0 10px', lineHeight: 1.45 }}>{f.detail}</div>
+                      <button onClick={() => { set({ fabric: f.id }); setFabricGuide(false); }}
+                        style={{ width: '100%', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: on ? '#fff' : C.navy, background: on ? C.navy : '#fff', border: '1px solid ' + (on ? C.navy : C.mid), borderRadius: 4, padding: '9px 0', cursor: 'pointer' }}>
+                        {on ? 'Selected' : 'Choose ' + f.label}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* BOTTOM BAR */}
       <div style={{ height: 72, flexShrink: 0, borderTop: '1px solid ' + C.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>

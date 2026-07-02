@@ -195,7 +195,7 @@ const TEMPLATES = {
       front: {
         base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
-        anchors: { number: { x: 0.5, y: 0.5, size: 150 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        anchors: { number: { x: 0.36, y: 0.3, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
