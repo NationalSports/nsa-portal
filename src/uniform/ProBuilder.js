@@ -21,7 +21,6 @@ import * as ds from './designSpec';
 import { StripePaymentModal } from '../modals';
 
 const Viewer3D = React.lazy(() => import('./Viewer3D'));
-const UniformBuilder = React.lazy(() => import('./UniformBuilder'));
 
 // ── design tokens (match the NSA design system) ──────────────────────────────
 const C = {
@@ -56,20 +55,38 @@ const zoneRowValue = (z) => {
 };
 
 // ── per-section design ────────────────────────────────────────────────────────
-// Each section carries its own pattern + two colors; "sleeves" edits both
-// sleeve zones together (coaches think in sleeves, the spec keeps L/R apart).
+// Each section carries its own pattern + two colors. Sleeves are stored per-arm
+// (sleeveL/sleeveR) but mirror each other by default — a "Split sleeves" toggle
+// lets a coach style them independently.
 const SECTIONS = [
   { key: 'body', label: 'Body' },
-  { key: 'sleeves', label: 'Sleeves' },
+  { key: 'sleeveL', label: 'Left Sleeve' },
+  { key: 'sleeveR', label: 'Right Sleeve' },
   { key: 'collar', label: 'Collar & Cuffs' },
 ];
 const defaultSections = () => ({
   body: { color: '#7CB0E0', color2: '#FFFFFF', pattern: 'boldstripe' },
-  sleeves: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+  sleeveL: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+  sleeveR: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
   collar: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
 });
+// Accept sections written in either vocabulary: presets and pre-split autosaves
+// say "sleeves" (one entry for both arms); storage/UI is always per-sleeve. An
+// explicit sleeveL/sleeveR wins over the combined key.
+const expandSections = (saved) => {
+  if (!saved) return {};
+  const out = { ...saved };
+  if (saved.sleeves) {
+    if (!out.sleeveL) out.sleeveL = { ...saved.sleeves };
+    if (!out.sleeveR) out.sleeveR = { ...saved.sleeves };
+    delete out.sleeves;
+  }
+  return out;
+};
+// Normalized read: defaults filled, combined-sleeves expanded.
+const normSections = (sections) => ({ ...defaultSections(), ...expandSections(sections) });
 // Autosaves from before per-section design carried flat color fields.
-const sectionsFromLegacy = (c) => ({
+const sectionsFromLegacy = (c) => expandSections({
   body: { color: c.primary || '#7CB0E0', color2: c.secondary || '#FFFFFF', pattern: c.pattern || 'solid' },
   sleeves: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
   collar: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
@@ -93,11 +110,11 @@ const defaultBottomSections = () => ({
 const defaultBottom = () => ({ enabled: true, linked: true, sections: defaultBottomSections() });
 // The linked derivation, or the coach's independent sections once unlinked.
 function effectiveBottomSections(cfg) {
-  const S = cfg.sections || defaultSections();
+  const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
     const from = (z) => ({ color: z.color, color2: z.color2, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName });
-    return { legs: from(S.body), waistband: from(S.collar), stripe: from(S.sleeves) };
+    return { legs: from(S.body), waistband: from(S.collar), stripe: from(S.sleeveL) };
   }
   return { ...defaultBottomSections(), ...(bottom.sections || {}) };
 }
@@ -108,7 +125,7 @@ function bottomSpecFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'shorts', fabric: 'sublimated',
+    garmentId: 'shorts', fabric: cfg.fabric || 'sublimated',
     zones: {
       legL: zoneOf(B.legs), legR: zoneOf(B.legs),
       waistband: zoneOf(B.waistband),
@@ -216,10 +233,13 @@ const DEFAULT_CONFIG = {
   sport: null,
   teamName: 'ARGENTINA',
   sections: defaultSections(),
+  sleevesLinked: true,
+  fabric: 'sublimated',
   bottom: defaultBottom(),
   logos: emptyLogos(),
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
+  outlineColor: 'auto', numberSize: 1, nameSize: 1,
 };
 
 // ── persistence ──────────────────────────────────────────────────────────────
@@ -241,7 +261,7 @@ function restoredConfig() {
   // Merge over defaults so configs saved before new fields/slots existed stay
   // valid; flat-color autosaves migrate to per-section design.
   const base = defaultSections();
-  const saved = a.config.sections || sectionsFromLegacy(a.config);
+  const saved = a.config.sections ? expandSections(a.config.sections) : sectionsFromLegacy(a.config);
   const sections = {};
   for (const s of SECTIONS) sections[s.key] = { ...base[s.key], ...(saved[s.key] || {}) };
   const savedBottom = a.config.bottom || defaultBottom();
@@ -264,9 +284,14 @@ function specFromConfig(cfg) {
   const fontDef = FONTS.find((f) => f.id === cfg.font) || FONTS[0];
   const font = fontDef.font;
   const numColor = cfg.numberColor;
-  const outline = fontDef.hollow ? numColor : ds.contrastInk(numColor);
+  // Outline: 'auto' picks a contrasting ink, 'none' drops the stroke, a hex is
+  // used as-is. Hollow fonts need their stroke to BE the number color.
+  const oc = cfg.outlineColor || 'auto';
+  const outline = fontDef.hollow ? numColor : (oc === 'auto' ? ds.contrastInk(numColor) : oc);
   const fill = fontDef.hollow ? '#ffffff' : numColor;
-  const outlineWidth = fontDef.hollow ? 8 : 5;
+  const outlineWidth = fontDef.hollow ? 8 : (oc === 'none' ? 0 : 5);
+  const numScale = Number.isFinite(cfg.numberSize) ? cfg.numberSize : 1;
+  const nameScale = Number.isFinite(cfg.nameSize) ? cfg.nameSize : 1;
   const num = (cfg.playerNumber || '').toString();
   const logos = { front: [], back: [] };
   const cfgLogos = cfg.logos || {};
@@ -279,7 +304,7 @@ function specFromConfig(cfg) {
     };
     (slot.view === 'back' ? logos.back : logos.front).push(item);
   }
-  const S = cfg.sections || defaultSections();
+  const S = normSections(cfg.sections);
   // Only carry the print-pattern image when the section is actually set to it,
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
@@ -287,21 +312,21 @@ function specFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'octa_jersey', fabric: 'sublimated',
+    garmentId: 'octa_jersey', fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
-      sleeveL: zoneOf(S.sleeves),
-      sleeveR: zoneOf(S.sleeves),
+      sleeveL: zoneOf(S.sleeveL),
+      sleeveR: zoneOf(S.sleeveR),
       collar: zoneOf(S.collar),
     },
     text: {
       front: {
-        number: { value: num, font, fill, outline, outlineWidth, size: 0.95 },
+        number: { value: num, font, fill, outline, outlineWidth, size: 0.95 * numScale },
         name: { value: '', font: 'saira' },
       },
       back: {
-        number: { value: num, font, fill, outline, outlineWidth: outlineWidth + 1, size: 1.3 },
-        name: { value: (cfg.playerName || '').toUpperCase(), font: 'saira', fill, outline, size: 0.7 },
+        number: { value: num, font, fill, outline, outlineWidth: outlineWidth ? outlineWidth + 1 : 0, size: 1.3 * numScale },
+        name: { value: (cfg.playerName || '').toUpperCase(), font: 'saira', fill, outline, size: 0.7 * nameScale },
       },
     },
     logos,
@@ -429,7 +454,6 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
 
   // Roster / sizes
   const [selectedSize, setSelectedSize] = useState('AM');
@@ -468,8 +492,23 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // Per-section design: which section the Jersey step is editing, and a helper
   // that patches one section's {color, color2, pattern}.
   const [designSection, setDesignSection] = useState('body');
-  const setSection = (key, patch) => setConfig((c) => ({ ...c, sections: { ...c.sections, [key]: { ...c.sections[key], ...patch } } }));
-  const SX = config.sections || defaultSections();
+  // Section edits go through the normalized store; while sleeves are mirrored,
+  // editing either sleeve writes both.
+  const setSection = (key, patch) => setConfig((c) => {
+    const cur = normSections(c.sections);
+    const mirror = c.sleevesLinked !== false && (key === 'sleeveL' || key === 'sleeveR');
+    const keys = mirror ? ['sleeveL', 'sleeveR'] : [key];
+    const sections = { ...cur };
+    for (const k of keys) sections[k] = { ...cur[k], ...patch };
+    return { ...c, sections };
+  });
+  const SX = normSections(config.sections);
+  const sleevesLinked = config.sleevesLinked !== false;
+  const toggleSleevesLinked = () => setConfig((c) => {
+    const cur = normSections(c.sections);
+    if (c.sleevesLinked !== false) return { ...c, sleevesLinked: false }; // split — keep current values
+    return { ...c, sleevesLinked: true, sections: { ...cur, sleeveR: { ...cur.sleeveL } } }; // re-mirror from the left
+  });
   const activeSection = SX[designSection] || SX.body;
 
   // Paired bottom garment (shorts) — linked by default (derives from the top's
@@ -532,7 +571,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const pickSport = (key) => { set({ sport: key }); setScreen('designs'); };
   // A preset replaces the design (colors/pattern/number color) but keeps the
   // coach's team name, players, logos, and roster.
-  const pickDesign = (pz) => { if (pz) set({ ...pz.config }); setScreen('wizard'); setStep('team'); };
+  const pickDesign = (pz) => {
+    if (pz) set({ ...pz.config, ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}) });
+    setScreen('wizard'); setStep('team');
+  };
 
   // ── My Designs (browser-local; a coach's saves are only ever on their own
   // device — nothing here is pulled from the shared uniform_designs table) ──
@@ -556,7 +598,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     return () => { alive = false; };
   }, [screen]); // eslint-disable-line
   const loadSavedDesign = (entry) => {
-    const restored = { ...DEFAULT_CONFIG, ...entry.config, logos: { ...emptyLogos(), ...(entry.config.logos || {}) } };
+    const restored = { ...DEFAULT_CONFIG, ...entry.config, sections: normSections(entry.config.sections), logos: { ...emptyLogos(), ...(entry.config.logos || {}) } };
     setConfig(restored);
     setAssignments((entry.assignments && typeof entry.assignments === 'object') ? entry.assignments : { AM: ['10'] });
     setPlayerNames((entry.playerNames && typeof entry.playerNames === 'object') ? entry.playerNames : {});
@@ -597,14 +639,15 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       };
       const patch = {};
       const bodySec = zoneToSection(zones.body); if (bodySec) patch.body = bodySec;
-      const sleeveSec = zoneToSection(zones.sleeveL || zones.sleeveR); if (sleeveSec) patch.sleeves = sleeveSec;
+      const sleeveSecL = zoneToSection(zones.sleeveL || zones.sleeveR); if (sleeveSecL) patch.sleeveL = sleeveSecL;
+      const sleeveSecR = zoneToSection(zones.sleeveR || zones.sleeveL); if (sleeveSecR) patch.sleeveR = sleeveSecR;
       const collarSec = zoneToSection(zones.collar); if (collarSec) patch.collar = collarSec;
       const t = data.spec && data.spec.text;
       const numSrc = (t && t.back && t.back.number) || (t && t.front && t.front.number);
       const nameSrc = (t && t.back && t.back.name) || (t && t.front && t.front.name);
       const meta = data.spec && data.spec.meta;
       setConfig((c) => {
-        const next = { ...c, sections: { ...c.sections, ...patch } };
+        const next = { ...c, sections: { ...normSections(c.sections), ...patch } };
         if (meta && meta.teamName) next.teamName = String(meta.teamName).slice(0, 24);
         if (numSrc && numSrc.value) { const n = String(numSrc.value).replace(/[^0-9]/g, '').slice(0, 2); if (n) next.playerNumber = n; }
         if (nameSrc && nameSrc.value) next.playerName = String(nameSrc.value).slice(0, 14);
@@ -866,14 +909,6 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const goPrev = () => { if (stepIdx === 0) { setScreen('designs'); return; } setStep(STEPS[stepIdx - 1].key); };
   const nextLabel = 'Next';
 
-  if (advanced) {
-    return (
-      <React.Suspense fallback={<div style={loadStyle}>Loading editor…</div>}>
-        <UniformBuilder onExit={() => setAdvanced(false)} />
-      </React.Suspense>
-    );
-  }
-
   const isBuilderStep = step === 'team' || step === 'jersey' || step === 'numbers';
 
   return (
@@ -888,7 +923,6 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <button onClick={() => setScreen('saved')} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer' }}>My Designs</button>
-          <button onClick={() => setAdvanced(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer' }}>Advanced editor</button>
           <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Changes save automatically</div>
         </div>
       </div>
@@ -984,7 +1018,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderTop: '1px solid ' + C.light }}>
                     <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{pz.name}</span>
                     <span style={{ display: 'flex', gap: 3 }}>
-                      {[pz.config.sections.body.color, pz.config.sections.sleeves.color, pz.config.sections.body.color2].map((cx, i) => <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: cx, border: '1px solid ' + C.light }} />)}
+                      {[pz.config.sections.body.color, (pz.config.sections.sleeves || pz.config.sections.sleeveL).color, pz.config.sections.body.color2].map((cx, i) => <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: cx, border: '1px solid ' + C.light }} />)}
                     </span>
                   </span>
                 </button>
@@ -1035,10 +1069,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
                 <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 21, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px', lineHeight: 1.15 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                  {[SX.body.color, SX.sleeves.color, SX.collar.color].map((c, i) => (
+                  {[SX.body.color, SX.sleeveL.color, SX.collar.color].map((c, i) => (
                     <span key={i} style={{ width: 13, height: 13, borderRadius: '50%', background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
                   ))}
-                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeves.color)} / {nameForHex(SX.collar.color)}</span>
+                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>
                 </div>
               </div>
               {/* floating shorts chip — bottom left */}
@@ -1077,15 +1111,31 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   {/* Quick team colors — write through to the sections; the Jersey
                       step offers full per-section pattern + color control. */}
                   <SwatchGroup head="Primary · Body" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
-                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeves.color)} hex={SX.sleeves.color} onPick={(h) => { setSection('sleeves', { color: h }); setSection('collar', { color: h }); }} />
+                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
                   <SwatchGroup head="Accent 2 · Pattern" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} />
                 </div>
               )}
               {step === 'jersey' && (
                 <div>
-                  <div style={railLabel}>Section Design</div>
-                  <SectionEditor sectionDefs={SECTIONS} sections={SX} activeKey={designSection} onSelect={setDesignSection}
-                    onPatch={(patch) => setSection(designSection, patch)} printLib={printLib} />
+                  <div style={railLabel}>Fabric</div>
+                  <div style={{ marginBottom: 20 }}>
+                    <Pills options={ds.FABRICS} active={config.fabric || 'sublimated'} onPick={(f) => set({ fabric: f })} />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ ...railLabel, marginBottom: 0 }}>Section Design</div>
+                    <button onClick={toggleSleevesLinked}
+                      style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '4px 9px', cursor: 'pointer' }}>
+                      {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
+                    </button>
+                  </div>
+                  <SectionEditor
+                    sectionDefs={sleevesLinked
+                      ? [{ key: 'body', label: 'Body' }, { key: 'sleeveL', label: 'Sleeves' }, { key: 'collar', label: 'Collar & Cuffs' }]
+                      : SECTIONS}
+                    sections={SX}
+                    activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
+                    onSelect={setDesignSection}
+                    onPatch={(patch) => setSection(sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection, patch)} printLib={printLib} />
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
                     {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
@@ -1175,6 +1225,30 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                       {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={38} active={String(config.numberColor).toUpperCase() === p.hex.toUpperCase()} onClick={() => set({ numberColor: p.hex })} />)}
                     </div>
+                  </div>
+                  {config.font !== 'outline' && (
+                    <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                        <div style={groupHead}>Outline</div>
+                        <div style={groupVal}>{(config.outlineColor || 'auto') === 'auto' ? 'Auto' : config.outlineColor === 'none' ? 'None' : nameForHex(config.outlineColor)}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                        <Pills options={[{ id: 'auto', label: 'Auto' }, { id: 'none', label: 'None' }]} active={(config.outlineColor || 'auto')} onPick={(v) => set({ outlineColor: v })} />
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={26} active={String(config.outlineColor || '').toUpperCase() === p.hex.toUpperCase()} onClick={() => set({ outlineColor: p.hex })} />)}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <div style={groupHead}>Number Size</div><div style={groupVal}>{Math.round((config.numberSize || 1) * 100)}%</div>
+                    </div>
+                    <input type="range" min={0.7} max={1.3} step={0.05} value={config.numberSize || 1} onChange={(e) => set({ numberSize: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: C.navy }} />
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 6px' }}>
+                      <div style={groupHead}>Name Size</div><div style={groupVal}>{Math.round((config.nameSize || 1) * 100)}%</div>
+                    </div>
+                    <input type="range" min={0.7} max={1.3} step={0.05} value={config.nameSize || 1} onChange={(e) => set({ nameSize: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: C.navy }} />
                   </div>
                   <div>
                     <div style={railLabel}>Number &amp; Name Font</div>
@@ -1393,7 +1467,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       <div style={{ height: 72, flexShrink: 0, borderTop: '1px solid ' + C.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ display: 'flex', gap: 4 }}>
-            {[SX.body.color, SX.sleeves.color, SX.body.color2].map((c, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: '1px solid ' + C.light }} />)}
+            {[SX.body.color, SX.sleeveL.color, SX.body.color2].map((c, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: '1px solid ' + C.light }} />)}
           </div>
           <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>
         </div>

@@ -95,7 +95,11 @@ function applyDesign(st, rawSpec) {
         mat.map = tex; mat.color.set('#ffffff');
       } else { mat.color.set(color); }
     }
-    mat.roughness = 0.72; mat.metalness = 0.0;
+    // Fabric choice reads as sheen: gloss is noticeably shinier, matte knit
+    // flatter. (2D renderers carry the texture side of the fabric look.)
+    const FABRIC_ROUGHNESS = { matte: 0.88, mesh: 0.8, heather: 0.82, sublimated: 0.72, gloss: 0.5 };
+    mat.roughness = FABRIC_ROUGHNESS[spec.fabric] || 0.72;
+    mat.metalness = 0.0;
     mat.needsUpdate = true;
   }
 }
