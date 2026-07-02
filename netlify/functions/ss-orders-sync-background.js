@@ -104,6 +104,19 @@ exports.handler = async () => {
     return { statusCode: 200, body: 'No S&S orders in the last 3 months' };
   }
 
+  // 2b) Ship-later resurfacing: an order that arrived unshipped gets pulled once, marked
+  // 'reviewed', and skipped ("no shipped lines"). When S&S later invoices it, nothing would
+  // re-light the badge — so snapshot which reviewed rows are still awaiting an invoice, and
+  // after the upsert flip the ones that just gained one back to 'new'. ('applied' rows are
+  // excluded: those were billed pre-invoice off the order #, and dedup already covers them.)
+  let pendingInvoice = new Set();
+  try {
+    const r0 = await fetch(sbUrl + '/rest/v1/ss_documents?select=order_number&invoice_number=is.null&status=not.in.(new,applied)', {
+      headers: { apikey: sbKey, Authorization: 'Bearer ' + sbKey },
+    });
+    if (r0.ok) pendingInvoice = new Set((await r0.json()).map((x) => x.order_number).filter(Boolean));
+  } catch (e) { console.error('[ss-orders-sync] pending-invoice snapshot failed', e.message); }
+
   // 3) Upsert in chunks (merge-duplicates). Omitted columns keep existing values on conflict,
   //    so a review/apply mark is preserved; new rows default to status 'new'.
   let upserted = 0;
@@ -126,6 +139,22 @@ exports.handler = async () => {
   }
   console.log('[ss-orders-sync] upserted', upserted, 'S&S orders');
 
+  // 3b) Flip reviewed-but-now-invoiced orders back to 'new' (see 2b) so the badge + digest
+  //     resurface them now that there's something to bill.
+  const gained = rows.filter((r) => r.invoice_number && pendingInvoice.has(r.order_number)).map((r) => r.order_number);
+  let reflagged = 0;
+  for (let i = 0; i < gained.length; i += 100) {
+    const chunk = gained.slice(i, i + 100);
+    const rf = await fetch(sbUrl + '/rest/v1/ss_documents?order_number=in.(' + chunk.map(encodeURIComponent).join(',') + ')', {
+      method: 'PATCH',
+      headers: { apikey: sbKey, Authorization: 'Bearer ' + sbKey, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'new', updated_at: new Date().toISOString() }),
+    });
+    if (rf.ok) reflagged += chunk.length;
+    else console.error('[ss-orders-sync] re-flag failed', rf.status);
+  }
+  if (reflagged) console.log('[ss-orders-sync] re-flagged', reflagged, 'newly-invoiced order(s) as new');
+
   // 4) Daily digest of NEW arrivals (best-effort; skipped if nothing new, so it never spams).
   try { await sendDigest(sbUrl, sbKey); } catch (e) { console.error('[ss-orders-sync] digest', e.message); }
 
@@ -136,9 +165,11 @@ async function sendDigest(sbUrl, sbKey) {
   const brevoKey = process.env.REACT_APP_BREVO_API_KEY;
   const to = process.env.SS_DIGEST_EMAIL || 'accounting@nationalsportsapparel.com';
   if (!brevoKey) return;
-  // New since the last run = first_seen_at within ~23h (set on insert, preserved on conflict).
+  // New since the last run = first seen within ~23h (set on insert, preserved on conflict),
+  // OR re-flagged 'new' within the window (ship-later orders that just got their invoice).
   const sinceTs = new Date(Date.now() - 23 * 3600 * 1000).toISOString();
-  const r = await fetch(sbUrl + '/rest/v1/ss_documents?select=has_usable_lines,doc_total,is_credit,po_number&first_seen_at=gt.' + encodeURIComponent(sinceTs), {
+  const ts = encodeURIComponent(sinceTs);
+  const r = await fetch(sbUrl + '/rest/v1/ss_documents?select=has_usable_lines,doc_total,is_credit,po_number&or=(first_seen_at.gt.' + ts + ',and(status.eq.new,updated_at.gt.' + ts + '))', {
     headers: { apikey: sbKey, Authorization: 'Bearer ' + sbKey },
   });
   if (!r.ok) return;

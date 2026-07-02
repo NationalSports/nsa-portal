@@ -125,3 +125,46 @@ export const mapSsOrderToBill = (order) => {
     rawText: '',
   };
 };
+
+// Resolve each S&S bill line to a line on the matched SO/batch, so a bill whose lines carry
+// S&S's own per-size part number (e.g. "B18008335", not our style "3023CL") still maps to the
+// right SO item. S&S echoes our SKU back only when CrossRef is configured in the account, so we
+// can't rely on it; but colorName + sizeName always come through clean, and the PO has already
+// pinned the SO — so within that SO, color + size uniquely identify the line.
+//
+// Tiered so an exact SKU still wins when it IS our SKU: (1) SKU + size, (2) color + size,
+// (3) size alone when only one candidate has it. Each tier only accepts an UNAMBIGUOUS hit
+// (exactly one distinct target line) — anything ambiguous returns null so the caller leaves it
+// for the manual match wizard rather than guessing where money lands.
+//
+//   billItems:  [{ sku, size, color, qty, ... }]                          (the parsed bill lines)
+//   candidates: [{ sku, size, color, so_id, item_id, po_id, unit_cost }]  (open SO/batch size buckets)
+//   opts.canonSize: optional size canonicalizer (App passes _canonBillSize) so "Medium"↔"M" align
+// Returns an array aligned to billItems: { cand | null, via }.
+export const resolveSsBillLines = (billItems, candidates, opts = {}) => {
+  const canon = opts.canonSize || ((s) => String(s || '').toUpperCase().trim());
+  const nSku = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const nColor = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const cands = Array.isArray(candidates) ? candidates : [];
+  // Collapse candidates that point at the SAME target line (same item + po_line + size) so a
+  // style split across identical buckets doesn't read as ambiguous.
+  const lineKey = (c) => (c.item_id || nSku(c.sku)) + '|' + (c.po_id || '') + '|' + canon(c.size);
+  const only = (list) => {
+    const seen = new Map();
+    list.forEach((c) => { const k = lineKey(c); if (!seen.has(k)) seen.set(k, c); });
+    const u = [...seen.values()];
+    return u.length === 1 ? u[0] : null;
+  };
+  return (billItems || []).map((li) => {
+    const size = canon(li.size);
+    const color = nColor(li.color);
+    const sku = nSku(li.sku);
+    let hit = sku ? only(cands.filter((c) => nSku(c.sku) === sku && canon(c.size) === size)) : null;
+    if (hit) return { cand: hit, via: 'sku_size' };
+    hit = color ? only(cands.filter((c) => canon(c.size) === size && nColor(c.color) === color)) : null;
+    if (hit) return { cand: hit, via: 'color_size' };
+    hit = only(cands.filter((c) => canon(c.size) === size));
+    if (hit) return { cand: hit, via: 'size_only' };
+    return { cand: null, via: 'none' };
+  });
+};
