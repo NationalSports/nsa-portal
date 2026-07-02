@@ -25089,10 +25089,16 @@ export default function App(){
         nf('No S&S orders found (nothing in the last 3 months)','success');
         return;
       }
-      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let idx=0;
+      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let credits=0;let idx=0;
+      const pulledOrderNos=[];// every order this pull saw — scopes the badge-clear below
       let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
         let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        if(parsed.si_doc_number)pulledOrderNos.push(String(parsed.si_doc_number));
+        // Credits/returns (negative total) carry no positive shipped lines, so they can't flow
+        // into Billed tracking — surface the count instead of silently lumping them into "not
+        // shipped" (they still need handling in QB).
+        if(parsed.is_credit&&!parsed.has_usable_lines){credits++;return}
         // No shipped lines (backordered / not yet shipped) → nothing to bill; leave it.
         if(!parsed.has_usable_lines){empty++;return}
         // Resolve S&S per-size part numbers to our SO's style line (by color+size) and pre-build
@@ -25110,17 +25116,23 @@ export default function App(){
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
         idx++;
       });
-      const extraNote=empty?' — '+empty+' order(s) with no shipped lines skipped':'';
+      const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'');
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
-      _markSsReviewed();// staff have now seen these → clear the "new" badge from the daily cron
+      _markSsReviewed(pulledOrderNos);// staff have now seen these → clear the "new" badge from the daily cron
     };
     // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
-    // review, so the Import & Review badge clears. Best-effort: the dedup (_docAlreadyApplied)
-    // still prevents any double-bill on push, so a failed status write can't cause harm.
-    const _markSsReviewed=async()=>{
+    // review, so the Import & Review badge clears. Scoped to the order #s THIS pull actually
+    // returned — a filtered/partial pull must not wipe the flag on orders it never showed.
+    // Best-effort: dedup (_docAlreadyApplied) still prevents any double-bill on push, so a
+    // failed status write can't cause harm.
+    const _markSsReviewed=async(orderNos)=>{
       setSsNewCount(0);
-      if(!supabase)return;
-      try{await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new')}catch(e){/* badge cleared locally; DB retried on next open */}
+      const nos=(orderNos||[]).filter(Boolean);
+      if(!supabase||!nos.length)return;
+      try{
+        for(let i=0;i<nos.length;i+=200)
+          await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new').in('order_number',nos.slice(i,i+200));
+      }catch(e){/* badge cleared locally; DB retried on next open */}
     };
 
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
@@ -25575,6 +25587,51 @@ export default function App(){
       return{items,_lineMappings:mappings};
     };
 
+    // All size-bucket lines on the matched SO that belong to the bill's PO — same PO predicate
+    // rematchBill matched it with (exact / prefix / PO-prefix-stripped) — in the wizard's
+    // target-item shape including item_id/po_id, so mappings built from these apply precisely.
+    const _soPoTargetItems=(p)=>{
+      const so=sos.find(s=>s.id===(p.matchedPO?.so_id||p.matchedPO?.so?.id));
+      if(!so)return[];
+      const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+      const stripPO=s=>s.replace(/^d?po/,'');const poStrip=stripPO(poLc);
+      const stripEq=pid=>poStrip.length>=3&&stripPO(pid)===poStrip;
+      const items=[];
+      (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+        const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+        if(!(pid===poLc||pid.startsWith(poLc)||stripEq(pid)))return;
+        Object.entries(po).forEach(([k,v])=>{
+          if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+          if(v<=0)return;
+          items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:v-((po.billed||{})[k]||0),ordered:v,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||''});
+        });
+      }));
+      return items;
+    };
+
+    // Auto-build wizard-shaped _lineMappings for an auto-matched so_po bill that has none, via
+    // the SAME per-line matcher the wizard's auto-map uses (SKU-gated, canonical sizes, color-
+    // narrowed), scoped to the bill's own PO lines. Why: the default so_po apply path carries
+    // billed qty on the freight write, so a $0-freight bill used to apply NOTHING while still
+    // reporting success — mappings apply directly and don't care about freight. Strict: every
+    // usable line must land unambiguously or this returns null (no silent partial applies).
+    const _soPoAutoMappings=(p)=>{
+      if(p?.matchedPOSource!=='so_po'||!p.matchedPO)return null;
+      const items=_soPoTargetItems(p);
+      if(!items.length)return null;
+      const usable=(p.items||[]).map((li,i)=>({li,i})).filter(x=>x.li&&x.li.sku&&x.li.qty>0);
+      if(!usable.length)return null;
+      const maps=[];
+      for(const u of usable){
+        const hit=_matchLineToItems(u.li,items);
+        if(!hit||hit.ambiguous)return null;
+        const it=hit.item;
+        const billCost=safeNum(u.li.extension||0)||safeNum(u.li.unit_price||0)*safeNum(u.li.qty||0);
+        maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100});
+      }
+      return maps;
+    };
+
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
     // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
@@ -25899,9 +25956,9 @@ export default function App(){
     // Returns over-billing problems: cases where billed qty (already applied + this bill)
     // would exceed the ordered qty on a PO line/batch. Mirrors the apply paths so the
     // numbers match what would actually be written.
-    const _billOverBillingErrors=(p)=>{
+    const _billOverBillingErrors=(p,mapsOverride)=>{
       const errs=[];
-      const maps=(p._lineMappings||[]).filter(m=>safeNum(m.allocated_qty)>0);
+      const maps=(mapsOverride||p._lineMappings||[]).filter(m=>safeNum(m.allocated_qty)>0);
       if(maps.length){
         const groups={};
         maps.forEach(m=>{
@@ -25974,11 +26031,29 @@ export default function App(){
       return errs;
     };
 
-    // Blocking problems for a bill about to be pushed (duplicate doc# + PO over-billing).
+    // Blocking problems for a bill about to be pushed: duplicate doc#, PO over-billing, and
+    // — crucially — bills that would APPLY NOTHING. The default so_po apply path writes billed
+    // qty only alongside freight, so a $0-freight auto-matched bill used to no-op silently while
+    // still reporting "Applied to SO" (and then dedup blocked ever re-importing it). Those now
+    // auto-map to explicit line mappings at push time; here we pre-flag the ones that can't.
     const _validateBillForPush=(p)=>{
       const errs=[];
       if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
-      errs.push(..._billOverBillingErrors(p));
+      let autoMaps=null;
+      if(p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length){
+        if(safeNum(p.freight)<=0){
+          autoMaps=_soPoAutoMappings(p);
+          if(!autoMaps)errs.push('Would apply nothing — $0 freight and the lines don\'t match this PO\'s items cleanly. Use Match manually or Find PO with AI');
+        }else{
+          // Freight would apply but billed qty wouldn't move if no line SKU ties to the PO at
+          // all (the pre-fix S&S symptom). Some-overlap is fine — partial lines are normal.
+          const items=_soPoTargetItems(p);
+          const billSkus=[...new Set((p.items||[]).filter(it=>it.qty>0).map(it=>(it.sku||'').toUpperCase()).filter(Boolean))];
+          if(items.length&&billSkus.length&&!billSkus.some(bs=>items.some(it=>_billSkuMatchesItem(bs,it))))
+            errs.push('Billed quantities would not update — none of the bill\'s line SKUs match this PO\'s items. Use Match manually or Find PO with AI');
+        }
+      }
+      errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
       return errs;
     };
 
@@ -26186,12 +26261,30 @@ export default function App(){
       let applied=0;
       bills.forEach(b=>{
         try{
-          applyBillToSO(b.parsed);
+          const p=b.parsed;
+          // $0-freight so_po bills apply through explicit line mappings (the freight-carried
+          // default path writes nothing at $0). Build them now; if they can't be built, fail
+          // HONESTLY instead of recording a success that wrote nothing and dedups forever.
+          if(p&&p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length&&safeNum(p.freight)<=0){
+            const auto=_soPoAutoMappings(p);
+            if(auto)p._lineMappings=auto;
+            else{b.portalStatus='error';b.portalMsg='Nothing to apply: $0 freight and lines don\'t match the PO — use Match manually';return}
+          }
+          applyBillToSO(p);
           b.portalStatus='success';b.portalMsg='Applied to SO';
           applied++;
         }catch(e){
           b.portalStatus='error';b.portalMsg='Failed: '+e.message;
         }
+      });
+      // Close the loop in the shared S&S queue (lifecycle: new → reviewed → applied) so
+      // accounting's completeness view reconciles. Best-effort — billing already applied.
+      if(supabase)bills.forEach(b=>{
+        if(b.portalStatus!=='success'||b.parsed?.source!=='ss_orders'||!b.parsed?.si_doc_number)return;
+        supabase.from('ss_documents')
+          .update({status:'applied',applied_doc_number:b.parsed.doc_number||null,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),updated_at:new Date().toISOString()})
+          .eq('order_number',String(b.parsed.si_doc_number))
+          .then(()=>{},()=>{/* status sync retried on next cron/pull */});
       });
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
