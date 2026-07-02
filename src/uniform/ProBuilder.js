@@ -45,11 +45,28 @@ const nameForHex = (hex) => {
   return hit ? hit.name : 'Custom';
 };
 
-// Pattern ids must match designSpec's PATTERN_IDS or cleanZone silently drops them.
-const PATTERNS = [
-  { id: 'solid', label: 'Solid' }, { id: 'stripes', label: 'Stripes' },
-  { id: 'boldstripe', label: 'Bold Stripes' }, { id: 'pinstripe', label: 'Pinstripe' },
+// Full pattern library (ids/labels from designSpec, so they always validate).
+const PATTERNS = ds.PATTERNS;
+
+// ── per-section design ────────────────────────────────────────────────────────
+// Each section carries its own pattern + two colors; "sleeves" edits both
+// sleeve zones together (coaches think in sleeves, the spec keeps L/R apart).
+const SECTIONS = [
+  { key: 'body', label: 'Body' },
+  { key: 'sleeves', label: 'Sleeves' },
+  { key: 'collar', label: 'Collar & Cuffs' },
 ];
+const defaultSections = () => ({
+  body: { color: '#7CB0E0', color2: '#FFFFFF', pattern: 'boldstripe' },
+  sleeves: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+  collar: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+});
+// Autosaves from before per-section design carried flat color fields.
+const sectionsFromLegacy = (c) => ({
+  body: { color: c.primary || '#7CB0E0', color2: c.secondary || '#FFFFFF', pattern: c.pattern || 'solid' },
+  sleeves: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
+  collar: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
+});
 const FONTS = [
   { id: 'block', label: 'Block', font: 'anton', preview: 'normal' },
   { id: 'varsity', label: 'Varsity', font: 'squada', preview: 'normal' },
@@ -80,15 +97,16 @@ const SPORTS = [
   { key: 'soccer', label: 'Soccer', icon: '⚽' },
 ];
 const SPORT_LABELS = SPORTS.reduce((m, s) => { m[s.key] = s.label; return m; }, {});
+const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
 const DESIGN_PRESETS = [
-  { id: 'bold', name: 'Bold Stripes', config: { pattern: 'boldstripe', primary: '#7CB0E0', secondary: '#FFFFFF', trim: '#192853', numberColor: '#192853' } },
-  { id: 'classic', name: 'Classic Solid', config: { pattern: 'solid', primary: '#192853', secondary: '#FFFFFF', trim: '#962C32', numberColor: '#FFFFFF' } },
-  { id: 'pinstripe', name: 'Pinstripe', config: { pattern: 'pinstripe', primary: '#FFFFFF', secondary: '#192853', trim: '#192853', numberColor: '#192853' } },
-  { id: 'fine', name: 'Fine Stripes', config: { pattern: 'stripes', primary: '#962C32', secondary: '#FFFFFF', trim: '#0B0B0B', numberColor: '#FFFFFF' } },
-  { id: 'royalgold', name: 'Royal & Gold', config: { pattern: 'solid', primary: '#1E4D8C', secondary: '#F2B705', trim: '#F2B705', numberColor: '#F2B705' } },
-  { id: 'forest', name: 'Forest Classic', config: { pattern: 'solid', primary: '#0B6E4F', secondary: '#FFFFFF', trim: '#FFFFFF', numberColor: '#FFFFFF' } },
-  { id: 'blackout', name: 'Blackout', config: { pattern: 'solid', primary: '#0B0B0B', secondary: '#4A4A4A', trim: '#4A4A4A', numberColor: '#FFFFFF' } },
-  { id: 'maroon', name: 'Maroon Stripes', config: { pattern: 'boldstripe', primary: '#7A1F3D', secondary: '#FFFFFF', trim: '#0B0B0B', numberColor: '#FFFFFF' } },
+  { id: 'bold', name: 'Bold Stripes', config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'classic', name: 'Classic Solid', config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
+  { id: 'pinstripe', name: 'Pinstripe', config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'camo', name: 'Camo Sleeves', config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'royalgold', name: 'Royal & Gold', config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
+  { id: 'fade', name: 'Sunset Fade', config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#D9631E'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'blackout', name: 'Blackout', config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
+  { id: 'maroon', name: 'Maroon Stripes', config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
 ];
 const thumbCache = {}; // module-level: gallery thumbs render once per session
 
@@ -145,10 +163,7 @@ const STEPS = [
 const DEFAULT_CONFIG = {
   sport: null,
   teamName: 'ARGENTINA',
-  primary: '#7CB0E0',   // body
-  secondary: '#FFFFFF', // stripes / secondary
-  trim: '#192853',      // collar + sleeves/cuffs
-  pattern: 'boldstripe',
+  sections: defaultSections(),
   logos: emptyLogos(),
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
@@ -166,8 +181,13 @@ function loadAutosave() {
 function restoredConfig() {
   const a = loadAutosave();
   if (!a || !a.config) return { ...DEFAULT_CONFIG };
-  // Merge over defaults so configs saved before new fields/slots existed stay valid.
-  return { ...DEFAULT_CONFIG, ...a.config, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
+  // Merge over defaults so configs saved before new fields/slots existed stay
+  // valid; flat-color autosaves migrate to per-section design.
+  const base = defaultSections();
+  const saved = a.config.sections || sectionsFromLegacy(a.config);
+  const sections = {};
+  for (const s of SECTIONS) sections[s.key] = { ...base[s.key], ...(saved[s.key] || {}) };
+  return { ...DEFAULT_CONFIG, ...a.config, sections, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
 }
 async function trySupabaseSave(rec) {
   try {
@@ -200,13 +220,14 @@ function specFromConfig(cfg) {
     };
     (slot.view === 'back' ? logos.back : logos.front).push(item);
   }
+  const S = cfg.sections || defaultSections();
   return ds.normalizeSpec({
     garmentId: 'octa_jersey', fabric: 'sublimated',
     zones: {
-      body: { color: cfg.primary, color2: cfg.secondary, pattern: cfg.pattern || 'solid' },
-      sleeveL: { color: cfg.trim, pattern: 'solid' },
-      sleeveR: { color: cfg.trim, pattern: 'solid' },
-      collar: { color: cfg.trim, pattern: 'solid' },
+      body: { color: S.body.color, color2: S.body.color2, pattern: S.body.pattern || 'solid' },
+      sleeveL: { color: S.sleeves.color, color2: S.sleeves.color2, pattern: S.sleeves.pattern || 'solid' },
+      sleeveR: { color: S.sleeves.color, color2: S.sleeves.color2, pattern: S.sleeves.pattern || 'solid' },
+      collar: { color: S.collar.color, color2: S.collar.color2, pattern: S.collar.pattern || 'solid' },
     },
     text: {
       front: {
@@ -302,6 +323,13 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const set = (patch) => setConfig((c) => ({ ...c, ...patch }));
   const spec = useMemo(() => specFromConfig(config), [config]);
   const tpl = getTemplate('octa_jersey');
+
+  // Per-section design: which section the Jersey step is editing, and a helper
+  // that patches one section's {color, color2, pattern}.
+  const [designSection, setDesignSection] = useState('body');
+  const setSection = (key, patch) => setConfig((c) => ({ ...c, sections: { ...c.sections, [key]: { ...c.sections[key], ...patch } } }));
+  const SX = config.sections || defaultSections();
+  const activeSection = SX[designSection] || SX.body;
 
   // Autosave (debounced — logo data URLs make the payload chunky, so don't
   // write on every pointer-move of a drag).
@@ -415,7 +443,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     ]).then(([front, back]) => { if (alive) setProofs({ front, back }); }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line
-  }, [step, config.primary, config.secondary, config.trim, config.pattern, config.playerNumber, config.playerName, config.numberColor, config.font]);
+  }, [step, JSON.stringify(config.sections), config.playerNumber, config.playerName, config.numberColor, config.font]);
 
   const padPoint = (e) => {
     const rect = padRef.current.getBoundingClientRect();
@@ -585,7 +613,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderTop: '1px solid ' + C.light }}>
                     <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{pz.name}</span>
                     <span style={{ display: 'flex', gap: 3 }}>
-                      {[pz.config.primary, pz.config.trim, pz.config.secondary].map((cx, i) => <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: cx, border: '1px solid ' + C.light }} />)}
+                      {[pz.config.sections.body.color, pz.config.sections.sleeves.color, pz.config.sections.body.color2].map((cx, i) => <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: cx, border: '1px solid ' + C.light }} />)}
                     </span>
                   </span>
                 </button>
@@ -626,7 +654,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, background: '#fff', padding: '24px 16px 0' }}>
               <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
               <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: '2px 0 2px' }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
-              <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, marginBottom: 6 }}>{nameForHex(config.primary)} / {nameForHex(config.trim)} / {nameForHex(config.secondary)}</div>
+              <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, marginBottom: 6 }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeves.color)} / {nameForHex(SX.collar.color)}</div>
               <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
                   <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} />
@@ -644,16 +672,47 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 <div>
                   <LabeledInput label="Team Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
                   <div style={{ height: 18 }} />
-                  <SwatchGroup head="Primary · Body" value={nameForHex(config.primary)} hex={config.primary} onPick={(h) => set({ primary: h })} />
-                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(config.trim)} hex={config.trim} onPick={(h) => set({ trim: h })} />
-                  <SwatchGroup head="Accent 2 · Stripe" value={nameForHex(config.secondary)} hex={config.secondary} onPick={(h) => set({ secondary: h })} />
+                  {/* Quick team colors — write through to the sections; the Jersey
+                      step offers full per-section pattern + color control. */}
+                  <SwatchGroup head="Primary · Body" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
+                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeves.color)} hex={SX.sleeves.color} onPick={(h) => { setSection('sleeves', { color: h }); setSection('collar', { color: h }); }} />
+                  <SwatchGroup head="Accent 2 · Pattern" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} />
                 </div>
               )}
               {step === 'jersey' && (
                 <div>
-                  <div style={railLabel}>Jersey Pattern</div>
-                  <div style={{ paddingBottom: 22, marginBottom: 22, borderBottom: '1px solid ' + C.light }}>
-                    <Pills options={PATTERNS} active={config.pattern} onPick={(p) => set({ pattern: p })} />
+                  <div style={railLabel}>Section Design</div>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+                    {SECTIONS.map((s) => {
+                      const on = s.key === designSection;
+                      return (
+                        <button key={s.key} onClick={() => setDesignSection(s.key)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <span style={{ width: 11, height: 11, borderRadius: 3, background: SX[s.key].color, border: '1px solid ' + (on ? 'rgba(255,255,255,.5)' : C.mid) }} />{s.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div style={groupHead}>{(SECTIONS.find((s) => s.key === designSection) || {}).label}</div>
+                      <div style={groupVal}>{nameForHex(activeSection.color)} · {(PATTERNS.find((p) => p.id === activeSection.pattern) || {}).label || 'Solid'}</div>
+                    </div>
+                    <div style={{ ...railLabel, marginBottom: 8 }}>Pattern</div>
+                    <div style={{ marginBottom: 14 }}>
+                      <Pills options={PATTERNS} active={activeSection.pattern} onPick={(p) => setSection(designSection, { pattern: p })} />
+                    </div>
+                    <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: activeSection.pattern !== 'solid' ? 14 : 0 }}>
+                      {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(activeSection.color).toUpperCase() === p.hex.toUpperCase()} onClick={() => setSection(designSection, { color: p.hex })} />)}
+                    </div>
+                    {activeSection.pattern !== 'solid' && (
+                      <>
+                        <div style={{ ...railLabel, marginBottom: 8 }}>Secondary Color</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(activeSection.color2).toUpperCase() === p.hex.toUpperCase()} onClick={() => setSection(designSection, { color2: p.hex })} />)}
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
@@ -835,11 +894,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               </div>
               <div style={sectionHead}>Construction Materials</div>
               {[
-                { label: 'Jersey Pattern', value: (PATTERNS.find((p) => p.id === config.pattern) || {}).label || 'Solid' },
-                { label: 'Body', value: nameForHex(config.primary), sw: config.primary },
-                { label: 'Stripe / Secondary', value: nameForHex(config.secondary), sw: config.secondary },
-                { label: 'Sleeves / Trim', value: nameForHex(config.trim), sw: config.trim },
-                { label: 'Collar Binding', value: nameForHex(config.trim), sw: config.trim },
+                ...SECTIONS.map((s) => {
+                  const z = SX[s.key];
+                  const patLabel = (PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid';
+                  const v = z.pattern !== 'solid' ? `${nameForHex(z.color)} · ${patLabel} w/ ${nameForHex(z.color2)}` : nameForHex(z.color);
+                  return { label: s.label, value: v, sw: z.color };
+                }),
                 { label: 'Number Fill', value: nameForHex(config.numberColor), sw: config.numberColor },
                 { label: 'Number & Name Font', value: (FONTS.find((f) => f.id === config.font) || {}).label || 'Block' },
                 { label: 'Logos', value: (LOGO_SLOTS.filter((s) => config.logos && config.logos[s.key] && config.logos[s.key].src).map((s) => s.label).join(', ')) || 'None' },
@@ -874,7 +934,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       <div style={{ height: 72, flexShrink: 0, borderTop: '1px solid ' + C.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ display: 'flex', gap: 4 }}>
-            {[config.primary, config.trim, config.secondary].map((c, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: '1px solid ' + C.light }} />)}
+            {[SX.body.color, SX.sleeves.color, SX.body.color2].map((c, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: '1px solid ' + C.light }} />)}
           </div>
           <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>
         </div>
