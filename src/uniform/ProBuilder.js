@@ -209,8 +209,8 @@ function knockoutBackground(canvas) {
   return canvas.toDataURL('image/png');
 }
 
-const SIZES = ['YS', 'YM', 'YL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
-const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
+const SIZES = ['YS', 'YM', 'YL', 'WS', 'WM', 'WL', 'WXL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
+const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', WS: "Women's S", WM: "Women's M", WL: "Women's L", WXL: "Women's XL", AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
 const UNIT_PRICE = 80;
 const STEPS = [
   { key: 'team', label: 'Team' }, { key: 'jersey', label: 'Jersey' }, { key: 'numbers', label: 'Embellish' },
