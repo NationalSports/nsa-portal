@@ -9,6 +9,7 @@ import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
+import { normalizeWebLogos } from './businessLogic';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -1776,9 +1777,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // new cutout instead of ignoring it. Any per-CW entries already on the record are kept.
     const withWebLogo = (a) => {
       const wls = Array.isArray(a.web_logos) ? a.web_logos.filter((w) => w && w.url) : [];
-      const di = wls.findIndex((w) => !((w.color_way || '').trim()));
-      const web_logos = di >= 0 ? wls.map((w, i) => (i === di ? { ...w, url } : w)) : [{ url, color_way: '' }, ...wls];
-      return { ...a, web_logo_url: url, web_logos };
+      const di = wls.findIndex((w) => w.is_default || !((w.color_way || '').trim()));
+      const web_logos = di >= 0 ? wls.map((w, i) => (i === di ? { ...w, url, is_default: true } : w)) : [{ url, color_way: '', is_default: true }, ...wls];
+      // Re-key per-CW entries to their stable color_way_id while we're writing anyway.
+      return { ...a, web_logo_url: url, web_logos: normalizeWebLogos(web_logos, a.color_ways) };
     };
     let next;
     if (idx >= 0) {
@@ -2198,12 +2200,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        // Pin the screen-print colorway whose garment_color matches this line's garment,
-        // so production gets the right inks instead of an unset CW. Each art color_way
-        // carries a garment_color (e.g. "Navy"); match it to the SO line's color, with a
-        // contains-fallback, and use the only colorway when there's just one.
+        // Pin the production colorway. The builder's per-color web-logo pick is the source of
+        // truth when it carries a color_way_id (the rep chose that CW's cutout for this exact
+        // garment color — deterministic, not a guess). Only fall back to matching the CW's
+        // garment_color label against the SO line's color (exact, then contains, then only-CW)
+        // for legacy url-only picks.
         let cwId = null;
-        if (lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
+        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(info.color)];
+        if (_pick && typeof _pick === 'object' && _pick.color_way_id && lib && Array.isArray(lib.color_ways) && lib.color_ways.some((c) => c && c.id === _pick.color_way_id)) {
+          cwId = _pick.color_way_id;
+        }
+        if (!cwId && lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
           const gc = colorKeyOf(info.color);
           const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
@@ -4926,21 +4933,26 @@ const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
 // "Heather Grey" still finds the "Grey" colorway. Falls back to an "all garments"/blank
 // colorway, then null (caller uses the deco's placed art_url).
 const _normColorWords = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
-const webLogoForGarmentColor = (webLogos, colorName) => {
+// Returns the matched web_logos[] ENTRY (so callers can read its color_way_id, not just the
+// url); webLogoForGarmentColor below keeps the original url-returning shape.
+const webLogoEntryForGarmentColor = (webLogos, colorName) => {
   const wls = (webLogos || []).filter((w) => w && w.url);
   if (!wls.length) return null;
   const g = _normColorWords(colorName);
   if (g.length) {
     const hit = wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); });
-    if (hit) return hit.url;
+    if (hit) return hit;
   }
-  const generic = wls.find((w) => { const c = (w.color_way || '').trim(); return !c || /all/i.test(c); });
-  return generic ? generic.url : null;
+  return wls.find((w) => { const c = (w.color_way || '').trim(); return w.is_default || !c || /all/i.test(c); }) || null;
 };
+const webLogoForGarmentColor = (webLogos, colorName) => { const e = webLogoEntryForGarmentColor(webLogos, colorName); return e ? e.url : null; };
+// A cw_by_color value is a bare url (legacy) or { url, color_way_id } (id-keyed, Decision 2).
+const _cwPickUrl = (v) => (typeof v === 'string' ? v : (v && v.url) || '');
 const decoUrlForColor = (deco, colorName, webLogos) => {
   if (!deco) return '';
   const m = deco.cw_by_color; const k = colorKeyOf(colorName);
-  if (m && k && m[k]) return m[k];                       // explicit per-color override wins
+  const pick = m && k && m[k];
+  if (pick) return _cwPickUrl(pick);                     // explicit per-color override wins
   const auto = webLogoForGarmentColor(webLogos, colorName); // else auto-match the garment color
   return auto || deco.art_url || '';
 };
@@ -5316,10 +5328,12 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       const _cardColors = (groupColors || []).map((c) => (stockByWp[c.id]?.color) || c.sku).filter(Boolean);
       if (_cardColors.length) fields.decorations = fields.decorations.map((d) => {
         const art = (library || []).find((a) => a.id === d.art_id);
-        const wls = art && Array.isArray(art.web_logos) ? art.web_logos.filter((w) => w && w.url) : [];
+        // normalize stamps color_way_id from the label match, so the bake below carries the
+        // STABLE CW identity to the storefront/SO handoff — not just a url keyed by color name.
+        const wls = art ? normalizeWebLogos(art.web_logos, art.color_ways) : [];
         if (wls.length < 2) return d;
         const m = { ...(d.cw_by_color || {}) };
-        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const u = webLogoForGarmentColor(wls, cn); if (u) m[k] = u; } });
+        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const e = webLogoEntryForGarmentColor(wls, cn); if (e) m[k] = e.color_way_id ? { url: e.url, color_way_id: e.color_way_id } : e.url; } });
         return Object.keys(m).length ? { ...d, cw_by_color: m } : d;
       });
       // null = the product's full scale, unchanged (default). Persist an explicit list
@@ -7936,7 +7950,7 @@ const webLogoDefault = (art) => {
   if (!art || !Array.isArray(art.web_logos)) return null;
   const wl = art.web_logos.filter((w) => w && w.url);
   if (!wl.length) return null;
-  return (wl.find((w) => !((w.color_way || '').trim())) || wl[0]).url;
+  return (wl.find((w) => w.is_default || !((w.color_way || '').trim())) || wl[0]).url;
 };
 const artImgUrl = (art) => {
   if (!art) return null;

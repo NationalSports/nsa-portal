@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
+import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
@@ -807,7 +808,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const mockups=[...(art.mockup_files||[]),...itemMocks].filter(f=>f);
       const dispFiles=mockups.length?mockups:(art.files||[]).filter(f=>f);
       // Thumbnail: first renderable image across preview, mockups, then files.
-      const imgUrl=[art.web_logo_url,art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
+      const imgUrl=[pickCwAsset(art,{kind:'web_logo'}),...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
       const allProd=[];const seenP=new Set();
@@ -1052,9 +1053,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const webLogos=(Array.isArray(art.web_logos)&&art.web_logos.length)
       ? art.web_logos
       : (art.web_logo_url?[{url:art.web_logo_url,color_way:''}]:[]);
-    const saveWebLogos=(list)=>{
-      const clean=(list||[]).filter(w=>w&&w.url);
-      const def=(clean.find(w=>!((w.color_way||'').trim()))||clean[0]||{}).url||'';
+    const saveWebLogos=(list,cwList)=>{
+      // Re-key on save (Decision 2): stamp the stable color_way_id from the label match so
+      // resolution survives CW renames; blank entries become the is_default "all garments" logo.
+      const clean=normalizeWebLogos(list,cwList||art.color_ways||[]);
+      const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logos:clean,web_logo_url:def}));
@@ -1068,8 +1071,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
       // Prompt for the color way this web logo is for (or create a new one), then save.
-      const _assign=(cwName)=>{saveWebLogos([...webLogos,{url,color_way:cwName||''}]);setCwPrompt(null);nf&&nf('Web logo added'+(cwName?' — '+cwName:''))};
-      setCwPrompt({title:'Which color way is this web logo for?',onPick:_assign,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_assign(name)}});
+      const _assign=(cwName,cwList)=>{saveWebLogos([...webLogos,{url,color_way:cwName||''}],cwList);setCwPrompt(null);nf&&nf('Web logo added'+(cwName?' — '+cwName:''))};
+      // A just-created CW isn't in art.color_ways yet (state update is async) — pass the fresh
+      // list through so the new entry still gets its color_way_id stamped.
+      setCwPrompt({title:'Which color way is this web logo for?',onPick:_assign,onPickNew:(name)=>{const _newCws=[...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}];persistColorWays(_newCws);_assign(name,_newCws)}});
     };
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
     const setWebLogoCw=(i,cw)=>saveWebLogos(webLogos.map((w,x)=>x===i?{...w,color_way:cw}:w));
@@ -1090,9 +1095,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // artist nudge + the empty slots below so every color way gets a clean cutout for
     // webstore + order mockups (a blank-color-way "default" covers the rest as a fallback).
     const _cwNames=cws.map(c=>(c.garment_color||'').trim()).filter(Boolean);
-    const _haveCwLogo=new Set(webLogos.map(w=>(w.color_way||'').trim().toLowerCase()).filter(Boolean));
+    // Coverage counts BOTH keying schemes: legacy label tags and stable color_way_id tags.
+    const _haveCwLogo=new Set();
+    webLogos.forEach(w=>{const l=(w.color_way||'').trim().toLowerCase();if(l)_haveCwLogo.add(l);const c=w.color_way_id&&cws.find(x=>x&&x.id===w.color_way_id);const cl=c?(c.garment_color||'').trim().toLowerCase():'';if(cl)_haveCwLogo.add(cl)});
     const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
-    const _hasDefaultWebLogo=webLogos.some(w=>w.url&&!((w.color_way||'').trim()));
+    const _hasDefaultWebLogo=webLogos.some(w=>w.url&&(w.is_default||!((w.color_way||'').trim())));
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header">{isOwnLib?<input value={art.name||''} onChange={e=>editLib({name:e.target.value})} placeholder="Art group name…" style={{flex:1,fontSize:18,fontWeight:800,border:'1px solid #e2e8f0',borderRadius:8,padding:'5px 10px',marginRight:10,outline:'none',color:'#0f172a'}}/>:<h2>{art.name||'Untitled'}</h2>}<button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
