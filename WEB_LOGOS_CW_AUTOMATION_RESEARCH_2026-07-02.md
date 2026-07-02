@@ -35,6 +35,16 @@ Fix those once and the five features become thin UI work instead of five new sys
 
 ## Landmines (fix these first — they silently break everything above them)
 
+> **Status update (2026-07-02, same branch):** all three are now addressed.
+> L1 — migration `00169` adds the columns; `_artCols`/`_decoCols`/`_loadArtRow` carry them.
+> L2 — `normalizeWebLogos()` stamps `color_way_id` on save (CustDetail + builder attach),
+> the builder bake writes `{url, color_way_id}` into `cw_by_color`, and `batchOrders`
+> reads the picked CW id before falling back to the fuzzy garment-color match.
+> L3 — `pickCwAsset` gained a legacy label-recovery fallback and is wired into the
+> OrderEditor deco thumbs and the CustDetail art thumbnail; `webLogoDefault`/the builder
+> matcher are `is_default`-aware. Remaining ad-hoc chains are display-only pickers.
+> Details below describe the pre-fix state for the record.
+
 ### L1 — Web logos don't persist on orders. At all.
 `_artCols` (`constants.js:26`) — the column whitelist used for every
 `so_art_files` / `estimate_art_files` upsert — **does not include `web_logos` or

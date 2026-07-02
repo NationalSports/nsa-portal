@@ -197,7 +197,14 @@ function pickCwAsset(art, sel) {
   const cwId = sel.colorWayId || null;
   if (sel.kind === 'web_logo') {
     const wl = safeArr(art.web_logos).filter((w) => w && w.url);
-    if (cwId) { const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url; }
+    if (cwId) {
+      const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url;
+      // Legacy label-keyed entry (pre-Decision-2 data): recover the match through the art's
+      // own color_ways — the CW id names a label, and an entry tagged with that label is it.
+      const cw = safeArr(art.color_ways).find((c) => c && c.id === cwId);
+      const lbl = cw ? String(cw.garment_color || '').trim().toLowerCase() : '';
+      if (lbl) { const lm = wl.find((w) => String(w.color_way || '').trim().toLowerCase() === lbl); if (lm) return lm.url; }
+    }
     // blank/default web logo applies to all garments; then legacy single, then design-level default
     const def = wl.find((w) => w.is_default || (!w.color_way_id && !w.color_way));
     if (def) return def.url;
@@ -218,6 +225,24 @@ function pickCwAsset(art, sel) {
   if (cwId) { const m = pool.find((f) => f && f.color_way_id === cwId); if (m) return _assetUrl(m); }
   const untagged = pool.find((f) => f && !(typeof f === 'object' && f.color_way_id));
   return untagged ? _assetUrl(untagged) : '';
+}
+
+// ── Web-logo re-keying (Decision 2 of the CW web-logo model) ── Stamp the stable
+// color_way_id onto label-keyed web_logos[] entries so resolution never rides on the CW
+// label string (a rename silently breaks label matches). Blank-label entries are the
+// "all garments" default (is_default). Labels are kept for display. Idempotent: entries
+// whose color_way_id still points at a live CW pass through untouched; a stale id gets
+// re-stamped when its label maps to a current CW.
+function normalizeWebLogos(webLogos, colorWays) {
+  const cws = safeArr(colorWays).filter((c) => c && c.id);
+  const byLabel = new Map(cws.filter((c) => String(c.garment_color || '').trim()).map((c) => [String(c.garment_color).trim().toLowerCase(), c.id]));
+  return safeArr(webLogos).filter((w) => w && w.url).map((w) => {
+    const label = String(w.color_way || '').trim();
+    if (!label) return w.is_default ? w : Object.assign({}, w, { is_default: true });
+    if (w.color_way_id && cws.some((c) => c.id === w.color_way_id)) return w;
+    const id = byLabel.get(label.toLowerCase());
+    return id ? Object.assign({}, w, { color_way_id: id }) : w;
+  });
 }
 
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
@@ -930,7 +955,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

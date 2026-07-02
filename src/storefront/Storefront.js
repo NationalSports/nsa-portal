@@ -754,7 +754,8 @@ function bundleBadge(count, theme) {
 // black tee); falls back to the placed art_url.
 const decoUrlForColor = (d, colorName) => {
   const k = String(colorName || '').trim().toLowerCase();
-  return (d && d.cw_by_color && k && d.cw_by_color[k]) || (d && d.art_url) || '';
+  const v = d && d.cw_by_color && k && d.cw_by_color[k]; // bare url (legacy) or { url, color_way_id }
+  return (typeof v === 'string' ? v : (v && v.url) || '') || (d && d.art_url) || '';
 };
 // Applied logo art (from webstore_products.decorations) composited on the
 // garment image at its placement — the on-screen mock shoppers see. colorName picks the
