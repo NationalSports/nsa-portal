@@ -215,6 +215,35 @@ describe('Pricing Functions', () => {
       expect(result.sell).toBeGreaterThan(result.cost);
     });
 
+    // Under 12 pieces, screen print bills an ALL-IN flat charge ($50/$60/$80 for 1/2/3 colors) —
+    // dP returns unrounded per-piece shares so qty × value reconstructs the exact flat total.
+    test('under-12 screen print: qty × sell equals the flat all-in charge', () => {
+      expect(dP({ type: 'screen_print', colors: 3 }, 10, null).sell * 10).toBeCloseTo(80, 6);
+      expect(dP({ type: 'screen_print', colors: 1 }, 5, null).sell * 5).toBeCloseTo(50, 6);
+      expect(dP({ type: 'screen_print', colors: 2 }, 11, null).sell * 11).toBeCloseTo(60, 6);
+    });
+
+    test('under-12 screen print: qty × cost equals the flat cost (quarter-rounded at the total)', () => {
+      const dp = dP({ type: 'screen_print', colors: 3 }, 10, null);
+      expect(dp.cost * 10).toBeCloseTo(rQ(80 / SP.mk), 6);
+    });
+
+    test('under-12 flat applies to art-linked screen print at the combined qty', () => {
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123\nPMS 456\nPMS 789' })];
+      const d = { kind: 'art', art_file_id: 'af1' };
+      // 8-unit line, 8-unit combined run → the line carries its full $80 flat share
+      expect(dP(d, 8, artFiles, 8).sell * 8).toBeCloseTo(80, 6);
+    });
+
+    test('12+ pieces price per piece at the tier rate, never the flat', () => {
+      const dp = dP({ type: 'screen_print', colors: 3 }, 20, null);
+      expect(dp.cost).toBe(rQ(SP.pr[1][2])); // 12–23 tier, 3-color cost/pc (caller quarter-rounds)
+    });
+
+    test('under-12 sell_override still wins', () => {
+      expect(dP({ type: 'screen_print', colors: 3, sell_override: 4 }, 5, null).sell).toBe(4);
+    });
+
     test('art-based embroidery', () => {
       const artFiles = [makeArtFile({ deco_type: 'embroidery', stitches: 10000, ink_colors: '' })];
       const d = { kind: 'art', art_file_id: 'af1', position: 'Left Chest' };

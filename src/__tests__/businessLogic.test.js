@@ -329,9 +329,9 @@ describe('Decoration Pricing — dP()', () => {
     // per-piece rate. Passing the combined cq (e.g. 14 across all line items)
     // prices it per-piece in bracket 1 (~$6.40), matching the screen.
     const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 2, underbase: false };
-    const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 flat total
+    const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 ALL-IN flat, prorated per piece
     const aggregated = BL.dP(d, 4, [], 14);      // combined qty → bracket 1 per-piece
-    expect(perLine.sell).toBeCloseTo(60, 2);
+    expect(perLine.sell * 4).toBeCloseTo(60, 2); // $60 all-in for the under-12 run (qty × share = flat)
     expect(aggregated.sell).toBeCloseTo(6.4, 2);
     expect(aggregated.cost).toBeCloseTo(4.25, 2);
   });
