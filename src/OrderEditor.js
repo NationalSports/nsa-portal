@@ -1707,7 +1707,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
-  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
+  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
     // Preserve source's available_sizes (union with new product's) so manually-added sizes survive the swap
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];const newSizes=Array.isArray(p.available_sizes)?p.available_sizes:[];clone.available_sizes=[...new Set([...srcSizes,...newSizes])];
     const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
@@ -1715,6 +1715,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
     if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
     sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
+  // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
+  // item's CURRENT garment. Every flow that swaps the style or color has to re-stamp (or clear)
+  // them: a stale stamp silently survives into the batch queue, and the API order ships the OLD
+  // design/colorway (e.g. the youth tee the line was swapped away from) while the portal shows
+  // the new one. Call with just (target) to clear; pass style/color/isMT to stamp fresh.
+  const _restampMt=(target,style,color,isMT)=>{
+    delete target._mt_style;delete target._mt_color;delete target._mt_sku;delete target._mt_skus;
+    if(isMT&&color?.sku){
+      target._mt_style=style.sku;target._mt_color=color.colorCode||'';target._mt_sku=color.sku;
+      target._mt_skus=Object.fromEntries((color.sizes||[]).map(s=>{const sz=typeof s==='string'?s:(s?.sizeName||'');return[sz,color.sku+'.'+sz]}).filter(([sz])=>sz));
+    }
+    return target;
+  };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
   const copyIWithVendorResult=(i,style,color,source)=>{
@@ -1744,6 +1757,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];
     // Clear stale live-vendor flags from the source
     delete clone._ss_live;delete clone._sm_live;delete clone._mt_live;delete clone._rs_live;delete clone._mtId;delete clone._colors;
+    _restampMt(clone,style,color,isMT);
     clone.product_id=catMatch?.id||null;clone.sku=style.sku;clone.name=nameWithBrand(style.styleName,style.brandName);clone.brand=style.brandName;
     clone.vendor_id=vId;clone.color=color.colorName;clone.nsa_cost=cost;clone.retail_price=catMatch?.retail_price||0;
     clone.unit_sell=sell;clone.available_sizes=availSizes.length?availSizes:fallbackSizes;
@@ -1781,6 +1795,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const next={...x};
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;
       delete next._sizeCosts;delete next._sizeSells;delete next._colorImage;delete next._colorBackImage;
+      _restampMt(next);
       next.product_id=p.id;next.sku=p.sku;next.name=nameWithBrand(p.name,p.brand);next.brand=p.brand;
       next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
       next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
@@ -1829,6 +1844,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(xi!==i)return x;
       const next={...x};
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;delete next._colors;
+      _restampMt(next,style,color,isMT);
       next.product_id=catMatch?.id||null;next.sku=style.sku;next.name=style.styleName;next.brand=style.brandName;
       next.vendor_id=vId;next.color=color.colorName;next.nsa_cost=cost;next.retail_price=catMatch?.retail_price||0;
       next.unit_sell=sell;next.available_sizes=availSizes.length?availSizes:fallbackSizes;
@@ -1855,7 +1871,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
   };
   // Change the color on an existing vendor-live item without losing decorations/sizes.
-  const changeItemVendorColor=(itemIdx,style,color)=>{
+  const changeItemVendorColor=(itemIdx,style,color,source)=>{
     const cur=o.items[itemIdx];
     setO(e=>({...e,items:safeItems(e).map((it,x)=>{
       if(x!==itemIdx)return it;
@@ -1863,6 +1879,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         color:color.colorName,
         _colorImage:color.colorFrontImage||style.styleImage||it._colorImage||'',
         _colorBackImage:color.colorBackImage||it._colorBackImage||''};
+      // Re-stamp the Momentec order SKUs for the NEW colorway (or clear them so the order
+      // modal resolves live) — otherwise the API order ships the old color.
+      _restampMt(next,style,color,source==='mt');
       // If the line is still a blank vendor stub (OSFA-only, no cost — e.g. a Momentec item
       // pulled from the catalog before it had real colors), backfill sizes + pricing from the
       // picked color so it matches a freshly added vendor line.
@@ -1914,7 +1933,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
       {colors.length>6&&<input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8,maxWidth:300}} autoFocus/>}
       {colors.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:4,maxHeight:260,overflowY:'auto'}}>
-        {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<div key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(idx,style,c)} style={{padding:'4px 8px',borderRadius:4,border:'1px solid '+(isCurrent?accent:bdr),background:isCurrent?bdr:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0,opacity:isCurrent?0.6:1}} title={c.colorName+' — $'+(c.customerPrice||0).toFixed(2)+(c.totalQty?' ('+c.totalQty.toLocaleString()+' avail)':'')}>
+        {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<div key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(idx,style,c,source)} style={{padding:'4px 8px',borderRadius:4,border:'1px solid '+(isCurrent?accent:bdr),background:isCurrent?bdr:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0,opacity:isCurrent?0.6:1}} title={c.colorName+' — $'+(c.customerPrice||0).toFixed(2)+(c.totalQty?' ('+c.totalQty.toLocaleString()+' avail)':'')}>
           {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
           <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
           {c.customerPrice>0&&<span style={{fontSize:9,color:accent,whiteSpace:'nowrap'}}>${c.customerPrice.toFixed(2)}</span>}

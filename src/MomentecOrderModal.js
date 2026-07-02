@@ -15,6 +15,10 @@ import { NSA, NSA_WAREHOUSE } from './constants';
 const NSA_SHIP_TO = {
   companyName: NSA.name,
   attentionTo: 'Receiving',
+  // Momentec requires a recipient first/last name on the address (their system shows
+  // the order nameless without one — shipTo/attention alone don't count).
+  firstName: 'NSA',
+  lastName: 'Receiving',
   address1: NSA_WAREHOUSE.street1,
   address2: NSA_WAREHOUSE.street2,
   city: NSA_WAREHOUSE.city,

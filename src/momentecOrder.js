@@ -25,7 +25,10 @@ export function buildMomentecOrderLines(batchPOs) {
       const skuBySize = it._mt_skus || {};
       Object.entries(it.sizes || {}).forEach(([size, qty]) => {
         if (!qty || qty <= 0) return;
-        const sku = String(skuBySize[size] || it._mt_sku || '');
+        // No _mt_sku fallback here: it's the colorway (design.color) WITHOUT the size — a
+        // truncated, invalid order SKU that would also skip the modal's live resolution and
+        // missing-SKU submit block. Leave blank so the line resolves (or blocks) properly.
+        const sku = String(skuBySize[size] || '');
         if (!sku) warnings.push(`Line (${[style, color, size].filter(Boolean).join(' ')}) is missing a Momentec SKU`);
         lines.push({
           key: `${style}|${color}|${size}`,
@@ -47,7 +50,7 @@ export function buildMomentecOrderPayload({
   poNumber,
   batchPOs,
   lineItems,
-  shipTo,                  // { companyName, attentionTo, address1, address2, city, region, postalCode, phone }
+  shipTo,                  // { companyName, attentionTo, firstName, lastName, address1, address2, city, region, postalCode, phone }
   shipMode = '103',        // 103 = ground
   isKitOrder = 'N',        // blank goods = not a kit
   packageType = 'Blank',
@@ -57,6 +60,20 @@ export function buildMomentecOrderPayload({
   let lines = lineItems, warnings = [];
   if (!lines) { const built = buildMomentecOrderLines(batchPOs); lines = built.lines; warnings = built.warnings; }
   const ship = shipTo || {};
+  // Momentec keys the recipient name on the address off firstName/lastName — their spec
+  // says "Either firstName or lastName is required", and orders sent with both blank
+  // land nameless in their system even when shipTo/attention are filled. Derive a name
+  // when the caller doesn't supply one: split a multi-word attention into first/last,
+  // otherwise fall back to the company name.
+  let firstName = ship.firstName || '';
+  let lastName = ship.lastName || '';
+  if (!firstName && !lastName) {
+    const attn = String(ship.attentionTo || ship.attn || '').trim();
+    const company = String(ship.companyName || ship.customer || '').trim();
+    const words = attn.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) { firstName = words.slice(0, -1).join(' '); lastName = words[words.length - 1]; }
+    else lastName = company || attn;
+  }
   const order = {
     packageType,
     shipMode: String(shipMode),
@@ -85,8 +102,8 @@ export function buildMomentecOrderPayload({
       telePhone: ship.phone || '',
       residence: 'N',
       shipComplete: 'N',
-      firstName: ship.firstName || '',
-      lastName: ship.lastName || '',
+      firstName,
+      lastName,
     }],
   };
   const summary = {
