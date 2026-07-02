@@ -156,3 +156,9 @@
 # back → exact match. Env: SS_ACCOUNT_NUMBER, SS_API_KEY, SS_DIGEST_EMAIL (optional).
 [functions."ss-orders-sync-cron"]
   schedule = "30 12 * * *"
+
+# Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
+# whose roster deadline is within 3 days and whose team isn't locked yet, once
+# per session (deadline_reminded_at).
+[functions."roster-deadline-reminders"]
+  schedule = "0 17 * * *"

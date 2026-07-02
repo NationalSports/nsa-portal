@@ -11,6 +11,7 @@ import { supabase } from './lib/supabase';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
+import { RosterOrdersCoach } from './RosterOrders';
 
 // The coach portal is also embedded in the marketing site (nationalsportsapparel.com)
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
@@ -317,6 +318,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
   const hasStore=cpVisibleStores.length>0;
   const openStoreCount=cpStores.filter(s=>s.status==='open').length;
+  // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
+  // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
+  const hasRoster=!!customer.coach_roster;
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -1413,6 +1417,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
     {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
+    ...(hasRoster?[{key:'roster',label:'Roster',icon:'📋'}]:[]),
     ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
@@ -1427,7 +1432,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   // ── NSA nav (design tokens are hoisted to the top of the component) ──
-  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
   const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
@@ -1478,8 +1483,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>
       </div>
     </div>
-    {/* ── Striped rule ── */}
-    <div style={{height:5,background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
+    {/* ── Striped rule — sticks just below the header so the brand bar stays visible while scrolling ── */}
+    <div style={{height:8,position:'sticky',top:84,zIndex:49,boxShadow:'0 2px 6px rgba(0,0,0,.12)',background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
     {/* ── MAIN ── */}
     <div className="cp-main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
         <div className="cp-page">
@@ -1580,7 +1585,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
                 <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
               </div>
-              <a href="mailto:team@nsa-teamwear.com" className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
             </div>
             <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
@@ -1985,6 +1990,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
         </div>}
 
+        {/* Roster orders — spreadsheet-style season kit ordering per team */}
+        {page==='roster'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Roster Orders</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Build your team, fill in player sizes, and submit to {rep?.name||'your rep'} when you're ready.</div>
+          <RosterOrdersCoach customer={customer} />
+        </div>}
+
         {page==='shop'&&<div>
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
@@ -2100,7 +2112,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
     <nav className="cp-bottomnav">
-      {cpNav.filter(n=>n.key!=='spend').slice(0,6).map(it=>{const active=page===it.key;return(
+      {/* 7 fits today's max real combo (home/orders/estimates/roster/billing/art/shop); if
+          store and roster are ever both enabled for the same account this clips one item —
+          revisit if that combo becomes common. */}
+      {cpNav.filter(n=>n.key!=='spend').slice(0,7).map(it=>{const active=page===it.key;return(
         <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.primary:'#94a3b8'}}>
           <span style={{position:'relative',width:38,height:30,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,background:active?cpTint:'transparent',transition:'background .12s'}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-3,right:-1,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:14,textAlign:'center'}}>{it.badge}</span>:null}</span>
           <span>{it.label}</span>
