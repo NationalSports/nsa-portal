@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
@@ -1567,7 +1567,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
           {/* Artwork details — pantones, sizes, locations */}
           {af2&&(()=>{const _fallback2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';
-            const _dp2=new Set();const numDecos2=[];const _cwColors2=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id){if(d.position)_dp2.add(d.position);if(d.color_way_id&&af2.color_ways){const cw=af2.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors2.add(c.trim())})}}if(d.kind==='numbers')numDecos2.push(d)})});
+            const _dp2=new Set();const numDecos2=[];const _cwColors2=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;const _dis2=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis2&&!_dis2.includes(di))return;/* only THIS job's decos — the numbers job's spec stays off sibling art jobs */if(d.kind==='art'&&d.art_file_id===j.art_file_id){if(d.position)_dp2.add(d.position);if(d.color_way_id&&af2.color_ways){const cw=af2.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors2.add(c.trim())})}}if(d.kind==='numbers')numDecos2.push(d)})});
             const _gcColors2=new Set();(j.items||[]).forEach(gi=>{const gk2=gi.sku+'|'+(gi.color||'');const gc2=af2.garment_colors?.[gk2]||{};Object.values(gc2).flat().forEach(c=>{if(c&&c.trim())_gcColors2.add(c.trim())})});
             // Final fallback: union of all CW inks on the art file. Covers SOs where CWs are defined but
             // decorations don't carry an explicit color_way_id link — without this, colors render as empty.

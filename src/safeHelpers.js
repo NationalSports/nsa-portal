@@ -12,6 +12,19 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── Job-item decoration ownership ──
+// A job item records which decoration indexes of its SO line the job produces (deco_idxs,
+// legacy single deco_idx). Returns null when the item carries neither (legacy jobs) —
+// callers then fall back to every decoration on the line.
+export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : (gi?.deco_idx != null ? [gi.deco_idx] : null);
+// Decorations of one kind on a SO line that THIS job actually produces. Keeps a job's
+// display (number rosters, spec rows) from bleeding onto sibling jobs that share the
+// line — e.g. an art job showing the numbers job's roster.
+export const jobItemDecosOfKind = (gi, it, kind) => {
+  const dis = jobItemDecoIdxs(gi);
+  return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color

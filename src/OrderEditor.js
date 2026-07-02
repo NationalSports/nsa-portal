@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -2688,7 +2688,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
-    const _kept=[...newJobs,...splitJobs,...recalcedReleased,...recalcedMerged];
+    // Preserved (released/merged/split) jobs bypass the newJobs heal above, but the same rule
+    // holds: a job whose OWN decorations still sit on the Art TBD placeholder (or a deleted art
+    // file) has no artwork that could have been approved, so a completed-ish art status must not
+    // survive — it read "Art Complete — Ready for Production" with no real art applied.
+    const _healUnresolvedArt=j=>{
+      if(!j||!(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status)))return j;
+      const _unres=(j.items||[]).some(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return false;const dis=jobItemDecoIdxs(gi);
+        return safeDecos(it).some((d,di)=>{if(dis&&!dis.includes(di))return false;
+          return d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||!af.find(a=>a.id===d.art_file_id))})});
+      return _unres?{...j,art_status:'needs_art'}:j;
+    };
+    const _kept=[...newJobs,...splitJobs.map(_healUnresolvedArt),...recalcedReleased.map(_healUnresolvedArt),...recalcedMerged.map(_healUnresolvedArt)];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
@@ -7922,7 +7933,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Partition the roster like splitCustom: the first N per size (the received units) stay on
           // the original job; the remainder (the backorder) goes to the -S job.
           const _srcIt=safeItems(o)[gi.item_idx];
-          const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
+          // Only a numbers deco THIS job owns — splitting an art job must not partition the sibling numbers job's roster.
+          const _srcDeco=_srcIt?jobItemDecosOfKind(gi,_srcIt,'numbers')[0]||null:null;
           const baseRoster=gi.roster||_srcDeco?.roster||null;
           let rcvdRoster=null,openRoster=null;
           if(baseRoster){
@@ -8057,7 +8069,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Partition the roster: first N per size go to the split, the remainder stays on the parent.
           // Reads gi.roster if this item is itself a split slice; falls back to the source decoration's roster.
           const _srcIt=safeItems(o)[gi.item_idx];
-          const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
+          // Only a numbers deco THIS job owns — splitting an art job must not partition the sibling numbers job's roster.
+          const _srcDeco=_srcIt?jobItemDecosOfKind(gi,_srcIt,'numbers')[0]||null:null;
           const baseRoster=gi.roster||_srcDeco?.roster||null;
           let splitRoster=null,remainRoster=null;
           if(baseRoster){
@@ -8201,7 +8214,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // art_complete but a live design was never explicitly confirmed (checkbox / .dst) — the job
         // skipped the production-files stage (e.g. a stray PDF in prod_files), so keep the prod-files
         // banner up instead of "Ready for Production" until someone confirms or uploads the real files.
-        const _jobLiveArt=(()=>{const ids=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd'));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)})});return[...ids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(a=>a&&!a.archived)})();
+        // Scoped to the decorations THIS job owns (deco_idxs) — a numbers-only job sharing its
+        // garments with an art job must not inherit that art's production-files gating (it used
+        // to show the art job's "Waiting for Production Files" banner and a Mark Art Complete
+        // button that stamped the OTHER job's art).
+        const _jobLiveArt=(()=>{const ids=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd'));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)})});return[...ids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(a=>a&&!a.archived)})();
         const _unconfirmedProd=j.art_status==='art_complete'&&_jobLiveArt.length>0&&_jobLiveArt.some(a=>!artProdFilesConfirmed(a));
 
         return<><div>
@@ -8478,9 +8495,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
-                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
-                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
-                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    // Spec rows scoped to THIS job's own decorations (deco_idxs) — sibling jobs on the same line (e.g. the numbers job) keep their rosters/specs to themselves.
+                    const _disR=jobItemDecoIdxs(gi);
+                    const artDecos=it?safeDecos(it).filter((d,di)=>(!_disR||_disR.includes(di))&&d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?jobItemDecosOfKind(gi,it,'numbers'):[];
+                    const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
                     return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'hidden',background:'white'}}>
@@ -8608,7 +8627,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
                         {(()=>{const _job2Items=(j.items||[]);
-                          const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
+                          const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?jobItemDecosOfKind(_gi,_it,'numbers')[0]:null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
                           if(_rosters.length===0)return null;
                           const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
                           const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
@@ -8709,9 +8728,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
-                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
-                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
-                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    // Spec rows scoped to THIS job's own decorations (deco_idxs) — sibling jobs on the same line (e.g. the numbers job) keep their rosters/specs to themselves.
+                    const _disA=jobItemDecoIdxs(gi);
+                    const artDecos=it?safeDecos(it).filter((d,di)=>(!_disA||_disA.includes(di))&&d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?jobItemDecosOfKind(gi,it,'numbers'):[];
+                    const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
                     return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
@@ -8964,8 +8985,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const rowTotal=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                 const fulTotal=Object.values(gi.fulSizes||{}).reduce((a,v)=>a+safeNum(v),0);
                 const srcItem=safeItems(o)[gi.item_idx];
-                const itemArtDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
-                const itemNumDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
+                // Only decorations THIS job owns — sibling jobs' numbers/art stay off this job's item rows.
+                const itemArtDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'art'):[];
+                const itemNumDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'numbers'):[];
                 const _cm4={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 return<div key={gii} style={{padding:'12px 16px',borderBottom:gii<itemDetails.length-1?'1px solid #f1f5f9':'none'}}>
                   <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
@@ -9444,7 +9466,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           let artStatus=allApproved&&allProdFiles?'art_complete':allApproved?prodFilesStatusFor(_actDeco):anyUploaded?'waiting_approval':'needs_art';
           // Skip artist — rep approved the art directly. REUSE-6: never land a blank art_complete with no
           // mock present — if there's no mockup (and no rep sample to promote), send it out for approval instead.
-          if(g.skipArtist&&activateAll){const _hasMock=(g.files||[]).length>0||artIds.some(aid=>{const a2=safeArt(o).find(f=>f.id===aid);return a2&&((a2.mockup_files||[]).length>0||Object.values(a2.item_mockups||{}).some(v=>Array.isArray(v)&&v.length>0))});artStatus=_hasMock?'art_complete':'waiting_approval'}
+          if(g.skipArtist&&activateAll){const _hasMock=(g.files||[]).length>0||artIds.some(aid=>{const a2=safeArt(o).find(f=>f.id===aid);return a2&&((a2.mockup_files||[]).length>0||Object.values(a2.item_mockups||{}).some(v=>Array.isArray(v)&&v.length>0))});
+            // Art still on the __tbd placeholder is NOT approvable art — a rep sample attached to a
+            // TBD group must not release it straight to art_complete (it read "Ready for Production"
+            // with no real artwork). Send it out for approval instead.
+            const _tbdOnly=artIds.length>0&&artIds.every(aid=>aid==='__tbd');
+            artStatus=(_hasMock&&!_tbdOnly)?'art_complete':'waiting_approval'}
           // Quick mock — rep built the mockup themselves; send to coach for approval,
           // skipping the artist on the mockup phase. Artist still does separations after approval.
           if(g.quickMock&&activateAll){artStatus='waiting_approval'}

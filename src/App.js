@@ -18,7 +18,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
@@ -2709,8 +2709,10 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
   const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
     const it=safeItems(so)[gi.item_idx];if(!it)return;
-    const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
-    const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+    // Only decorations THIS job produces — an art job sharing the line with a numbers job
+    // must not print the numbers job's roster on its sheet.
+    const numDecos=jobItemDecosOfKind(gi,it,'numbers');
+    const nameDecos=jobItemDecosOfKind(gi,it,'names');
     const nd=numDecos[0];const nameD=nameDecos[0];
     if(!nd&&!nameD)return;
     const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
@@ -2754,9 +2756,9 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   itemDetails.forEach(gi=>{
     const it=safeItems(so)[gi.item_idx];
     if(!it)return;
-    const itemArtDecos=safeDecos(it).filter(d=>d.kind==='art');
-    const itemNumDecos=safeDecos(it).filter(d=>d.kind==='numbers');
-    const itemNameDecos=safeDecos(it).filter(d=>d.kind==='names');
+    const itemArtDecos=jobItemDecosOfKind(gi,it,'art');
+    const itemNumDecos=jobItemDecosOfKind(gi,it,'numbers');
+    const itemNameDecos=jobItemDecosOfKind(gi,it,'names');
     const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
     // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey in two
     // colors) with numbers on only one of them; a sku match leaks the roster onto both.
@@ -12072,8 +12074,10 @@ export default function App(){
         // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return;
-          const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
-          const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+          // Only decorations THIS job produces — an art job sharing the line with a numbers job
+          // must not show the numbers job's roster on its cards.
+          const numDecos=jobItemDecosOfKind(gi,it,'numbers');
+          const nameDecos=jobItemDecosOfKind(gi,it,'names');
           const nd=numDecos[0];const nameD=nameDecos[0];
           if(!nd&&!nameD)return;
           const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
@@ -12193,9 +12197,11 @@ export default function App(){
                   const _giSrc=_linkSrcOf(gi);
                   const _giDeps=_linkDepsOf(gi);
                   const itemMocks=_giSrc?[]:collectItemMocks(gi);
-                  const artDecos=safeDecos(it).filter(d=>d.kind==='art');
-                  const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
-                  const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+                  // Spec/roster/files show only what THIS job produces (mockups stay shared — they
+                  // depict the whole garment, which the numbers crew needs for placement).
+                  const artDecos=jobItemDecosOfKind(gi,it,'art');
+                  const numDecos=jobItemDecosOfKind(gi,it,'numbers');
+                  const nameDecos=jobItemDecosOfKind(gi,it,'names');
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                   const itemSizes=SZ_ORD.filter(sz=>gi.sizes[sz]>0);
                   // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey
