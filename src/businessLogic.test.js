@@ -2574,6 +2574,14 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
   test('all-custom client (no catalog rows) cannot verify through the fallback (block)', () => {
     expect(itemEditReconciles([{ name: 'Fresh custom row', product_id: null }], dbMixed)).toBe(false);
   });
+
+  test('fallback is NOT vacuously true when the DB side has no product_id rows (block)', () => {
+    // Callers whose DB read omits product_id (or a DB estimate of only custom lines) must not let a
+    // phantom-empty client that typed one catalog row pass verification — subset(dCat, cCat) over an
+    // empty dCat would otherwise be vacuously true and re-open the SO-1001/EST-1119 data-loss mode.
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }], [{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }])).toBe(false);
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }, { name: 'custom' }], [{ name: 'Old Custom' }])).toBe(false);
+  });
 });
 
 describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {

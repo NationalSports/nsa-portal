@@ -873,11 +873,13 @@ function itemEditReconciles(clientItems, dbItems) {
   // so a renamed custom line plus any count change defeats the multiset match above and blocked the whole
   // save (EST-1351 / EST-1353 "won't save"). Fall back to reconciling only the catalog rows (those with a
   // product_id): if they prove the client held the real estimate, the custom-line churn is a deliberate
-  // edit. Still requires at least one catalog row on the client — an all-custom or phantom-empty client
-  // list can never verify this way, so the phantom-load protection is unchanged.
+  // edit. BOTH sides must contribute at least one catalog row — with an empty dCat the subset(dCat, cCat)
+  // direction is vacuously true, which would let a phantom-empty client that added one catalog row pass
+  // verification and delete real DB rows (callers whose DB read omits product_id would hit this on every
+  // save). Requiring dCat.size > 0 keeps the phantom-load protection intact.
   const hasPid = (x) => !!(x && x.product_id);
   const cCat = toMs(clientItems.filter(hasPid)), dCat = toMs((dbItems || []).filter(hasPid));
-  return cCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
+  return cCat.size > 0 && dCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
 }
 
 // ─── Per-item quantity-wipe detection (data-loss guard helper) ───

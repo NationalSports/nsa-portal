@@ -1545,7 +1545,7 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku,color').eq('so_id',so.id));
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku,color,product_id').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -2512,8 +2512,12 @@ const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)retu
 // poll/realtime merge for 60s so a reload that read the DB before the change landed can't snap the status
 // back (EST-1227: clicking Unapprove reverted to approved shortly after saving). The estimate merge's only
 // other guard is a locale-string updated_at comparison, which is not chronologically reliable.
-const _recentEstStatusChanges=new Map();// estId → {status,approved_by,approved_at,at}
-const _markEstStatusChange=(e)=>{_recentEstStatusChanges.set(e.id,{status:e.status,approved_by:e.approved_by??null,approved_at:e.approved_at??null,at:Date.now()})};
+// baseVersion is the estimate's optimistic-concurrency _version at the moment of the change: the merge only
+// honors the mark against rows whose _version hasn't advanced past it, so a LEGITIMATE later write (another
+// user's approve/unapprove, convertSO's status:'converted') always wins — the mark can only beat rows that
+// provably predate this client's change.
+const _recentEstStatusChanges=new Map();// estId → {status,approved_by,approved_at,baseVersion,at}
+const _markEstStatusChange=(e)=>{_recentEstStatusChanges.set(e.id,{status:e.status,approved_by:e.approved_by??null,approved_at:e.approved_at??null,baseVersion:(e._version!=null&&isFinite(Number(e._version))?Number(e._version):null),at:Date.now()})};
 const _recentEstStatusChange=(id)=>{const r=_recentEstStatusChanges.get(id);if(!r)return null;if(Date.now()-r.at>60000){_recentEstStatusChanges.delete(id);return null}return r};
 // Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
 let _lsQuotaWarned=false;// prevent spamming quota warnings
@@ -4489,7 +4493,7 @@ export default function App(){
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
-        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields until the write lands — the incoming row may predate it (EST-1227). */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
@@ -7004,7 +7008,6 @@ export default function App(){
     return{...order,items}};
   const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);
     const prev=ests.find(x=>x.id===e2.id);
-    if(prev&&prev.status!==e2.status)_markEstStatusChange(e2);
     // Last-line client guard: refuse to silently drop all items. If the previous in-memory state had items but the
     // incoming save has none, alert and abort — mirrors the savSO guard that protected SO-1001.
     if(prev&&(prev.items?.length||0)>0&&(!e2.items||e2.items.length===0)){
@@ -7012,6 +7015,8 @@ export default function App(){
       nf('⚠️ Save blocked for '+e2.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
       return prev;
     }
+    // Mark AFTER the abort guard — a blocked save must not arm the merge protection with a status that never persisted.
+    if(prev&&prev.status!==e2.status)_markEstStatusChange(e2);
     // Snapshot the prior state before overwriting so a blanked estimate can be restored from Estimate Version
     // History. Keeps the last 20 saves, cloud-backed via app_state (est_history).
     if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
@@ -12618,10 +12623,12 @@ export default function App(){
             </tr></thead><tbody>
             {(()=>{
               const _soGs=[];poItems.forEach((it,oi)=>{let g=_soGs.find(g=>g.soId===it.soId);if(!g){g={soId:it.soId,customer:it.customer,items:[]};_soGs.push(g);}g.items.push({...it,_oi:oi})});
+              // Resolve full program name + rep once per group — _recvName/_recvRep scan sos/cust linearly.
+              _soGs.forEach(g=>{g._fullName=_recvName(g.soId,g.customer)||g.customer;g._rep=_recvRep(g.soId)});
               const _multi=_soGs.length>1;
               return _soGs.map(g=><React.Fragment key={g.soId}>
                 {_multi&&<tr style={{background:'#eff6ff'}}><td colSpan={10} style={{padding:'6px 14px',fontSize:11,fontWeight:800,color:'#1e40af',borderTop:'2px solid #bfdbfe',borderBottom:'2px solid #bfdbfe',letterSpacing:0.2}}>
-                  <span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===g.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{g.soId}</span><span style={{fontWeight:500,color:'#3b82f6',marginLeft:8}}>{_recvName(g.soId,g.customer)||g.customer}</span>{_recvRep(g.soId)&&<span style={{fontWeight:600,color:'#2563eb',marginLeft:8}}>{_recvRep(g.soId)}</span>}
+                  <span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===g.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{g.soId}</span><span style={{fontWeight:500,color:'#3b82f6',marginLeft:8}}>{g._fullName}</span>{g._rep&&<span style={{fontWeight:600,color:'#2563eb',marginLeft:8}}>{g._rep}</span>}
                   <span style={{marginLeft:10,fontWeight:500,color:'#94a3b8'}}>{g.items.length} item{g.items.length!==1?'s':''} · {g.items.reduce((a,it)=>a+it.qty,0)} units</span>
                 </td></tr>}
                 {g.items.map((it)=>{const i=it._oi;const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
@@ -12644,8 +12651,8 @@ export default function App(){
             <div style={{padding:'8px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
               <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>AFFECTS SALES ORDERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
-                  return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sid);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{_recvName(sid,it?.customer)||it?.customer}{_recvRep(sid)?' · '+_recvRep(sid):''}</span></span>})}
+                {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);const _nm=_recvName(sid,it?.customer)||it?.customer;const _rp=_recvRep(sid);
+                  return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sid);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{_nm}{_rp?' · '+_rp:''}</span></span>})}
               </div>
               {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -19130,6 +19137,10 @@ export default function App(){
           })});
           const isFullyReceived=(totalOpen<=0&&totalReceived>0)||(batchMatch?.status==='received');
           const poStatus=isFullyReceived?'received':totalReceived>0?'partial':'waiting';
+          // Rep lookup for check-in display, cached per soId — sos/cust are scanned linearly and this
+          // view re-renders per receiving keystroke, so per-row lookups would be O(items × (sos+cust)).
+          const _mchkRepCache={};
+          const _mchkRep=(sid)=>{if(!sid)return'';if(_mchkRepCache[sid]!=null)return _mchkRepCache[sid];const so=sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return _mchkRepCache[sid]=(r&&r.name?'Rep: '+r.name.split(' ')[0]:'')};
 
           return<div style={{maxWidth:700,margin:'0 auto'}}>
             {/* Back + scanner bar */}
@@ -19155,7 +19166,7 @@ export default function App(){
                     <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',letterSpacing:2}}>{poId}</div>
                     {vendorName&&<div style={{fontSize:12,opacity:0.8}}>{vendorName}</div>}
                     {/* Warehouse asked to see the sales rep during mobile check-in, next to the program name. */}
-                    {(()=>{const _sids=[...new Set(poItems.map(it=>it.soId).filter(Boolean))];if(_sids.length!==1)return null;const so=sos.find(s=>s.id===_sids[0]);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return<div style={{fontSize:12,opacity:0.9,fontWeight:600,marginTop:2}}>{_sids[0]}{cc?.name?' · '+cc.name:''}{r?.name?' · Rep: '+r.name.split(' ')[0]:''}</div>})()}
+                    {(()=>{const _sids=[...new Set(poItems.map(it=>it.soId).filter(Boolean))];if(_sids.length!==1)return null;const so=sos.find(s=>s.id===_sids[0]);const cc=so&&cust.find(x=>x.id===so.customer_id);const _rp=_mchkRep(_sids[0]);return<div style={{fontSize:12,opacity:0.9,fontWeight:600,marginTop:2}}>{_sids[0]}{cc?.name?' · '+cc.name:''}{_rp?' · '+_rp:''}</div>})()}
                     {poDate&&<div style={{fontSize:11,opacity:0.5}}>{poDate}</div>}
                   </div>
                   <div style={{textAlign:'right'}}>
@@ -19226,7 +19237,7 @@ export default function App(){
                       <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{it.sku}</span>
                       <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
                       {it.color&&<span className="badge badge-gray">{it.color}</span>}
-                      {it.soId&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{it.soId}{it.customer?' · '+it.customer:''}{(()=>{const so=sos.find(s=>s.id===it.soId);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?' · Rep: '+r.name.split(' ')[0]:''})()}</span>}
+                      {it.soId&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{it.soId}{it.customer?' · '+it.customer:''}{_mchkRep(it.soId)?' · '+_mchkRep(it.soId):''}</span>}
                     </div>
                     <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
                       <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}>
