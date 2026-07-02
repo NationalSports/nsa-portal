@@ -4121,7 +4121,11 @@ export default function App(){
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          setDbError('Could not load data from Supabase. Changes will only be saved locally until this is resolved.');
+          // Wording matters: this state is almost always a slow CLIENT (the 45s race above expiring on a
+          // slow network/machine) while the server is fine — the old "Could not load data from Supabase"
+          // text sent people hunting server dashboards. Say what happened, that it self-heals (the poll
+          // clears this banner when a later load succeeds), and what to check.
+          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
@@ -4248,7 +4252,7 @@ export default function App(){
         }
       }catch(e){
         console.error('[DB] Load failed:',e);
-        if(!cancelled)setDbError('Supabase connection failed: '+e.message+'. Changes will only be saved locally.');
+        if(!cancelled)setDbError('Couldn’t reach the database ('+e.message+'). Cloud saves are paused to protect your data — this tab retries automatically. Check your internet if this persists.');
       }
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
@@ -32007,6 +32011,7 @@ export default function App(){
         </div></div>
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
+        <button onClick={()=>{try{window.location.reload()}catch(_){}}} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Retry now</button>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       {cacheFull&&<div style={{padding:'8px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
