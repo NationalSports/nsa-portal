@@ -136,7 +136,7 @@ function applyDesign(st, rawSpec) {
     }
     // Fabric choice reads as sheen: gloss is noticeably shinier, matte knit
     // flatter. (2D renderers carry the texture side of the fabric look.)
-    const FABRIC_ROUGHNESS = { matte: 0.88, mesh: 0.8, heather: 0.82, sublimated: 0.72, gloss: 0.5 };
+    const FABRIC_ROUGHNESS = { matte: 0.94, mesh: 0.88, heather: 0.9, sublimated: 0.86, gloss: 0.6 };
     mat.roughness = FABRIC_ROUGHNESS[spec.fabric] || 0.72;
     mat.metalness = 0.0;
     mat.needsUpdate = true;
@@ -355,7 +355,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             name: srcMat.name,
             color: srcMat.color ? srcMat.color.clone() : 0xffffff,
             side: THREE.FrontSide,
-            envMapIntensity: 0.28,
+            envMapIntensity: 0.2,
             // Keep a baked normal map when the vendor supplied one (that's the
             // cloth-wrinkle detail); otherwise fall back to our knit bump so
             // solid colors still read as fabric, not plastic.
@@ -363,7 +363,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.6, 0.6),
             // Fabric sheen (the soft edge glow cloth has at grazing angles) is
             // what separates "jersey" from "painted plastic" at arm's length.
-            sheen: 0.14,
+            sheen: 0.1,
             sheenRoughness: 0.7,
             sheenColor: new THREE.Color(0xffffff),
           });
