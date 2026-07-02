@@ -7063,7 +7063,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const isBatchEligible=!!batchKey;
       const isAdidas=batchKey==='adidas';
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
-      const pendingBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchKey);
+      // Batch queues group per destination (vendor + optional ship-to decorator) and each group orders as
+      // its OWN PO — so the queue readout and free-ship threshold below must only count this PO's destination
+      // group, not every destination for the vendor ($100 warehouse + $60 decorator is NOT $160 toward one PO).
+      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
+      const batchGroupKey=batchKey?batchKey+(podDv?.id?':'+podDv.id:''):null;
+      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
       const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // Each open SO line for this vendor, with its remaining per-size quantities.
       const _poLinesRaw=vItems.map(it=>{const openSizes=openSizesFor(it);
@@ -7124,7 +7129,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Items offered mirror the standalone deco form (every SO item with sized qty); all start
       // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
       const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
       const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -7335,7 +7339,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
             });
             const bpId='BPO '+Date.now();
-            const batchGroupKey=batchKey+(podDv?.id?':'+podDv.id:'');
             const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString(),...(podDv?.id?{ship_to_deco_id:podDv.id}:{})};
             // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
@@ -7552,9 +7555,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setBatchReadyPopup(null);
           }}>🚀 Submit SanMar Order (API)</button>}
           {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
-          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={()=>{
+          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={async()=>{
             if(!window.confirm('Mark '+(batchPONum||'this batch')+' as manually ordered for '+batchReadyPopup.vendorName+'? This records all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') as placed in NSA and clears the queue — you still need to place the order on Momentec\'s website.'))return;
-            const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
+            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
             if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
             // Promote this SO's own queued lines through the editor copy — App skipped them
             // (skipSoId), so a later save from the editor can't revert the promotion.
@@ -7568,12 +7571,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             nf('✓ '+orderedNum+' recorded as ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+') — place the order on Momentec\'s website');
           }}>✓ Mark Ordered Manually</button>}
           {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
-            setApiOrder({vendorKey:'momentec',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id});
+            setApiOrder({vendorKey:'momentec',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id,groupKey:batchReadyPopup.groupKey||null});
             setBatchReadyPopup(null);
           }}>🚀 Order {batchPONum||'NSA####'} via API (${liveTotal.toFixed(2)})</button>}
-          {onOrderBatch&&batchReadyPopup.vendorKey!=='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+          {onOrderBatch&&batchReadyPopup.vendorKey!=='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={async()=>{
             if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
-            const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
+            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
             if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
             // Promote this SO's own queued lines through the editor copy — App skipped them
             // (skipSoId), so a later save from the editor can't revert the promotion.
@@ -7593,9 +7596,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
       {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
       {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>{
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={async r=>{
         if(apiOrder.isBatch){
-          const orderedNum=onOrderBatch&&onOrderBatch({vendorKey:'momentec',skipSoId:apiOrder.skipSoId,apiResult:r});
+          const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:'momentec',groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r}):null;
           if(orderedNum){
             // Promote this SO's own queued lines through the editor copy — App skipped them.
             const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));

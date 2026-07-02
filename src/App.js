@@ -17,7 +17,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
@@ -960,7 +960,7 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(_loadArtRow);
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
@@ -991,7 +991,7 @@ const _dbLoad = async (opts={}) => {
       const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
       const _carryArtIds=new Set();
       _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
-      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(_loadArtRow);
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
@@ -1389,6 +1389,7 @@ const _dbSaveEstimateInner = async (est) => {
     // rows. It raises CUSTOMER_MISSING when the estimate's customer isn't in the DB yet (the root-cause
     // failure) — mapped to plain English below instead of leaking a raw constraint string to the rep. The
     // safety guards above still decide WHETHER to save (they only read); this performs the write.
+    let _serverVersioned=false;// true when save_estimate returned the post-save version (base is exact, no bump needed)
     {
       const _rpcItems=(items||[]).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
       const _estPayload=_pick(estRow,_estCols);
@@ -1444,7 +1445,7 @@ const _dbSaveEstimateInner = async (est) => {
         return 'stale';
       }
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
-      if(_rpcRes.data&&typeof _rpcRes.data.version==='number')est._version=_rpcRes.data.version;
+      if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_serverVersioned=true}
     }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
@@ -1486,8 +1487,12 @@ const _dbSaveEstimateInner = async (est) => {
     // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
     if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
-    // Bump local version to match server (DB trigger increments on UPDATE)
-    if(est._version)est._version=est._version+1;
+    // Bump local version to match server (DB trigger increments on UPDATE) — ONLY when the RPC didn't
+    // return the post-save version (pre-00128 fallback). When it did, est._version is already exact and
+    // bumping on top sets base = server+1, which lets the NEXT save slide past the stale guard after one
+    // concurrent foreign write (cur == base) and silently clobber it — defeating optimistic locking for
+    // the most common conflict case.
+    if(est._version&&!_serverVersioned)est._version=est._version+1;
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
@@ -5359,7 +5364,9 @@ export default function App(){
   // are dropped, and any pending assignment at/below the high-water mark is re-minted above it.
   React.useEffect(()=>{
     const groupKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'')))];
-    const parseNo=v=>{const n=parseInt(String(v).replace(/[^0-9]/g,''),10);return isNaN(n)?null:n};
+    // First run of 3-6 digits, NOT all digits concatenated: a hand-edited "NSA 4513-2" must parse as
+    // 4513, not 45132 — concatenation would permanently inflate the high-water mark and jump the sequence.
+    const parseNo=v=>{const m=String(v??'').match(/\d{3,6}/);return m?parseInt(m[0],10):null};
     let hi=4500;// NSA 4501 is the first PO number ever issued
     (submittedBatches||[]).forEach(sb=>{const n=parseNo(sb.po_number);if(n!=null&&n>hi)hi=n;});
     // Keep an existing assignment only if it's unique and strictly above every ordered PO#;
@@ -5474,6 +5481,8 @@ export default function App(){
   },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
+  // Batch groups with an orderVendorBatch submission in flight — blocks double-submits per group.
+  const _batchOrderingRef=useRef(new Set());
   _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
   // Warn user before closing/reloading if there are failed saves (data at risk of loss).
   // Cloud is source of truth — heavy tables reload from Supabase, no need to flush them to localStorage.
@@ -9513,9 +9522,15 @@ export default function App(){
   // to waiting under the batch PO number, then clears the queue and the vendor's counter.
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
-  // Returns the batch PO number, or null if the vendor has nothing queued.
-  const orderVendorBatch=({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
+  // Resolves to the batch PO number, or null if the vendor has nothing queued.
+  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
+    // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
+    // onSubmitted) would run the whole promotion twice before state settles — duplicate
+    // submitted-batch entry and duplicate waiting po_lines, i.e. double-ordered inventory.
+    if(_batchOrderingRef.current.has(_gk))return null;
+    _batchOrderingRef.current.add(_gk);
+    try{
     // Read the live queue + SOs from the flush ref, not this closure. This runs from a deferred
     // callback (a vendor API modal's onSubmitted, fired seconds after the modal opened), by which
     // point the closed-over batchPOs/sos can be stale — using the ref keeps the promotion correct.
@@ -9526,7 +9541,32 @@ export default function App(){
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    const poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    let poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    // Claim the number server-side (atomic). The local counter is derived from the LWW
+    // submitted_batches app_state blob, so two clients in the same sync window can mint the
+    // same number — the "NSA 4513 x3" duplicate. claim_batch_po_number inserts the number into
+    // a unique table; if another client already claimed it, the server returns the next free
+    // number and the rep is told the batch was renumbered (they may have typed the preview
+    // number on the vendor's site). Falls back to the local number when the RPC isn't deployed
+    // yet, so deploy order can't block ordering.
+    if(supabase){
+      const _reqStr=(String(poNum).match(/\d{3,6}/)||[])[0];
+      const _req=_reqStr?parseInt(_reqStr,10):null;
+      try{
+        // 5s cap: a hung claim call must degrade to local numbering, not leave the group's
+        // Order button dead behind the in-flight guard until the tab reloads.
+        const{data:_claimed,error:_claimErr}=await Promise.race([
+          supabase.rpc('claim_batch_po_number',{p_number:_req,p_claimed_by:cu.name||cu.id||null}),
+          new Promise(res=>setTimeout(()=>res({data:null,error:{message:'claim_batch_po_number timed out',code:'CLAIM_TIMEOUT'}}),5000))
+        ]);
+        if(!_claimErr&&typeof _claimed==='number'){
+          if(_claimed!==_req)nf('⚠️ PO number NSA '+_req+' was already used by another submission — this batch was recorded as NSA '+_claimed+'. If you placed the vendor order under NSA '+_req+', update the PO number on the vendor site.','error');
+          poNum='NSA '+_claimed;
+        }else if(_claimErr&&_claimErr.code!=='PGRST202'&&!/could not find the function|does not exist/i.test(_claimErr.message||'')){
+          console.warn('[orderVendorBatch] claim_batch_po_number failed — using local number:',_claimErr.message);
+        }
+      }catch(_ce){console.warn('[orderVendorBatch] claim_batch_po_number threw — using local number:',_ce);}
+    }
     // When this batch was submitted through the vendor's API, the order modal hands back the
     // vendor's order id (orderId / orderNumber / transactionId). Stamp it on every promoted
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
@@ -9566,10 +9606,18 @@ export default function App(){
         }
       });
       savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
-    }catch(_promoErr){console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);}});
+    }catch(_promoErr){
+      // The vendor already accepted this order (or the rep already placed it) — never mask that
+      // it isn't recorded on the SO. console-only left orders that exist at the vendor but
+      // nowhere in fulfillment tracking, with nobody told.
+      console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);
+      nf('⚠️ Batch '+poNum+' was placed but its PO line could not be recorded on '+soId+' — add it to the order manually','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId,reason:'Batch '+poNum+' ('+vgName+') promoted at the vendor but writing the po_line failed: '+(_promoErr&&_promoErr.message||_promoErr)});
+    }});
     setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
     setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return poNum;
+    }finally{_batchOrderingRef.current.delete(_gk)}
   };
 
 
@@ -12466,7 +12514,7 @@ export default function App(){
   };
   function rBatchPOs(){
     const byVendor={};
-    batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]}}byVendor[_gk].pos.push(bp)});
+    batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold??200,pos:[]}}byVendor[_gk].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
     // Universal PO lookup — searches submitted batches AND all PO lines across every SO
     const q2=batchScan.trim().toLowerCase();
@@ -12886,8 +12934,8 @@ export default function App(){
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
-              onClick={()=>{
-                const poNum=orderVendorBatch({vendorKey:vk,groupKey:gk});
+              onClick={async()=>{
+                const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
