@@ -16,6 +16,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
+import { SETTINGS_DEFAULTS, loadBuilderSettings } from './builderSettings';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import * as ds from './designSpec';
 import { StripePaymentModal } from '../modals';
@@ -33,12 +34,9 @@ const F_BODY = "'Source Sans 3','Segoe UI',system-ui,sans-serif";
 
 // 12-color team palette (+ sky, kept selectable so the Argentina demo maps to
 // real swatches rather than a "custom" hex).
-const PALETTE = [
-  { hex: '#192853', name: 'Navy' }, { hex: '#962C32', name: 'Red' }, { hex: '#0B0B0B', name: 'Black' },
-  { hex: '#FFFFFF', name: 'White' }, { hex: '#1E4D8C', name: 'Royal' }, { hex: '#7CB0E0', name: 'Sky' },
-  { hex: '#0B6E4F', name: 'Forest' }, { hex: '#F2B705', name: 'Gold' }, { hex: '#5B2A86', name: 'Purple' },
-  { hex: '#7A1F3D', name: 'Maroon' }, { hex: '#D9631E', name: 'Orange' }, { hex: '#0EA5A5', name: 'Teal' },
-];
+// Admin-managed via Settings → Uniform Builder; hydrated from Supabase on
+// mount (see loadBuilderSettings) with these safe built-ins until then.
+let PALETTE = SETTINGS_DEFAULTS.palette;
 const nameForHex = (hex) => {
   const h = String(hex || '').toUpperCase();
   const hit = PALETTE.find((p) => p.hex.toUpperCase() === h);
@@ -135,11 +133,7 @@ function bottomSpecFromConfig(cfg) {
   });
 }
 
-const FONTS = [
-  { id: 'block', label: 'Block', font: 'anton', preview: 'normal' },
-  { id: 'varsity', label: 'Varsity', font: 'squada', preview: 'normal' },
-  { id: 'outline', label: 'Outline', font: 'anton', preview: 'normal', hollow: true },
-];
+let FONTS = SETTINGS_DEFAULTS.numberStyles;
 // Logo slots — each projects onto the jersey from a view; sleeve logos land on
 // the sleeve panel (the 3D viewer raycasts the whole model, so a logo attaches
 // to whatever surface it's over). Defaults pre-place each slot sensibly.
@@ -167,17 +161,7 @@ const SPORTS = [
   { key: 'soccer', label: 'Soccer', icon: '⚽' },
 ];
 const SPORT_LABELS = SPORTS.reduce((m, s) => { m[s.key] = s.label; return m; }, {});
-const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
-const DESIGN_PRESETS = [
-  { id: 'bold', name: 'Bold Stripes', config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'classic', name: 'Classic Solid', config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
-  { id: 'pinstripe', name: 'Pinstripe', config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'camo', name: 'Camo Sleeves', config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'royalgold', name: 'Royal & Gold', config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
-  { id: 'fade', name: 'Sunset Fade', config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#D9631E'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'blackout', name: 'Blackout', config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
-  { id: 'maroon', name: 'Maroon Stripes', config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
-];
+let DESIGN_PRESETS = SETTINGS_DEFAULTS.presets;
 const thumbCache = {}; // module-level: gallery thumbs render once per session
 const savedThumbsCache = {}; // module-level: My Designs thumbs render once per session
 
@@ -350,6 +334,25 @@ function Swatch({ hex, active, onClick, size = 42 }) {
     }} />
   );
 }
+// Compact color picker for the steps AFTER Team: leads with the coach's own
+// team colors (plus white/black staples) so choices stay consistent, with the
+// full palette one tap away. The Team step stays the place where the "main"
+// colors get declared from the full range.
+function QuickColors({ teamColors, hex, onPick, size = 30 }) {
+  const [more, setMore] = useState(false);
+  const shown = more ? PALETTE : teamColors;
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {shown.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
+        <button onClick={() => setMore((m) => !m)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight, background: 'none', border: '1px dashed ' + C.mid, borderRadius: 4, padding: '6px 9px', cursor: 'pointer' }}>
+          {more ? 'Team colors' : 'More…'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SwatchGroup({ head, value, hex, onPick, size }) {
   return (
     <div style={{ padding: '22px 0', borderBottom: '1px solid ' + C.light }}>
@@ -377,7 +380,7 @@ function Pills({ options, active, onPick }) {
 }
 // Per-section pattern + color editor — used for both the jersey's sections
 // (Body/Sleeves/Collar) and the shorts' sections (Legs/Waistband/Stripe).
-function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, printLib }) {
+function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, printLib, teamColors }) {
   const active = sections[activeKey] || sections[sectionDefs[0].key];
   return (
     <div>
@@ -418,15 +421,13 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
           </>
         )}
         <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: active.pattern !== 'solid' ? 14 : 0 }}>
-          {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(active.color).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPatch({ color: p.hex })} />)}
+        <div style={{ marginBottom: active.pattern !== 'solid' ? 14 : 0 }}>
+          <QuickColors teamColors={teamColors} hex={active.color} onPick={(h) => onPatch({ color: h })} />
         </div>
         {active.pattern !== 'solid' && active.pattern !== 'custom' && (
           <>
             <div style={{ ...railLabel, marginBottom: 8 }}>Secondary Color</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(active.color2).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPatch({ color2: p.hex })} />)}
-            </div>
+            <QuickColors teamColors={teamColors} hex={active.color2} onPick={(h) => onPatch({ color2: h })} />
           </>
         )}
       </div>
@@ -451,6 +452,18 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [config, setConfig] = useState(restoredConfig);
   // Catalog flow: pick a sport → pick a starting design → the wizard.
   const [screen, setScreen] = useState('sports'); // sports | designs | wizard
+  // Admin-managed palette/styles/presets: hydrate once per session, then bump
+  // to re-render everything reading the module-level registries.
+  const [, setSettingsRev] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    loadBuilderSettings().then((sx) => {
+      if (!alive) return;
+      PALETTE = sx.palette; FONTS = sx.numberStyles; DESIGN_PRESETS = sx.presets;
+      setSettingsRev((r) => r + 1);
+    });
+    return () => { alive = false; };
+  }, []);
   const [hasAutosave] = useState(() => !!loadAutosave());
   const [hasSavedDesigns] = useState(() => loadSavedDesigns().length > 0);
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
@@ -515,6 +528,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     return { ...c, sleevesLinked: true, sections: { ...cur, sleeveR: { ...cur.sleeveL } } }; // re-mirror from the left
   });
   const activeSection = SX[designSection] || SX.body;
+  // The coach's declared colors (Team step) + staples — the quick palette every
+  // later step leads with.
+  const teamColors = (() => {
+    const seen = new Set(); const out = [];
+    for (const hex of [SX.body.color, SX.body.color2, SX.sleeveL.color, SX.collar.color, config.numberColor, '#FFFFFF', '#0B0B0B']) {
+      const h = String(hex || '').toUpperCase();
+      if (!/^#[0-9A-F]{6}$/.test(h) || seen.has(h)) continue;
+      seen.add(h); out.push({ hex: h, name: nameForHex(h) });
+    }
+    return out;
+  })();
 
   // Paired bottom garment (shorts) — linked by default (derives from the top's
   // sections); unlinking freezes the current derived look for independent edits.
@@ -997,7 +1021,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <span style={{ fontSize: 34 }}>{s.icon}</span>
                   <span>
                     <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{s.label}</span>
-                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.length} designs · more garments soon</span>
+                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.filter((p) => !p.sports || !p.sports.length || p.sports.includes(s.key)).length} designs · more garments soon</span>
                   </span>
                 </button>
               ))}
@@ -1015,7 +1039,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick a Starting Design</h2>
             <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 24 }}>Every design is fully customizable — colors, pattern, trim, lettering, and logos are all yours to change.</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
-              {DESIGN_PRESETS.map((pz) => (
+              {DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)).map((pz) => (
                 <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
                     {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
@@ -1140,7 +1164,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     sections={SX}
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
-                    onPatch={(patch) => setSection(sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection, patch)} printLib={printLib} />
+                    onPatch={(patch) => setSection(sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection, patch)} printLib={printLib} teamColors={teamColors} />
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
                     {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
@@ -1212,7 +1236,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                         </div>
                         {!bottom.linked && (
                           <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
-                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} />
+                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} teamColors={teamColors} />
                         )}
                       </>
                     )}
@@ -1227,9 +1251,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
                       <div style={groupHead}>Number Color</div><div style={groupVal}>{nameForHex(config.numberColor)}</div>
                     </div>
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                      {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={38} active={String(config.numberColor).toUpperCase() === p.hex.toUpperCase()} onClick={() => set({ numberColor: p.hex })} />)}
-                    </div>
+                    <QuickColors teamColors={teamColors} size={38} hex={config.numberColor} onPick={(h) => set({ numberColor: h })} />
                   </div>
                   {config.font !== 'outline' && (
                     <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
@@ -1240,9 +1262,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
                         <Pills options={[{ id: 'auto', label: 'Auto' }, { id: 'none', label: 'None' }]} active={(config.outlineColor || 'auto')} onPick={(v) => set({ outlineColor: v })} />
                       </div>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={26} active={String(config.outlineColor || '').toUpperCase() === p.hex.toUpperCase()} onClick={() => set({ outlineColor: p.hex })} />)}
-                      </div>
+                      <QuickColors teamColors={teamColors} size={26} hex={config.outlineColor || ''} onPick={(h) => set({ outlineColor: h })} />
                     </div>
                   )}
                   <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
