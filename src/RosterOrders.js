@@ -26,6 +26,41 @@ const resolveSizeGroup = (sz, player, groups) => {
   return 'AM';
 };
 
+// Required kit items a player still needs a size for. "Required" = not flagged
+// optional in the catalog and not a checkbox (no_size) item; keeper gear only
+// counts for keepers. Drives the per-team completeness indicator and the
+// lock/submit warnings.
+const missingSizesFor = (player, kitItems, cellsForPlayer) => (kitItems || [])
+  .filter(ki => !ki.optional && !ki.no_size && (!ki.gk_only || player.is_gk))
+  .filter(ki => { const sz = ((cellsForPlayer || {})[ki.slot] || {}).size; return !sz || sz === '-'; });
+
+// Parse rows pasted from a spreadsheet (Sheets/Excel copy = tab-separated;
+// plain CSV also accepted). Per row: any 1–3 digit cell is the jersey number,
+// a YM/WM/AM cell is the category, remaining text is first + last name (a
+// single "First Last" cell is split on the first space). A leading
+// header-looking row ("First", "Name", …) is skipped.
+const parsePastedRoster = (text) => {
+  const rows = [];
+  String(text || '').split(/\r?\n/).forEach(line => {
+    if (!line.trim()) return;
+    const cells = (line.includes('\t') ? line.split('\t') : line.split(',')).map(c => c.trim());
+    if (!rows.length && /\b(first|last|name|player|number|cat)\b/i.test(cells.join(' ')) && !cells.some(c => /^\d{1,3}$/.test(c))) return;
+    let num = '', cat = '';
+    const rest = [];
+    cells.forEach(c => {
+      if (!c) return;
+      if (/^#?\d{1,3}$/.test(c) && !num) num = c.replace('#', '');
+      else if (/^(ym|wm|am)$/i.test(c) && !cat) cat = c.toUpperCase();
+      else rest.push(c);
+    });
+    let first = '', last = '';
+    if (rest.length >= 2) { first = rest[0]; last = rest.slice(1).join(' '); }
+    else if (rest.length === 1) { const parts = rest[0].split(/\s+/); first = parts[0]; last = parts.slice(1).join(' '); }
+    if (first || last || num) rows.push({ first_name: first, last_name: last, jersey_number: num, category: cat || null });
+  });
+  return rows;
+};
+
 // ─── Inventory hook (product_inventory + inventory_unified) ───────────────────
 function useKitInventory(items) {
   const [inv, setInv] = useState({});
@@ -505,6 +540,12 @@ function TypeaheadInput({ value, options, onCommit, placeholder, width, center =
         value={text}
         placeholder={placeholder}
         title={title}
+        className="rst-in"
+        autoCapitalize="characters"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        enterKeyHint="next"
         onChange={e => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
@@ -531,12 +572,19 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   const [addingRow, setAddingRow] = useState(false);
   const [lockLoading, setLockLoading] = useState(false);
   const [isLocked, setIsLocked] = useState(team?.locked || false);
+  const [paste, setPaste] = useState({ open: false, text: '', busy: false });
 
   const kitItems = useMemo(() => kitTemplate?.items || [], [kitTemplate]);
   const { getStock } = useKitInventory(kitItems);
   const hasGK = players.some(p => p.is_gk);
   const gkItems = kitItems.filter(ki => ki.gk_only);
   const mainItems = kitItems.filter(ki => !ki.gk_only);
+
+  // Players still missing a size on a required item — feeds the "N of M
+  // complete" indicator and the lock warning.
+  const incomplete = useMemo(() => players
+    .map(p => ({ p, missing: missingSizesFor(p, kitItems, sizes[p.id]) }))
+    .filter(x => x.missing.length), [players, kitItems, sizes]);
 
   useEffect(() => {
     setIsLocked(team?.locked || false);
@@ -617,17 +665,44 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
   };
 
   const toggleLock = async () => {
-    setLockLoading(true);
     const newLocked = !isLocked;
+    if (newLocked && incomplete.length) {
+      const detail = incomplete.slice(0, 5).map(x =>
+        `• ${[x.p.first_name, x.p.last_name].filter(Boolean).join(' ') || 'Unnamed'} — ${x.missing.map(ki => ki.label).join(', ')}`).join('\n');
+      const more = incomplete.length > 5 ? `\n…and ${incomplete.length - 5} more` : '';
+      if (!window.confirm(`${incomplete.length} player${incomplete.length === 1 ? ' is' : 's are'} still missing sizes:\n\n${detail}${more}\n\nLock the roster anyway?`)) return;
+    }
+    setLockLoading(true);
     await supabase.from('roster_teams').update({ locked: newLocked }).eq('id', team.id);
     setIsLocked(newLocked);
     setLockLoading(false);
+  };
+
+  // Bulk-add players pasted from a spreadsheet (the old Google Sheet workflow).
+  const importPaste = async () => {
+    const rows = parsePastedRoster(paste.text);
+    if (!rows.length) { window.alert('Nothing to import — paste rows copied from your spreadsheet (name, number…).'); return; }
+    setPaste(p => ({ ...p, busy: true }));
+    const { data, error } = await supabase.from('roster_players').insert(rows.map((r, i) => ({
+      team_id: team.id, first_name: r.first_name, last_name: r.last_name,
+      jersey_number: r.jersey_number, is_gk: false, category: r.category,
+      sort_order: players.length + i,
+    }))).select();
+    if (error) {
+      console.error('[importPaste]', error);
+      window.alert('Import failed — ' + error.message);
+      setPaste(p => ({ ...p, busy: false }));
+      return;
+    }
+    setPlayers(prev => [...prev, ...(data || [])]);
+    setPaste({ open: false, text: '', busy: false });
   };
 
   const editable = !readOnly && !isLocked;
 
   const cellInput = (playerId, field, value, opts = {}) => (
     <input value={value || ''} placeholder={opts.placeholder || ''}
+      className="rst-in" inputMode={opts.numeric ? 'numeric' : undefined} enterKeyHint="next"
       onChange={e => updatePlayer(playerId, field, e.target.value)}
       onBlur={e => savePlayer(playerId, field, e.target.value)}
       style={{ width: opts.width || '100%', border: 'none', background: 'transparent',
@@ -724,19 +799,65 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
 
   return (
     <div>
+      {/* On phones, sub-16px inputs make iOS Safari zoom the whole page on focus —
+          bump the grid's inputs to 16px on coarse pointers only. */}
+      <style>{`@media (pointer: coarse){ .rst-in{ font-size:16px !important } }`}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
         <div style={{ fontWeight: 800, fontSize: 15, color: '#0b1220' }}>{team.name}</div>
         <span style={{ fontSize: 11, color: '#64748b' }}>{players.length} player{players.length !== 1 ? 's' : ''}</span>
+        {players.length > 0 && (
+          <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '2px 10px',
+            background: incomplete.length ? '#fffbeb' : '#dcfce7',
+            border: incomplete.length ? '1px solid #fde68a' : '1px solid #bbf7d0',
+            color: incomplete.length ? '#b45309' : '#15803d' }}
+            title={incomplete.length ? incomplete.slice(0, 8).map(x => `${[x.p.first_name, x.p.last_name].filter(Boolean).join(' ') || 'Unnamed'}: ${x.missing.map(ki => ki.label).join(', ')}`).join('\n') : 'Every player has all required sizes'}>
+            {players.length - incomplete.length} of {players.length} complete
+          </span>
+        )}
         {isLocked && <span style={{ background: '#dcfce7', color: '#15803d', borderRadius: 999, padding: '2px 10px', fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>LOCKED</span>}
         {!readOnly && (
-          <button onClick={toggleLock} disabled={lockLoading}
-            style={{ marginLeft: 'auto', padding: '5px 14px', borderRadius: 7, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-              border: isLocked ? '1px solid #15803d' : '1px solid #e2e8f0',
-              background: isLocked ? '#f0fdf4' : '#f8fafc', color: isLocked ? '#15803d' : '#374151' }}>
-            {lockLoading ? '…' : isLocked ? '🔓 Unlock roster' : '🔒 Lock roster'}
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            {editable && (
+              <button onClick={() => setPaste(p => ({ ...p, open: !p.open }))}
+                style={{ padding: '5px 14px', borderRadius: 7, cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                  border: '1px solid #e2e8f0', background: paste.open ? '#eff6ff' : '#f8fafc', color: '#374151' }}>
+                📋 Paste roster
+              </button>
+            )}
+            <button onClick={toggleLock} disabled={lockLoading}
+              style={{ padding: '5px 14px', borderRadius: 7, cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                border: isLocked ? '1px solid #15803d' : '1px solid #e2e8f0',
+                background: isLocked ? '#f0fdf4' : '#f8fafc', color: isLocked ? '#15803d' : '#374151' }}>
+              {lockLoading ? '…' : isLocked ? '🔓 Unlock roster' : '🔒 Lock roster'}
+            </button>
+          </div>
         )}
       </div>
+
+      {paste.open && editable && (
+        <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 10, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#1e3a5f', marginBottom: 6 }}>
+            Paste your roster from Google Sheets or Excel
+          </div>
+          <div style={{ fontSize: 11.5, color: '#475569', marginBottom: 8 }}>
+            Copy the rows in your spreadsheet (name, number — category too if you have it) and paste below. One player per line; sizes get typed in the grid after.
+          </div>
+          <textarea value={paste.text} onChange={e => setPaste(p => ({ ...p, text: e.target.value }))}
+            placeholder={'Steve\tPeterson\t10\tYM\nJordan\tSmith\t7'}
+            rows={6}
+            style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, padding: 10, fontFamily: 'monospace', outline: 'none', resize: 'vertical' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <button onClick={importPaste} disabled={paste.busy || !parsePastedRoster(paste.text).length}
+              style={{ padding: '7px 18px', borderRadius: 8, border: 'none', background: '#0b1220', color: '#fff', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>
+              {paste.busy ? 'Importing…' : `Add ${parsePastedRoster(paste.text).length} player${parsePastedRoster(paste.text).length === 1 ? '' : 's'}`}
+            </button>
+            <button onClick={() => setPaste({ open: false, text: '', busy: false })}
+              style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', fontSize: 12.5, cursor: 'pointer', color: '#475569' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
@@ -772,7 +893,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
                       : <span>{player.last_name || '—'}</span>}
                   </td>
                   <td style={{ padding: '10px 8px', textAlign: 'center' }}>
-                    {editable ? cellInput(player.id, 'jersey_number', player.jersey_number, { placeholder: '#', width: 40, center: true })
+                    {editable ? cellInput(player.id, 'jersey_number', player.jersey_number, { placeholder: '#', width: 40, center: true, numeric: true })
                       : <span style={{ fontWeight: 700 }}>{player.jersey_number || '—'}</span>}
                   </td>
                   <td style={{ padding: '10px 8px', textAlign: 'center' }}>
@@ -803,15 +924,15 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
             {editable && (
               <tr style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc' }}>
                 <td style={{ padding: '10px 14px' }}>
-                  <input value={addRow.first_name} placeholder="First" onChange={e => setAddRow(r => ({ ...r, first_name: e.target.value }))}
+                  <input value={addRow.first_name} placeholder="First" className="rst-in" enterKeyHint="next" onChange={e => setAddRow(r => ({ ...r, first_name: e.target.value }))}
                     style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
                 <td style={{ padding: '10px 14px' }}>
-                  <input value={addRow.last_name} placeholder="Last" onChange={e => setAddRow(r => ({ ...r, last_name: e.target.value }))}
+                  <input value={addRow.last_name} placeholder="Last" className="rst-in" enterKeyHint="next" onChange={e => setAddRow(r => ({ ...r, last_name: e.target.value }))}
                     style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
                 <td style={{ padding: '10px 8px', textAlign: 'center' }}>
-                  <input value={addRow.jersey_number} placeholder="#" onChange={e => setAddRow(r => ({ ...r, jersey_number: e.target.value }))}
+                  <input value={addRow.jersey_number} placeholder="#" className="rst-in" inputMode="numeric" onChange={e => setAddRow(r => ({ ...r, jersey_number: e.target.value }))}
                     style={{ width: 40, textAlign: 'center', border: 'none', background: 'transparent', fontSize: 14, outline: 'none' }} />
                 </td>
                 <td style={{ padding: '10px 8px', textAlign: 'center' }}>
@@ -987,6 +1108,83 @@ function RosterTotals({ session, teams, kitTemplate }) {
     a.click();
   };
 
+  // Clean printable buy-sheet — what the warehouse pulls from. Same data as the
+  // on-screen tables, stripped to Item → Size / Need / Players / On hand.
+  const printBuySheet = () => {
+    const escH = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const CAT_LABELS = { YM: 'Youth', WM: "Women's", AM: 'Adult' };
+    let sections = '';
+    kitItems.forEach(ki => {
+      const byCat = totals[ki.slot] || {};
+      const activeCats = ['YM', 'WM', 'AM'].filter(cat => Object.keys(byCat[cat] || {}).length);
+      if (!activeCats.length) return;
+      let rows = '', itemUnits = 0;
+      activeCats.forEach(cat => {
+        const bySz = byCat[cat] || {};
+        const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id) :
+                          cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+        const sku = productId === ki.product_youth_id ? ki.sku_youth : productId === ki.product_womens_id ? ki.sku_womens : ki.sku;
+        [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]).forEach(sz => {
+          const pqs = bySz[sz] || [];
+          const need = pqs.reduce((s, pq) => s + pq.qty, 0);
+          itemUnits += need;
+          const stock = productId ? getStock(productId, sz) : null;
+          const playerStr = pqs.map(({ player: p, qty }) =>
+            `${p.jersey_number ? '#' + p.jersey_number + ' ' : ''}${[p.first_name, p.last_name].filter(Boolean).join(' ')}${qty > 1 ? ` (×${qty})` : ''}`.trim()).join(', ');
+          rows += `<tr>
+            <td>${escH(activeCats.length > 1 ? CAT_LABELS[cat] + ' ' : '')}${escH(ki.no_size ? 'Included' : sz)}</td>
+            <td class="num">${need}</td>
+            <td class="players">${escH(playerStr)}</td>
+            <td class="num">${stock ? stock.avail : '—'}${stock && stock.incoming ? ` <span class="inc">(+${stock.incoming}${stock.eta ? ' ' + escH(stock.eta) : ''})</span>` : ''}</td>
+            <td class="chk"></td>
+          </tr>`;
+        });
+      });
+      sections += `
+        <div class="item">
+          <div class="item-head">
+            <span class="item-name">${escH(ki.label)}${ki.color ? ` — ${escH(ki.color)}` : ''}</span>
+            ${sku ? `<span class="sku">${escH(sku)}</span>` : ''}
+            <span class="units">${itemUnits} units</span>
+          </div>
+          <table>
+            <thead><tr><th>Size</th><th class="num">Need</th><th>Players</th><th class="num">On hand</th><th class="chk">Pulled</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    });
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escH(session?.name || 'Roster')} — Buy-Sheet</title>
+      <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#111;margin:28px;font-size:12px}
+        h1{font-size:18px;margin:0}
+        .meta{color:#555;font-size:11px;margin:4px 0 20px}
+        .item{margin-bottom:18px;break-inside:avoid}
+        .item-head{display:flex;align-items:baseline;gap:10px;border-bottom:2px solid #111;padding-bottom:4px;margin-bottom:6px}
+        .item-name{font-weight:800;font-size:13.5px}
+        .sku{font-family:monospace;color:#555}
+        .units{margin-left:auto;font-weight:700}
+        table{width:100%;border-collapse:collapse}
+        th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#555;text-align:left;padding:3px 8px 3px 0;border-bottom:1px solid #ccc}
+        td{padding:5px 8px 5px 0;border-bottom:1px solid #eee;vertical-align:top}
+        .num{text-align:right;white-space:nowrap;font-weight:700}
+        th.num{font-weight:700}
+        .players{color:#444;font-size:11px}
+        .inc{color:#888;font-weight:400;font-size:10px}
+        .chk{width:44px}
+        td.chk::after{content:'';display:inline-block;width:14px;height:14px;border:1.5px solid #999;border-radius:3px}
+        @media print{body{margin:10mm}}
+      </style></head><body>
+      <h1>Buy-Sheet — ${escH(session?.name || '')}</h1>
+      <div class="meta">${session?.season ? escH(session.season) + ' · ' : ''}${(teams || []).length} team${(teams || []).length !== 1 ? 's' : ''} · ${totalPlayers} players · ${lockedTeams} of ${(teams || []).length} locked · Printed ${new Date().toLocaleDateString()}</div>
+      ${sections || '<p>No sizes entered yet.</p>'}
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 250);
+  };
+
   if (loading) return <div style={{ padding: 24, color: '#64748b' }}>Building totals…</div>;
 
   const totalPlayers = allPlayers.length;
@@ -1004,8 +1202,13 @@ function RosterTotals({ session, teams, kitTemplate }) {
             {orderValue > 0 && <span> · <strong style={{ color: '#0b1220' }}>Est. value ${orderValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>}
           </div>
         </div>
-        <button onClick={exportCSV}
+        <button onClick={printBuySheet}
           style={{ marginLeft: 'auto', padding: '7px 16px', borderRadius: 8, border: '1px solid #e2e8f0',
+            background: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', color: '#0b1220' }}>
+          🖨️ Print buy-sheet
+        </button>
+        <button onClick={exportCSV}
+          style={{ padding: '7px 16px', borderRadius: 8, border: '1px solid #e2e8f0',
             background: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', color: '#0b1220' }}>
           ↓ Download CSV
         </button>
@@ -1216,8 +1419,22 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
   };
 
   const changeStatus = async (status) => {
+    // Reopening a submitted order means the coach has work to do — collect an
+    // optional note and let the reopen function email the session's coaches.
+    const wasSubmitted = ['submitted', 'processing'].includes(sess.status);
+    let note = null;
+    if (status === 'open' && wasSubmitted) {
+      note = window.prompt('Send the coaches a note about what needs fixing (optional):', '');
+      if (note === null) return; // cancelled — leave status alone
+    }
     setSess(s => ({ ...s, status }));
     await supabase.from('roster_order_sessions').update({ status }).eq('id', session.id);
+    if (status === 'open' && wasSubmitted) {
+      fetch('/.netlify/functions/roster-order-reopen', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, note: (note || '').trim() }),
+      }).catch(e => console.error('[changeStatus] reopen notify:', e));
+    }
   };
 
   // Build a draft estimate from this session's rosters. Each kit item becomes one
@@ -1303,7 +1520,14 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
       });
 
       if (!seedItems.length) { window.alert('No player sizes entered yet — nothing to put on an estimate.'); setBuildingEst(false); return; }
-      onNewEst(customer, null, seedItems);
+      // newE returns the freshly-created draft estimate (and navigates to the
+      // estimate editor, unmounting this view) — stamp its id on the session
+      // for traceability before we're gone. No local state updates after this.
+      const est = onNewEst(customer, null, seedItems);
+      if (est?.id) {
+        await supabase.from('roster_order_sessions').update({ estimate_id: est.id }).eq('id', session.id);
+      }
+      return;
     } catch (e) {
       console.error('[buildEstimate]', e);
       window.alert('Could not build the estimate — ' + (e.message || 'unknown error'));
@@ -1346,6 +1570,10 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
             {session.season && <span>{session.season} · </span>}
             {teams.length} team{teams.length !== 1 ? 's' : ''}
             {session.deadline && <span> · Deadline: {session.deadline}</span>}
+            {sess.estimate_id && (
+              <span style={{ marginLeft: 8, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', borderRadius: 999, padding: '1px 9px', fontSize: 11, fontWeight: 700 }}
+                title="Draft estimate built from this roster">→ {sess.estimate_id}</span>
+            )}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -1762,6 +1990,10 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
                     {sess.season && `${sess.season} · `}
                     Created {new Date(sess.created_at).toLocaleDateString()}
                     {sess.deadline && ` · Deadline: ${sess.deadline}`}
+                    {sess.estimate_id && (
+                      <span style={{ marginLeft: 8, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', borderRadius: 999, padding: '1px 8px', fontSize: 10, fontWeight: 700 }}
+                        title="Draft estimate built from this roster">→ {sess.estimate_id}</span>
+                    )}
                   </div>
                 </div>
                 <span style={{ background: '#f1f5f9', color: STATUS_COLORS[sess.status] || '#64748b', borderRadius: 999, padding: '3px 12px', fontSize: 11, fontWeight: 700 }}>
@@ -1848,10 +2080,29 @@ export function RosterOrdersCoach({ customer }) {
   // notification email (server-side). Optimistic; the function is the source of
   // truth for the email but the status also persists here.
   const submitSession = async (session) => {
-    const locked = teams.filter(t => t.session_id === session.id && t.locked).length;
-    const total = teams.filter(t => t.session_id === session.id).length;
-    const msg = total && locked < total
-      ? `Submit "${session.name}" to your rep? ${locked} of ${total} team rosters are locked — you can still submit, but unlocked teams may change.`
+    const sessTeams = teams.filter(t => t.session_id === session.id);
+    const locked = sessTeams.filter(t => t.locked).length;
+    const total = sessTeams.length;
+    // Check for players still missing required sizes before submitting — the
+    // rep builds the order from this data, so surface holes now, not in the
+    // buy-sheet later.
+    let missingCount = 0;
+    try {
+      const kitItems = effectiveKit(session, catalog);
+      const { data: ps } = await supabase.from('roster_players').select('*').in('team_id', sessTeams.map(t => t.id));
+      const playerList = ps || [];
+      if (playerList.length) {
+        const { data: sz } = await supabase.from('roster_player_sizes').select('player_id,kit_slot,size').in('player_id', playerList.map(p => p.id));
+        const smap = {};
+        (sz || []).forEach(r => { (smap[r.player_id] = smap[r.player_id] || {})[r.kit_slot] = { size: r.size }; });
+        missingCount = playerList.filter(p => missingSizesFor(p, kitItems, smap[p.id]).length).length;
+      }
+    } catch (e) { console.error('[submitSession] completeness check:', e); }
+    const warnings = [];
+    if (total && locked < total) warnings.push(`${locked} of ${total} team rosters are locked — unlocked teams may still change.`);
+    if (missingCount) warnings.push(`${missingCount} player${missingCount === 1 ? ' is' : 's are'} missing sizes on required items.`);
+    const msg = warnings.length
+      ? `Submit "${session.name}" to your rep?\n\n⚠ ${warnings.join('\n⚠ ')}\n\nSubmit anyway?`
       : `Submit "${session.name}" to your rep? They'll be emailed to build the order.`;
     if (!window.confirm(msg)) return;
     setSubmittingId(session.id);
