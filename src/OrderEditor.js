@@ -125,6 +125,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setArtRevisionNote('');
     await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
   };
+  // Every path that pulls art back for rework (Recall or an Update request) must clear the same
+  // approval residue — one shared list so the call sites can't drift apart. Stale coach flags
+  // produce phantom todos/"Sent to Customer" badges; a stale follow_up_at keeps nagging the coach.
+  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false};
+  const _activeProd=s=>s==='staging'||s==='in_process';
+  // Jobs sharing any of the affected art files must not keep running a design that's being
+  // redrawn — put them on hold along with the job being acted on.
+  const _holdArtSiblings=(jobsArr,artIds,exceptId)=>jobsArr.map(jj=>{
+    if(jj.id===exceptId||!_activeProd(jj.prod_status))return jj;
+    const ids=jj._art_ids||[jj.art_file_id].filter(Boolean);
+    return ids.some(id=>artIds.includes(id))?{...jj,prod_status:'hold'}:jj;
+  });
+  const _artSiblingsInProd=(artIds,exceptId)=>safeJobs(o).filter(jj=>jj.id!==exceptId&&_activeProd(jj.prod_status)&&(jj._art_ids||[jj.art_file_id].filter(Boolean)).some(id=>artIds.includes(id))).length;
+  // Recall = the design itself is wrong. The job resets to needs_art IN PLACE — released jobs too:
+  // dropping the row loses it for every other client (the local syncJobs regeneration is never
+  // persisted), orphans split slices' split_from, and can flip the SO to complete. In place, the
+  // job stays visible everywhere and 🎨 Set up job re-releases over it via _existingJobId.
+  const _recallArt=(ji,updateLabel)=>{
+    const j=safeJobs(o)[ji];if(!j)return;
+    const artIds=j._art_ids||[j.art_file_id].filter(Boolean);
+    const wasInProd=_activeProd(j.prod_status);
+    const sibs=_artSiblingsInProd(artIds,j.id);
+    if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n• The job resets to Needs Art — re-request it via 🎨 Set up job\n'+(wasInProd?'• Production will be put back ON HOLD\n':'')+(sibs?'• '+sibs+' other job(s) share this art and will also be put on hold\n':'')+'\nJust need a change to the current design? Use '+updateLabel+' instead — it messages the artist directly.'))return;
+    let updJobs=safeJobs(o).map((jj,i2)=>i2!==ji?jj:{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(wasInProd?{prod_status:'hold'}:{})});
+    updJobs=_holdArtSiblings(updJobs,artIds,j.id);
+    const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
+    const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    setO(updated);onSave(updated);setDirty(false);
+    nf('Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''),(wasInProd||sibs)?'error':'success');
+  };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.
   const jobGarmentLines=(jj)=>(jj.items||[]).map(gi=>{
@@ -8849,12 +8879,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
                   {activeReq?(activeReq.status==='in_progress'?'Art In Progress':'Art Requested'):'Art Complete'}</span>}
-                {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#dc2626',color:'white',border:'none',padding:'3px 8px',marginRight:4}} title="Pull the art back completely — use when the design/logo itself is changing" onClick={()=>{const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!(j._released||j.key?.startsWith('released_'));
-                  // Recall = the design itself is wrong. Stale approvals and production separations must
-                  // not survive it — clear prod_files_attached so re-approval can't skip the seps gate.
-                  const _wasInProd=['staging','in_process'].includes(j.prod_status);
-                  if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n'+(wasReleased?'• This job goes back to the dashboard to be set up fresh\n':'')+(_wasInProd?'• Production will be put back ON HOLD\n':'')+'\nJust need a change to the current design? Use Update Art instead — it messages the artist directly.'))return;
-                  const updJobs=wasReleased?safeJobs(o).filter(jj=>jj.id!==j.id):safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',sent_to_coach_at:null,follow_up_at:null,coach_rejected:false,coach_approved_at:null,...(_wasInProd?{prod_status:'hold'}:{})}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);if(wasReleased){setSelJob(null);nf('Art recalled — set the job up again with the new design (🎨 Set up job)'+(_wasInProd?' ⚠️ This job was in production!':''))}else nf('Art recalled — set up the new design, or use Update Art to message the artist'+(_wasInProd?' ⚠️ Production put back on hold':''))}}>Recall Art</button>}
+                {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#dc2626',color:'white',border:'none',padding:'3px 8px',marginRight:4}} title="Pull the art back completely — use when the design/logo itself is changing" onClick={()=>_recallArt(ji,'Update Art')}>Recall Art</button>}
                 {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#6d28d9',color:'white',border:'none',padding:'3px 8px'}} title="Send a change straight to the artist — job stays in place; the new art needs approval again" onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)||'',instructions:'',files:[]})}>
                   Update Art</button>}</>})()}
               {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _appHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_appArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* Same as the main Approve Artwork button: a __tbd placeholder must open the gate; a truly artless job (names/numbers-only) approves straight through. */if(_allConfirmed||(_appArtIds.length===0&&!_appHasTbd)){_approveArtTo(j.id,_appArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_appArtIds,deco:_apDeco,artName:j.art_name})}}}>Approve Art</button>}
@@ -9136,26 +9161,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const j2=jobs[artReqModal.jIdx];if(!j2)return null;
         const _artIds2=(j2._art_ids||[j2.art_file_id]).filter(Boolean);
         const existingFiles2=_artIds2.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.sample_art||[]).concat(af?.mockup_files||[]).concat(af?.prod_files||[])});
-        const artists2=REPS.filter(r=>r.role==='art');
+        const artists2=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);// match the job Artist dropdown — a prefilled 'artist'-role assignee must resolve in this list
         const submitArtReq2=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const j2job=jobs[artReqModal.jIdx];
-          // Pulling approved/submitted art back for rework: clear the coach-send flags (else stale
-          // follow-up todos fire and a re-submitted mock shows "Sent to Customer") so the new art
-          // must earn a fresh rep approval.
-          const _wasInProd2=['staging','in_process'].includes(j2job?.prod_status);
-          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          const artIds2=j2job?(j2job._art_ids||[j2job.art_file_id].filter(Boolean)):[];
+          // Pulling approved/submitted art back for rework: ART_PULLBACK_CLEARS wipes the coach-send
+          // flags (else stale follow-up todos fire and a re-submitted mock shows "Sent to Customer")
+          // so the new art must earn a fresh rep approval. The new request supersedes any still-open
+          // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
+          // artist/status ("at most one active request per job").
+          const _wasInProd2=_activeProd(j2job?.prod_status);
+          const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
-          // and leaving it true would let the re-approval silently skip the production-files gate.
+          // and an explicit false makes artProdFilesConfirmed refuse stale files (incl. an old .dst).
           const repFiles=artReqModal.files||[];
-          let updArtFiles2=safeArt(o);
-          if(j2job){
-            const artIds2=j2job._art_ids||[j2job.art_file_id].filter(Boolean);
-            updArtFiles2=updArtFiles2.map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
-          }
+          const updArtFiles2=safeArt(o).map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
           const _an2=(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_wasInProd2?' ⚠️ Production put back on hold':''));
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),(_wasInProd2||sibs2)?'error':'success');
         };
         const hasExistingReqs2=(j2.art_requests||[]).length>0;
         const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
@@ -9864,14 +9890,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const artReturned=j.art_status==='waiting_approval';const artApproved=j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status);
                   return<>{!artApproved&&hasActiveReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:artReturned?'#dbeafe':'#fef3c7',color:artReturned?'#1e40af':'#92400e',marginRight:3}}>{artReturned?'Returned':activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
                   {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)||'',instructions:'',files:[]})}} title="Send a change straight to the artist — job stays in place; the new art needs approval again">Update</button>}
-                  {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!(j._released||j.key?.startsWith('released_'));
-                  // Recall = the design itself is wrong. For wizard-released jobs, drop them so syncJobs
-                  // regenerates a fresh needs_art auto-job; clear prod_files_attached so stale separations
-                  // can't let a future re-approval skip the seps gate.
-                  const _wasInProd=['staging','in_process'].includes(j.prod_status);
-                  if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n'+(wasReleased?'• This job goes back to the dashboard to be set up fresh\n':'')+(_wasInProd?'• Production will be put back ON HOLD\n':'')+'\nJust need a change to the current design? Use Update instead — it messages the artist directly.'))return;
-                  const updJobs=wasReleased?safeJobs(o).filter((_,i2)=>i2!==ji):safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',sent_to_coach_at:null,follow_up_at:null,coach_rejected:false,coach_approved_at:null,...(_wasInProd?{prod_status:'hold'}:{})}});
-                  const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);if(!wasReleased){if(_wasInProd)nf('⚠️ Production put back on hold — art recalled');setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}else nf('Art recalled — set the job up again with the new design (🎨 Set up job)'+(_wasInProd?' ⚠️ This job was in production!':''))}} title="Pull the art back completely — use when the design/logo itself is changing">Recall</button>}</>})()}
+                  {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();_recallArt(ji,'Update')}} title="Pull the art back completely — use when the design/logo itself is changing">Recall</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}} title="Split job">✂️ Split</button>}
                 {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
               </td>
@@ -10050,27 +10069,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const j=jobs[artReqModal.jIdx];if(!j)return null;
         const _artIds=(j._art_ids||[j.art_file_id]).filter(Boolean);
         const existingFiles=_artIds.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.sample_art||[]).concat(af?.mockup_files||[]).concat(af?.prod_files||[])});
-        const artists=REPS.filter(r=>r.role==='art');
+        const artists=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);// match the job Artist dropdown — a prefilled 'artist'-role assignee must resolve in this list
         const hasExistingReqs=(j.art_requests||[]).length>0;
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
-          // Pulling approved/submitted art back for rework: clear the coach-send flags (else stale
-          // follow-up todos fire and a re-submitted mock shows "Sent to Customer") so the new art
-          // must earn a fresh rep approval.
-          const _wasInProd3=['staging','in_process'].includes(j?.prod_status);
-          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          const artIds3=j?(j._art_ids||[j.art_file_id].filter(Boolean)):[];
+          // Pulling approved/submitted art back for rework: ART_PULLBACK_CLEARS wipes the coach-send
+          // flags (else stale follow-up todos fire and a re-submitted mock shows "Sent to Customer")
+          // so the new art must earn a fresh rep approval. The new request supersedes any still-open
+          // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
+          // artist/status ("at most one active request per job").
+          const _wasInProd3=_activeProd(j?.prod_status);
+          const sibs3=_artSiblingsInProd(artIds3,j?.id);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
-          // and leaving it true would let the re-approval silently skip the production-files gate.
+          // and an explicit false makes artProdFilesConfirmed refuse stale files (incl. an old .dst).
           const repFiles=artReqModal.files||[];
-          let updArtFiles3=safeArt(o);
-          if(j){
-            const artIds3=j._art_ids||[j.art_file_id].filter(Boolean);
-            updArtFiles3=updArtFiles3.map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
-          }
+          const updArtFiles3=safeArt(o).map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
           const _an3=(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_wasInProd3?' ⚠️ Production put back on hold':''));
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),(_wasInProd3||sibs3)?'error':'success');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>

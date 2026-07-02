@@ -12,8 +12,12 @@
 |---|---|
 | **Recall vs Update are now separate actions.** Recall = pull the design back entirely (released jobs return to the dashboard). Update = modal that sends a typed change straight to the assigned artist, job stays in place, revised art re-enters the approval path. | `OrderEditor.js` jobs list + job detail |
 | **Stale separations can't skip the re-approval gate.** Recall and Update clear `prod_files_attached` on the affected art files. | recall handlers + both `submitArtReq` copies |
-| **No bogus coach state after a pull-back.** Recall and Update clear `sent_to_coach_at`/`follow_up_at` (kills phantom "follow up on art approval" todos and the wrong "Sent to Customer" badge); Recall also clears `coach_rejected`/`coach_approved_at`; Update clears `coach_approved_at`. | same handlers |
-| **Production re-holds when art is pulled back.** If a job was `staging`/`in_process`, Recall/Update force `prod_status:'hold'` and the toast warns the rep. | same handlers |
+| **No bogus coach state after a pull-back.** Recall and Update clear `sent_to_coach_at`/`follow_up_at`/`coach_approved_at`/`coach_rejected` via one shared `ART_PULLBACK_CLEARS` list (kills phantom "follow up on art approval" / "coach rejected" todos and the wrong "Sent to Customer" badge). | shared helpers above `_recallArt` |
+| **Production re-holds when art is pulled back — including sibling jobs.** If the acted-on job OR any other job sharing the affected art files was `staging`/`in_process`, it's forced to `prod_status:'hold'` and the toast warns (error-styled). | `_holdArtSiblings` |
+| **Stale production files can't satisfy the approval gate.** `prod_files_attached===false` now short-circuits `artProdFilesConfirmed`/`artProdFilesReady` to false — an old `.dst`/file left on the row after a Recall/Update (or on cloned prior art) no longer lets re-approval skip the seps re-check. | `constants.js:315,320` |
+| **One active request per job.** Sending an Update marks any still-open `requested`/`in_progress` request `recalled` before appending the new one, so `activeReq` lookups can't show a stale artist/status. | both submit handlers |
+| **Recall never deletes the job row.** Released jobs reset to `needs_art` in place (deleting them persisted the removal but the syncJobs regeneration was local-only — other clients lost the job, split slices orphaned, SO could read complete). Both Recall buttons share one `_recallArt` handler + confirm dialog. | `_recallArt` |
+| **Artist picker mismatch fixed.** The request modal's artist list now matches the job Artist dropdown (`role art|artist`, active only), so a prefilled assignee always resolves. | both modals |
 
 ---
 
@@ -73,6 +77,10 @@
 - **L7** Skip-Artist's mock guard accepts a mock for the wrong color-way (`OrderEditor.js:9445` counts *any* `item_mockups` entry); caught later by Check-Mock, so briefly-wrong rather than dangerous.
 - **L8** `addPrevArt`'s `selUrls` keep-mockups parameter is dead code — the only caller passes `new Set()` (`:4935`).
 - **L9** Proof page doesn't name the color-way being approved (`CoachPortal.js:926-930`).
+- **L10** Changing `prod_status` from OrderEditor (Recall/Update re-hold, or the Production select at `OrderEditor.js:8862`) bypasses the production board's `applyJobMove` (`App.js:11546`), so a decorator's active timer keeps running and `assigned_to`/`assigned_machine` survive — the eventual time log records a multi-day run.
+- **L11** The `so_jobs` upsert retry path strips `_jobExtraCols` (incl. `sent_to_coach_at`/`coach_approved_at`/`coach_rejected`/`follow_up_at`, `constants.js:37`, `App.js:1844`) — if the first upsert hits a schema-cache error, a pull-back's status change lands but the coach-flag nulls don't, resurrecting "Sent to Coach" state on reload.
+- **L12** Recalling art on a job whose `prod_status` is already `completed` leaves it Completed — the redo never re-enters the production pipeline and nothing warns the rep (only `staging`/`in_process` are re-held).
+- **L13** The `_orderDtf`/`_completeEmb` marker objects pushed into `prod_files` (e.g. `{name:'DTF films ordered',dtf_order:true}`, `OrderEditor.js:8648`) satisfy every `prod_files.length>0` check (`isJobReady`, `businessLogic.js:426`) even after the design changes — markers should be dropped when art is pulled back, or excluded from the length checks.
 
 ---
 
