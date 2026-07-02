@@ -258,15 +258,18 @@ const buildJobs = (o) => {
     if (it.no_deco) return;
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
-      if (d.kind === 'art' && d.art_file_id) {
-        const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
+      if (d.kind === 'art') {
+        const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
-        const part = 'art_' + d.art_file_id;
+        // Art TBD saves to the DB with a null art_file_id (see _sanitizeDeco), so an unassigned
+        // deco must still form a job — keyed by position, mirroring syncJobs in OrderEditor —
+        // instead of silently vanishing from the production board.
+        const part = d.art_file_id ? 'art_' + d.art_file_id : 'unassigned@' + safeStr(d.position);
         // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
         // split across several lines — and a standalone copy of it — all consolidate into ONE job.
         // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
         // bundle into a single combined job (the established Split-Art behavior).
-        const bk = d.split_group ? 'art::' + d.art_file_id : dt;
+        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : dt;
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
@@ -302,7 +305,14 @@ const buildJobs = (o) => {
     const artNames = []; const artIds = []; const decoTypes = [];
     let worstArtSt = 'art_complete';
     firstEntry.decos.forEach(({ d }) => {
-      if (d.kind === 'art' && d.art_file_id) {
+      if (d.kind === 'art' && !d.art_file_id) {
+        // Art TBD (null id after _sanitizeDeco) — there is no artwork yet, so the job can never
+        // read as complete/ready. Mirrors the unassigned branch in OrderEditor's syncJobs.
+        positions.add(d.position || '');
+        artNames.push('Unassigned Art (' + safeStr(d.position) + ')');
+        decoTypes.push(d.deco_type || 'screen_print');
+        worstArtSt = 'needs_art';
+      } else if (d.kind === 'art' && d.art_file_id) {
         positions.add(d.position || '');
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
@@ -356,13 +366,21 @@ const buildJobs = (o) => {
 // The designs a job actually decorates with, taken from its items' CURRENT
 // decorations rather than the job's stored _art_ids/art_file_id (which can go
 // stale when an item's art is swapped, leaving an orphaned art file behind).
-// Falls back to the stored ids only when the items reference no art (e.g.
-// names/numbers-only jobs). Excludes art files that no longer exist or are archived.
+// Scoped to the decorations each job item OWNS (deco_idxs) so a numbers-only job —
+// or a second logo job on the same garment line — never inherits a sibling job's
+// art (which used to gate its completion on, and stamp prod_files_attached onto,
+// the OTHER job's art files). Legacy items without deco_idxs keep the unscoped
+// behavior. Falls back to the stored ids only when the items reference no art
+// (e.g. names/numbers-only jobs). Excludes art files that no longer exist or are archived.
+// Mirrors jobItemDecoIdxs in safeHelpers.js (this module stays dependency-free for tests).
+const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : null;
 const jobLiveArtIds = (j, o) => {
   const ids = []; const seen = new Set();
   (j?.items || []).forEach(gi => {
     const it = safeItems(o)[gi.item_idx]; if (!it) return;
-    safeDecos(it).forEach(d => {
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
       if (d.kind === 'art' && d.art_file_id && d.art_file_id !== '__tbd' && !seen.has(d.art_file_id)) {
         seen.add(d.art_file_id); ids.push(d.art_file_id);
       }
