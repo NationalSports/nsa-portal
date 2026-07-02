@@ -160,6 +160,7 @@ const DESIGN_PRESETS = [
   { id: 'maroon', name: 'Maroon Stripes', config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
 ];
 const thumbCache = {}; // module-level: gallery thumbs render once per session
+const savedThumbsCache = {}; // module-level: My Designs thumbs render once per session
 
 // ── logo upload hardening ────────────────────────────────────────────────────
 // Coaches upload phone photos and JPGs with solid backgrounds. Every upload is
@@ -227,6 +228,10 @@ const DEFAULT_CONFIG = {
 // order requests share the old builder's localStorage + best-effort Supabase
 // pattern (silent no-op if the table/RLS isn't provisioned).
 const AUTOSAVE_KEY = 'nsa_uniform_pro_autosave';
+const SAVED_DESIGNS_KEY = 'nsa_uniform_saved';
+function loadSavedDesigns() {
+  try { return JSON.parse(localStorage.getItem(SAVED_DESIGNS_KEY) || '[]'); } catch { return []; }
+}
 function loadAutosave() {
   try { return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { return null; }
 }
@@ -420,6 +425,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // Catalog flow: pick a sport → pick a starting design → the wizard.
   const [screen, setScreen] = useState('sports'); // sports | designs | wizard
   const [hasAutosave] = useState(() => !!loadAutosave());
+  const [hasSavedDesigns] = useState(() => loadSavedDesigns().length > 0);
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
@@ -430,6 +436,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [assignments, setAssignments] = useState(() => {
     const a = loadAutosave();
     return (a && a.assignments && typeof a.assignments === 'object') ? a.assignments : { AM: ['10'] };
+  });
+  // Player name per jersey number (a number belongs to one jersey, so a flat
+  // map is enough regardless of which size it's assigned to).
+  const [playerNames, setPlayerNames] = useState(() => {
+    const a = loadAutosave();
+    return (a && a.playerNames && typeof a.playerNames === 'object') ? a.playerNames : {};
   });
 
   // Finalize state
@@ -475,10 +487,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // write on every pointer-move of a drag).
   useEffect(() => {
     const t = setTimeout(() => {
-      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ config, assignments, ts: Date.now() })); } catch (_e) { /* quota */ }
+      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ config, assignments, playerNames, ts: Date.now() })); } catch (_e) { /* quota */ }
     }, 600);
     return () => clearTimeout(t);
-  }, [config, assignments]);
+  }, [config, assignments, playerNames]);
 
   // Gallery thumbnails — rendered live from the proof pipeline, cached for the
   // session. Blank number/name so the thumb reads as the design, not a player.
@@ -522,6 +534,89 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // coach's team name, players, logos, and roster.
   const pickDesign = (pz) => { if (pz) set({ ...pz.config }); setScreen('wizard'); setStep('team'); };
 
+  // ── My Designs (browser-local; a coach's saves are only ever on their own
+  // device — nothing here is pulled from the shared uniform_designs table) ──
+  const [savedList, setSavedList] = useState([]);
+  const [savedThumbs, setSavedThumbs] = useState({});
+  useEffect(() => {
+    if (screen !== 'saved') return;
+    const list = loadSavedDesigns();
+    setSavedList(list);
+    let alive = true;
+    (async () => {
+      for (const entry of list) {
+        if (savedThumbsCache[entry.id]) continue;
+        try {
+          const url = await renderToDataURL(specFromConfig({ ...DEFAULT_CONFIG, ...entry.config }), { view: 'front', width: 260 });
+          savedThumbsCache[entry.id] = url;
+          if (alive) setSavedThumbs((t) => ({ ...t, [entry.id]: url }));
+        } catch (_e) { /* thumb optional */ }
+      }
+    })();
+    return () => { alive = false; };
+  }, [screen]); // eslint-disable-line
+  const loadSavedDesign = (entry) => {
+    const restored = { ...DEFAULT_CONFIG, ...entry.config, logos: { ...emptyLogos(), ...(entry.config.logos || {}) } };
+    setConfig(restored);
+    setAssignments((entry.assignments && typeof entry.assignments === 'object') ? entry.assignments : { AM: ['10'] });
+    setPlayerNames((entry.playerNames && typeof entry.playerNames === 'object') ? entry.playerNames : {});
+    setScreen('wizard'); setStep('team');
+  };
+  const deleteSavedDesign = (id) => {
+    const next = savedList.filter((e) => e.id !== id);
+    setSavedList(next);
+    try { localStorage.setItem(SAVED_DESIGNS_KEY, JSON.stringify(next)); } catch (_e) { /* quota */ }
+  };
+
+  // ── AI design assist (Team step) — a plain-English brief becomes a starting
+  // point the coach then fine-tunes with the normal controls. Reuses the same
+  // Claude-backed function the advanced editor's AI tab calls; 'crew_jersey'
+  // is the closest existing zone vocabulary (body/sleeveL/sleeveR/collar) —
+  // the octa jersey's sections map onto it directly.
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiNote, setAiNote] = useState('');
+  const runAIDesign = async () => {
+    const prompt = aiPrompt.trim();
+    if (!prompt) return;
+    setAiBusy(true); setAiError(''); setAiNote('');
+    try {
+      const res = await fetch('/.netlify/functions/uniform-ai-design', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, garmentId: 'crew_jersey' }),
+      });
+      const data = await res.json();
+      if (!data.ok) { setAiError(data.error || 'AI design is not available right now.'); return; }
+      const zones = (data.spec && data.spec.zones) || {};
+      const zoneToSection = (z) => {
+        const color = ds.toHex(z && z.color);
+        if (!color) return null;
+        const color2 = ds.toHex(z && z.color2) || '#FFFFFF';
+        return { color, color2, pattern: (z && z.pattern) || 'solid' };
+      };
+      const patch = {};
+      const bodySec = zoneToSection(zones.body); if (bodySec) patch.body = bodySec;
+      const sleeveSec = zoneToSection(zones.sleeveL || zones.sleeveR); if (sleeveSec) patch.sleeves = sleeveSec;
+      const collarSec = zoneToSection(zones.collar); if (collarSec) patch.collar = collarSec;
+      const t = data.spec && data.spec.text;
+      const numSrc = (t && t.back && t.back.number) || (t && t.front && t.front.number);
+      const nameSrc = (t && t.back && t.back.name) || (t && t.front && t.front.name);
+      const meta = data.spec && data.spec.meta;
+      setConfig((c) => {
+        const next = { ...c, sections: { ...c.sections, ...patch } };
+        if (meta && meta.teamName) next.teamName = String(meta.teamName).slice(0, 24);
+        if (numSrc && numSrc.value) { const n = String(numSrc.value).replace(/[^0-9]/g, '').slice(0, 2); if (n) next.playerNumber = n; }
+        if (nameSrc && nameSrc.value) next.playerName = String(nameSrc.value).slice(0, 14);
+        const numColor = numSrc && ds.toHex(numSrc.fill); if (numColor) next.numberColor = numColor;
+        return next;
+      });
+      setAiNote(data.rationale || 'Design applied — fine-tune the colors below, or move on to Jersey for patterns.');
+    } catch (e) {
+      setAiError('Could not reach the AI design service. Please try again.');
+    } finally { setAiBusy(false); }
+  };
+
   // ── roster helpers ──
   const numberOwner = useCallback((num) => {
     for (const k of Object.keys(assignments)) if ((assignments[k] || []).includes(num)) return k;
@@ -537,14 +632,31 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     return next;
   });
   const clearSize = () => setAssignments((s) => { const n = { ...s }; delete n[selectedSize]; return n; });
+  // Each size's roster carries both a plain "7, 10" string (nums — for CSV
+  // parsing/back-compat) and a display string with names folded in
+  // (numsDisplay — "#7, MESSI #10" — for the on-screen summary and the
+  // production PDF/PNG), plus the raw {num,name} pairs (players) so the
+  // admin queue can regenerate a real CSV even for orders placed before a
+  // name was added to a given number.
   const rosterBreakdown = useMemo(() => SIZES
-    .map((sz) => ({ size: sz, label: SIZE_LABELS[sz], qty: (assignments[sz] || []).length, nums: (assignments[sz] || []).slice().sort((a, b) => Number(a) - Number(b)).join(', ') }))
-    .filter((r) => r.qty > 0), [assignments]);
+    .map((sz) => {
+      const nums = (assignments[sz] || []).slice().sort((a, b) => Number(a) - Number(b));
+      const players = nums.map((n) => ({ num: n, name: playerNames[n] || '' }));
+      return {
+        size: sz, label: SIZE_LABELS[sz], qty: nums.length,
+        nums: nums.join(', '),
+        numsDisplay: players.map((pl) => (pl.name ? `${pl.name.toUpperCase()} #${pl.num}` : `#${pl.num}`)).join(', '),
+        players,
+      };
+    })
+    .filter((r) => r.qty > 0), [assignments, playerNames]);
+
+  const setPlayerName = (num, name) => setPlayerNames((p) => ({ ...p, [num]: name }));
 
   const downloadRoster = () => {
     const rows = [['Player Name', 'Number', 'Size']];
     let any = false;
-    SIZES.forEach((sz) => (assignments[sz] || []).forEach((n) => { rows.push(['', n, sz]); any = true; }));
+    SIZES.forEach((sz) => (assignments[sz] || []).forEach((n) => { rows.push([playerNames[n] || '', n, sz]); any = true; }));
     if (!any) rows.push(['Jordan Smith', '23', 'AM']);
     const csv = rows.map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -652,9 +764,9 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
   const saveDesign = () => {
     try {
-      const key = 'nsa_uniform_saved';
+      const key = SAVED_DESIGNS_KEY;
       const prev = JSON.parse(localStorage.getItem(key) || '[]');
-      prev.unshift({ id: 'u_' + Date.now().toString(36), name: config.teamName || 'Team', config, assignments, ts: Date.now() });
+      prev.unshift({ id: 'u_' + Date.now().toString(36), name: config.teamName || 'Team', config, assignments, playerNames, ts: Date.now() });
       localStorage.setItem(key, JSON.stringify(prev.slice(0, 40)));
       setSavedMsg(true); setTimeout(() => setSavedMsg(false), 3000);
     } catch (e) {}
@@ -775,10 +887,48 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
           Uniform Builder <span style={{ color: C.textLight, fontWeight: 700, fontSize: 12 }}>National Sports</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <button onClick={() => setScreen('saved')} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer' }}>My Designs</button>
           <button onClick={() => setAdvanced(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer' }}>Advanced editor</button>
           <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Changes save automatically</div>
         </div>
       </div>
+
+      {/* MY DESIGNS — browser-local saved designs, reopen or delete */}
+      {screen === 'saved' && (
+        <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
+          <div style={{ maxWidth: 1080, margin: '0 auto', padding: '32px 28px 60px' }}>
+            <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
+            <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Saved on This Device</div>
+            <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>My Designs</h2>
+            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 24 }}>Designs you've saved from the Finalize step — stored in this browser only.</div>
+            {savedList.length === 0 ? (
+              <div style={{ padding: '40px 20px', textAlign: 'center', background: '#fff', border: '1px dashed ' + C.mid, borderRadius: 8, color: C.textLight, fontFamily: F_BODY, fontSize: 14 }}>
+                No saved designs yet — use <strong>Save Design</strong> on the Finalize step to keep one here.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
+                {savedList.map((entry) => (
+                  <div key={entry.id} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
+                    <button onClick={() => loadSavedDesign(entry)} style={{ display: 'block', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
+                        {savedThumbs[entry.id] ? <img src={savedThumbs[entry.id]} alt={entry.name} style={{ width: '86%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
+                      </span>
+                    </button>
+                    <div style={{ padding: '12px 14px', borderTop: '1px solid ' + C.light }}>
+                      <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, marginBottom: 2 }}>{entry.name || 'Team'}</div>
+                      <div style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight, marginBottom: 10 }}>{new Date(entry.ts).toLocaleDateString()}</div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button onClick={() => loadSavedDesign(entry)} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: '#fff', background: C.navy, border: 'none', borderRadius: 4, padding: '7px 0', cursor: 'pointer' }}>Load</button>
+                        <button onClick={() => deleteSavedDesign(entry.id)} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: '#fff', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 0', cursor: 'pointer' }}>Delete</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* CATALOG · SPORT PICKER */}
       {screen === 'sports' && (
@@ -794,6 +944,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, opacity: 0.8, marginTop: 2 }}>{(config.teamName || 'Team')} · autosaved</span>
                 </span>
                 <span style={{ fontSize: 18 }}>→</span>
+              </button>
+            )}
+            {hasSavedDesigns && (
+              <button onClick={() => setScreen('saved')} style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: '#fff', color: C.navy, border: '1px solid ' + C.mid, borderRadius: 8, padding: '14px 22px', marginBottom: 24, cursor: 'pointer', textAlign: 'left', boxSizing: 'border-box' }}>
+                <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.6 }}>My Designs</span>
+                <span style={{ fontSize: 16 }}>→</span>
               </button>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
@@ -893,6 +1049,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '24px 22px', overflowY: 'auto' }}>
               {step === 'team' && (
                 <div>
+                  <div style={{ padding: '14px 16px', background: C.offWhite, border: '1px solid ' + C.light, borderRadius: 8, marginBottom: 20 }}>
+                    <div style={{ ...railLabel, marginBottom: 8 }}>✨ AI Design Assist</div>
+                    <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} maxLength={800}
+                      placeholder="e.g. Aggressive red and black with camo sleeves, bold block number"
+                      style={{ width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '9px 10px', fontFamily: F_BODY, fontSize: 13, color: C.text, resize: 'vertical' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                      <button onClick={runAIDesign} disabled={aiBusy || !aiPrompt.trim()} style={{ ...checkoutBtn(true), width: 'auto', padding: '9px 16px', opacity: (aiBusy || !aiPrompt.trim()) ? 0.6 : 1 }}>{aiBusy ? 'Designing…' : 'Generate'}</button>
+                      {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
+                    </div>
+                    {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
+                  </div>
                   <LabeledInput label="Team Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
                   <div style={{ height: 18 }} />
                   {/* Quick team colors — write through to the sections; the Jersey
@@ -1067,6 +1234,24 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 })}
               </div>
             </div>
+            {/* assigned players — names are optional, but complete the shop's roster sheet */}
+            {totalQty > 0 && (
+              <div style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 6, padding: '16px 20px', marginTop: 16 }}>
+                <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 13, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, marginBottom: 4 }}>Assigned Players</div>
+                <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 14 }}>Add a name per number (optional) — it flows into the roster CSV and the production PDF.</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+                  {SIZES.flatMap((sz) => (assignments[sz] || []).map((num) => ({ num, sz })))
+                    .sort((a, b) => Number(a.num) - Number(b.num))
+                    .map(({ num, sz }) => (
+                      <div key={num} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ flexShrink: 0, minWidth: 50, textAlign: 'center', fontFamily: F_DISP, fontWeight: 800, fontSize: 13, color: C.navy, background: C.offWhite, borderRadius: 4, padding: '7px 4px' }}>#{num} <span style={{ fontWeight: 600, color: C.textLight }}>{sz}</span></span>
+                        <input value={playerNames[num] || ''} onChange={(e) => setPlayerName(num, e.target.value)} placeholder="Player name" maxLength={30}
+                          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 9px', fontFamily: F_BODY, fontSize: 13, color: C.text }} />
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1135,7 +1320,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               {rosterBreakdown.length ? rosterBreakdown.map((r) => (
                 <div key={r.size} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '9px 0', borderBottom: '1px solid ' + C.light }}>
                   <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{r.label} <span style={{ color: C.textLight }}>×{r.qty}</span></span>
-                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, textAlign: 'right' }}>#{r.nums}</span>
+                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, textAlign: 'right' }}>{r.numsDisplay || r.nums}</span>
                 </div>
               )) : <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, padding: '9px 0' }}>No sizes assigned yet — add them in the Roster step.</div>}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18, paddingTop: 15, borderTop: '2px solid ' + C.navy }}>

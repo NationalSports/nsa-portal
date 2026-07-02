@@ -19,7 +19,7 @@ const STATUS_BG = {
 const FULFILL_LABEL = { card: '💳 Card', po: '🏫 School PO', manual: '📋 Queue' };
 
 function fileBase(o) { return (o.team_name || 'order').toLowerCase().replace(/\s+/g, '-'); }
-function rosterSummary(roster) { return (roster || []).map((r) => `${r.label || r.size} ×${r.qty} (#${r.nums})`).join('; ') || '—'; }
+function rosterSummary(roster) { return (roster || []).map((r) => `${r.label || r.size} ×${r.qty} (${r.numsDisplay || ('#' + r.nums)})`).join('; ') || '—'; }
 
 export default function UniformOrdersAdmin() {
   const [rows, setRows] = useState(null);
@@ -57,8 +57,16 @@ export default function UniformOrdersAdmin() {
 
   const downloadRosterCSV = (row) => {
     const rows2 = [['Player Name', 'Number', 'Size']];
-    (row.roster || []).forEach((r) => String(r.nums || '').split(',').map((s) => s.trim()).filter(Boolean)
-      .forEach((n) => rows2.push(['', n, r.size || r.label || ''])));
+    (row.roster || []).forEach((r) => {
+      // Orders placed before player names existed only have the plain "nums"
+      // string; newer ones carry {num,name} pairs directly.
+      if (Array.isArray(r.players) && r.players.length) {
+        r.players.forEach((pl) => rows2.push([pl.name || '', pl.num, r.size || r.label || '']));
+      } else {
+        String(r.nums || '').split(',').map((s) => s.trim()).filter(Boolean)
+          .forEach((n) => rows2.push(['', n, r.size || r.label || '']));
+      }
+    });
     const csv = rows2.map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);

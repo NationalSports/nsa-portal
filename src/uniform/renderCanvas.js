@@ -436,7 +436,7 @@ export async function renderProductionPDF(spec, opts = {}) {
     y += 6; ensureRoom();
     doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Roster & Sizes', M, y); y += 18;
     doc.setTextColor(40);
-    opts.roster.forEach((r) => line(`${r.label} ×${r.qty}`, `#${r.nums}`));
+    opts.roster.forEach((r) => line(`${r.label} ×${r.qty}`, r.numsDisplay || r.nums));
     if (opts.order) {
       ensureRoom();
       doc.setFont('helvetica', 'bold');
