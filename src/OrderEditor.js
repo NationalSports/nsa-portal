@@ -284,6 +284,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
     }
   };
+  // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
+  // color ways, preview, spec, etc. come along; mockup IMAGES are stripped from mockup_files/files
+  // and the per-garment item_mockups are cleared, so the rep selects mockups per garment afterward.
+  // selUrls (a Set of urls) optionally whitelists specific mockup images to keep; null keeps none.
+  const addPrevArt=(art,selUrls)=>{
+    const _u=f=>typeof f==='string'?f:(f?.url||'');
+    // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
+    // explicitly-whitelisted mockup image; drop every other mockup image.
+    const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
+    delete clone._so_id;delete clone._so_memo;
+    // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
+    // REUSE-6: the source order's garment mock_links don't apply here (they reference that
+    // order's garments), and inherited production files must be re-reviewed, not auto-confirmed.
+    clone.mock_links={};clone.prod_files_attached=false;
+    clone.mockup_files=keep(clone.mockup_files);
+    clone.files=keep(clone.files);
+    const im={};Object.entries(clone.item_mockups||{}).forEach(([k,arr])=>{const f2=keep(arr);if(f2.length)im[k]=f2});
+    clone.item_mockups=im;
+    sv('art_files',[...af,clone]);
+    const _pf=(clone.prod_files||[]).length;
+    nf('Added "'+(art.name||'Untitled')+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+(_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':''));
+  };
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
@@ -4903,18 +4926,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
-                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
-                      const newArt={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
-                      delete newArt._so_id;delete newArt._so_memo;
-                      // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
-                      // REUSE-6: the source order's garment mock_links don't apply here (they reference that
-                      // order's garments), and inherited production files must be re-reviewed, not auto-confirmed.
-                      newArt.mock_links={};newArt.prod_files_attached=false;
-                      sv('art_files',[...af,newArt]);
-                      const _pf=(newArt.prod_files||[]).length;
-                      nf('Added "'+art.name+'" from '+art._so_id+(_pf?' — incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':''));
-                    }}>+ Add</button>}
-                    {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} mockup(s)</span>}
+                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files. Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
+                    {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
                   </div>
                 </div>
