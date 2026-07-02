@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -1247,7 +1247,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{textAlign:'right'}}>
                     <div style={{fontWeight:700,fontSize:13}}>{qty} units</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
+                    {/* Prefer the invoice's stored line rate (garment + decoration, what the customer is
+                        actually billed) — it.unit_sell is garment-only, which made lines not add up to
+                        the invoice total (INV-63089: $16 shown for an $18 all-in item). Match by the
+                        canonical soLineKey (same helper that stamped _so_line_key at invoice creation);
+                        the fallback requires sku + color + qty and refuses ambiguous matches. */}
+                    <div style={{fontSize:10,color:'#64748b'}}>${(()=>{const lis=inv.line_items||[];let li=lis.find(l=>l._so_line_key===soLineKey(it,ii));if(!li){const cands=lis.filter(l=>(l._sku||l.sku)===it.sku&&(l._color==null||l._color===it.color)&&safeNum(l.qty)===qty);if(cands.length===1)li=cands[0]}return safeNum(li&&li.rate!=null?li.rate:it.unit_sell)})().toFixed(2)}/ea</div>
                   </div>
                 </div>
                 {allDecoLabels.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
