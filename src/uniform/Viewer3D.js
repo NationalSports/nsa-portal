@@ -15,6 +15,10 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makePatternTile } from './patterns';
 import { fontShorthand } from './fonts';
 import { getTemplate } from './templates';
@@ -304,6 +308,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     renderer.domElement.style.height = '100%';
 
     const scene = new THREE.Scene();
+    // Solid white stage: the AO pass needs an opaque background, and both host
+    // surfaces (wizard stage / editor stage) are white anyway.
+    scene.background = new THREE.Color(0xffffff);
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
@@ -313,15 +320,29 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     controls.enablePan = false;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
 
+    // Directional-heavy rig: the flatter the fill, the faster a white garment
+    // disappears into a white page. Shape comes from the key + AO; hemi stays
+    // low so downward-facing cloth shades into soft gray like a studio render.
     const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(1.5, 2.5, 2.5); scene.add(key);
     const fill = new THREE.DirectionalLight(0xffffff, 0.3); fill.position.set(-2, 0.5, 1); scene.add(fill);
-    // Rear light + even hemisphere fill so the BACK of the garment reads its true
-    // colorway (orbit moves the camera, not the model, so front-only lights leave
-    // the back in shadow — whites go gray, blues muddy).
-    const back = new THREE.DirectionalLight(0xffffff, 0.7); back.position.set(-1, 1.5, -2.5); scene.add(back);
-    const hemi = new THREE.HemisphereLight(0xffffff, 0xbfc4cc, 0.55); scene.add(hemi);
+    // Rear light so the BACK of the garment reads its true colorway (orbit moves
+    // the camera, not the model).
+    const back = new THREE.DirectionalLight(0xffffff, 0.6); back.position.set(-1, 1.5, -2.5); scene.add(back);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xb8bdc6, 0.35); scene.add(hemi);
 
-    const st = { renderer, scene, camera, controls, pmrem, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
+    // Post chain: GTAO is what keeps a white jersey visible on a white page —
+    // creases, under-sleeve and collar contact shading build up the way they do
+    // in studio product renders. Radius is set from the model's real size once
+    // it loads (AO distances are in model units).
+    const composer = new EffectComposer(renderer);
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(W, H);
+    composer.addPass(new RenderPass(scene, camera));
+    const gtao = new GTAOPass(scene, camera, W, H);
+    composer.addPass(gtao);
+    composer.addPass(new OutputPass());
+
+    const st = { renderer, scene, camera, controls, pmrem, composer, gtao, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
     stateRef.current = st;
 
     const draco = new DRACOLoader().setDecoderPath(PUB + '/draco/');
@@ -376,12 +397,17 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       st.bodyMesh = (st.meshes.find((m) => m.zone === 'body') || st.meshes[0] || {}).mesh || null;
       st.modelRoot = rootObj;
       st.modelSize = size.clone();
+      // AO distances are in model units, so tune the pass to this asset's size.
+      try {
+        gtao.updateGtaoMaterial({ radius: maxDim * 0.04, distanceExponent: 1, thickness: maxDim * 0.01, scale: 1.4, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
+        gtao.setSceneClipBox(new THREE.Box3().setFromObject(rootObj));
+      } catch (e) { /* AO tuning is best-effort */ }
       try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) { /* keep default */ }
       setStatus('ready');
       draco.dispose();
     }, undefined, () => { setStatus('error'); });
 
-    const animate = () => { st.raf = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); };
+    const animate = () => { st.raf = requestAnimationFrame(animate); controls.update(); composer.render(); };
     animate();
 
     // Keep the drawing buffer synced to the container (ResizeObserver catches the
@@ -391,6 +417,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       const w = mount.clientWidth || W, h = mount.clientHeight || H;
       if (w < 2 || h < 2) return;
       renderer.setSize(w, h, false);
+      composer.setSize(w, h);
       camera.aspect = w / h; camera.updateProjectionMatrix();
     };
     let ro = null;
@@ -407,6 +434,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
       st.meshes.forEach(({ mesh }) => { if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); });
       pmrem.dispose();
+      try { gtao.dispose(); composer.dispose(); } catch (e) { /* older three */ }
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       stateRef.current = null;
