@@ -9553,7 +9553,12 @@ export default function App(){
       const _reqStr=(String(poNum).match(/\d{3,6}/)||[])[0];
       const _req=_reqStr?parseInt(_reqStr,10):null;
       try{
-        const{data:_claimed,error:_claimErr}=await supabase.rpc('claim_batch_po_number',{p_number:_req,p_claimed_by:cu.name||cu.id||null});
+        // 5s cap: a hung claim call must degrade to local numbering, not leave the group's
+        // Order button dead behind the in-flight guard until the tab reloads.
+        const{data:_claimed,error:_claimErr}=await Promise.race([
+          supabase.rpc('claim_batch_po_number',{p_number:_req,p_claimed_by:cu.name||cu.id||null}),
+          new Promise(res=>setTimeout(()=>res({data:null,error:{message:'claim_batch_po_number timed out',code:'CLAIM_TIMEOUT'}}),5000))
+        ]);
         if(!_claimErr&&typeof _claimed==='number'){
           if(_claimed!==_req)nf('⚠️ PO number NSA '+_req+' was already used by another submission — this batch was recorded as NSA '+_claimed+'. If you placed the vendor order under NSA '+_req+', update the PO number on the vendor site.','error');
           poNum='NSA '+_claimed;
