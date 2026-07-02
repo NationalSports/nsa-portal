@@ -792,7 +792,9 @@ const _inlineLogoUrl=async(logoUrl)=>{
 };
 
 const _serverPdf=async(html,fname,extra)=>{
-  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
+  // authFetch attaches the staff bearer token — the pdf-generator function is
+  // gated to authenticated team members (it renders arbitrary HTML server-side).
+  const r=await authFetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
   if(!r.ok)throw new Error('PDF generation failed: '+r.status);
   return r.json();
 };

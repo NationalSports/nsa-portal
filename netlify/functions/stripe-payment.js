@@ -2,7 +2,7 @@
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
 const crypto = require('crypto');
-const { verifyUser, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
+const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
@@ -187,11 +187,70 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
     }
 
-    if (action === 'refund') {
-      // Refund a PaymentIntent — full when amount_cents omitted, else partial.
-      // Staff-only: refunds are issued from the admin UIs, never by public payers.
-      // This action was previously open to any caller who knew a PaymentIntent id.
+    if (action === 'refund_webstore_order') {
+      // Order-scoped, recorded, atomic refund for a webstore order. Staff-only.
+      // Resolves the PaymentIntent from the order (never client-supplied), caps at the
+      // remaining balance, issues the Stripe refund with an idempotency key, then records
+      // it + increments refunded_amt atomically via apply_webstore_refund (which re-checks
+      // the cap under a row lock and dedupes on the refund id). Team-tab orders (no PI)
+      // record a credit only.
       const v = await verifyUser(event);
+      if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
+      const { webstore_order_id, amount_cents, reason, attempt_id } = body;
+      if (!webstore_order_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'webstore_order_id required' }) };
+      if (!attempt_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'attempt_id required' }) };
+
+      const admin = getSupabaseAdmin();
+      const { data: orders, error: oErr } = await admin.from('webstore_orders')
+        .select('id,total,refunded_amt,status,stripe_pi_id,payment_mode').eq('id', webstore_order_id).limit(1);
+      if (oErr) return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: oErr.message }) };
+      const order = orders && orders[0];
+      if (!order) return { statusCode: 404, headers: corsHeaders(), body: JSON.stringify({ error: 'Order not found' }) };
+
+      const total = Number(order.total) || 0;
+      const already = Number(order.refunded_amt) || 0;
+      const remainingCents = Math.round((total - already) * 100);
+      if (remainingCents <= 0) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This order is already fully refunded.' }) };
+      let cents = amount_cents != null ? Math.round(Number(amount_cents)) : remainingCents; // default: full remaining
+      if (!Number.isFinite(cents) || cents <= 0) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Enter a valid amount.' }) };
+      if (cents > remainingCents) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the refundable balance.' }) };
+
+      let stripeRefundId, kind;
+      if (order.stripe_pi_id) {
+        kind = 'card';
+        try {
+          const refund = await client.refunds.create(
+            { payment_intent: order.stripe_pi_id, amount: cents },
+            { idempotencyKey: 'wsrefund_' + attempt_id }, // same click retried → same Stripe refund
+          );
+          stripeRefundId = refund.id;
+        } catch (e) {
+          return { statusCode: 502, headers: corsHeaders(), body: JSON.stringify({ error: 'Stripe refund failed: ' + e.message }) };
+        }
+      } else {
+        kind = 'credit'; // team-tab: stable synthetic id so a retried click dedupes
+        stripeRefundId = 'credit_' + attempt_id;
+      }
+
+      const { data: rpc, error: rErr } = await admin.rpc('apply_webstore_refund', {
+        p_order_id: order.id, p_amount: cents / 100, p_kind: kind,
+        p_stripe_refund_id: stripeRefundId, p_actor: v.teamMemberId || null, p_reason: reason || null,
+      });
+      if (rErr) {
+        console.error('[stripe-payment] refund recorded-FAILED for order', order.id, 'stripe_refund', stripeRefundId, '-', rErr.message);
+        return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: 'Refund was issued but recording it failed — contact an admin. Ref: ' + stripeRefundId, stripe_refund_id: stripeRefundId }) };
+      }
+      if (rpc && rpc.ok === false) {
+        return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: rpc.error === 'exceeds_total' ? 'Amount exceeds the refundable balance.' : (rpc.error || 'Refund rejected.'), ...rpc }) };
+      }
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, ...(rpc || {}) }) };
+    }
+
+    if (action === 'refund') {
+      // Low-level manual refund by PaymentIntent id (e.g. coach-portal invoice payments).
+      // ADMIN-ONLY now: it's unscoped and unrecorded, so it's an escape hatch, not the
+      // normal path. Webstore-order refunds must use refund_webstore_order (recorded + capped).
+      const v = await verifyAdmin(event);
       if (!v.ok) {
         return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       }
