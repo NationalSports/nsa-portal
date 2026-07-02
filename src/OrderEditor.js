@@ -7063,7 +7063,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const isBatchEligible=!!batchKey;
       const isAdidas=batchKey==='adidas';
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
-      const pendingBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchKey);
+      // Batch queues group per destination (vendor + optional ship-to decorator) and each group orders as
+      // its OWN PO — so the queue readout and free-ship threshold below must only count this PO's destination
+      // group, not every destination for the vendor ($100 warehouse + $60 decorator is NOT $160 toward one PO).
+      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
+      const batchGroupKey=batchKey?batchKey+(podDv?.id?':'+podDv.id:''):null;
+      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
       const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // Each open SO line for this vendor, with its remaining per-size quantities.
       const _poLinesRaw=vItems.map(it=>{const openSizes=openSizesFor(it);
@@ -7124,7 +7129,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Items offered mirror the standalone deco form (every SO item with sized qty); all start
       // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
       const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-      const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
       const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -7335,7 +7339,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
             });
             const bpId='BPO '+Date.now();
-            const batchGroupKey=batchKey+(podDv?.id?':'+podDv.id:'');
             const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString(),...(podDv?.id?{ship_to_deco_id:podDv.id}:{})};
             // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
