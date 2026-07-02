@@ -254,8 +254,11 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     renderer.setSize(W, H);
     renderer.setPixelRatio(Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    // Khronos PBR-neutral tone mapping: built for product configurators — keeps
+    // saturated brand colors true. ACES filmic skewed deep reds (maroon) toward
+    // salmon pink on the lit side.
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.0;
     mount.appendChild(renderer.domElement);
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
@@ -271,8 +274,8 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     controls.enablePan = false;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.15); key.position.set(1.5, 2.5, 2.5); scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(-2, 0.5, 1); scene.add(fill);
+    const key = new THREE.DirectionalLight(0xffffff, 0.8); key.position.set(1.5, 2.5, 2.5); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.3); fill.position.set(-2, 0.5, 1); scene.add(fill);
     // Rear light + even hemisphere fill so the BACK of the garment reads its true
     // colorway (orbit moves the camera, not the model, so front-only lights leave
     // the back in shadow — whites go gray, blues muddy).
@@ -303,8 +306,13 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
 
       rootObj.traverse((o) => {
         if (o.isMesh) {
-          o.material = o.material.clone();
-          o.material.side = THREE.FrontSide;
+          // Replace the vendor material with our own plain fabric material —
+          // applyDesign owns color/map/roughness anyway, and vendor exports
+          // (e.g. CLO3D's KHR_materials_specular at full strength) otherwise
+          // catch the lights and wash tinted colors toward pastel. Keep the
+          // original name: matchZone falls back to it for zone matching.
+          const srcMat = o.material;
+          o.material = new THREE.MeshStandardMaterial({ name: srcMat.name, color: srcMat.color ? srcMat.color.clone() : 0xffffff, side: THREE.FrontSide, envMapIntensity: 0.35 });
           const zone = matchZone(o.name) || matchZone(o.material && o.material.name);
           st.meshes.push({ mesh: o, zone });
         }

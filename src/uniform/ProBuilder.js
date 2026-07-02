@@ -312,7 +312,7 @@ function specFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'octa_jersey', fabric: cfg.fabric || 'sublimated',
+    garmentId: 'sahrul_jersey', fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
       sleeveL: zoneOf(S.sleeveL),
@@ -487,7 +487,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
   const set = (patch) => setConfig((c) => ({ ...c, ...patch }));
   const spec = useMemo(() => specFromConfig(config), [config]);
-  const tpl = getTemplate('octa_jersey');
+  // Sahrul's commissioned garment: real sewn panels with clean seam
+  // boundaries, so section recolors stay crisp (the stock octa model bled at
+  // panel edges).
+  const tpl = getTemplate('sahrul_jersey');
 
   // Per-section design: which section the Jersey step is editing, and a helper
   // that patches one section's {color, color2, pattern}.
