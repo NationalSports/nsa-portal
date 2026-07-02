@@ -2,13 +2,14 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
+import { cloudUpload, fileUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
+import { planStoreBakes, bakeMockBlob } from './lib/mockBake';
 import { normalizeWebLogos } from './businessLogic';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -1227,6 +1228,69 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Store created'); return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
 
+  // Auto-bake mockups: composite each garment color's photo with its placed logos and
+  // save the PNGs into the owning art records' item_mockups (tagged auto:true, keyed
+  // sku|color, CW-tagged). Runs on store launch and from the Art tab. batchOrders then
+  // carries a real decorated proof onto webstore Sales Orders instead of the bare
+  // catalog photo, and the artist mockup gate sees these SKUs as covered (the "Auto
+  // mock" name makes their origin visible wherever mockups render).
+  // Never touches webstore_products.image_url/decorations — the storefront overlay
+  // stays the shopper-facing render (no double-stamping).
+  const bakeStoreMockups = useCallback(async (opts = {}) => {
+    const plan = planStoreBakes({ catalog: detail?.catalog || [], stockByWp: detail?.stockByWp || {}, libraryArt: detail?.libraryArt || [], storeArt: sel?.store_art || [], defaultCustId: sel?.customer_id });
+    if (!plan.length) { if (!opts.quiet) flash('No placed logos to bake into mockups'); return { baked: 0, failed: 0 }; }
+    if (!opts.quiet) flash(`Baking ${plan.length} mockup${plan.length === 1 ? '' : 's'}…`);
+    let baked = 0, failed = 0;
+    const byCust = {}; // custId -> artId -> 'sku|color' -> [entries]
+    for (const t of plan) {
+      try {
+        const blob = await bakeMockBlob(t);
+        const fname = `automock_${t.sku}_${(t.color || 'all').replace(/[^a-z0-9]+/gi, '-')}_${t.side}.png`;
+        const url = await fileUpload(new File([blob], fname, { type: 'image/png' }), 'nsa-mockups');
+        t.writes.forEach((w) => {
+          if (!w.custId) return;
+          const entry = { url, name: `Auto mock · ${t.color || 'default'}${t.side === 'back' ? ' · back' : ''}`, art_file_id: w.artId, sku: t.sku, side: t.side, auto: true };
+          if (w.colorWayId) entry.color_way_id = w.colorWayId;
+          const byArt = byCust[w.custId] = byCust[w.custId] || {};
+          const byKey = byArt[w.artId] = byArt[w.artId] || {};
+          (byKey[t.key] = byKey[t.key] || []).push(entry);
+        });
+        baked++;
+      } catch (e) { console.warn('[mockBake] skipped', t.key, t.side, e?.message || e); failed++; }
+    }
+    // Write each owning customer's art records: prior AUTO entries for the same
+    // garment+art are replaced (re-publish re-bakes, never accumulates), and a garment
+    // that already has a MANUAL mock (artist/QuickMockBuilder) is left alone — a human's
+    // proof always outranks the auto composite. Fresh read right before the write to
+    // shrink the concurrent-edit window on the art_files blob.
+    for (const [cid, byArt] of Object.entries(byCust)) {
+      const { data: cust } = await supabase.from('customers').select('art_files').eq('id', cid).maybeSingle();
+      const arts = Array.isArray(cust?.art_files) ? cust.art_files : [];
+      let touched = false;
+      const next = arts.map((a) => {
+        const byKey = byArt[a.id];
+        if (!byKey) return a;
+        let changed = false;
+        const im = { ...(a.item_mockups || {}) };
+        Object.entries(byKey).forEach(([key, entries]) => {
+          const cur = im[key] || [];
+          if (cur.some((m) => m && !(typeof m === 'object' && m.auto))) return; // manual mock wins
+          im[key] = [...cur.filter((m) => !(m && typeof m === 'object' && m.auto && m.art_file_id === a.id)), ...entries];
+          changed = true;
+        });
+        if (!changed) return a;
+        touched = true;
+        return { ...a, item_mockups: im };
+      });
+      if (!touched) continue;
+      const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', cid);
+      if (error) flash('Could not save auto mocks to the library: ' + error.message);
+    }
+    if (!opts.quiet) flash(failed ? `Auto-baked ${baked} mockup${baked === 1 ? '' : 's'} (${failed} skipped)` : `Auto-baked ${baked} mockup${baked === 1 ? '' : 's'} to the art library`);
+    if (baked && sel) loadDetail(sel);
+    return { baked, failed };
+  }, [detail, sel, flash, loadDetail]);
+
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
   const setStoreStatus = useCallback(async (store, status, opts = {}) => {
@@ -1243,7 +1307,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
-  }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
+    // Launch = the catalog is final: bake the decorated proofs so orders batch with
+    // real mockups. Failures never block the launch itself.
+    if (status === 'open') { try { await bakeStoreMockups({ quiet: false }); } catch (e) { console.warn('[mockBake] launch bake failed:', e?.message || e); } }
+  }, [sel, flash, notifyCoachPublished, notifyStoreClosed, bakeStoreMockups]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
@@ -2175,8 +2242,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
     });
     // Every art file carries the per-garment mockups (production filters by the
-    // job's SKUs, same as OMG). Merge so library art keeps its own mockups too.
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}), ...itemMockups } }); };
+    // job's SKUs, same as OMG). The record's OWN mocks (auto-baked or QuickMockBuilder
+    // proofs — real decorated composites) win over the captured storefront photo, which
+    // only fills keys the record has nothing for. The old spread order let the bare
+    // garment photo clobber a real proof for the same sku|color.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
@@ -2384,7 +2454,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onBakeMocks={bakeStoreMockups} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
@@ -3746,7 +3816,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onBakeMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -3918,7 +3988,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} onBakeMocks={onBakeMocks} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -8104,7 +8174,7 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder, onBakeMocks }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -8215,6 +8285,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
         <span style={{ fontSize: 13, fontWeight: 800, background: 'rgba(255,255,255,.18)', border: '1px solid rgba(255,255,255,.35)', borderRadius: 9, padding: '9px 15px', whiteSpace: 'nowrap' }}>Open →</span>
       </button>
+      {/* Auto-bake: composite the placed overlays into saved proofs (also runs on launch) */}
+      {onBakeMocks && <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, marginBottom: 12, border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+        <span style={{ fontSize: 12.5, color: '#475569', flex: 1 }}>⚡ <b>Auto-bake mockups</b> — save each garment color's photo with its placed logos as a proof in the art library (tagged "Auto mock"). Runs automatically at launch; use this to re-bake after art changes.</span>
+        <button className="btn btn-sm btn-secondary" onClick={() => onBakeMocks()} title="Composite placed logos onto each garment color and save to the customer's art library">Bake now</button>
+      </div>}
       {/* Library picker + placement (quick decoration overlay path) */}
       <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
