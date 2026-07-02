@@ -149,6 +149,11 @@ function custShipAddrSub(cu){
 // sends `message` + a portal link on the schedule until the doc resolves or the cap
 // is hit. `defaultMessage` seeds the textarea the first time automation is enabled.
 const _FU_DAYS=[1,2,3,5,7,10,14,21,30];
+// Seed the panel from the doc row so a RE-send keeps whatever automation is already armed —
+// without this, re-sending wrote the panel's default (off) back and silently disarmed the
+// follow-ups the rep set up on the first send. Never-armed docs still get the off defaults.
+const seedFollowUp=(doc)=>{const armed=!!doc?.follow_up_auto;const iv=Number(doc?.follow_up_interval_days)||0;
+  return{auto:armed,firstDays:(armed&&iv)||3,intervalDays:armed?iv:0,max:doc?.follow_up_max||4,message:(armed&&doc?.follow_up_message)||''}};
 function FollowUpAutoPanel({value,onChange,defaultMessage}){
   const v=value||{};const auto=!!v.auto;
   const first=v.firstDays||3;const interval=v.intervalDays||0;const max=v.max||4;
@@ -198,7 +203,6 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const customerRef=React.useRef(customer);customerRef.current=customer;
   const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
-  const defaultFollowUpRef=React.useRef(defaultFollowUpDays);defaultFollowUpRef.current=defaultFollowUpDays;
   const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
@@ -214,7 +218,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
-    setFollowUp({auto:false,firstDays:defaultFollowUpRef.current||3,intervalDays:0,max:4,message:''});
+    setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -570,4 +574,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
