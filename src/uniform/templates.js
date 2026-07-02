@@ -223,7 +223,11 @@ const TEMPLATES = {
           { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#ff682a' },
           { id: 'collar', label: 'Collar', maskColor: '#afbf00' },
         ],
-        anchors: { number: { x: 0.5, y: 0.5, size: 150 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        // Kit-standard front layout: small number over the wearer's RIGHT chest
+        // (image-left), leaving the wearer's-left chest (image-right) for the
+        // crest/logo slot — centered defaults stacked the two on top of each
+        // other mid-torso.
+        anchors: { number: { x: 0.36, y: 0.3, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/sahrul-base-back.jpg'), mask: PUB('/uniform/sahrul-mask-back.png'),

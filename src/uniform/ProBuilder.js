@@ -144,7 +144,9 @@ const FONTS = [
 // the sleeve panel (the 3D viewer raycasts the whole model, so a logo attaches
 // to whatever surface it's over). Defaults pre-place each slot sensibly.
 const LOGO_SLOTS = [
-  { key: 'chest', label: 'Chest', view: 'front', x: 0.5, y: 0.42, scale: 1 },
+  // Crest default: wearer's LEFT chest = image-right; the front number sits
+  // over the wearer's right chest, so the two never stack.
+  { key: 'chest', label: 'Chest', view: 'front', x: 0.64, y: 0.3, scale: 0.55 },
   { key: 'leftSleeve', label: 'L Sleeve', view: 'front', x: 0.17, y: 0.33, scale: 0.5 },
   { key: 'rightSleeve', label: 'R Sleeve', view: 'front', x: 0.83, y: 0.33, scale: 0.5 },
   { key: 'back', label: 'Back', view: 'back', x: 0.5, y: 0.16, scale: 0.7 },
