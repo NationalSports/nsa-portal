@@ -44,42 +44,102 @@ function matchZone(name) {
   return null;
 }
 
-// Procedural knit normal map: fine grain + a soft vertical rib, tiled across
-// the garment. Vendor models without a baked normal map (CLO exports ship
-// none) render as smooth plastic without this — the micro-bump is what makes
-// a solid color read as fabric.
-let _knitNormal = null;
-function knitNormalTexture() {
-  if (_knitNormal) return _knitNormal;
+// ── Fabric surface library ──────────────────────────────────────────────────
+// Each fabric option gets its own procedurally generated surface (normal map,
+// and for heather a color fleck), so "Mesh" actually shows perforations and
+// "Heather" actually flecks — the finish (roughness) alone never sold the
+// difference. Textures are cached module-wide and shared across meshes, so
+// they are tagged shared and must never be disposed by per-mesh cleanup.
+const FABRIC_SURFACES = {
+  matte:      { gen: 'knit',   normalScale: 0.7,  repeat: 10 },
+  mesh:       { gen: 'mesh',   normalScale: 0.95, repeat: 14 },
+  heather:    { gen: 'knit',   normalScale: 0.55, repeat: 10 },
+  sublimated: { gen: 'smooth', normalScale: 0.45, repeat: 10 },
+  gloss:      { gen: 'smooth', normalScale: 0.3,  repeat: 10 },
+};
+const _fabricNormals = {};
+
+function makeNormalCanvas(gen) {
   const S = 256;
   const c = document.createElement('canvas'); c.width = c.height = S;
   const x = c.getContext('2d');
   const img = x.createImageData(S, S);
   const d = img.data;
   const TAU = Math.PI * 2;
+  // Hex-offset grid of round perforations for mesh fabric.
+  const CELL = 32, R = 7;
+  const holeOffset = (px, py) => {
+    const row = Math.floor(py / CELL);
+    const ox = (row % 2) * (CELL / 2);
+    const cx = (Math.floor((px - ox) / CELL) + 0.5) * CELL + ox;
+    const cy = (row + 0.5) * CELL;
+    const dx = px - cx, dy = py - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > R || dist === 0) return null;
+    // dimple: normals lean toward the hole center, deepest at the rim
+    const k = (dist / R) * 46;
+    return [-(dx / dist) * k, -(dy / dist) * k];
+  };
   for (let py = 0; py < S; py++) {
     for (let px = 0; px < S; px++) {
       const i = (py * S + px) * 4;
       const u = px / S, v = py / S;
-      // Two octaves: broad soft cloth undulation (tile-safe sines) + fine knit
-      // ribs + grain. The broad octave is what reads at arm's length; the ribs
-      // only show up zoomed in.
+      // Broad soft cloth undulation (tile-safe sines) — reads at arm's length.
       const broadX = (Math.sin(u * TAU * 2 + Math.sin(v * TAU)) + Math.sin(v * TAU * 3 + u * TAU)) * 5;
       const broadY = (Math.cos(v * TAU * 2 + Math.sin(u * TAU * 2)) + Math.sin(u * TAU * 3)) * 5;
-      const rib = Math.sin(u * TAU * 16) * 12;
       const grainX = (Math.sin(px * 12.9898 + py * 78.233) * 43758.5453 % 1) * 18 - 9;
       const grainY = (Math.sin(px * 39.346 + py * 11.135) * 24634.6345 % 1) * 18 - 9;
-      d[i] = Math.max(0, Math.min(255, 128 + broadX + rib + grainX));
-      d[i + 1] = Math.max(0, Math.min(255, 128 + broadY + grainY));
+      let nx = broadX + grainX, ny = broadY + grainY;
+      if (gen === 'knit') nx += Math.sin(u * TAU * 16) * 12; // vertical knit ribs
+      if (gen === 'smooth') { nx = broadX + grainX * 0.5; ny = broadY + grainY * 0.5; }
+      if (gen === 'mesh') {
+        const hole = holeOffset(px, py);
+        if (hole) { nx += hole[0]; ny += hole[1]; }
+      }
+      d[i] = Math.max(0, Math.min(255, 128 + nx));
+      d[i + 1] = Math.max(0, Math.min(255, 128 + ny));
       d[i + 2] = 255;
       d[i + 3] = 255;
     }
   }
   x.putImageData(img, 0, 0);
+  return c;
+}
+
+function fabricNormalTexture(fabric) {
+  const def = FABRIC_SURFACES[fabric] || FABRIC_SURFACES.sublimated;
+  if (_fabricNormals[def.gen]) return _fabricNormals[def.gen];
+  const t = new THREE.CanvasTexture(makeNormalCanvas(def.gen));
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(def.repeat, def.repeat);
+  t.userData.shared = true;
+  _fabricNormals[def.gen] = t;
+  return t;
+}
+
+// Heather fleck: near-white tile peppered with soft gray specks; multiplied
+// under the zone color it reads as melange yarn.
+let _heatherMap = null;
+function heatherFleckTexture() {
+  if (_heatherMap) return _heatherMap;
+  const S = 256;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  x.fillStyle = '#f4f4f4'; x.fillRect(0, 0, S, S);
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 2600; i++) {
+    const g = 150 + Math.floor(rand() * 80);
+    x.fillStyle = 'rgba(' + g + ',' + g + ',' + (g + 4) + ',' + (0.25 + rand() * 0.45).toFixed(2) + ')';
+    const w = 1 + rand() * 2.4;
+    x.fillRect(rand() * S, rand() * S, w, w * (0.5 + rand()));
+  }
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(10, 10);
-  _knitNormal = t;
+  t.repeat.set(9, 9);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.userData.shared = true;
+  _heatherMap = t;
   return t;
 }
 
@@ -150,7 +210,7 @@ function applyDesign(st, rawSpec) {
     const color = ds.toHex(zs.color, '#1f2a44');
     const color2 = ds.toHex(zs.color2, '#ffffff');
     const pat = zs.pattern || 'solid';
-    if (mat.map) { mat.map.dispose(); mat.map = null; }
+    if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
     if (pat === 'custom' && zs.patternImage) {
       // Admin-library print pattern: image tile loads async; a generation token
       // drops stale loads if the design changed again before the image decoded.
@@ -169,6 +229,9 @@ function applyDesign(st, rawSpec) {
     } else if (pat === 'solid') {
       entry._patGen = (entry._patGen || 0) + 1; // invalidate in-flight custom tiles
       mat.color.set(color);
+      // Heather is a yarn-color effect, not a print: multiply a fleck tile
+      // under the chosen color so it reads as melange fabric.
+      if (spec.fabric === 'heather') mat.map = heatherFleckTexture();
     } else if (pat === 'fade') {
       entry._patGen = (entry._patGen || 0) + 1;
       mat.color.set('#ffffff'); mat.map = gradientTexture(color, color2);
@@ -187,10 +250,16 @@ function applyDesign(st, rawSpec) {
         mat.map = tex; mat.color.set('#ffffff');
       } else { mat.color.set(color); }
     }
-    // Fabric choice reads as sheen: gloss is noticeably shinier, matte knit
-    // flatter. (2D renderers carry the texture side of the fabric look.)
+    // Fabric = finish (roughness) + surface (normal map): gloss is shinier and
+    // smoother, mesh shows perforations, matte shows knit ribs. A vendor-baked
+    // normal map (real cloth wrinkles) always wins over the generic surface.
     const FABRIC_ROUGHNESS = { matte: 0.94, mesh: 0.88, heather: 0.9, sublimated: 0.86, gloss: 0.6 };
-    mat.roughness = FABRIC_ROUGHNESS[spec.fabric] || 0.72;
+    mat.roughness = FABRIC_ROUGHNESS[spec.fabric] || 0.86;
+    if (!entry.vendorNormal) {
+      const def = FABRIC_SURFACES[spec.fabric] || FABRIC_SURFACES.sublimated;
+      mat.normalMap = fabricNormalTexture(spec.fabric);
+      mat.normalScale.set(def.normalScale, def.normalScale);
+    }
     mat.metalness = 0.0;
     mat.needsUpdate = true;
   }
@@ -432,8 +501,8 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             // Keep a baked normal map when the vendor supplied one (that's the
             // cloth-wrinkle detail); otherwise fall back to our knit bump so
             // solid colors still read as fabric, not plastic.
-            normalMap: srcMat.normalMap || knitNormalTexture(),
-            normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.6, 0.6),
+            normalMap: srcMat.normalMap || fabricNormalTexture('sublimated'),
+            normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.45, 0.45),
             // Fabric sheen (the soft edge glow cloth has at grazing angles) is
             // what separates "jersey" from "painted plastic" at arm's length.
             sheen: studioRef.current.sheen,
@@ -441,7 +510,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             sheenColor: new THREE.Color(0xffffff),
           });
           const zone = matchZone(o.name) || matchZone(o.material && o.material.name);
-          st.meshes.push({ mesh: o, zone });
+          st.meshes.push({ mesh: o, zone, vendorNormal: !!srcMat.normalMap });
         }
       });
       scene.add(rootObj);
@@ -485,7 +554,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       cancelAnimationFrame(st.raf);
       controls.dispose();
       st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
-      st.meshes.forEach(({ mesh }) => { if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); });
+      st.meshes.forEach(({ mesh }) => { const m = mesh.material.map; if (m && !(m.userData && m.userData.shared)) m.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); });
       pmrem.dispose();
       try { gtao.dispose(); composer.dispose(); } catch (e) { /* older three */ }
       renderer.dispose();
