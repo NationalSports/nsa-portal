@@ -13,6 +13,7 @@
 import { jsPDF } from 'jspdf';
 import { makePatternTile, makeFabricOverlay } from './patterns';
 import { fontShorthand, ensureFontsReady } from './fonts';
+import { drawAthleticText } from './lettering';
 import { getTemplate } from './templates';
 import * as ds from './designSpec';
 import { preloadRasterAssets, compositeRaster, preloadPatternImages, patternImgCache } from './raster';
@@ -121,22 +122,14 @@ function drawText(ctx, el, view, vb) {
   const size = anchor.size * (el.size || 1);
 
   ctx.save();
-  ctx.font = fontShorthand(el.font, size);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  if ('letterSpacing' in ctx) { try { ctx.letterSpacing = `${el.letterSpacing || 0}px`; } catch (_e) { /* unsupported */ } }
-  ctx.lineJoin = 'round';
-
   const fill = ds.toHex(el.fill, '#ffffff');
   let outline = el.outline;
   if (outline === 'auto') outline = ds.contrastInk(fill);
-  if (outline && outline !== 'none' && el.outlineWidth > 0) {
-    ctx.strokeStyle = ds.toHex(outline, '#111827');
-    ctx.lineWidth = el.outlineWidth * 2; // stroke straddles the path; ×2 ≈ visible width
-    ctx.strokeText(value, px, py);
-  }
-  ctx.fillStyle = fill;
-  ctx.fillText(value, px, py);
+  if (outline && outline !== 'none') outline = ds.toHex(outline, '#111827');
+  drawAthleticText(ctx, {
+    value, font: el.font, size, fill, outline, outlineWidth: el.outlineWidth,
+    letterSpacing: el.letterSpacing || 0, arch: el.arch || 0, x: px, y: py,
+  });
   ctx.restore();
 }
 

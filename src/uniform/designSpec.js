@@ -129,7 +129,7 @@ const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', pattern: 'solid' };
 // that contrasts the fill until the user overrides it.
 const DEFAULT_TEXT = {
   value: '', font: 'anton', fill: '#ffffff', outline: 'auto', outlineWidth: 5,
-  size: 1, x: null, y: null, letterSpacing: 0,
+  size: 1, x: null, y: null, letterSpacing: 0, arch: 0,
 };
 
 function makeDefaultSpec(garmentId = 'crew_jersey') {
@@ -227,6 +227,7 @@ function cleanText(t, base = DEFAULT_TEXT) {
     if (Number.isFinite(t.x)) out.x = clamp(t.x, 0, 1);
     if (Number.isFinite(t.y)) out.y = clamp(t.y, 0, 1);
     if (Number.isFinite(t.letterSpacing)) out.letterSpacing = clamp(t.letterSpacing, -10, 40);
+    if (Number.isFinite(t.arch)) out.arch = clamp(t.arch, 0, 0.6);
   }
   return out;
 }

@@ -21,6 +21,7 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makePatternTile } from './patterns';
 import { fontShorthand } from './fonts';
+import { drawAthleticText, measureAthleticText } from './lettering';
 import { getTemplate } from './templates';
 import * as ds from './designSpec';
 
@@ -266,27 +267,28 @@ function applyDesign(st, rawSpec) {
 }
 
 // Render a text element to a transparent canvas for use as a decal texture.
+// Runs through the shared lettering engine so arch + spacing match the 2D
+// proof exactly.
 function decalTextCanvas(el) {
   const val = (el.value || '').trim();
   if (!val) return null;
   const S = 220;
-  const meas = document.createElement('canvas').getContext('2d');
-  meas.font = fontShorthand(el.font, S);
-  const tw = Math.ceil(meas.measureText(val).width);
-  const pad = Math.ceil(S * 0.4);
-  const c = document.createElement('canvas');
-  c.width = Math.max(8, tw + pad * 2); c.height = Math.ceil(S * 1.5);
-  const x = c.getContext('2d');
-  x.font = fontShorthand(el.font, S);
-  x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round';
   const fill = ds.toHex(el.fill, '#ffffff');
   let outline = el.outline === 'auto' ? ds.contrastInk(fill) : el.outline;
-  if (outline && outline !== 'none' && el.outlineWidth > 0) {
-    x.strokeStyle = ds.toHex(outline, '#111827');
-    x.lineWidth = el.outlineWidth * (S / 24);
-    x.strokeText(val, c.width / 2, c.height / 2);
-  }
-  x.fillStyle = fill; x.fillText(val, c.width / 2, c.height / 2);
+  if (outline && outline !== 'none') outline = ds.toHex(outline, '#111827');
+  // 3D decals want a beefier stroke than the 2D proof (small on screen);
+  // matches the old S/24 scaling via outlineWidth × 2 in the engine.
+  const ow = el.outlineWidth > 0 ? (el.outlineWidth * (S / 24)) / 2 : 0;
+  const opts = { value: val, font: el.font, size: S, fill, outline, outlineWidth: ow, letterSpacing: el.letterSpacing || 0, arch: el.arch || 0 };
+  const meas = document.createElement('canvas').getContext('2d');
+  const m = measureAthleticText(meas, opts);
+  const pad = Math.ceil(S * 0.4);
+  const c = document.createElement('canvas');
+  c.width = Math.max(8, Math.ceil(m.total) + pad * 2);
+  c.height = Math.ceil(S * 1.5 + m.sag);
+  const x = c.getContext('2d');
+  // center the visual block: an arch adds `sag` below the center letter's line
+  drawAthleticText(x, { ...opts, x: c.width / 2, y: (c.height - m.sag) / 2 });
   return c;
 }
 

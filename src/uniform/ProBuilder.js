@@ -227,6 +227,7 @@ const DEFAULT_CONFIG = {
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
   outlineColor: 'auto', numberSize: 1, nameSize: 1,
+  nameArch: 'arched', nameSpacing: 8,
   neckStyle: 'vneck', frontNumber: 'right',
 };
 
@@ -319,7 +320,10 @@ function specFromConfig(cfg) {
       },
       back: {
         number: { value: num, font, fill, outline, outlineWidth: outlineWidth ? outlineWidth + 1 : 0, size: 1.3 * numScale },
-        name: { value: (cfg.playerName || '').toUpperCase(), font: 'saira', fill, outline, size: 0.7 * nameScale },
+        // The name follows the chosen lettering style (it used to be pinned to
+        // one condensed font) and arches over the number by default.
+        name: { value: (cfg.playerName || '').toUpperCase(), font, fill, outline, outlineWidth: Math.max(2, outlineWidth - 2), size: 0.7 * nameScale,
+          arch: cfg.nameArch === 'straight' ? 0 : 0.35, letterSpacing: Number.isFinite(cfg.nameSpacing) ? cfg.nameSpacing : 8 },
       },
     },
     logos,
@@ -1281,6 +1285,20 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   </div>
                   <LabeledInput label="Player Name (Back)" value={config.playerName} onChange={(v) => set({ playerName: v })} maxLength={14} />
                   <LabeledInput label="Player Number" value={config.playerNumber} onChange={(v) => set({ playerNumber: v.replace(/[^0-9]/g, '').slice(0, 2) })} maxLength={2} />
+                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <div style={groupHead}>Name Style</div>
+                      <div style={groupVal}>{config.nameArch === 'straight' ? 'Straight' : 'Arched'}</div>
+                    </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <Pills options={[{ id: 'arched', label: 'Arched' }, { id: 'straight', label: 'Straight' }]} active={config.nameArch || 'arched'} onPick={(v) => set({ nameArch: v })} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight }}>Letter Spacing</span>
+                      <span style={groupVal}>{Number.isFinite(config.nameSpacing) ? config.nameSpacing : 8}%</span>
+                    </div>
+                    <input type="range" min={0} max={30} step={1} value={Number.isFinite(config.nameSpacing) ? config.nameSpacing : 8} onChange={(e) => set({ nameSpacing: parseInt(e.target.value, 10) })} style={{ width: '100%', accentColor: C.navy }} />
+                  </div>
                   <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
                       <div style={groupHead}>Number Color</div><div style={groupVal}>{nameForHex(config.numberColor)}</div>
