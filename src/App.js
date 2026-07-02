@@ -4547,32 +4547,42 @@ export default function App(){
       // company-wide Brevo stat checks from an unauthenticated page and trips Brevo's 429 rate limit.
       if(typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('portal'))return;
       const{ests,sos,invs}=_brevoDocsRef.current;
-      // Check estimates with pending email_status='sent' and a messageId
-      const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(h=>h.messageId));
+      // Only chase opens for RECENT sends. A doc that's 'sent' but never opened otherwise stays
+      // "pending" forever and gets re-polled every cycle for the tab's whole life — per open tab.
+      // That unbounded, never-backing-off repetition is the same shape that caused the save_estimate
+      // storms, here aimed at the brevo-proxy (whose verifyUser hits the auth server + DB each call).
+      // After 14 days an unopened email has realistically stopped changing state; let it rest.
+      const _fresh=h=>h&&h.messageId&&(Date.now()-new Date(h.sent_at||0).getTime())<14*86400000;
+      // Check estimates with pending email_status='sent' and a recent messageId send
+      const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));
       for(const est of pendingEsts.slice(0,5)){
-        const lastSend=(est.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        const lastSend=(est.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoEmailOpens(lastSend.messageId);
         if(result){setEsts(prev=>prev.map(e=>e.id===est.id?{...e,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:e))}
       }
       // Check SOs
-      const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(h=>h.messageId));
+      const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(_fresh));
       for(const so of pendingSOs.slice(0,5)){
-        const lastSend=(so.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        const lastSend=(so.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoEmailOpens(lastSend.messageId);
         if(result){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:s))}
       }
       // Check invoices
-      const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(h=>h.messageId));
+      const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(_fresh));
       for(const inv of pendingInvs.slice(0,5)){
-        const lastSend=(inv.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        const lastSend=(inv.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoEmailOpens(lastSend.messageId);
         if(result){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:i))}
       }
     };
-    const timer=setInterval(checkOpens,60000);// check every 60s
+    // 5-minute cadence (was 60s). Open tracking is a dashboard nicety, not realtime data — at 60s,
+    // every open tab fired up to 15 brevo-proxy calls/min around the clock, and each call costs a
+    // GoTrue verification + team_members query server-side. 5 min keeps the feature and sheds ~80%
+    // of that steady-state traffic.
+    const timer=setInterval(checkOpens,300000);
     checkOpens();// initial check
     return()=>clearInterval(timer);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps

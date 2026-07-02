@@ -24,13 +24,47 @@ function getSiteUrl(event) {
   return host ? `https://${host}` : '';
 }
 
-// Verify caller is signed in and has an admin (or super_admin) team_members row.
-async function verifyAdmin(event) {
+// ── Token-verification cache ────────────────────────────────────────────────
+// Verifying a caller costs a GoTrue network round-trip (admin.auth.getUser) plus a
+// team_members query — PER function invocation. Portal pollers (e.g. the email-open
+// checker) hit these endpoints many times a minute from every open tab, so the auth
+// server absorbs the multiplied traffic: the same unbounded-repeat shape that caused
+// the save_estimate DB storms. Caching a token only AFTER it fully verifies makes
+// repeats free while this Netlify container stays warm, keeping GoTrue and the DB out
+// of the blast radius of any client loop. TTL is far under the ~1h JWT lifetime the
+// rest of the stack already honors (PostgREST accepts a JWT until exp regardless of
+// session state), so this adds no new exposure; a deactivation/role change is picked
+// up within the TTL. Failures are never cached. Size-capped, oldest-first eviction.
+const VERIFY_TTL_MS = 2 * 60 * 1000;
+const VERIFY_CACHE_MAX = 500;
+const _verifyCache = new Map(); // token -> { at, id: {userId, teamMemberId, role} }
+
+function _verifyCacheGet(token) {
+  const hit = _verifyCache.get(token);
+  if (!hit) return null;
+  if (Date.now() - hit.at > VERIFY_TTL_MS) { _verifyCache.delete(token); return null; }
+  return hit.id;
+}
+
+function _verifyCachePut(token, id) {
+  if (_verifyCache.size >= VERIFY_CACHE_MAX) {
+    let drop = _verifyCache.size - VERIFY_CACHE_MAX + 1;
+    for (const k of _verifyCache.keys()) { _verifyCache.delete(k); if (--drop <= 0) break; }
+  }
+  _verifyCache.set(token, { at: Date.now(), id });
+}
+
+// Shared core: resolve the bearer token to an ACTIVE team member (cached), or an error.
+// `inactiveMsg` preserves the historical per-endpoint wording.
+async function _verifyTeamMember(event, inactiveMsg) {
   const auth = event.headers?.authorization || event.headers?.Authorization;
   if (!auth || !auth.startsWith('Bearer ')) return { ok: false, status: 401, error: 'Missing bearer token' };
   const token = auth.substring(7);
 
   const admin = getSupabaseAdmin();
+  const cached = _verifyCacheGet(token);
+  if (cached) return { ok: true, ...cached, admin };
+
   const { data: userData, error } = await admin.auth.getUser(token);
   if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
 
@@ -40,32 +74,25 @@ async function verifyAdmin(event) {
     .eq('auth_id', userData.user.id)
     .maybeSingle();
   if (tmErr) return { ok: false, status: 500, error: tmErr.message };
-  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: 'Inactive account' };
-  if (tm.role !== 'admin' && tm.role !== 'super_admin') return { ok: false, status: 403, error: 'Admin role required' };
+  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: inactiveMsg };
 
-  return { ok: true, userId: userData.user.id, teamMemberId: tm.id, admin };
+  const id = { userId: userData.user.id, teamMemberId: tm.id, role: tm.role };
+  _verifyCachePut(token, id);
+  return { ok: true, ...id, admin };
+}
+
+// Verify caller is signed in and has an admin (or super_admin) team_members row.
+async function verifyAdmin(event) {
+  const res = await _verifyTeamMember(event, 'Inactive account');
+  if (!res.ok) return res;
+  if (res.role !== 'admin' && res.role !== 'super_admin') return { ok: false, status: 403, error: 'Admin role required' };
+  return { ok: true, userId: res.userId, teamMemberId: res.teamMemberId, admin: res.admin };
 }
 
 // Verify caller is any signed-in, active team member (no role requirement).
 // Used to gate staff-only endpoints that previously accepted unauthenticated calls.
 async function verifyUser(event) {
-  const auth = event.headers?.authorization || event.headers?.Authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return { ok: false, status: 401, error: 'Missing bearer token' };
-  const token = auth.substring(7);
-
-  const admin = getSupabaseAdmin();
-  const { data: userData, error } = await admin.auth.getUser(token);
-  if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
-
-  const { data: tm, error: tmErr } = await admin
-    .from('team_members')
-    .select('id, role, is_active')
-    .eq('auth_id', userData.user.id)
-    .maybeSingle();
-  if (tmErr) return { ok: false, status: 500, error: tmErr.message };
-  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: 'Inactive or unknown account' };
-
-  return { ok: true, userId: userData.user.id, teamMemberId: tm.id, role: tm.role, admin };
+  return _verifyTeamMember(event, 'Inactive or unknown account');
 }
 
 // Verify the caller is EITHER an active team member (a staff browser session) OR a
