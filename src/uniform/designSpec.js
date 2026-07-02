@@ -121,7 +121,7 @@ const FABRICS = [
 const FABRIC_IDS = FABRICS.map((f) => f.id);
 
 // ── Zone / text defaults ────────────────────────────────────────────────────
-const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', pattern: 'solid' };
+const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', color3: '#ffffff', pattern: 'solid' };
 
 // A text element (number or name). x/y are fractions of the view box (0–1) so a
 // placement survives switching garments/views; the anchor in the template only
@@ -201,6 +201,7 @@ function cleanZone(z, base = DEFAULT_ZONE) {
   if (z && typeof z === 'object') {
     const c = toHex(z.color); if (c) out.color = c;
     const c2 = toHex(z.color2); if (c2) out.color2 = c2;
+    const c3 = toHex(z.color3); if (c3) out.color3 = c3; // pattern accent (3-color prints)
     if (typeof z.pattern === 'string' && PATTERN_IDS.includes(z.pattern)) out.pattern = z.pattern;
     // Admin-library print pattern: an image tile fills the zone. Only honored
     // with a valid image URL; carries a display name for spec sheets/PDFs.
@@ -209,7 +210,8 @@ function cleanZone(z, base = DEFAULT_ZONE) {
       out.pattern = 'custom';
       out.patternImage = pimg;
       if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
-      if (z.patternTint) out.patternTint = true; // grayscale tile → recolor with zone colors
+      if (z.patternTint) out.patternTint = true; // tile → recolor with zone colors
+      if (z.patternTintMode === 'blend' || z.patternTintMode === 'solid') out.patternTintMode = z.patternTintMode;
     }
   }
   return out;

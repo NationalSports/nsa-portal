@@ -40,7 +40,7 @@ function fillZone(ctx, path, zone, vb, s) {
 
   if (pat === 'custom' && zone.patternImage) {
     let img = patternImgCache[zone.patternImage];
-    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2);
+    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2, ds.toHex(zone.color3, '#ffffff'), zone.patternTintMode);
     const cp = img ? ctx.createPattern(img, 'repeat') : null;
     if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
       try { cp.setTransform(new DOMMatrix().scale(1 / s)); } catch (_e) { /* older browsers */ }

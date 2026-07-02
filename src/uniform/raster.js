@@ -130,7 +130,7 @@ function tint(lx, zoneSpec, w, h) {
   lx.globalCompositeOperation = 'multiply';
   if (pat === 'custom' && zoneSpec.patternImage) {
     let img = patternImgCache[zoneSpec.patternImage];
-    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2);
+    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2, ds.toHex(zoneSpec.color3, '#ffffff'), zoneSpec.patternTintMode);
     const cp = img ? lx.createPattern(img, 'repeat') : null;
     lx.fillStyle = cp || color; lx.fillRect(0, 0, w, h); return; // flat fallback until loaded
   }
