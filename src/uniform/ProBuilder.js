@@ -18,6 +18,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { getTemplate } from './templates';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import * as ds from './designSpec';
+import { StripePaymentModal } from '../modals';
 
 const Viewer3D = React.lazy(() => import('./Viewer3D'));
 const UniformBuilder = React.lazy(() => import('./UniformBuilder'));
@@ -47,6 +48,12 @@ const nameForHex = (hex) => {
 
 // Full pattern library (ids/labels from designSpec, so they always validate).
 const PATTERNS = ds.PATTERNS;
+// Human-readable "Construction Materials" row value for a section/zone.
+const zoneRowValue = (z) => {
+  if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
+  if (z.pattern !== 'solid') return `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.color2)}`;
+  return nameForHex(z.color);
+};
 
 // ── per-section design ────────────────────────────────────────────────────────
 // Each section carries its own pattern + two colors; "sleeves" edits both
@@ -67,6 +74,50 @@ const sectionsFromLegacy = (c) => ({
   sleeves: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
   collar: { color: c.trim || '#192853', color2: c.secondary || '#FFFFFF', pattern: 'solid' },
 });
+// ── paired bottom garment (shorts) ────────────────────────────────────────────
+// A top can ship with a matching bottom shown alongside it. Default is linked:
+// the bottom's three sections derive live from the top's (legs<-body,
+// waistband<-collar, stripe<-sleeves) so a coach never has to think about the
+// shorts unless they want to; unlinking freezes the current derived look so
+// they can then customize it independently.
+const BOTTOM_SECTIONS = [
+  { key: 'legs', label: 'Legs' },
+  { key: 'waistband', label: 'Waistband' },
+  { key: 'stripe', label: 'Side Stripe' },
+];
+const defaultBottomSections = () => ({
+  legs: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+  waistband: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
+  stripe: { color: '#7CB0E0', color2: '#FFFFFF', pattern: 'solid' },
+});
+const defaultBottom = () => ({ enabled: true, linked: true, sections: defaultBottomSections() });
+// The linked derivation, or the coach's independent sections once unlinked.
+function effectiveBottomSections(cfg) {
+  const S = cfg.sections || defaultSections();
+  const bottom = cfg.bottom || defaultBottom();
+  if (bottom.linked) {
+    const from = (z) => ({ color: z.color, color2: z.color2, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName });
+    return { legs: from(S.body), waistband: from(S.collar), stripe: from(S.sleeves) };
+  }
+  return { ...defaultBottomSections(), ...(bottom.sections || {}) };
+}
+function bottomSpecFromConfig(cfg) {
+  const B = effectiveBottomSections(cfg);
+  const zoneOf = (z) => ({
+    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName } : {}),
+  });
+  return ds.normalizeSpec({
+    garmentId: 'shorts', fabric: 'sublimated',
+    zones: {
+      legL: zoneOf(B.legs), legR: zoneOf(B.legs),
+      waistband: zoneOf(B.waistband),
+      sidePanelL: zoneOf(B.stripe), sidePanelR: zoneOf(B.stripe),
+    },
+    meta: { teamName: cfg.teamName },
+  });
+}
+
 const FONTS = [
   { id: 'block', label: 'Block', font: 'anton', preview: 'normal' },
   { id: 'varsity', label: 'Varsity', font: 'squada', preview: 'normal' },
@@ -164,6 +215,7 @@ const DEFAULT_CONFIG = {
   sport: null,
   teamName: 'ARGENTINA',
   sections: defaultSections(),
+  bottom: defaultBottom(),
   logos: emptyLogos(),
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
@@ -187,7 +239,9 @@ function restoredConfig() {
   const saved = a.config.sections || sectionsFromLegacy(a.config);
   const sections = {};
   for (const s of SECTIONS) sections[s.key] = { ...base[s.key], ...(saved[s.key] || {}) };
-  return { ...DEFAULT_CONFIG, ...a.config, sections, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
+  const savedBottom = a.config.bottom || defaultBottom();
+  const bottom = { ...defaultBottom(), ...savedBottom, sections: { ...defaultBottomSections(), ...(savedBottom.sections || {}) } };
+  return { ...DEFAULT_CONFIG, ...a.config, sections, bottom, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
 }
 async function trySupabaseSave(rec) {
   try {
@@ -289,6 +343,65 @@ function Pills({ options, active, onPick }) {
     </div>
   );
 }
+// Per-section pattern + color editor — used for both the jersey's sections
+// (Body/Sleeves/Collar) and the shorts' sections (Legs/Waistband/Stripe).
+function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, printLib }) {
+  const active = sections[activeKey] || sections[sectionDefs[0].key];
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        {sectionDefs.map((s) => {
+          const on = s.key === activeKey;
+          return (
+            <button key={s.key} onClick={() => onSelect(s.key)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span style={{ width: 11, height: 11, borderRadius: 3, background: sections[s.key].color, border: '1px solid ' + (on ? 'rgba(255,255,255,.5)' : C.mid) }} />{s.label}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: '1px solid ' + C.light }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={groupHead}>{(sectionDefs.find((s) => s.key === activeKey) || sectionDefs[0]).label}</div>
+          <div style={groupVal}>{nameForHex(active.color)} · {active.pattern === 'custom' ? (active.patternName || 'Print') : ((PATTERNS.find((p) => p.id === active.pattern) || {}).label || 'Solid')}</div>
+        </div>
+        <div style={{ ...railLabel, marginBottom: 8 }}>Pattern</div>
+        <div style={{ marginBottom: 14 }}>
+          <Pills options={PATTERNS} active={active.pattern} onPick={(p) => onPatch({ pattern: p })} />
+        </div>
+        {printLib.length > 0 && (
+          <>
+            <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+              {printLib.map((p) => {
+                const on = active.pattern === 'custom' && active.patternImage === p.image;
+                return (
+                  <button key={p.id} title={p.name} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name })}
+                    style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
+                      border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
+                      boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
+                      backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
+                );
+              })}
+            </div>
+          </>
+        )}
+        <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: active.pattern !== 'solid' ? 14 : 0 }}>
+          {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(active.color).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPatch({ color: p.hex })} />)}
+        </div>
+        {active.pattern !== 'solid' && active.pattern !== 'custom' && (
+          <>
+            <div style={{ ...railLabel, marginBottom: 8 }}>Secondary Color</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(active.color2).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPatch({ color2: p.hex })} />)}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LabeledInput({ label, value, onChange, maxLength }) {
   return (
     <label style={{ display: 'block' }}>
@@ -321,8 +434,18 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
   // Finalize state
   const [review, setReview] = useState({ front: null, back: null });
-  const [ordered, setOrdered] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
+
+  // Order fulfillment — three ways to complete an order, one shared record.
+  const [contactName, setContactName] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [poOpen, setPoOpen] = useState(false);
+  const [poNumber, setPoNumber] = useState('');
+  const [poContact, setPoContact] = useState('');
+  const [showStripeModal, setShowStripeModal] = useState(false);
+  const [orderBusy, setOrderBusy] = useState(false);
+  const [orderError, setOrderError] = useState('');
+  const [orderDone, setOrderDone] = useState(null); // { fulfillment }
   const [busy, setBusy] = useState('');
   const logoInputRef = useRef(null);
 
@@ -336,6 +459,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const setSection = (key, patch) => setConfig((c) => ({ ...c, sections: { ...c.sections, [key]: { ...c.sections[key], ...patch } } }));
   const SX = config.sections || defaultSections();
   const activeSection = SX[designSection] || SX.body;
+
+  // Paired bottom garment (shorts) — linked by default (derives from the top's
+  // sections); unlinking freezes the current derived look for independent edits.
+  const [designBottomSection, setDesignBottomSection] = useState('legs');
+  const bottom = config.bottom || defaultBottom();
+  const bottomSections = effectiveBottomSections(config);
+  const setBottomSection = (key, patch) => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: false, sections: { ...effectiveBottomSections(c), [key]: { ...effectiveBottomSections(c)[key], ...patch } } } }));
+  const toggleBottomEnabled = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), enabled: !(c.bottom ? c.bottom.enabled : true) } }));
+  const unlinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: false, sections: effectiveBottomSections(c) } }));
+  const relinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: true } }));
+  const bottomSpec = useMemo(() => bottomSpecFromConfig(config), [config]);
 
   // Autosave (debounced — logo data URLs make the payload chunky, so don't
   // write on every pointer-move of a drag).
@@ -469,6 +603,16 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     // eslint-disable-next-line
   }, [step, JSON.stringify(config.sections), config.playerNumber, config.playerName, config.numberColor, config.font]);
 
+  // Live shorts thumbnail — shown next to the 3D jersey stage so the top and
+  // bottom "show together" while designing, even without a 3D shorts model.
+  const [bottomPreview, setBottomPreview] = useState(null);
+  useEffect(() => {
+    if (!bottom.enabled) { setBottomPreview(null); return; }
+    let alive = true;
+    renderToDataURL(bottomSpec, { view: 'front', width: 300 }).then((u) => { if (alive) setBottomPreview(u); }).catch(() => {});
+    return () => { alive = false; };
+  }, [bottom.enabled, bottomSpec]);
+
   const padPoint = (e) => {
     const rect = padRef.current.getBoundingClientRect();
     const x = Math.min(0.92, Math.max(0.08, (e.clientX - rect.left) / rect.width));
@@ -479,11 +623,13 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const onPadMove = (e) => { if (draggingRef.current) padPoint(e); };
   const onPadUp = (e) => { draggingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {} };
 
-  // ── finalize: render 2D proof images for the review ──
+  // ── finalize: render 2D proof images for the review (+ paired bottom) ──
+  const [bottomReview, setBottomReview] = useState({ front: null, back: null });
   useEffect(() => {
     if (step !== 'finalize') return;
     let alive = true;
     setReview({ front: null, back: null });
+    setBottomReview({ front: null, back: null });
     (async () => {
       try {
         const [front, back] = await Promise.all([
@@ -492,11 +638,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
         ]);
         if (alive) setReview({ front, back });
       } catch (e) { /* review images optional */ }
+      if (!bottom.enabled) return;
+      try {
+        const [bf, bb] = await Promise.all([
+          renderToDataURL(bottomSpec, { view: 'front', scale: 1 }),
+          renderToDataURL(bottomSpec, { view: 'back', scale: 1 }),
+        ]);
+        if (alive) setBottomReview({ front: bf, back: bb });
+      } catch (e) { /* review images optional */ }
     })();
     return () => { alive = false; };
-  }, [step, spec]);
-
-  const rosterSummary = () => rosterBreakdown.map((r) => `${r.size} ×${r.qty} (#${r.nums})`).join('; ');
+  }, [step, spec, bottom.enabled, bottomSpec]);
 
   const saveDesign = () => {
     try {
@@ -525,6 +677,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       const doc = await renderProductionPDF(spec, {
         roster: rosterBreakdown,
         order: { totalQty, unitPrice: UNIT_PRICE, total: totalQty * UNIT_PRICE },
+        bottomSpec: bottom.enabled ? bottomSpec : undefined,
       });
       doc.save(`${fileBase()}-production.pdf`);
     } catch (e) { /* jsPDF unavailable */ } finally { setBusy(''); }
@@ -532,36 +685,74 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const downloadProofPNG = async () => {
     setBusy('Rendering production PNG…');
     try {
-      const url = await renderProductionSheet(spec, { width: 1400 });
+      const url = await renderProductionSheet(spec, { width: 1400, bottomSpec: bottom.enabled ? bottomSpec : undefined });
       downloadDataURL(url, `${fileBase()}-production.png`);
     } catch (e) { /* render failed */ } finally { setBusy(''); }
   };
 
-  const createOrder = () => {
-    const order = { assignments, totalQty, unitPrice: UNIT_PRICE, total: totalQty * UNIT_PRICE };
-    if (onCreateOrder) { onCreateOrder({ config, spec, ...order }); return; }
-    // No host order flow (standalone route): persist the request so a rep can
-    // pick it up — locally, and best-effort to the shared uniform_designs table
-    // with the roster embedded and a human-readable summary in meta.notes.
-    const notes = `ORDER REQUEST — ${totalQty} jerseys @ $${UNIT_PRICE} = $${order.total.toLocaleString()}. ${rosterSummary()}`.slice(0, 500);
-    const rec = {
-      name: `${config.teamName || 'Team'} — ORDER REQUEST`,
-      spec: { ...spec, meta: { ...spec.meta, notes }, order },
-      thumb: review.front,
+  // A coach fills in name/email once, then picks how to complete the order —
+  // pay by card now, submit a school PO, or add to the queue for a rep to
+  // process manually. All three write one row to uniform_order_requests
+  // (staff-only reads; see Settings -> Uniform Orders) so there's a single
+  // queue to work from regardless of path.
+  const contactValid = contactName.trim().length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail.trim());
+
+  const submitOrder = async (fulfillment, extra) => {
+    setOrderBusy(true); setOrderError('');
+    const row = {
+      team_name: config.teamName || 'Team',
+      sport: config.sport || null,
+      contact_name: contactName.trim(),
+      contact_email: contactEmail.trim(),
+      config,
+      spec,
+      bottom_spec: bottom.enabled ? bottomSpec : null,
+      roster: rosterBreakdown,
+      total_qty: totalQty,
+      unit_price: UNIT_PRICE,
+      total: totalQty * UNIT_PRICE,
+      fulfillment,
+      status: fulfillment === 'card' ? 'paid' : fulfillment === 'po' ? 'po_submitted' : 'queued',
+      thumb: review.front || null,
+      ...extra,
     };
+    // localStorage is the guaranteed record — it can't fail on a network blip,
+    // and it's what lets a coach complete an order offline. Supabase is a
+    // best-effort mirror for the staff queue: if it's unreachable the coach
+    // still gets a real confirmation, and the local record (plus the PDF/PNG
+    // they can download) is the fallback until it syncs.
+    let localOk = true;
     try {
       const prev = JSON.parse(localStorage.getItem('nsa_uniform_orders') || '[]');
-      prev.unshift({ id: 'o_' + Date.now().toString(36), ...rec, config, ts: Date.now() });
+      prev.unshift({ id: 'o_' + Date.now().toString(36), ...row, ts: Date.now() });
       localStorage.setItem('nsa_uniform_orders', JSON.stringify(prev.slice(0, 20)));
-    } catch (e) {}
-    trySupabaseSave(rec);
-    setOrdered(true); setTimeout(() => setOrdered(false), 6000);
+    } catch (_e) { localOk = false; /* quota / private mode */ }
+    try {
+      const mod = await import('../lib/supabase');
+      if (mod.supabase) await mod.supabase.from('uniform_order_requests').insert(row);
+    } catch (_e) { /* best-effort — local record still stands */ }
+    if (localOk) {
+      setOrderDone({ fulfillment });
+      if (onCreateOrder) onCreateOrder({ ...row, assignments });
+    } else {
+      setOrderError("Could not save your order on this device. Please try again, or email us the Production PDF/PNG and your contact info directly.");
+    }
+    setOrderBusy(false);
+  };
+
+  const submitPO = () => {
+    if (!poNumber.trim()) { setOrderError('Enter a PO number to continue.'); return; }
+    submitOrder('po', { po_number: poNumber.trim(), po_contact: poContact.trim() });
+  };
+  const onStripeSuccess = (result) => {
+    setShowStripeModal(false);
+    submitOrder('card', { stripe_intent_id: (result && result.intentId) || null });
   };
 
   const stepIdx = STEPS.findIndex((s) => s.key === step);
-  const goNext = () => { if (step === 'finalize') { createOrder(); return; } setStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key); };
+  const goNext = () => { if (step === 'finalize') return; setStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key); };
   const goPrev = () => { if (stepIdx === 0) { setScreen('designs'); return; } setStep(STEPS[stepIdx - 1].key); };
-  const nextLabel = step === 'finalize' ? 'Create Order' : 'Next';
+  const nextLabel = 'Next';
 
   if (advanced) {
     return (
@@ -688,6 +879,14 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>
                 <button onClick={() => setSpin((v) => !v)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: spin ? '#fff' : C.navy, background: spin ? C.navy : '#fff', border: '1px solid ' + (spin ? C.navy : C.mid), borderRadius: 4, padding: '5px 11px', cursor: 'pointer' }}>{spin ? 'Pause Spin' : 'Auto-Spin'}</button>
               </div>
+              {bottom.enabled && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 14 }}>
+                  <div style={{ width: 52, height: 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: C.offWhite, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {bottomPreview ? <img src={bottomPreview} alt="shorts" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: C.textLight }}>…</span>}
+                  </div>
+                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>+ Matching Shorts{bottom.linked ? '' : ' (custom)'}</span>
+                </div>
+              )}
             </div>
 
             {/* RIGHT PANEL */}
@@ -706,55 +905,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               {step === 'jersey' && (
                 <div>
                   <div style={railLabel}>Section Design</div>
-                  <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-                    {SECTIONS.map((s) => {
-                      const on = s.key === designSection;
-                      return (
-                        <button key={s.key} onClick={() => setDesignSection(s.key)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7 }}>
-                          <span style={{ width: 11, height: 11, borderRadius: 3, background: SX[s.key].color, border: '1px solid ' + (on ? 'rgba(255,255,255,.5)' : C.mid) }} />{s.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
-                      <div style={groupHead}>{(SECTIONS.find((s) => s.key === designSection) || {}).label}</div>
-                      <div style={groupVal}>{nameForHex(activeSection.color)} · {activeSection.pattern === 'custom' ? (activeSection.patternName || 'Print') : ((PATTERNS.find((p) => p.id === activeSection.pattern) || {}).label || 'Solid')}</div>
-                    </div>
-                    <div style={{ ...railLabel, marginBottom: 8 }}>Pattern</div>
-                    <div style={{ marginBottom: 14 }}>
-                      <Pills options={PATTERNS} active={activeSection.pattern} onPick={(p) => setSection(designSection, { pattern: p })} />
-                    </div>
-                    {printLib.length > 0 && (
-                      <>
-                        <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-                          {printLib.map((p) => {
-                            const on = activeSection.pattern === 'custom' && activeSection.patternImage === p.image;
-                            return (
-                              <button key={p.id} title={p.name} onClick={() => setSection(designSection, { pattern: 'custom', patternImage: p.image, patternName: p.name })}
-                                style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
-                                  border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
-                                  boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
-                                  backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
-                    <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: activeSection.pattern !== 'solid' ? 14 : 0 }}>
-                      {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(activeSection.color).toUpperCase() === p.hex.toUpperCase()} onClick={() => setSection(designSection, { color: p.hex })} />)}
-                    </div>
-                    {activeSection.pattern !== 'solid' && activeSection.pattern !== 'custom' && (
-                      <>
-                        <div style={{ ...railLabel, marginBottom: 8 }}>Secondary Color</div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={30} active={String(activeSection.color2).toUpperCase() === p.hex.toUpperCase()} onClick={() => setSection(designSection, { color2: p.hex })} />)}
-                        </div>
-                      </>
-                    )}
-                  </div>
+                  <SectionEditor sectionDefs={SECTIONS} sections={SX} activeKey={designSection} onSelect={setDesignSection}
+                    onPatch={(patch) => setSection(designSection, patch)} printLib={printLib} />
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
                     {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
@@ -807,6 +959,30 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       <input ref={logoInputRef} type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                     </label>
                   )}
+
+                  <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid ' + C.light }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: bottom.enabled ? 14 : 0 }}>
+                      <div style={{ ...railLabel, marginBottom: 0 }}>Shorts</div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
+                        <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Include shorts</span>
+                      </label>
+                    </div>
+                    {bottom.enabled && (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16, padding: '10px 12px', background: C.offWhite, borderRadius: 6 }}>
+                          <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.text }}>{bottom.linked ? 'Matching jersey design' : 'Custom shorts design'}</span>
+                          <button onClick={bottom.linked ? unlinkBottom : relinkBottom} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: '#fff', border: '1px solid ' + C.mid, borderRadius: 4, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>
+                            {bottom.linked ? 'Customize' : 'Match Jersey'}
+                          </button>
+                        </div>
+                        {!bottom.linked && (
+                          <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
+                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} />
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
               {step === 'numbers' && (
@@ -900,12 +1076,19 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             <div style={{ flex: 1, minWidth: 0, padding: '34px 40px', display: 'flex', flexDirection: 'column' }}>
               <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Design Complete</div>
               <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 32, textTransform: 'uppercase', color: C.navy, lineHeight: 1, margin: '2px 0 0' }}>{(config.teamName || 'Team').toUpperCase()}</h2>
-              <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, margin: '6px 0 24px' }}>{(config.teamName || 'Team')} Home Jersey</div>
+              <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, margin: '6px 0 24px' }}>{(config.teamName || 'Team')} Home Jersey{bottom.enabled ? ' + Shorts' : ''}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, maxWidth: 640 }}>
                 {['front', 'back'].map((v) => (
                   <div key={v} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: '100%', aspectRatio: '1/1', background: C.offWhite, border: '1px solid ' + C.light, borderRadius: 8, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {review[v] ? <img src={review[v]} alt={v} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ color: C.textLight, fontSize: 13 }}>Rendering…</span>}
+                    <div style={{ width: '100%', aspectRatio: bottom.enabled ? '4/5' : '1/1', background: C.offWhite, border: '1px solid ' + C.light, borderRadius: 8, overflow: 'hidden', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 8, boxSizing: 'border-box' }}>
+                      <div style={{ flex: bottom.enabled ? '0 1 62%' : '1 1 100%', width: '100%', minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {review[v] ? <img src={review[v]} alt={v} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ color: C.textLight, fontSize: 13 }}>Rendering…</span>}
+                      </div>
+                      {bottom.enabled && (
+                        <div style={{ flex: '0 1 34%', width: '100%', minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderTop: '1px dashed ' + C.light, paddingTop: 6, marginTop: 4 }}>
+                          {bottomReview[v] ? <img src={bottomReview[v]} alt={v + '-shorts'} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ color: C.textLight, fontSize: 12 }}>Rendering…</span>}
+                        </div>
+                      )}
                     </div>
                     <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.4, color: C.textLight }}>{v}</span>
                   </div>
@@ -918,7 +1101,6 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.text, lineHeight: 1.6, marginBottom: 20 }}>Download your design or continue to place your team order. Your rep confirms every order within 24 hours.</div>
               <div style={{ display: 'flex', gap: 10, marginBottom: 22 }}>
                 <button onClick={() => setStep('team')} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: '#fff', border: '1px solid ' + C.navy, borderRadius: 4, padding: '13px 10px', cursor: 'pointer' }}>Change Design</button>
-                <button onClick={createOrder} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: '1px solid ' + C.red, borderRadius: 4, padding: '13px 10px', cursor: 'pointer' }}>Create Order</button>
               </div>
               <div style={{ padding: '14px 16px', background: '#fff', border: '1px solid ' + C.light, borderRadius: 6, marginBottom: 14 }}>
                 <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, marginBottom: 4 }}>Send to Production</div>
@@ -935,14 +1117,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               </div>
               <div style={sectionHead}>Construction Materials</div>
               {[
-                ...SECTIONS.map((s) => {
-                  const z = SX[s.key];
-                  let v;
-                  if (z.pattern === 'custom') v = `Print: ${z.patternName || 'Custom'}`;
-                  else if (z.pattern !== 'solid') v = `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.color2)}`;
-                  else v = nameForHex(z.color);
-                  return { label: s.label, value: v, sw: z.color };
-                }),
+                ...SECTIONS.map((s) => ({ label: s.label, value: zoneRowValue(SX[s.key]), sw: SX[s.key].color })),
+                ...(bottom.enabled ? BOTTOM_SECTIONS.map((s) => ({ label: `Shorts — ${s.label}`, value: zoneRowValue(bottomSections[s.key]), sw: bottomSections[s.key].color })) : []),
                 { label: 'Number Fill', value: nameForHex(config.numberColor), sw: config.numberColor },
                 { label: 'Number & Name Font', value: (FONTS.find((f) => f.id === config.font) || {}).label || 'Block' },
                 { label: 'Logos', value: (LOGO_SLOTS.filter((s) => config.logos && config.logos[s.key] && config.logos[s.key].src).map((s) => s.label).join(', ')) || 'None' },
@@ -966,8 +1142,51 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight }}>{totalQty} jerseys · ${UNIT_PRICE} ea</div>
                 <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 26, color: C.navy }}>${(totalQty * UNIT_PRICE).toLocaleString()}</div>
               </div>
-              {ordered && <div style={{ marginTop: 18, padding: '14px 16px', background: '#fff', borderLeft: '3px solid ' + C.red, fontFamily: F_BODY, fontSize: 13, color: C.text, lineHeight: 1.6 }}>Order request received — your rep will follow up within 24 hours.</div>}
               {savedMsg && <div style={{ marginTop: 18, padding: '14px 16px', background: '#fff', borderLeft: '3px solid ' + C.navy, fontFamily: F_BODY, fontSize: 13, color: C.text }}>Design saved.</div>}
+
+              {/* Complete the order — pick a fulfillment path once contact info is filled in. */}
+              <div style={{ marginTop: 22, padding: '18px 18px 20px', background: '#fff', border: '2px solid ' + C.navy, borderRadius: 8 }}>
+                <div style={{ ...sectionHead, border: 'none', paddingBottom: 0, marginBottom: 14 }}>Complete Your Order</div>
+                {orderDone ? (
+                  <div style={{ padding: '14px 16px', background: C.offWhite, borderLeft: '3px solid ' + C.green, fontFamily: F_BODY, fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+                    {orderDone.fulfillment === 'card' && 'Payment received — thank you! Your rep will confirm production details within 24 hours.'}
+                    {orderDone.fulfillment === 'po' && "PO submitted — we'll invoice your school per the PO terms. Your rep will follow up within 24 hours."}
+                    {orderDone.fulfillment === 'manual' && "Order added to our queue — your rep will follow up within 24 hours to confirm payment and production."}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+                      <LabeledInput label="Your Name" value={contactName} onChange={setContactName} maxLength={60} />
+                      <LabeledInput label="Email" value={contactEmail} onChange={setContactEmail} maxLength={80} />
+                    </div>
+                    {!contactValid && <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 12 }}>Enter your name and a valid email to complete the order.</div>}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <button onClick={() => setShowStripeModal(true)} disabled={!contactValid || orderBusy} style={{ ...checkoutBtn(true), opacity: (!contactValid || orderBusy) ? 0.5 : 1 }}>💳 Pay by Card Now</button>
+                      <button onClick={() => setPoOpen((v) => !v)} disabled={!contactValid || orderBusy} style={{ ...checkoutBtn(false), opacity: (!contactValid || orderBusy) ? 0.5 : 1 }}>🏫 School Purchase Order</button>
+                      {poOpen && (
+                        <div style={{ padding: '12px 14px', background: C.offWhite, borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <LabeledInput label="PO Number" value={poNumber} onChange={setPoNumber} maxLength={40} />
+                          <LabeledInput label="Billing Contact (optional)" value={poContact} onChange={setPoContact} maxLength={80} />
+                          <button onClick={submitPO} disabled={orderBusy} style={{ ...prodBtn, opacity: orderBusy ? 0.6 : 1 }}>{orderBusy ? 'Submitting…' : 'Submit PO Order'}</button>
+                        </div>
+                      )}
+                      <button onClick={() => submitOrder('manual')} disabled={!contactValid || orderBusy} style={{ ...checkoutBtn(false), opacity: (!contactValid || orderBusy) ? 0.5 : 1 }}>{orderBusy ? 'Submitting…' : '📋 Add to Order Queue'}</button>
+                    </div>
+                    <div style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight, marginTop: 10, lineHeight: 1.5 }}>Card charges now. PO and Order Queue require no payment today — your rep confirms details and invoices per your terms.</div>
+                    {orderError && <div style={{ marginTop: 12, padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{orderError}</div>}
+                  </>
+                )}
+              </div>
+              {showStripeModal && (
+                <StripePaymentModal
+                  invoices={[{ id: 'uniform-' + fileBase(), total: totalQty * UNIT_PRICE, paid: 0 }]}
+                  customerName={contactName || config.teamName || 'Team'}
+                  customerEmail={contactEmail}
+                  paymentNote={`${config.teamName || 'Team'} uniform order — ${totalQty} jersey${totalQty === 1 ? '' : 's'}${bottom.enabled ? ' + shorts' : ''}.`}
+                  onClose={() => setShowStripeModal(false)}
+                  onSuccess={onStripeSuccess}
+                />
+              )}
             </div>
           </div>
         )}
@@ -983,7 +1202,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={goPrev} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>{stepIdx === 0 ? 'Designs' : 'Back'}</button>
-          <button onClick={goNext} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 14, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: 'none', borderRadius: 4, padding: '12px 26px', cursor: 'pointer' }}>{nextLabel}</button>
+          {step !== 'finalize' && <button onClick={goNext} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 14, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: 'none', borderRadius: 4, padding: '12px 26px', cursor: 'pointer' }}>{nextLabel}</button>}
         </div>
       </div>
       </>)}
@@ -995,3 +1214,4 @@ const loadStyle = { position: 'fixed', inset: 0, display: 'flex', alignItems: 'c
 const ghostBtn = { flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase', color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '10px 8px', cursor: 'pointer' };
 const prodBtn = { flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.navy, border: '1px solid ' + C.navy, borderRadius: 4, padding: '11px 8px', cursor: 'pointer' };
 const sectionHead = { fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, borderBottom: '2px solid ' + C.navy, paddingBottom: 8, marginBottom: 2 };
+const checkoutBtn = (primary) => ({ width: '100%', textAlign: 'left', fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.4, textTransform: 'uppercase', color: primary ? '#fff' : C.navy, background: primary ? C.red : '#fff', border: '1.5px solid ' + (primary ? C.red : C.mid), borderRadius: 6, padding: '13px 14px', cursor: 'pointer' });

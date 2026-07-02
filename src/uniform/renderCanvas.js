@@ -295,10 +295,27 @@ export async function renderProductionSheet(spec, opts = {}) {
   const f = renderUniform(front, spec, { ...opts, images, assets: assetsF, view: 'front', width: per, background: '#ffffff' });
   const b = renderUniform(back, spec, { ...opts, images, assets: assetsB, view: 'back', width: per, background: '#ffffff' });
 
-  const pad = 40; const gap = 40; const headH = 70;
+  // Optional paired bottom garment (e.g. shorts) — a second row, same column
+  // widths as the top row so front/back line up visually.
+  let bf, bb, bottomSpecN, bottomTpl;
+  if (opts.bottomSpec) {
+    bottomSpecN = ds.normalizeSpec(opts.bottomSpec);
+    const bImages = await preloadLogos(bottomSpecN);
+    await preloadPatternImages(bottomSpecN);
+    bottomTpl = getTemplate(bottomSpecN.garmentId);
+    const bAssetsF = bottomTpl.type === 'raster' ? await preloadRasterAssets(bottomTpl.views.front) : undefined;
+    const bAssetsB = bottomTpl.type === 'raster' ? await preloadRasterAssets(bottomTpl.views.back) : undefined;
+    bf = document.createElement('canvas'); bb = document.createElement('canvas');
+    renderUniform(bf, bottomSpecN, { images: bImages, assets: bAssetsF, view: 'front', width: f.width, background: '#ffffff' });
+    renderUniform(bb, bottomSpecN, { images: bImages, assets: bAssetsB, view: 'back', width: b.width, background: '#ffffff' });
+  }
+
+  const pad = 40; const gap = 40; const headH = 70; const rowGap = 26;
+  const topRowH = Math.max(f.height, b.height);
+  const bottomRowH = bf ? Math.max(bf.height, bb.height) : 0;
   const out = document.createElement('canvas');
   out.width = pad * 2 + f.width + gap + b.width;
-  out.height = headH + Math.max(f.height, b.height) + pad;
+  out.height = headH + topRowH + (bf ? rowGap + bottomRowH : 0) + pad;
   const ctx = out.getContext('2d');
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, out.width, out.height);
 
@@ -306,7 +323,8 @@ export async function renderProductionSheet(spec, opts = {}) {
   ctx.fillStyle = '#192853';
   ctx.font = "700 30px 'Saira Condensed', Arial, sans-serif";
   ctx.textBaseline = 'middle';
-  ctx.fillText(`${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name}`, pad, headH / 2);
+  const title = bf ? `${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name} + ${bottomTpl.name}` : `${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name}`;
+  ctx.fillText(title, pad, headH / 2);
   ctx.font = "400 16px Arial, sans-serif";
   ctx.fillStyle = '#5A6075';
   ctx.textAlign = 'right';
@@ -315,6 +333,11 @@ export async function renderProductionSheet(spec, opts = {}) {
 
   ctx.drawImage(front, pad, headH);
   ctx.drawImage(back, pad + f.width + gap, headH);
+  if (bf) {
+    const y2 = headH + topRowH + rowGap;
+    ctx.drawImage(bf, pad, y2);
+    ctx.drawImage(bb, pad + f.width + gap, y2);
+  }
   return out.toDataURL('image/png');
 }
 
@@ -329,49 +352,74 @@ export async function renderProductionPDF(spec, opts = {}) {
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
   const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
   const M = 40;
 
-  doc.setFillColor(25, 40, 83); doc.rect(0, 0, W, 54, 'F');
-  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(18);
-  doc.text(`${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name}`, M, 34);
-  doc.setFontSize(10); doc.setFont('helvetica', 'normal');
-  doc.text('PRODUCTION PROOF', W - M, 34, { align: 'right' });
+  const drawProofPage = (title, fUrl, bUrl, ftpl) => {
+    doc.setFillColor(25, 40, 83); doc.rect(0, 0, W, 54, 'F');
+    doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(18);
+    doc.text(title, M, 34);
+    doc.setFontSize(10); doc.setFont('helvetica', 'normal');
+    doc.text('PRODUCTION PROOF', W - M, 34, { align: 'right' });
+    const imgW = (W - M * 2 - 30) / 2;
+    const imgH = imgW * (parseViewBox(ftpl.views.front.viewBox).h / parseViewBox(ftpl.views.front.viewBox).w);
+    const top = 70;
+    doc.addImage(fUrl, 'PNG', M, top, imgW, imgH);
+    doc.addImage(bUrl, 'PNG', M + imgW + 30, top, imgW, imgH);
+    doc.setTextColor(90); doc.setFontSize(9);
+    doc.text('FRONT', M + imgW / 2, top + imgH + 12, { align: 'center' });
+    doc.text('BACK', M + imgW + 30 + imgW / 2, top + imgH + 12, { align: 'center' });
+  };
+  drawProofPage(`${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${tpl.name}`, frontUrl, backUrl, tpl);
 
-  // Front/back proofs.
-  const imgW = (W - M * 2 - 30) / 2;
-  const imgH = imgW * (parseViewBox(tpl.views.front.viewBox).h / parseViewBox(tpl.views.front.viewBox).w);
-  const top = 70;
-  doc.addImage(frontUrl, 'PNG', M, top, imgW, imgH);
-  doc.addImage(backUrl, 'PNG', M + imgW + 30, top, imgW, imgH);
-  doc.setTextColor(90); doc.setFontSize(9);
-  doc.text('FRONT', M + imgW / 2, top + imgH + 12, { align: 'center' });
-  doc.text('BACK', M + imgW + 30 + imgW / 2, top + imgH + 12, { align: 'center' });
+  // Optional paired bottom garment (e.g. shorts) — its own proof page.
+  let bottomSpec = null, bottomTpl = null;
+  if (opts.bottomSpec) {
+    bottomSpec = ds.normalizeSpec(opts.bottomSpec);
+    bottomTpl = getTemplate(bottomSpec.garmentId);
+    const bFrontUrl = await renderToDataURL(bottomSpec, { view: 'front', width: 900, background: '#ffffff' });
+    const bBackUrl = await renderToDataURL(bottomSpec, { view: 'back', width: 900, background: '#ffffff' });
+    doc.addPage('letter', 'landscape');
+    drawProofPage(`${(spec.meta && spec.meta.teamName) || 'Custom Uniform'} — ${bottomTpl.name}`, bFrontUrl, bBackUrl, bottomTpl);
+  }
 
-  // Spec table on a second page for room.
+  // Spec table on its own page for room.
   doc.addPage('letter', 'landscape');
   doc.setTextColor(25, 40, 83); doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
   doc.text('Build Specification', M, 44);
   doc.setFontSize(10); doc.setTextColor(40);
   let y = 70;
+  // Guards every section against running off the page — a long roster or a
+  // paired bottom garment can easily push past one sheet.
+  const ensureRoom = () => { if (y > H - 60) { doc.addPage('letter', 'landscape'); y = 44; } };
   const line = (label, value) => {
+    ensureRoom();
     doc.setFont('helvetica', 'bold'); doc.text(String(label), M, y);
     doc.setFont('helvetica', 'normal'); doc.text(String(value), M + 190, y);
     y += 18;
   };
-  line('Garment', tpl.name);
-  line('Fabric', spec.fabric);
-  if (spec.meta && spec.meta.teamName) line('Team', spec.meta.teamName);
-  y += 6;
-  doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Zones', M, y); y += 18;
-  doc.setTextColor(40);
-  tpl.views.front.zones.forEach((z) => {
-    const zs = spec.zones[z.id]; if (!zs) return;
+  const zoneLines = (zspec, ztpl) => ztpl.views.front.zones.forEach((z) => {
+    const zs = zspec.zones[z.id]; if (!zs) return;
     const pat = zs.pattern === 'custom'
       ? ` · print pattern "${zs.patternName || 'custom'}" (see proof)`
       : (zs.pattern && zs.pattern !== 'solid' ? ` · ${zs.pattern} w/ ${ds.nameForHex(zs.color2)} (${zs.color2})` : '');
     line(z.label, `${ds.nameForHex(zs.color)} (${zs.color})${pat}`);
   });
-  y += 6;
+
+  line('Garment', bottomSpec ? `${tpl.name} + ${bottomTpl.name}` : tpl.name);
+  line('Fabric', spec.fabric);
+  if (spec.meta && spec.meta.teamName) line('Team', spec.meta.teamName);
+  y += 6; ensureRoom();
+  doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Zones', M, y); y += 18;
+  doc.setTextColor(40);
+  zoneLines(spec, tpl);
+  if (bottomSpec) {
+    y += 6; ensureRoom();
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text(`${bottomTpl.name} — Zones`, M, y); y += 18;
+    doc.setTextColor(40);
+    zoneLines(bottomSpec, bottomTpl);
+  }
+  y += 6; ensureRoom();
   doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Lettering', M, y); y += 18;
   doc.setTextColor(40);
   ['front', 'back'].forEach((v) => ['number', 'name'].forEach((r) => {
@@ -381,15 +429,14 @@ export async function renderProductionPDF(spec, opts = {}) {
   const logoCount = ((spec.logos && spec.logos.front) || []).length + ((spec.logos && spec.logos.back) || []).length;
   if (logoCount) { y += 6; line('Logos', `${logoCount} placed (see proof)`); }
 
-  // Roster & sizes — what the shop actually prints per jersey. Passed by the
-  // guided builder as opts.roster [{label, qty, nums}] + opts.order totals.
+  // Roster & sizes — what the shop actually prints per jersey (+ matching
+  // shorts, one set per player). Passed by the guided builder as
+  // opts.roster [{label, qty, nums}] + opts.order totals.
   if (opts.roster && opts.roster.length) {
-    const H = doc.internal.pageSize.getHeight();
-    const ensureRoom = () => { if (y > H - 60) { doc.addPage('letter', 'landscape'); y = 44; } };
     y += 6; ensureRoom();
     doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Roster & Sizes', M, y); y += 18;
     doc.setTextColor(40);
-    opts.roster.forEach((r) => { ensureRoom(); line(`${r.label} ×${r.qty}`, `#${r.nums}`); });
+    opts.roster.forEach((r) => line(`${r.label} ×${r.qty}`, `#${r.nums}`));
     if (opts.order) {
       ensureRoom();
       doc.setFont('helvetica', 'bold');
