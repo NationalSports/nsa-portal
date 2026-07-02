@@ -83,6 +83,55 @@ function knitNormalTexture() {
   return t;
 }
 
+// ── Studio render profile ────────────────────────────────────────────────────
+// Every dial that shapes the product-render look, in one place. The viewer
+// seeds from localStorage so a tuned look sticks in that browser; opening the
+// builder with ?studio=1 shows a slider panel that edits these live on the
+// real garment. "Copy values" exports the JSON so winning numbers can be baked
+// in here as the shipped defaults.
+export const STUDIO_DEFAULTS = {
+  key: 1.3,       // main top-front light
+  fill: 0.18,     // soft left fill
+  back: 0.5,      // rear light (back-view color read)
+  hemi: 0.14,     // ambient — the higher it goes, the flatter the garment
+  exposure: 1.0,  // overall brightness
+  env: 0.12,      // environment reflections
+  sheen: 0.1,     // fabric grazing-angle glow
+  aoRadius: 0.09, // AO reach, as a fraction of garment size
+  aoScale: 2.2,   // AO strength
+  bg: 1.0,        // backdrop shade (1 = white, lower = gray studio wall)
+};
+const STUDIO_LS_KEY = 'nsa_uniform_studio';
+export function loadStudioProfile() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STUDIO_LS_KEY) || 'null');
+    const out = { ...STUDIO_DEFAULTS };
+    if (saved && typeof saved === 'object') {
+      for (const k of Object.keys(STUDIO_DEFAULTS)) if (Number.isFinite(saved[k])) out[k] = saved[k];
+    }
+    return out;
+  } catch (_e) { return { ...STUDIO_DEFAULTS }; }
+}
+function saveStudioProfile(p) { try { localStorage.setItem(STUDIO_LS_KEY, JSON.stringify(p)); } catch (_e) { /* quota */ } }
+
+// Push a profile onto a live scene (lights, tone mapping, materials, AO).
+function applyStudioProfile(st, p) {
+  if (!st || !st.lights) return;
+  st.lights.key.intensity = p.key;
+  st.lights.fill.intensity = p.fill;
+  st.lights.back.intensity = p.back;
+  st.lights.hemi.intensity = p.hemi;
+  st.renderer.toneMappingExposure = p.exposure;
+  if (st.scene.background && st.scene.background.isColor) st.scene.background.setScalar(p.bg);
+  for (const { mesh } of st.meshes) {
+    if (mesh.material) { mesh.material.envMapIntensity = p.env; mesh.material.sheen = p.sheen; mesh.material.needsUpdate = true; }
+  }
+  if (st.gtao && st.modelSize) {
+    const maxDim = Math.max(st.modelSize.x, st.modelSize.y, st.modelSize.z) || 1;
+    try { st.gtao.updateGtaoMaterial({ radius: maxDim * p.aoRadius, distanceExponent: 1.2, thickness: maxDim * 0.02, scale: p.aoScale, samples: 16, distanceFallOff: 1, screenSpaceRadius: false }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 function gradientTexture(a, b) {
   const c = document.createElement('canvas'); c.width = 8; c.height = 256;
   const x = c.getContext('2d');
@@ -287,6 +336,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
   const [status, setStatus] = useState('loading');
+  const [studio, setStudio] = useState(loadStudioProfile);
+  const studioRef = useRef(studio); studioRef.current = studio;
+  const studioOpen = typeof window !== 'undefined' && /[?&]studio=1/.test(window.location.search);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -301,7 +353,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     // saturated brand colors true. ACES filmic skewed deep reds (maroon) toward
     // salmon pink on the lit side.
     renderer.toneMapping = THREE.NeutralToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    renderer.toneMappingExposure = studioRef.current.exposure;
     mount.appendChild(renderer.domElement);
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
@@ -310,7 +362,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     const scene = new THREE.Scene();
     // Solid white stage: the AO pass needs an opaque background, and both host
     // surfaces (wizard stage / editor stage) are white anyway.
-    scene.background = new THREE.Color(0xffffff);
+    scene.background = new THREE.Color().setScalar(studioRef.current.bg);
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
@@ -323,12 +375,12 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     // Directional-heavy rig: the flatter the fill, the faster a white garment
     // disappears into a white page. Shape comes from the key + AO; hemi stays
     // low so downward-facing cloth shades into soft gray like a studio render.
-    const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(1.5, 2.5, 2.5); scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.3); fill.position.set(-2, 0.5, 1); scene.add(fill);
+    const key = new THREE.DirectionalLight(0xffffff, studioRef.current.key); key.position.set(1.2, 3.2, 2.2); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, studioRef.current.fill); fill.position.set(-2, 0.5, 1); scene.add(fill);
     // Rear light so the BACK of the garment reads its true colorway (orbit moves
     // the camera, not the model).
-    const back = new THREE.DirectionalLight(0xffffff, 0.6); back.position.set(-1, 1.5, -2.5); scene.add(back);
-    const hemi = new THREE.HemisphereLight(0xffffff, 0xb8bdc6, 0.35); scene.add(hemi);
+    const back = new THREE.DirectionalLight(0xffffff, studioRef.current.back); back.position.set(-1, 2.2, -2.5); scene.add(back);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xaeb4bd, studioRef.current.hemi); scene.add(hemi);
 
     // Post chain: GTAO is what keeps a white jersey visible on a white page —
     // creases, under-sleeve and collar contact shading build up the way they do
@@ -342,7 +394,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     composer.addPass(gtao);
     composer.addPass(new OutputPass());
 
-    const st = { renderer, scene, camera, controls, pmrem, composer, gtao, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
+    const st = { renderer, scene, camera, controls, pmrem, composer, gtao, lights: { key, fill, back, hemi }, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
     stateRef.current = st;
 
     const draco = new DRACOLoader().setDecoderPath(PUB + '/draco/');
@@ -376,7 +428,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             name: srcMat.name,
             color: srcMat.color ? srcMat.color.clone() : 0xffffff,
             side: THREE.FrontSide,
-            envMapIntensity: 0.2,
+            envMapIntensity: studioRef.current.env,
             // Keep a baked normal map when the vendor supplied one (that's the
             // cloth-wrinkle detail); otherwise fall back to our knit bump so
             // solid colors still read as fabric, not plastic.
@@ -384,7 +436,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
             normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.6, 0.6),
             // Fabric sheen (the soft edge glow cloth has at grazing angles) is
             // what separates "jersey" from "painted plastic" at arm's length.
-            sheen: 0.1,
+            sheen: studioRef.current.sheen,
             sheenRoughness: 0.7,
             sheenColor: new THREE.Color(0xffffff),
           });
@@ -399,7 +451,8 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       st.modelSize = size.clone();
       // AO distances are in model units, so tune the pass to this asset's size.
       try {
-        gtao.updateGtaoMaterial({ radius: maxDim * 0.04, distanceExponent: 1, thickness: maxDim * 0.01, scale: 1.4, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
+        const sp = studioRef.current;
+        gtao.updateGtaoMaterial({ radius: maxDim * sp.aoRadius, distanceExponent: 1.2, thickness: maxDim * 0.02, scale: sp.aoScale, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
         gtao.setSceneClipBox(new THREE.Box3().setFromObject(rootObj));
       } catch (e) { /* AO tuning is best-effort */ }
       try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) { /* keep default */ }
@@ -444,19 +497,55 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
   // re-apply on autoRotate toggle
   useEffect(() => { const st = stateRef.current; if (st && st.controls) st.controls.autoRotate = !!autoRotate; }, [autoRotate]);
 
+  // studio profile changes apply to the live scene and persist locally
+  useEffect(() => {
+    const st = stateRef.current;
+    if (st) applyStudioProfile(st, studio);
+    saveStudioProfile(studio);
+  }, [studio]);
+
   // re-color on spec change
   useEffect(() => {
     const st = stateRef.current;
     if (st && st.meshes && st.meshes.length) { try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) {} }
   }, [spec]);
 
+  const STUDIO_SLIDERS = [
+    ['key', 'Key Light', 0, 2.5, 0.05], ['fill', 'Fill Light', 0, 1.5, 0.02], ['back', 'Back Light', 0, 1.5, 0.02],
+    ['hemi', 'Ambient', 0, 1, 0.02], ['exposure', 'Exposure', 0.6, 1.6, 0.02], ['env', 'Reflections', 0, 1, 0.02],
+    ['sheen', 'Sheen', 0, 1, 0.02], ['aoRadius', 'Shadow Size', 0.01, 0.25, 0.005], ['aoScale', 'Shadow Strength', 0, 5, 0.1],
+    ['bg', 'Backdrop', 0.8, 1, 0.01],
+  ];
+
   return (
     <div ref={mountRef} style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, cursor: 'grab' }}>
       {status === 'loading' && <div style={ovl}>Loading 3D…</div>}
       {status === 'error' && <div style={ovl}>Couldn’t load the 3D model.</div>}
       {status === 'nomodel' && <div style={ovl}>3D preview isn’t available for this garment yet.</div>}
+      {studioOpen && (
+        <div style={{ position: 'absolute', top: 10, right: 10, width: 230, background: 'rgba(255,255,255,0.96)', border: '1px solid #d7dbe3', borderRadius: 8, padding: '12px 14px', boxShadow: '0 4px 18px rgba(15,23,42,.14)', fontFamily: 'system-ui, sans-serif', zIndex: 5 }}
+          onPointerDown={(e) => e.stopPropagation()}>
+          <div style={{ fontWeight: 800, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', color: '#192853', marginBottom: 8 }}>Render Studio</div>
+          {STUDIO_SLIDERS.map(([k, label, min, max, step]) => (
+            <div key={k} style={{ marginBottom: 7 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#3d4356', marginBottom: 2 }}>
+                <span>{label}</span><span>{Number(studio[k]).toFixed(k === 'aoRadius' ? 3 : 2)}</span>
+              </div>
+              <input type="range" min={min} max={max} step={step} value={studio[k]}
+                onChange={(e) => setStudio((prev) => ({ ...prev, [k]: parseFloat(e.target.value) }))}
+                style={{ width: '100%', accentColor: '#192853' }} />
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button onClick={() => setStudio({ ...STUDIO_DEFAULTS })} style={studioBtn}>Reset</button>
+            <button onClick={() => { try { navigator.clipboard.writeText(JSON.stringify(studio, null, 2)); } catch (_e) {} }} style={{ ...studioBtn, background: '#192853', color: '#fff', borderColor: '#192853' }}>Copy values</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const studioBtn = { flex: 1, fontSize: 11, fontWeight: 700, padding: '7px 0', borderRadius: 5, border: '1px solid #c9cedb', background: '#fff', color: '#192853', cursor: 'pointer' };
 
 const ovl = { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#5A6075', fontFamily: "'Source Sans 3',system-ui,sans-serif", fontSize: 14, pointerEvents: 'none' };
