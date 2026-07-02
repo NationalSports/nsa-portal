@@ -40,6 +40,38 @@ function matchZone(name) {
   return null;
 }
 
+// Procedural knit normal map: fine grain + a soft vertical rib, tiled across
+// the garment. Vendor models without a baked normal map (CLO exports ship
+// none) render as smooth plastic without this — the micro-bump is what makes
+// a solid color read as fabric.
+let _knitNormal = null;
+function knitNormalTexture() {
+  if (_knitNormal) return _knitNormal;
+  const S = 128;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  const img = x.createImageData(S, S);
+  const d = img.data;
+  for (let py = 0; py < S; py++) {
+    for (let px = 0; px < S; px++) {
+      const i = (py * S + px) * 4;
+      const rib = Math.sin((px / S) * Math.PI * 16) * 14;           // vertical knit ribs
+      const grainX = (Math.sin(px * 12.9898 + py * 78.233) * 43758.5453 % 1) * 24 - 12; // hash noise
+      const grainY = (Math.sin(px * 39.346 + py * 11.135) * 24634.6345 % 1) * 24 - 12;
+      d[i] = Math.max(0, Math.min(255, 128 + rib + grainX));
+      d[i + 1] = Math.max(0, Math.min(255, 128 + grainY));
+      d[i + 2] = 255;
+      d[i + 3] = 255;
+    }
+  }
+  x.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(24, 24);
+  _knitNormal = t;
+  return t;
+}
+
 function gradientTexture(a, b) {
   const c = document.createElement('canvas'); c.width = 8; c.height = 256;
   const x = c.getContext('2d');
@@ -274,7 +306,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
     controls.enablePan = false;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
 
-    const key = new THREE.DirectionalLight(0xffffff, 0.8); key.position.set(1.5, 2.5, 2.5); scene.add(key);
+    const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(1.5, 2.5, 2.5); scene.add(key);
     const fill = new THREE.DirectionalLight(0xffffff, 0.3); fill.position.set(-2, 0.5, 1); scene.add(fill);
     // Rear light + even hemisphere fill so the BACK of the garment reads its true
     // colorway (orbit moves the camera, not the model, so front-only lights leave
@@ -312,7 +344,17 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
           // catch the lights and wash tinted colors toward pastel. Keep the
           // original name: matchZone falls back to it for zone matching.
           const srcMat = o.material;
-          o.material = new THREE.MeshStandardMaterial({ name: srcMat.name, color: srcMat.color ? srcMat.color.clone() : 0xffffff, side: THREE.FrontSide, envMapIntensity: 0.35 });
+          o.material = new THREE.MeshStandardMaterial({
+            name: srcMat.name,
+            color: srcMat.color ? srcMat.color.clone() : 0xffffff,
+            side: THREE.FrontSide,
+            envMapIntensity: 0.35,
+            // Keep a baked normal map when the vendor supplied one (that's the
+            // cloth-wrinkle detail); otherwise fall back to our knit bump so
+            // solid colors still read as fabric, not plastic.
+            normalMap: srcMat.normalMap || knitNormalTexture(),
+            normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.55, 0.55),
+          });
           const zone = matchZone(o.name) || matchZone(o.material && o.material.name);
           st.meshes.push({ mesh: o, zone });
         }
