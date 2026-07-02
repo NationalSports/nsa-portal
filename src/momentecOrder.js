@@ -7,11 +7,14 @@
 // injected server-side by the proxy and never live in the client payload. Dry-run-safe:
 // no network calls here.
 //
-// NOTE: packageType / isKitOrder / the storeId property and shipMode codes are pending
-// confirmation from Momentec (their Sample Blank Order omits packageType/isKitOrder).
-// Defaults below follow that sample; adjust once Momentec confirms the blank-order spec.
+// Field values verified against Momentec's OpenAPI spec (momentec-v14-updated.yaml, the
+// source behind momentecbrands.com/rest-api): isKitOrder allows 'true'/'false' only (blank
+// orders are never kit orders), quantity is a string, and the address block requires
+// addressId/shipTo/attention/shipAddress1/shipCity/shipZip/residence/shipComplete/shipCountry
+// plus firstName-or-lastName. Their Sample Blank Order omits packageType/isKitOrder entirely;
+// we send explicit spec-legal values. shipMode 103 = FedEx Ground per the spec's mode table.
 
-export const MT_SHIP_MODES = { ground: '103' }; // 103 = ground per the docs sample
+export const MT_SHIP_MODES = { ground: '103' }; // 103 = FedEx Ground per the spec's shipping-mode table
 
 // Flatten batch PO entries into Momentec order lines (one per size).
 export function buildMomentecOrderLines(batchPOs) {
@@ -25,7 +28,10 @@ export function buildMomentecOrderLines(batchPOs) {
       const skuBySize = it._mt_skus || {};
       Object.entries(it.sizes || {}).forEach(([size, qty]) => {
         if (!qty || qty <= 0) return;
-        const sku = String(skuBySize[size] || it._mt_sku || '');
+        // No _mt_sku fallback here: it's the colorway (design.color) WITHOUT the size — a
+        // truncated, invalid order SKU that would also skip the modal's live resolution and
+        // missing-SKU submit block. Leave blank so the line resolves (or blocks) properly.
+        const sku = String(skuBySize[size] || '');
         if (!sku) warnings.push(`Line (${[style, color, size].filter(Boolean).join(' ')}) is missing a Momentec SKU`);
         lines.push({
           key: `${style}|${color}|${size}`,
@@ -47,9 +53,9 @@ export function buildMomentecOrderPayload({
   poNumber,
   batchPOs,
   lineItems,
-  shipTo,                  // { companyName, attentionTo, address1, address2, city, region, postalCode, phone }
-  shipMode = '103',        // 103 = ground
-  isKitOrder = 'N',        // blank goods = not a kit
+  shipTo,                  // { companyName, attentionTo, firstName, lastName, address1, address2, city, region, postalCode, phone }
+  shipMode = '103',        // 103 = FedEx Ground
+  isKitOrder = 'false',    // blank goods = not a kit; spec allows 'true'/'false' only
   packageType = 'Blank',
   storeId = '',            // optional storeId property (per sample)
   addressId = '1',
@@ -57,6 +63,20 @@ export function buildMomentecOrderPayload({
   let lines = lineItems, warnings = [];
   if (!lines) { const built = buildMomentecOrderLines(batchPOs); lines = built.lines; warnings = built.warnings; }
   const ship = shipTo || {};
+  // Momentec keys the recipient name on the address off firstName/lastName — their spec
+  // says "Either firstName or lastName is required", and orders sent with both blank
+  // land nameless in their system even when shipTo/attention are filled. Derive a name
+  // when the caller doesn't supply one: split a multi-word attention into first/last,
+  // otherwise fall back to the company name.
+  let firstName = ship.firstName || '';
+  let lastName = ship.lastName || '';
+  if (!firstName && !lastName) {
+    const attn = String(ship.attentionTo || ship.attn || '').trim();
+    const company = String(ship.companyName || ship.customer || '').trim();
+    const words = attn.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) { firstName = words.slice(0, -1).join(' '); lastName = words[words.length - 1]; }
+    else lastName = company || attn;
+  }
   const order = {
     packageType,
     shipMode: String(shipMode),
@@ -85,8 +105,8 @@ export function buildMomentecOrderPayload({
       telePhone: ship.phone || '',
       residence: 'N',
       shipComplete: 'N',
-      firstName: ship.firstName || '',
-      lastName: ship.lastName || '',
+      firstName,
+      lastName,
     }],
   };
   const summary = {

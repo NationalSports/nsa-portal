@@ -64,6 +64,43 @@ exports.handler = async (event) => {
     }
   }
 
+  // ─── Momentec order verification (GET /v2/Order + /v2/OrderLines) ───
+  // service=order-details&env=stage|prod&ecomOrderId=… (or invoiceOrderId=…) — reads back
+  // what Momentec actually registered for an order: header status/CO#/tracking plus every
+  // line's itemNumber+quantity. Used to confirm an API order landed (their intake has gone
+  // quiet on us before) and that the registered SKUs match what we submitted.
+  if (event.queryStringParameters?.service === 'order-details') {
+    const v = await verifyUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+    const env = (event.queryStringParameters?.env || 'prod').toLowerCase();
+    const host = V2_HOSTS[env];
+    if (!host) return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Unknown Momentec env "${env}". Use stage or prod.` }) };
+    const ecomOrderId = String(event.queryStringParameters?.ecomOrderId || '').trim();
+    const invoiceOrderId = String(event.queryStringParameters?.invoiceOrderId || '').trim();
+    if (!ecomOrderId && !invoiceOrderId) return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'ecomOrderId or invoiceOrderId is required.' }) };
+    const idQ = ecomOrderId ? `ecomOrderId=${encodeURIComponent(ecomOrderId)}` : `invoiceOrderId=${encodeURIComponent(invoiceOrderId)}`;
+    const logonId = process.env.MOMENTEC_LOGON_ID || '';
+    const parse = (t) => { try { return JSON.parse(t); } catch { return null; } };
+    try {
+      const [oResp, lResp] = await Promise.all([
+        fetch(`${host}/v2/Order?${logonId ? `logonId=${encodeURIComponent(logonId)}&` : ''}${idQ}`, { headers: { 'Accept': 'application/json' } }),
+        fetch(`${host}/v2/OrderLines?${idQ}`, { headers: { 'Accept': 'application/json' } }),
+      ]);
+      const [oText, lText] = await Promise.all([oResp.text(), lResp.text()]);
+      const oJson = parse(oText), lJson = parse(lText);
+      const orders = Array.isArray(oJson?.asgOrderResponse) ? oJson.asgOrderResponse : [];
+      const lines = Array.isArray(lJson?.asgOrderLinesResponse) ? lJson.asgOrderLinesResponse : [];
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        ok: true, env,
+        found: orders.length > 0 || lines.length > 0,
+        order: orders[0] || null, lines,
+        _status: { order: oResp.status, lines: lResp.status },
+      }) };
+    } catch (error) {
+      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Momentec order lookup failed: ${error.message}` }) };
+    }
+  }
+
   // ─── Momentec /v2/Style (catalog read: colors, sizes, images, price, live stock) ───
   // service=style — public "Basic" variant, no credentials. Body: { productOrDesignNumber }.
   // Reads from prod by default (real catalog data); ?env=stage to target the sandbox.
