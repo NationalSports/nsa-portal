@@ -7,11 +7,14 @@
 // injected server-side by the proxy and never live in the client payload. Dry-run-safe:
 // no network calls here.
 //
-// NOTE: packageType / isKitOrder / the storeId property and shipMode codes are pending
-// confirmation from Momentec (their Sample Blank Order omits packageType/isKitOrder).
-// Defaults below follow that sample; adjust once Momentec confirms the blank-order spec.
+// Field values verified against Momentec's OpenAPI spec (momentec-v14-updated.yaml, the
+// source behind momentecbrands.com/rest-api): isKitOrder allows 'true'/'false' only (blank
+// orders are never kit orders), quantity is a string, and the address block requires
+// addressId/shipTo/attention/shipAddress1/shipCity/shipZip/residence/shipComplete/shipCountry
+// plus firstName-or-lastName. Their Sample Blank Order omits packageType/isKitOrder entirely;
+// we send explicit spec-legal values. shipMode 103 = FedEx Ground per the spec's mode table.
 
-export const MT_SHIP_MODES = { ground: '103' }; // 103 = ground per the docs sample
+export const MT_SHIP_MODES = { ground: '103' }; // 103 = FedEx Ground per the spec's shipping-mode table
 
 // Flatten batch PO entries into Momentec order lines (one per size).
 export function buildMomentecOrderLines(batchPOs) {
@@ -51,8 +54,8 @@ export function buildMomentecOrderPayload({
   batchPOs,
   lineItems,
   shipTo,                  // { companyName, attentionTo, firstName, lastName, address1, address2, city, region, postalCode, phone }
-  shipMode = '103',        // 103 = ground
-  isKitOrder = 'N',        // blank goods = not a kit
+  shipMode = '103',        // 103 = FedEx Ground
+  isKitOrder = 'false',    // blank goods = not a kit; spec allows 'true'/'false' only
   packageType = 'Blank',
   storeId = '',            // optional storeId property (per sample)
   addressId = '1',

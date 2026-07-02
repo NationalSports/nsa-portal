@@ -39,6 +39,23 @@ describe('buildMomentecOrderPayload recipient name', () => {
   });
 });
 
+describe('order payload spec compliance (momentec-v14 OpenAPI)', () => {
+  test('isKitOrder uses the documented true/false values, not Y/N', () => {
+    const { order } = buildMomentecOrderPayload({ poNumber: 'NSA 1', lineItems: [LINE], shipTo: {} });
+    expect(['true', 'false']).toContain(order.isKitOrder);
+    expect(order.isKitOrder).toBe('false'); // blank goods are never kit orders
+  });
+
+  test('sends every required root and address field with quantity as a string', () => {
+    const { order } = buildMomentecOrderPayload({ poNumber: 'NSA 1', lineItems: [LINE], shipTo: { companyName: 'NSA', attentionTo: 'Receiving', address1: '210 E Emerson Ave', city: 'Orange', region: 'CA', postalCode: '92865' } });
+    ['packageType', 'shipMode', 'isKitOrder', 'poNum', 'items', 'addresses'].forEach(k => expect(order[k]).toBeDefined());
+    const a = order.addresses[0];
+    ['addressId', 'shipTo', 'attention', 'shipAddress1', 'shipCity', 'shipZip', 'residence', 'shipComplete', 'shipCountry'].forEach(k => expect(String(a[k] ?? '')).not.toBe(''));
+    expect(a.firstName || a.lastName).toBeTruthy(); // "Either firstName or lastName is required"
+    expect(typeof order.items[0].quantity).toBe('string');
+  });
+});
+
 describe('buildMomentecOrderLines SKU stamping', () => {
   test('uses the stamped per-size SKU when present', () => {
     const { lines, warnings } = buildMomentecOrderLines([{

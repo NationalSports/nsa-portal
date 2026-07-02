@@ -1223,6 +1223,18 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   return data;
 };
 
+// Read back what Momentec actually registered for an order (GET /v2/Order + /v2/OrderLines
+// via the proxy). Verifies an API submission landed AND that the registered line SKUs match
+// what we sent — their intake has silently dropped orders and swapped garments before.
+// Resolves to { found, order:{orderStatus,poNum,invoiceOrderId,trackingNumber,…}|null,
+// lines:[{itemNumber,orderedQuantity,status,trackingNumber,…}] }; throws on transport failure.
+const momentecOrderDetails = async (ecomOrderId, env = 'prod') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=order-details&env=${encodeURIComponent(env)}&ecomOrderId=${encodeURIComponent(ecomOrderId)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || `Momentec order lookup failed (HTTP ${response.status})`);
+  return data;
+};
+
 // ─── Momentec /v2/Style — normalized colors/sizes/images/price/stock ───
 // Fetches real catalog data from the /v2 API (via the proxy's public Basic route)
 // and shapes it to match the vendor-search result the Order Editor consumes:
@@ -1283,10 +1295,15 @@ const momentecStyleV2 = async (design, env = 'prod') => {
 };
 
 // Collapse Momentec's one-size tokens (OS, OSFA, OSFM, "One Size"…) so an order line's
-// "OSFA" matches a catalog "OS". Real sizes pass through (uppercased, separators stripped).
+// "OSFA" matches a catalog "OS", and collapse plus-size spellings — Momentec's feed uses
+// 2X/3X/4X while portal items (esp. from the local catalog) use 2XL/XXL — so those resolve
+// instead of blocking the order. Other sizes pass through (uppercased, separators stripped).
 const _mtNormSize = (s) => {
   const u = String(s || '').toUpperCase().replace(/[\s._/-]/g, '');
-  return ['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u) ? 'OS' : u;
+  if (['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u)) return 'OS';
+  const nx = u.match(/^([2-6])XL?$/); if (nx) return nx[1] + 'X';           // 2XL / 2X → 2X
+  if (/^X{2,6}L$/.test(u)) return (u.length - 1) + 'X';                     // XXL → 2X, XXXL → 3X
+  return u;
 };
 
 // Resolve missing Momentec order SKUs (design.colorCode.size) live from /v2/Style,
@@ -1563,4 +1580,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
