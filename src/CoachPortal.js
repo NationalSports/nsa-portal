@@ -106,7 +106,7 @@ function CoachStore({ customer, storeIds }) {
   // progress drafts stay hidden until published. Everything live renders as the
   // usual order-tracking card.
   const pending = stores.filter((s) => s.status === 'draft' && s.created_via === 'coach');
-  const live = stores.filter((s) => s.status !== 'draft');
+  const live = stores.filter((s) => s.status !== 'draft' && s.status !== 'archived');
   if (!pending.length && !live.length) return null;
   return (
     <div style={{ marginBottom: 18 }}>
