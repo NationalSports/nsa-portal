@@ -67,6 +67,73 @@ const LOGO_SLOTS = [
 const SLOT_BY_KEY = LOGO_SLOTS.reduce((m, s) => { m[s.key] = s; return m; }, {});
 const emptyLogos = () => LOGO_SLOTS.reduce((m, s) => { m[s.key] = { src: null, x: s.x, y: s.y, scale: s.scale, rot: 0, aspect: 1 }; return m; }, {});
 
+// ── catalog: sports + starting designs ───────────────────────────────────────
+// Every design is a preset over the same spec model, so each one is fully
+// recolorable after selection. Thumbnails render live from the real proof
+// pipeline (no static assets); vendor garment models per sport slot in here.
+const SPORTS = [
+  { key: 'football', label: 'Football', icon: '🏈' },
+  { key: 'volleyball', label: 'Volleyball', icon: '🏐' },
+  { key: 'basketball', label: 'Basketball', icon: '🏀' },
+  { key: 'baseball', label: 'Baseball', icon: '⚾' },
+  { key: 'track', label: 'Track & Field', icon: '🎽' },
+  { key: 'soccer', label: 'Soccer', icon: '⚽' },
+];
+const SPORT_LABELS = SPORTS.reduce((m, s) => { m[s.key] = s.label; return m; }, {});
+const DESIGN_PRESETS = [
+  { id: 'bold', name: 'Bold Stripes', config: { pattern: 'boldstripe', primary: '#7CB0E0', secondary: '#FFFFFF', trim: '#192853', numberColor: '#192853' } },
+  { id: 'classic', name: 'Classic Solid', config: { pattern: 'solid', primary: '#192853', secondary: '#FFFFFF', trim: '#962C32', numberColor: '#FFFFFF' } },
+  { id: 'pinstripe', name: 'Pinstripe', config: { pattern: 'pinstripe', primary: '#FFFFFF', secondary: '#192853', trim: '#192853', numberColor: '#192853' } },
+  { id: 'fine', name: 'Fine Stripes', config: { pattern: 'stripes', primary: '#962C32', secondary: '#FFFFFF', trim: '#0B0B0B', numberColor: '#FFFFFF' } },
+  { id: 'royalgold', name: 'Royal & Gold', config: { pattern: 'solid', primary: '#1E4D8C', secondary: '#F2B705', trim: '#F2B705', numberColor: '#F2B705' } },
+  { id: 'forest', name: 'Forest Classic', config: { pattern: 'solid', primary: '#0B6E4F', secondary: '#FFFFFF', trim: '#FFFFFF', numberColor: '#FFFFFF' } },
+  { id: 'blackout', name: 'Blackout', config: { pattern: 'solid', primary: '#0B0B0B', secondary: '#4A4A4A', trim: '#4A4A4A', numberColor: '#FFFFFF' } },
+  { id: 'maroon', name: 'Maroon Stripes', config: { pattern: 'boldstripe', primary: '#7A1F3D', secondary: '#FFFFFF', trim: '#0B0B0B', numberColor: '#FFFFFF' } },
+];
+const thumbCache = {}; // module-level: gallery thumbs render once per session
+
+// ── logo upload hardening ────────────────────────────────────────────────────
+// Coaches upload phone photos and JPGs with solid backgrounds. Every upload is
+// downscaled (huge data URLs slow the 3D decal and can blow the autosave
+// quota), and a near-uniform background is knocked out via a border flood fill
+// so a JPG crest doesn't show as a colored rectangle on the jersey. Flood fill
+// (not global color distance) so whites INSIDE the logo survive.
+const MAX_LOGO_PX = 900;
+function knockoutBackground(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const x = canvas.getContext('2d');
+  const id = x.getImageData(0, 0, w, h);
+  const d = id.data;
+  // Already has real transparency → nothing to do.
+  let transparent = 0;
+  for (let i = 3; i < d.length; i += 4 * 97) { if (d[i] < 250) transparent++; if (transparent > 3) return null; }
+  // All four corners must agree on one background color.
+  const corners = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + w - 1) * 4];
+  const avg = [0, 1, 2].map((c) => corners.reduce((s, i) => s + d[i + c], 0) / 4);
+  const TOL2 = 46 * 46;
+  const near = (i) => { const dr = d[i] - avg[0], dg = d[i + 1] - avg[1], db = d[i + 2] - avg[2]; return dr * dr + dg * dg + db * db < TOL2; };
+  if (!corners.every(near)) return null;
+  // BFS from every matching border pixel.
+  const seen = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let qh = 0, qt = 0, removed = 0;
+  const push = (p) => { if (!seen[p] && near(p * 4)) { seen[p] = 1; q[qt++] = p; } };
+  for (let px = 0; px < w; px++) { push(px); push((h - 1) * w + px); }
+  for (let py = 0; py < h; py++) { push(py * w); push(py * w + w - 1); }
+  while (qh < qt) {
+    const p = q[qh++];
+    d[p * 4 + 3] = 0; removed++;
+    const px = p % w, py = (p / w) | 0;
+    if (px > 0) push(p - 1);
+    if (px < w - 1) push(p + 1);
+    if (py > 0) push(p - w);
+    if (py < h - 1) push(p + w);
+  }
+  if (removed < (w * h) * 0.02) return null; // border noise, not a real background
+  x.putImageData(id, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
 const SIZES = ['YS', 'YM', 'YL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
 const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
 const UNIT_PRICE = 80;
@@ -76,6 +143,7 @@ const STEPS = [
 ];
 
 const DEFAULT_CONFIG = {
+  sport: null,
   teamName: 'ARGENTINA',
   primary: '#7CB0E0',   // body
   secondary: '#FFFFFF', // stripes / secondary
@@ -209,6 +277,10 @@ function LabeledInput({ label, value, onChange, maxLength }) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProBuilder({ onExit, onCreateOrder }) {
   const [config, setConfig] = useState(restoredConfig);
+  // Catalog flow: pick a sport → pick a starting design → the wizard.
+  const [screen, setScreen] = useState('sports'); // sports | designs | wizard
+  const [hasAutosave] = useState(() => !!loadAutosave());
+  const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
   const [advanced, setAdvanced] = useState(false);
@@ -239,6 +311,30 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     }, 600);
     return () => clearTimeout(t);
   }, [config, assignments]);
+
+  // Gallery thumbnails — rendered live from the proof pipeline, cached for the
+  // session. Blank number/name so the thumb reads as the design, not a player.
+  useEffect(() => {
+    if (screen !== 'designs') return;
+    let alive = true;
+    (async () => {
+      for (const pz of DESIGN_PRESETS) {
+        if (thumbCache[pz.id]) continue;
+        try {
+          const tspec = specFromConfig({ ...DEFAULT_CONFIG, ...pz.config, teamName: '', playerName: '', playerNumber: '', logos: emptyLogos() });
+          const url = await renderToDataURL(tspec, { view: 'front', width: 320 });
+          thumbCache[pz.id] = url;
+          if (alive) setThumbs((t) => ({ ...t, [pz.id]: url }));
+        } catch (_e) { /* thumb optional */ }
+      }
+    })();
+    return () => { alive = false; };
+  }, [screen]);
+
+  const pickSport = (key) => { set({ sport: key }); setScreen('designs'); };
+  // A preset replaces the design (colors/pattern/number color) but keeps the
+  // coach's team name, players, logos, and roster.
+  const pickDesign = (pz) => { if (pz) set({ ...pz.config }); setScreen('wizard'); setStep('team'); };
 
   // ── roster helpers ──
   const numberOwner = useCallback((num) => {
@@ -288,11 +384,20 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const src = ev.target.result;
       const img = new Image();
-      img.onload = () => setLogo({ src, aspect: (img.naturalWidth / img.naturalHeight) || 1, x: slotDef.x, y: slotDef.y, scale: slotDef.scale, rot: 0 });
-      img.onerror = () => setLogo({ src, aspect: 1 });
-      img.src = src;
+      img.onload = () => {
+        const iw = img.naturalWidth || 1, ih = img.naturalHeight || 1;
+        const k = Math.min(1, MAX_LOGO_PX / Math.max(iw, ih));
+        const w = Math.max(1, Math.round(iw * k)), h = Math.max(1, Math.round(ih * k));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        const full = cv.toDataURL('image/png'); // before knockout mutates the canvas
+        let cut = null;
+        try { cut = knockoutBackground(cv); } catch (_e) {}
+        setLogo({ src: cut || full, srcFull: full, srcCut: cut, bgRemoved: !!cut, aspect: w / h, x: slotDef.x, y: slotDef.y, scale: slotDef.scale, rot: 0 });
+      };
+      img.onerror = () => setLogo({ src: ev.target.result, srcFull: ev.target.result, srcCut: null, bgRemoved: false, aspect: 1 });
+      img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
   };
@@ -403,7 +508,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
   const stepIdx = STEPS.findIndex((s) => s.key === step);
   const goNext = () => { if (step === 'finalize') { createOrder(); return; } setStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key); };
-  const goPrev = () => setStep(STEPS[Math.max(stepIdx - 1, 0)].key);
+  const goPrev = () => { if (stepIdx === 0) { setScreen('designs'); return; } setStep(STEPS[stepIdx - 1].key); };
   const nextLabel = step === 'finalize' ? 'Create Order' : 'Next';
 
   if (advanced) {
@@ -432,6 +537,70 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
         </div>
       </div>
 
+      {/* CATALOG · SPORT PICKER */}
+      {screen === 'sports' && (
+        <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
+          <div style={{ maxWidth: 980, margin: '0 auto', padding: '40px 28px 60px' }}>
+            <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Uniform Builder</div>
+            <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 34, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick Your Sport</h2>
+            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 26 }}>Choose a sport, start from a design, then make it yours — colors, logos, numbers, and roster.</div>
+            {hasAutosave && (
+              <button onClick={() => { setScreen('wizard'); setStep('team'); }} style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: C.navy, color: '#fff', border: 'none', borderRadius: 8, padding: '16px 22px', marginBottom: 24, cursor: 'pointer', textAlign: 'left', boxSizing: 'border-box' }}>
+                <span>
+                  <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.6 }}>Continue your last design</span>
+                  <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, opacity: 0.8, marginTop: 2 }}>{(config.teamName || 'Team')} · autosaved</span>
+                </span>
+                <span style={{ fontSize: 18 }}>→</span>
+              </button>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+              {SPORTS.map((s) => (
+                <button key={s.key} onClick={() => pickSport(s.key)} style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: '22px 20px', cursor: 'pointer', textAlign: 'left', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
+                  <span style={{ fontSize: 34 }}>{s.icon}</span>
+                  <span>
+                    <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{s.label}</span>
+                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.length} designs · more garments soon</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CATALOG · DESIGN GALLERY */}
+      {screen === 'designs' && (
+        <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
+          <div style={{ maxWidth: 1080, margin: '0 auto', padding: '32px 28px 60px' }}>
+            <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
+            <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>{SPORT_LABELS[config.sport] || 'Team'} Uniforms</div>
+            <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick a Starting Design</h2>
+            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 24 }}>Every design is fully customizable — colors, pattern, trim, lettering, and logos are all yours to change.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
+              {DESIGN_PRESETS.map((pz) => (
+                <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
+                    {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderTop: '1px solid ' + C.light }}>
+                    <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{pz.name}</span>
+                    <span style={{ display: 'flex', gap: 3 }}>
+                      {[pz.config.primary, pz.config.trim, pz.config.secondary].map((cx, i) => <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: cx, border: '1px solid ' + C.light }} />)}
+                    </span>
+                  </span>
+                </button>
+              ))}
+              <button onClick={() => pickDesign(null)} style={{ minHeight: 220, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: '#fff', border: '2px dashed ' + C.mid, borderRadius: 8, cursor: 'pointer' }}>
+                <span style={{ fontSize: 26, color: C.textLight }}>✎</span>
+                <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', color: C.navy }}>Start From Scratch</span>
+                <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Keep your current setup</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {screen === 'wizard' && (<>
       {/* STEP NAV */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 30, height: 52, borderBottom: '1px solid ' + C.light, flexShrink: 0, flexWrap: 'wrap' }}>
         {STEPS.map((s, i) => {
@@ -456,7 +625,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
             {/* CENTER STAGE — 3D */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, background: '#fff', padding: '24px 16px 0' }}>
               <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
-              <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: '2px 0 2px' }}>{(config.teamName || 'Team')} Home Jersey</h2>
+              <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: '2px 0 2px' }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
               <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.textLight, marginBottom: 6 }}>{nameForHex(config.primary)} / {nameForHex(config.trim)} / {nameForHex(config.secondary)}</div>
               <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
@@ -517,11 +686,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                         <input type="range" min="-180" max="180" step="1" value={activeLogo.rot || 0} onChange={(e) => setLogo({ rot: parseInt(e.target.value, 10) })} style={{ flex: 1 }} />
                         <button onClick={() => setLogo({ rot: 0 })} title="Reset rotation" style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '3px 7px', cursor: 'pointer' }}>0°</button>
                       </div>
+                      {activeLogo.srcCut && (
+                        <button onClick={() => setLogo({ bgRemoved: !activeLogo.bgRemoved, src: activeLogo.bgRemoved ? activeLogo.srcFull : activeLogo.srcCut })}
+                          style={{ marginTop: 10, fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: activeLogo.bgRemoved ? C.green : C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '5px 9px', cursor: 'pointer' }}>
+                          {activeLogo.bgRemoved ? '✓ Background removed · undo' : 'Remove background'}
+                        </button>
+                      )}
                       <div style={{ display: 'flex', gap: 14, marginTop: 12 }}>
                         <label style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy, cursor: 'pointer' }}>
                           Replace<input type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                         </label>
-                        <button onClick={() => setLogo({ src: null })} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove</button>
+                        <button onClick={() => setLogo({ src: null, srcFull: null, srcCut: null, bgRemoved: false })} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Remove</button>
                       </div>
                       <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to place the {slotDef.label.toLowerCase()} logo; it appears live on the 3D jersey and the proof.</div>
                     </div>
@@ -704,10 +879,11 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
           <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button onClick={goPrev} style={{ visibility: stepIdx === 0 ? 'hidden' : 'visible', fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>Back</button>
+          <button onClick={goPrev} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>{stepIdx === 0 ? 'Designs' : 'Back'}</button>
           <button onClick={goNext} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 14, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: 'none', borderRadius: 4, padding: '12px 26px', cursor: 'pointer' }}>{nextLabel}</button>
         </div>
       </div>
+      </>)}
     </div>
   );
 }
