@@ -19,7 +19,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -11337,7 +11337,6 @@ export default function App(){
   // Helper: build product search URL — uses Google Images to find the product
   const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
-  const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodPdfDownloading,setProdPdfDownloading]=useState(false);
@@ -13480,7 +13479,7 @@ export default function App(){
                 const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
                 const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
                 if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
-                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:{auto:false,firstDays:3,intervalDays:0,max:4,message:''}});
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -23464,74 +23463,6 @@ export default function App(){
         </div></div>
       })()}
 
-      {/* ═══ SEND FOR APPROVAL NOTIFICATION MODAL ═══ */}
-      {approvalNotifyModal&&(()=>{
-        const{job:aj,so:aso,contact:ac,portalUrl:apu,method:am,message:amsg,artMessages:aam}=approvalNotifyModal;
-        const doSend=(notifyMethod)=>{
-          const missing=skusMissingMockups(aj,aso);
-          if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
-          if(!_confirmResendIfRejected(aj))return;
-          // 1. Move art status to waiting_approval
-          moveArtStatus(aj,'waiting_approval');
-          const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
-          const updMsgs=[...(aam||[]),sysMsg];
-          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval',coach_rejected:false}:jj);
-          savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
-          // 2. Handle notification
-          if(notifyMethod==='email'&&ac.email){
-            const _label=(aso.memo&&aso.memo.trim())||aj.art_name;
-            const subj=encodeURIComponent('Artwork ready for approval — '+_label);
-            const body=encodeURIComponent(approvalNotifyModal.message);
-            window.open('mailto:'+ac.email+'?subject='+subj+'&body='+body,'_blank');
-          }else if(notifyMethod==='text'&&ac.phone){
-            const smsBody=encodeURIComponent(approvalNotifyModal.message);
-            window.open('sms:'+ac.phone+'?body='+smsBody,'_blank');
-          }
-          setArtJobDetailModal(aj.art_status!=='waiting_approval'?{...aj,art_messages:updMsgs,art_status:'waiting_approval'}:null);
-          setApprovalNotifyModal(null);
-          nf('Sent for approval!'+(notifyMethod!=='none'?' '+notifyMethod+' notification opened.':''));
-        };
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setApprovalNotifyModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-          <div className="modal-header" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white'}}>
-            <h2 style={{color:'white',margin:0}}>Send for Approval</h2>
-            <button className="modal-close" style={{color:'white'}} onClick={()=>setApprovalNotifyModal(null)}>×</button>
-          </div>
-          <div className="modal-body">
-            <div style={{padding:'10px 14px',background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:14}}>
-              <div style={{fontSize:13,fontWeight:700,color:'#6d28d9'}}>{aj.art_name}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{aj.customer} · {aso.id}</div>
-            </div>
-
-            <div style={{marginBottom:14}}>
-              <div className="form-label">Notify Coach</div>
-              <div style={{display:'flex',gap:8,marginBottom:8}}>
-                <button className={`btn btn-sm ${am==='email'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'email'}))}>Email{ac.email?' — '+ac.email:' (no email)'}</button>
-                <button className={`btn btn-sm ${am==='text'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'text'}))}>Text{ac.phone?' — '+ac.phone:' (no phone)'}</button>
-              </div>
-            </div>
-
-            {apu&&<div style={{marginBottom:14}}>
-              <div className="form-label">Portal Link</div>
-              <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <input className="form-input" readOnly value={apu} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard.writeText(apu).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',apu)})}}>Copy</button>
-              </div>
-            </div>}
-
-            <div style={{marginBottom:12}}>
-              <div className="form-label">Message to Coach</div>
-              <textarea className="form-input" rows={6} value={amsg} onChange={e=>setApprovalNotifyModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
-            </div>
-          </div>
-          <div className="modal-footer" style={{display:'flex',gap:8}}>
-            <button className="btn btn-secondary" onClick={()=>setApprovalNotifyModal(null)}>Cancel</button>
-            <button className="btn btn-secondary" onClick={()=>doSend('none')}>Send Without Notifying</button>
-            <button className="btn" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',fontWeight:700,padding:'8px 20px'}} disabled={am==='email'&&!ac.email||am==='text'&&!ac.phone} onClick={()=>doSend(am)}>
-              {am==='text'?'Send & Text Coach':'Send & Email Coach'}
-            </button>
-          </div>
-        </div></div>
-      })()}
     </>);
   };
 
