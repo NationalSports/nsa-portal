@@ -18,7 +18,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
@@ -2690,7 +2690,9 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       else{const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulSizes[sz]=Math.min(v,picked+rcvd)}
     });
     const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-    return{item_idx:gi.item_idx,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+    // deco_idx/deco_idxs must ride along — the per-item spec scoping (jobItemDecosOfKind) reads
+    // them off these rows; dropping them silently unscopes the whole sheet.
+    return{item_idx:gi.item_idx,deco_idx:gi.deco_idx,deco_idxs:gi.deco_idxs,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
   }).filter(Boolean);
   const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
   const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
@@ -12051,7 +12053,9 @@ export default function App(){
             else{const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulSizes[sz]=Math.min(v,picked+rcvd)}
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{item_idx:gi.item_idx,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          // deco_idx/deco_idxs must ride along — the per-item spec scoping (jobItemDecosOfKind)
+          // reads them off these rows; dropping them silently unscopes the job cards.
+          return{item_idx:gi.item_idx,deco_idx:gi.deco_idx,deco_idxs:gi.deco_idxs,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
@@ -21691,15 +21695,12 @@ export default function App(){
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
-        // An art deco still on the Art TBD placeholder (or pointing at a deleted art file) means
-        // there is NO artwork — jobLiveArtIds returns [] for it, which used to make the
-        // production-files check below pass vacuously and let the job read "Ready for Production".
-        const _unresolved=(j.items||[]).some(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return false;
-          // Only this job's own decorations count — a sibling job's TBD art must not block a numbers/names job.
-          const _dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:null);
-          return safeDecos(it).some((d,di)=>{if(_dis&&!_dis.includes(di))return false;
-            return d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||!safeArt(so).find(f=>f.id===d.art_file_id))})});
-        if(_unresolved){nf('This job still has Art TBD — assign real artwork before marking it complete','error');return false;}
+        // An art deco still on the Art TBD placeholder (or pointing at a deleted/archived-only
+        // art file) means there is NO live artwork — jobLiveArtIds returns [] for it, which used
+        // to make the production-files check below pass vacuously and let the job read "Ready for
+        // Production". Scoped to the job's own decorations so a sibling job's TBD art never
+        // blocks a numbers/names job.
+        if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before marking it complete','error');return false;}
         const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
         const missing=afs.filter(a=>!artProdFilesReady(a));
         if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}

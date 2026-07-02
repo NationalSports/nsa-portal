@@ -13,16 +13,43 @@ export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
 // ── Job-item decoration ownership ──
-// A job item records which decoration indexes of its SO line the job produces (deco_idxs,
-// legacy single deco_idx). Returns null when the item carries neither (legacy jobs) —
-// callers then fall back to every decoration on the line.
-export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : (gi?.deco_idx != null ? [gi.deco_idx] : null);
+// A job item records which decoration indexes of its SO line the job produces (deco_idxs).
+// Returns null for legacy items without the array — the legacy single deco_idx was written as
+// decoIdxs[0] and is NOT exhaustive for multi-deco jobs, so it must not be treated as a scope.
+// Null means "unknown coverage": callers fall back to every decoration on the line.
+export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : null;
 // Decorations of one kind on a SO line that THIS job actually produces. Keeps a job's
 // display (number rosters, spec rows) from bleeding onto sibling jobs that share the
 // line — e.g. an art job showing the numbers job's roster.
 export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+// Does this job's artwork fail to resolve to a real art file? True only when the job's declared
+// art (art_file_id/_art_ids — a '__tbd' placeholder counts as declaring) includes NO live design
+// AND an art decoration the job owns has no live art file behind it. Numbers/names-only jobs and
+// jobs with a live declared design are never "unresolved" — a sibling job's TBD deco on a shared
+// line must not taint them, and a frozen job whose stale indexes drift onto a foreign deco is
+// protected by the declared-art check. archivedIsUnresolved: action guards (marking a job
+// complete) treat archived-only art as unresolved because jobLiveArtIds excludes archived files
+// and the production-files check would otherwise pass vacuously; passive heals leave archived
+// art alone so long-finished jobs aren't resurrected by library cleanup.
+export const jobHasUnresolvedArt = (j, o, { archivedIsUnresolved = false } = {}) => {
+  const art = safeArt(o);
+  const live = (id) => { if (!id || id === '__tbd') return false; const a = art.find(f => f.id === id); return !!a && !(archivedIsUnresolved && a.archived); };
+  const declared = ((j?._art_ids && j._art_ids.length ? j._art_ids : [j?.art_file_id]) || []).filter(Boolean);
+  if (declared.some(live)) return false;
+  return (j?.items || []).some(gi => {
+    const it = safeItems(o)[gi.item_idx]; if (!it) return false;
+    const dis = jobItemDecoIdxs(gi);
+    // Legacy item with unknown coverage on a job that declares no art at all: a TBD deco here
+    // belongs to some other job — don't attribute it.
+    if (!dis && declared.length === 0) return false;
+    return safeDecos(it).some((d, di) => {
+      if (dis && !dis.includes(di)) return false;
+      return d?.kind === 'art' && !live(d.art_file_id);
+    });
+  });
 };
 
 // Stable-ish identifier for a sales-order line item, used to track which SO

@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -118,6 +118,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
     // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
     const _jb=safeJobs(curO).find(jj=>jj.id===jobId);
+    // Every approve/complete button funnels through here — a job whose art is still the TBD
+    // placeholder has nothing to approve, and letting it through persists a completed status
+    // that syncJobs' heal would immediately fight (status flip-flop, stale DB state).
+    if(_jb&&(targetStatus==='art_complete'||PROD_FILES_STATUSES.includes(targetStatus))&&jobHasUnresolvedArt(_jb,curO,{archivedIsUnresolved:true})){
+      nf('This job still has Art TBD — assign real artwork before approving it','error');return;
+    }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
     const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
     const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
@@ -2458,7 +2464,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const jobMap={};
     Object.values(sigGroups).forEach(grp=>{
       const firstEntry=grp.items[0];
-      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';let hasArtDeco=false;let hasUnresolvedArt=false;
+      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';let hasArtDeco=false;
       firstEntry.decos.forEach(({d})=>{
         if(d.kind==='art'){
           hasArtDeco=true;
@@ -2468,14 +2474,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
-            if(!artF)hasUnresolvedArt=true;// '__tbd' placeholder or a deleted art file — no real artwork behind this deco
             const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');
             decoTypes.push(d.deco_type||'screen_print');
             worstArtSt='needs_art';
-            hasUnresolvedArt=true;
           }
         } else if(d.kind==='numbers'){
           positions.add(safeStr(d.position));
@@ -2496,7 +2500,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _splitGrp=null;// per-item split group lives on each job item (giItem.split_group) for received-unit apportioning
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
-        total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp,_unresolved_art:hasUnresolvedArt};
+        total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp};
       // Add each item in the group
       grp.items.forEach(({ii,it,decos})=>{
         // Split-art job: a single design carrying its own per-size allocation. Receipts apportion
@@ -2559,16 +2563,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _newArtSt=(!existing&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
       // Preserve human-advanced states; 'needs_art' is the auto-computed default and
       // must be re-derived so a fixed art file immediately unlocks to art_complete.
+      // (_healUnresolvedArt below still downgrades a preserved completed-ish status
+      // when the job's art is TBD/unresolved.)
       const _preservedArtSt=(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt;
-      // A job whose art is still TBD / unresolved has no artwork that could have been approved,
-      // so a stale preserved 'art_complete' (or a production-files stage) must never survive —
-      // otherwise the job reads "Ready for Production" with no real art applied. Queue states the
-      // rep/artist set by hand (art_requested, art_in_progress, waiting_approval, …) still stick.
-      const _artSt=(j._unresolved_art&&(_preservedArtSt==='art_complete'||PROD_FILES_STATUSES.includes(_preservedArtSt)))?j.art_status:_preservedArtSt;
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
-        art_status:_artSt,item_status:itemSt,prod_status:prodSt,
+        art_status:_preservedArtSt,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
@@ -2669,7 +2670,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Re-derive each row's units/fulfilled from the source line too (not just the job total),
       // so a row that was inflated by an earlier bad merge (e.g. "0/18" when the line holds 9)
       // heals on next open instead of keeping its stale per-row count.
-      const _sk=new Set();const uniqueItems=(j.items||[]).filter(gi=>{const k=gi.item_idx+'-'+gi.sku;if(_sk.has(k))return false;_sk.add(k);return true});
+      // Union deco_idxs while deduping — a legacy merge that absorbed sibling jobs kept one row
+      // per absorbed job for the same line; keeping only the first row's deco_idxs would drop the
+      // sibling's decoration ownership and hide its roster/spec from the scoped displays.
+      const _byK=new Map();(j.items||[]).forEach(gi=>{const k=gi.item_idx+'-'+gi.sku;const prev=_byK.get(k);
+        if(!prev){_byK.set(k,gi);return}
+        const a=Array.isArray(prev.deco_idxs)?prev.deco_idxs:[];const b=Array.isArray(gi.deco_idxs)?gi.deco_idxs:[];
+        if(a.length||b.length)_byK.set(k,{...prev,deco_idxs:[...new Set([...a,...b])]});
+      });const uniqueItems=[..._byK.values()];
       const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
@@ -2688,18 +2696,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
-    // Preserved (released/merged/split) jobs bypass the newJobs heal above, but the same rule
-    // holds: a job whose OWN decorations still sit on the Art TBD placeholder (or a deleted art
-    // file) has no artwork that could have been approved, so a completed-ish art status must not
-    // survive — it read "Art Complete — Ready for Production" with no real art applied.
+    // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
+    // could have been approved, so a completed-ish art status must never survive — it read
+    // "Art Complete — Ready for Production" with no real art applied. Applies uniformly to
+    // rebuilt AND preserved (released/merged/split) jobs; jobHasUnresolvedArt only fires for
+    // jobs that declare art with no live design behind it, so numbers/names-only jobs and jobs
+    // with real artwork are never touched. Queue states set by hand (art_requested,
+    // waiting_approval, …) also stick — only completed-ish statuses downgrade.
     const _healUnresolvedArt=j=>{
       if(!j||!(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status)))return j;
-      const _unres=(j.items||[]).some(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return false;const dis=jobItemDecoIdxs(gi);
-        return safeDecos(it).some((d,di)=>{if(dis&&!dis.includes(di))return false;
-          return d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||!af.find(a=>a.id===d.art_file_id))})});
-      return _unres?{...j,art_status:'needs_art'}:j;
+      return jobHasUnresolvedArt(j,o)?{...j,art_status:'needs_art'}:j;
     };
-    const _kept=[...newJobs,...splitJobs.map(_healUnresolvedArt),...recalcedReleased.map(_healUnresolvedArt),...recalcedMerged.map(_healUnresolvedArt)];
+    const _kept=[...newJobs,...splitJobs,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt);
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
@@ -9467,11 +9475,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Skip artist — rep approved the art directly. REUSE-6: never land a blank art_complete with no
           // mock present — if there's no mockup (and no rep sample to promote), send it out for approval instead.
           if(g.skipArtist&&activateAll){const _hasMock=(g.files||[]).length>0||artIds.some(aid=>{const a2=safeArt(o).find(f=>f.id===aid);return a2&&((a2.mockup_files||[]).length>0||Object.values(a2.item_mockups||{}).some(v=>Array.isArray(v)&&v.length>0))});
-            // Art still on the __tbd placeholder is NOT approvable art — a rep sample attached to a
-            // TBD group must not release it straight to art_complete (it read "Ready for Production"
-            // with no real artwork). Send it out for approval instead.
-            const _tbdOnly=artIds.length>0&&artIds.every(aid=>aid==='__tbd');
-            artStatus=(_hasMock&&!_tbdOnly)?'art_complete':'waiting_approval'}
+            // Art still on the __tbd placeholder is NOT approvable art — a group carrying ANY TBD
+            // deco must not release straight to art_complete (it read "Ready for Production" with
+            // unassigned artwork). Send it out for approval instead.
+            const _hasTbd=artIds.some(aid=>aid==='__tbd');
+            artStatus=(_hasMock&&!_hasTbd)?'art_complete':'waiting_approval'}
           // Quick mock — rep built the mockup themselves; send to coach for approval,
           // skipping the artist on the mockup phase. Artist still does separations after approval.
           if(g.quickMock&&activateAll){artStatus='waiting_approval'}
