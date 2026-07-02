@@ -367,5 +367,21 @@ export async function renderProductionPDF(spec, opts = {}) {
   const logoCount = ((spec.logos && spec.logos.front) || []).length + ((spec.logos && spec.logos.back) || []).length;
   if (logoCount) { y += 6; line('Logos', `${logoCount} placed (see proof)`); }
 
+  // Roster & sizes — what the shop actually prints per jersey. Passed by the
+  // guided builder as opts.roster [{label, qty, nums}] + opts.order totals.
+  if (opts.roster && opts.roster.length) {
+    const H = doc.internal.pageSize.getHeight();
+    const ensureRoom = () => { if (y > H - 60) { doc.addPage('letter', 'landscape'); y = 44; } };
+    y += 6; ensureRoom();
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(25, 40, 83); doc.text('Roster & Sizes', M, y); y += 18;
+    doc.setTextColor(40);
+    opts.roster.forEach((r) => { ensureRoom(); line(`${r.label} ×${r.qty}`, `#${r.nums}`); });
+    if (opts.order) {
+      ensureRoom();
+      doc.setFont('helvetica', 'bold');
+      line('Total', `${opts.order.totalQty} jerseys @ $${opts.order.unitPrice} = $${Number(opts.order.total).toLocaleString()}`);
+    }
+  }
+
   return doc;
 }

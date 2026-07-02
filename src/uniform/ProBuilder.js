@@ -16,7 +16,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
-import { renderToDataURL, renderProductionPDF } from './renderCanvas';
+import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import * as ds from './designSpec';
 
 const Viewer3D = React.lazy(() => import('./Viewer3D'));
@@ -352,12 +352,32 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     trySupabaseSave({ name: config.teamName || 'Team', spec, thumb: review.front });
   };
 
+  const fileBase = () => (config.teamName || 'uniform').toLowerCase().replace(/\s+/g, '-');
+  const downloadDataURL = (url, name) => {
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  // Production exports — what gets emailed to the sublimation shop. The PDF
+  // carries the renders + exact hex colorway + lettering + roster; the PNG is
+  // a single high-res front/back sheet for quick reference.
   const downloadProofPDF = async () => {
     setBusy('Building production PDF…');
     try {
-      const doc = await renderProductionPDF(spec);
-      doc.save(`${(config.teamName || 'uniform').toLowerCase().replace(/\s+/g, '-')}-proof.pdf`);
+      const doc = await renderProductionPDF(spec, {
+        roster: rosterBreakdown,
+        order: { totalQty, unitPrice: UNIT_PRICE, total: totalQty * UNIT_PRICE },
+      });
+      doc.save(`${fileBase()}-production.pdf`);
     } catch (e) { /* jsPDF unavailable */ } finally { setBusy(''); }
+  };
+  const downloadProofPNG = async () => {
+    setBusy('Rendering production PNG…');
+    try {
+      const url = await renderProductionSheet(spec, { width: 1400 });
+      downloadDataURL(url, `${fileBase()}-production.png`);
+    } catch (e) { /* render failed */ } finally { setBusy(''); }
   };
 
   const createOrder = () => {
@@ -625,9 +645,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 <button onClick={() => setStep('team')} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: '#fff', border: '1px solid ' + C.navy, borderRadius: 4, padding: '13px 10px', cursor: 'pointer' }}>Change Design</button>
                 <button onClick={createOrder} style={{ flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: '1px solid ' + C.red, borderRadius: 4, padding: '13px 10px', cursor: 'pointer' }}>Create Order</button>
               </div>
+              <div style={{ padding: '14px 16px', background: '#fff', border: '1px solid ' + C.light, borderRadius: 6, marginBottom: 14 }}>
+                <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, marginBottom: 4 }}>Send to Production</div>
+                <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 10 }}>Everything your sublimation shop needs — renders, exact hex colors, lettering, and the roster.</div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={downloadProofPDF} disabled={!!busy} style={{ ...prodBtn, opacity: busy ? 0.6 : 1 }}>⬇︎ Production PDF</button>
+                  <button onClick={downloadProofPNG} disabled={!!busy} style={{ ...prodBtn, opacity: busy ? 0.6 : 1 }}>⬇︎ Production PNG</button>
+                </div>
+                {busy && <div style={{ marginTop: 8, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{busy}</div>}
+              </div>
               <div style={{ display: 'flex', gap: 10, marginBottom: 26 }}>
                 <button onClick={saveDesign} style={ghostBtn}>Save Design</button>
-                <button onClick={downloadProofPDF} style={ghostBtn}>{busy ? 'Building…' : 'Proof PDF'}</button>
                 <button onClick={downloadRoster} style={ghostBtn}>Roster CSV</button>
               </div>
               <div style={sectionHead}>Construction Materials</div>
@@ -686,4 +714,5 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
 const loadStyle = { position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight, fontFamily: F_BODY };
 const ghostBtn = { flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase', color: C.textLight, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '10px 8px', cursor: 'pointer' };
+const prodBtn = { flex: 1, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.navy, border: '1px solid ' + C.navy, borderRadius: 4, padding: '11px 8px', cursor: 'pointer' };
 const sectionHead = { fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, borderBottom: '2px solid ' + C.navy, paddingBottom: 8, marginBottom: 2 };
