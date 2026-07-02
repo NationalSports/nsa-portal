@@ -68,7 +68,11 @@ function applyDesign(st, rawSpec) {
       if (tile) {
         const tex = new THREE.CanvasTexture(tile);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(entry.zone === 'body' ? 5 : 3, entry.zone === 'body' ? 5 : 3);
+        // Fine patterns need a higher repeat or they read as broad bands on the
+        // body panel — keep the 3D stripe density close to the 2D proof's.
+        const fine = pat === 'stripes' || pat === 'pinstripe' || pat === 'dots' || pat === 'carbon' || pat === 'hex';
+        const rep = entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 5 : 3);
+        tex.repeat.set(rep, rep);
         tex.colorSpace = THREE.SRGBColorSpace;
         mat.map = tex; mat.color.set('#ffffff');
       } else { mat.color.set(color); }

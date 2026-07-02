@@ -16,7 +16,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
-import { renderToDataURL } from './renderCanvas';
+import { renderToDataURL, renderProductionPDF } from './renderCanvas';
 import * as ds from './designSpec';
 
 const Viewer3D = React.lazy(() => import('./Viewer3D'));
@@ -45,8 +45,9 @@ const nameForHex = (hex) => {
   return hit ? hit.name : 'Custom';
 };
 
+// Pattern ids must match designSpec's PATTERN_IDS or cleanZone silently drops them.
 const PATTERNS = [
-  { id: 'solid', label: 'Solid' }, { id: 'stripe', label: 'Stripes' },
+  { id: 'solid', label: 'Solid' }, { id: 'stripes', label: 'Stripes' },
   { id: 'boldstripe', label: 'Bold Stripes' }, { id: 'pinstripe', label: 'Pinstripe' },
 ];
 const FONTS = [
@@ -84,6 +85,30 @@ const DEFAULT_CONFIG = {
   playerName: 'MESSI', playerNumber: '10',
   numberColor: '#192853', font: 'block',
 };
+
+// ── persistence ──────────────────────────────────────────────────────────────
+// Autosave honors the top bar's "Changes save automatically": the in-progress
+// design + roster survive a refresh or accidental close. Saved designs and
+// order requests share the old builder's localStorage + best-effort Supabase
+// pattern (silent no-op if the table/RLS isn't provisioned).
+const AUTOSAVE_KEY = 'nsa_uniform_pro_autosave';
+function loadAutosave() {
+  try { return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { return null; }
+}
+function restoredConfig() {
+  const a = loadAutosave();
+  if (!a || !a.config) return { ...DEFAULT_CONFIG };
+  // Merge over defaults so configs saved before new fields/slots existed stay valid.
+  return { ...DEFAULT_CONFIG, ...a.config, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
+}
+async function trySupabaseSave(rec) {
+  try {
+    const mod = await import('../lib/supabase');
+    const sb = mod.supabase;
+    if (!sb) return;
+    await sb.from('uniform_designs').insert({ name: rec.name, spec: rec.spec, thumb: rec.thumb || null });
+  } catch (_e) { /* best-effort */ }
+}
 
 // ── wizard config → design spec ──────────────────────────────────────────────
 // The three brand colors map onto the octa jersey's real zones; the number/name/
@@ -183,24 +208,37 @@ function LabeledInput({ label, value, onChange, maxLength }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProBuilder({ onExit, onCreateOrder }) {
-  const [config, setConfig] = useState(() => ({ ...DEFAULT_CONFIG }));
+  const [config, setConfig] = useState(restoredConfig);
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
   const [advanced, setAdvanced] = useState(false);
 
   // Roster / sizes
   const [selectedSize, setSelectedSize] = useState('AM');
-  const [assignments, setAssignments] = useState({ AM: ['10'] });
+  const [assignments, setAssignments] = useState(() => {
+    const a = loadAutosave();
+    return (a && a.assignments && typeof a.assignments === 'object') ? a.assignments : { AM: ['10'] };
+  });
 
   // Finalize state
   const [review, setReview] = useState({ front: null, back: null });
   const [ordered, setOrdered] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
+  const [busy, setBusy] = useState('');
   const logoInputRef = useRef(null);
 
   const set = (patch) => setConfig((c) => ({ ...c, ...patch }));
   const spec = useMemo(() => specFromConfig(config), [config]);
   const tpl = getTemplate('octa_jersey');
+
+  // Autosave (debounced — logo data URLs make the payload chunky, so don't
+  // write on every pointer-move of a drag).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ config, assignments, ts: Date.now() })); } catch (_e) { /* quota */ }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [config, assignments]);
 
   // ── roster helpers ──
   const numberOwner = useCallback((num) => {
@@ -301,6 +339,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     return () => { alive = false; };
   }, [step, spec]);
 
+  const rosterSummary = () => rosterBreakdown.map((r) => `${r.size} ×${r.qty} (#${r.nums})`).join('; ');
+
   const saveDesign = () => {
     try {
       const key = 'nsa_uniform_saved';
@@ -309,9 +349,35 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       localStorage.setItem(key, JSON.stringify(prev.slice(0, 40)));
       setSavedMsg(true); setTimeout(() => setSavedMsg(false), 3000);
     } catch (e) {}
+    trySupabaseSave({ name: config.teamName || 'Team', spec, thumb: review.front });
   };
+
+  const downloadProofPDF = async () => {
+    setBusy('Building production PDF…');
+    try {
+      const doc = await renderProductionPDF(spec);
+      doc.save(`${(config.teamName || 'uniform').toLowerCase().replace(/\s+/g, '-')}-proof.pdf`);
+    } catch (e) { /* jsPDF unavailable */ } finally { setBusy(''); }
+  };
+
   const createOrder = () => {
-    if (onCreateOrder) { onCreateOrder({ config, spec, assignments, totalQty, unitPrice: UNIT_PRICE, total: totalQty * UNIT_PRICE }); return; }
+    const order = { assignments, totalQty, unitPrice: UNIT_PRICE, total: totalQty * UNIT_PRICE };
+    if (onCreateOrder) { onCreateOrder({ config, spec, ...order }); return; }
+    // No host order flow (standalone route): persist the request so a rep can
+    // pick it up — locally, and best-effort to the shared uniform_designs table
+    // with the roster embedded and a human-readable summary in meta.notes.
+    const notes = `ORDER REQUEST — ${totalQty} jerseys @ $${UNIT_PRICE} = $${order.total.toLocaleString()}. ${rosterSummary()}`.slice(0, 500);
+    const rec = {
+      name: `${config.teamName || 'Team'} — ORDER REQUEST`,
+      spec: { ...spec, meta: { ...spec.meta, notes }, order },
+      thumb: review.front,
+    };
+    try {
+      const prev = JSON.parse(localStorage.getItem('nsa_uniform_orders') || '[]');
+      prev.unshift({ id: 'o_' + Date.now().toString(36), ...rec, config, ts: Date.now() });
+      localStorage.setItem('nsa_uniform_orders', JSON.stringify(prev.slice(0, 20)));
+    } catch (e) {}
+    trySupabaseSave(rec);
     setOrdered(true); setTimeout(() => setOrdered(false), 6000);
   };
 
@@ -561,7 +627,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               </div>
               <div style={{ display: 'flex', gap: 10, marginBottom: 26 }}>
                 <button onClick={saveDesign} style={ghostBtn}>Save Design</button>
-                <button onClick={downloadRoster} style={ghostBtn}>Download Roster</button>
+                <button onClick={downloadProofPDF} style={ghostBtn}>{busy ? 'Building…' : 'Proof PDF'}</button>
+                <button onClick={downloadRoster} style={ghostBtn}>Roster CSV</button>
               </div>
               <div style={sectionHead}>Construction Materials</div>
               {[
