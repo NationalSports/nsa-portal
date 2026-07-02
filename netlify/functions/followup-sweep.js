@@ -17,6 +17,7 @@
 // Mirrors the onboarding-reminder.js pattern (getSupabaseAdmin + Brevo).
 
 const { getSupabaseAdmin } = require('./_shared');
+const { unsubUrl } = require('./_followupShared');
 
 const DEFAULT_MAX = 6;
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
@@ -26,11 +27,15 @@ function portalLink(alphaTag) {
   return alphaTag ? `${PORTAL_BASE}?portal=${encodeURIComponent(alphaTag)}` : '';
 }
 
-// Branded shell — message body (rep's custom text) + an optional portal button.
-function buildHtml(messageText, portalUrl, ctaLabel) {
+// Branded shell — message body (rep's custom text) + an optional portal button + the opt-out
+// footer (repeated commercial email must carry a working unsubscribe mechanism).
+function buildHtml(messageText, portalUrl, ctaLabel, unsubLink) {
   const bodyHtml = esc(messageText).replace(/\n/g, '<br/>');
   const button = portalUrl
     ? `<div style="margin:22px 0 6px"><a href="${esc(portalUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:700;padding:11px 20px;border-radius:8px">${esc(ctaLabel || 'View in your portal')}</a></div>`
+    : '';
+  const footer = unsubLink
+    ? `<div style="margin-top:26px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8">Don’t want these reminders? <a href="${esc(unsubLink)}" style="color:#64748b">Unsubscribe</a> — or just reply and we’ll take care of it.</div>`
     : '';
   return `<div style="font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:8px 4px">
     <div style="text-align:center;padding:6px 0 16px;border-bottom:2px solid #e2e8f0;margin-bottom:18px">
@@ -38,10 +43,11 @@ function buildHtml(messageText, portalUrl, ctaLabel) {
     </div>
     ${bodyHtml}
     ${button}
+    ${footer}
   </div>`;
 }
 
-async function sendEmail({ toList, subject, html, replyTo }) {
+async function sendEmail({ toList, subject, html, replyTo, unsubLink }) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
   if (!brevoKey) return { ok: false, error: 'BREVO_API_KEY not configured' };
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -53,6 +59,8 @@ async function sendEmail({ toList, subject, html, replyTo }) {
       subject,
       htmlContent: html,
       ...(replyTo ? { replyTo } : {}),
+      // RFC 8058 one-click unsubscribe — mail clients surface their own opt-out UI from these.
+      ...(unsubLink ? { headers: { 'List-Unsubscribe': `<${unsubLink}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } } : {}),
     }),
   });
   if (!res.ok) return { ok: false, error: `Brevo ${res.status}` };
@@ -85,7 +93,30 @@ exports.handler = async () => {
   let admin;
   try { admin = getSupabaseAdmin(); } catch (e) { return { statusCode: 500, body: e.message }; }
   const nowIso = new Date().toISOString();
-  const results = { estimate: 0, invoice: 0, art: 0, stopped: 0, errors: 0 };
+  const results = { estimate: 0, invoice: 0, art: 0, stopped: 0, errors: 0, deferred: 0 };
+
+  // Time budget: Netlify scheduled functions share the ~10s synchronous limit, and each row costs
+  // a Brevo call + 2-3 DB round-trips. Bail before the platform kills us mid-row — anything not
+  // reached stays due and the next hourly sweep picks it up. Deferred rows are counted so a
+  // chronically over-budget sweep is visible in the function logs, not silent.
+  const startedAt = Date.now();
+  const TIME_BUDGET_MS = 8000;
+  const overBudget = () => Date.now() - startedAt > TIME_BUDGET_MS;
+
+  // Claim a row BEFORE sending: compare-and-swap follow_up_at from the value we read to a lease a
+  // few hours out. If the update matches 0 rows, another invocation (overlapping run, retry after
+  // a timeout) already claimed it — skip, no duplicate email. If we crash after the send, the row
+  // wakes at the lease (one late reminder) instead of re-emailing every hour, and finalize below
+  // replaces the lease with the real cadence on the happy path.
+  const CLAIM_LEASE_MS = 6 * 3600000;
+  const claim = async (table, row) => {
+    const { data, error } = await admin.from(table)
+      .update({ follow_up_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString() })
+      .eq('id', row.id).eq('follow_up_at', row.follow_up_at).eq('follow_up_auto', true)
+      .select('id');
+    if (error) { results.errors++; console.error(`[followup-sweep] claim ${table}/${row.id}:`, error.message); return false; }
+    return (data || []).length > 0;
+  };
 
   // Advance/stop a due row after a (possibly successful) send attempt.
   const finalize = async (table, row, sent, sentEntry) => {
@@ -100,12 +131,16 @@ exports.handler = async () => {
         ? { follow_up_at: new Date(Date.now() + interval * 86400000).toISOString() }
         : { follow_up_at: null, follow_up_auto: false }),
     };
-    await admin.from(table).update(upd).eq('id', row.id);
+    const { error } = await admin.from(table).update(upd).eq('id', row.id);
+    // A failed finalize is not a duplicate-send risk (the claim lease already re-armed the row
+    // hours out) but it does lose the count/history bump — log it loudly.
+    if (error) { results.errors++; console.error(`[followup-sweep] finalize ${table}/${row.id}:`, error.message); }
   };
 
   // Turn a resolved/capped row off without sending.
   const stop = async (table, id) => {
-    await admin.from(table).update({ follow_up_auto: false, follow_up_at: null }).eq('id', id);
+    const { error } = await admin.from(table).update({ follow_up_auto: false, follow_up_at: null }).eq('id', id);
+    if (error) { results.errors++; console.error(`[followup-sweep] stop ${table}/${id}:`, error.message); return; }
     results.stopped++;
   };
 
@@ -120,7 +155,8 @@ exports.handler = async () => {
     const upd = count >= max
       ? { follow_up_count: count, follow_up_at: null, follow_up_auto: false }
       : { follow_up_count: count, follow_up_at: new Date(Date.now() + FAIL_BACKOFF_MS).toISOString() };
-    await admin.from(table).update(upd).eq('id', row.id);
+    const { error } = await admin.from(table).update(upd).eq('id', row.id);
+    if (error) { results.errors++; console.error(`[followup-sweep] backoff ${table}/${row.id}:`, error.message); }
   };
 
   const FU_COLS = 'follow_up_at, follow_up_auto, follow_up_interval_days, follow_up_message, follow_up_to, follow_up_count, follow_up_max, follow_up_last_sent_at, sent_history';
@@ -134,15 +170,19 @@ exports.handler = async () => {
     const list = rows || [];
     const custs = await custMap(admin, list.map((r) => r.customer_id));
     const reps = await repEmailMap(admin, list.map((r) => r.created_by));
-    for (const r of list) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (overBudget()) { results.deferred += list.length - i; break; }
       if (r.deleted_at || r.approved_at || ['approved', 'converted'].includes(r.status)) { await stop('estimates', r.id); continue; }
       if ((r.follow_up_count || 0) >= (r.follow_up_max || DEFAULT_MAX)) { await stop('estimates', r.id); continue; }
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('estimates', r.id); continue; }
+      if (!(await claim('estimates', r))) continue;
       const cust = custs[r.customer_id] || {};
       const link = portalLink(cust.alpha_tag);
       const msg = r.follow_up_message || defaultMessage('estimate', r.memo, link);
-      const out = await sendEmail({ toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate'), replyTo: reps[r.created_by] });
+      const unsub = unsubUrl('estimates', r.id);
+      const out = await sendEmail({ toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
       if (out.ok) { results.estimate++; await finalize('estimates', r, true, histEntry('estimate', to, r, out.messageId)); }
       else { results.errors++; await backoff('estimates', r); }
     }
@@ -157,15 +197,19 @@ exports.handler = async () => {
     const list = rows || [];
     const custs = await custMap(admin, list.map((r) => r.customer_id));
     const reps = await repEmailMap(admin, list.map((r) => r.created_by));
-    for (const r of list) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (overBudget()) { results.deferred += list.length - i; break; }
       if (r.deleted_at || r.status === 'paid' || r.status === 'void' || r.status === 'cancelled') { await stop('invoices', r.id); continue; }
       if ((r.follow_up_count || 0) >= (r.follow_up_max || DEFAULT_MAX)) { await stop('invoices', r.id); continue; }
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('invoices', r.id); continue; }
+      if (!(await claim('invoices', r))) continue;
       const cust = custs[r.customer_id] || {};
       const link = portalLink(cust.alpha_tag);
       const msg = r.follow_up_message || defaultMessage('invoice', r.id, link);
-      const out = await sendEmail({ toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice'), replyTo: reps[r.created_by] });
+      const unsub = unsubUrl('invoices', r.id);
+      const out = await sendEmail({ toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
       if (out.ok) { results.invoice++; await finalize('invoices', r, true, histEntry('invoice', to, r, out.messageId)); }
       else { results.errors++; await backoff('invoices', r); }
     }
@@ -187,16 +231,20 @@ exports.handler = async () => {
     }
     const custs = await custMap(admin, Object.values(soMap).map((s) => s.customer_id));
     const reps = await repEmailMap(admin, Object.values(soMap).map((s) => s.created_by));
-    for (const r of list) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (overBudget()) { results.deferred += list.length - i; break; }
       if (r.coach_approved_at || r.coach_rejected || r.art_status !== 'waiting_approval') { await stop('so_jobs', r.id); continue; }
       if ((r.follow_up_count || 0) >= (r.follow_up_max || DEFAULT_MAX)) { await stop('so_jobs', r.id); continue; }
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('so_jobs', r.id); continue; }
+      if (!(await claim('so_jobs', r))) continue;
       const so = soMap[r.so_id] || {};
       const cust = custs[so.customer_id] || {};
       const link = portalLink(cust.alpha_tag);
       const msg = r.follow_up_message || defaultMessage('art', r.art_name, link);
-      const out = await sendEmail({ toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork'), replyTo: reps[so.created_by] });
+      const unsub = unsubUrl('so_jobs', r.id);
+      const out = await sendEmail({ toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork', unsub), replyTo: reps[so.created_by], unsubLink: unsub });
       if (out.ok) { results.art++; await finalize('so_jobs', r, true, histEntry('art', to, r, out.messageId)); }
       else { results.errors++; await backoff('so_jobs', r); }
     }

@@ -5481,6 +5481,8 @@ export default function App(){
   },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
+  // Batch groups with an orderVendorBatch submission in flight — blocks double-submits per group.
+  const _batchOrderingRef=useRef(new Set());
   _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
   // Warn user before closing/reloading if there are failed saves (data at risk of loss).
   // Cloud is source of truth — heavy tables reload from Supabase, no need to flush them to localStorage.
@@ -9520,9 +9522,15 @@ export default function App(){
   // to waiting under the batch PO number, then clears the queue and the vendor's counter.
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
-  // Returns the batch PO number, or null if the vendor has nothing queued.
-  const orderVendorBatch=({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
+  // Resolves to the batch PO number, or null if the vendor has nothing queued.
+  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
+    // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
+    // onSubmitted) would run the whole promotion twice before state settles — duplicate
+    // submitted-batch entry and duplicate waiting po_lines, i.e. double-ordered inventory.
+    if(_batchOrderingRef.current.has(_gk))return null;
+    _batchOrderingRef.current.add(_gk);
+    try{
     // Read the live queue + SOs from the flush ref, not this closure. This runs from a deferred
     // callback (a vendor API modal's onSubmitted, fired seconds after the modal opened), by which
     // point the closed-over batchPOs/sos can be stale — using the ref keeps the promotion correct.
@@ -9533,7 +9541,27 @@ export default function App(){
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    const poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    let poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    // Claim the number server-side (atomic). The local counter is derived from the LWW
+    // submitted_batches app_state blob, so two clients in the same sync window can mint the
+    // same number — the "NSA 4513 x3" duplicate. claim_batch_po_number inserts the number into
+    // a unique table; if another client already claimed it, the server returns the next free
+    // number and the rep is told the batch was renumbered (they may have typed the preview
+    // number on the vendor's site). Falls back to the local number when the RPC isn't deployed
+    // yet, so deploy order can't block ordering.
+    if(supabase){
+      const _reqStr=(String(poNum).match(/\d{3,6}/)||[])[0];
+      const _req=_reqStr?parseInt(_reqStr,10):null;
+      try{
+        const{data:_claimed,error:_claimErr}=await supabase.rpc('claim_batch_po_number',{p_number:_req,p_claimed_by:cu.name||cu.id||null});
+        if(!_claimErr&&typeof _claimed==='number'){
+          if(_claimed!==_req)nf('⚠️ PO number NSA '+_req+' was already used by another submission — this batch was recorded as NSA '+_claimed+'. If you placed the vendor order under NSA '+_req+', update the PO number on the vendor site.','error');
+          poNum='NSA '+_claimed;
+        }else if(_claimErr&&_claimErr.code!=='PGRST202'&&!/could not find the function|does not exist/i.test(_claimErr.message||'')){
+          console.warn('[orderVendorBatch] claim_batch_po_number failed — using local number:',_claimErr.message);
+        }
+      }catch(_ce){console.warn('[orderVendorBatch] claim_batch_po_number threw — using local number:',_ce);}
+    }
     // When this batch was submitted through the vendor's API, the order modal hands back the
     // vendor's order id (orderId / orderNumber / transactionId). Stamp it on every promoted
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
@@ -9573,10 +9601,18 @@ export default function App(){
         }
       });
       savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
-    }catch(_promoErr){console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);}});
+    }catch(_promoErr){
+      // The vendor already accepted this order (or the rep already placed it) — never mask that
+      // it isn't recorded on the SO. console-only left orders that exist at the vendor but
+      // nowhere in fulfillment tracking, with nobody told.
+      console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);
+      nf('⚠️ Batch '+poNum+' was placed but its PO line could not be recorded on '+soId+' — add it to the order manually','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId,reason:'Batch '+poNum+' ('+vgName+') promoted at the vendor but writing the po_line failed: '+(_promoErr&&_promoErr.message||_promoErr)});
+    }});
     setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
     setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
     return poNum;
+    }finally{_batchOrderingRef.current.delete(_gk)}
   };
 
 
@@ -12893,8 +12929,8 @@ export default function App(){
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
-              onClick={()=>{
-                const poNum=orderVendorBatch({vendorKey:vk,groupKey:gk});
+              onClick={async()=>{
+                const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
