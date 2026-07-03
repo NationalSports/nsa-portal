@@ -13131,6 +13131,61 @@ export default function App(){
     setViewInvoice(null);
   };
 
+  // ── OMG invoice + settlement in one step ─────────────────────────────
+  // OMG money is collected by the platform before the store is even ported,
+  // so the invoice is an internal accounting document against funds already
+  // in hand — there's nothing to wait for. Builds the same full invoice a
+  // manual create would (blended per-size sells + deco sells + flat shipping,
+  // tax-exempt) and stamps the store-funds payment at birth: paid in full
+  // when the net remit (collected − OMG & CC fees) covers the total, else
+  // paid to exactly what was collected so a shortfall stays visible as a
+  // partial balance. If the Accounting Report isn't entered yet the invoice
+  // is created open and the settlement queue keeps flagging the store.
+  // Idempotent: skips SOs that already carry any invoice, and the
+  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert.
+  // Called at store port (createOmgSO) and from the settlement queue.
+  const createAndSettleOmgInvoice=(so)=>{
+    if(!so||!so.omg_store_id)return null;
+    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
+    const store=(omgStores||[]).find(x=>x.id===so.omg_store_id);
+    const c=cust.find(x=>x.id===so.customer_id);
+    const af=safeArt(so);
+    const artQty={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
+    const lineItems=safeItems(so).map(it=>{
+      const _szQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      const qty=_szQty>0?_szQty:safeNum(it.est_qty);
+      if(!qty)return null;
+      const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+(dp2._nq!=null?(qty>0?dp2._nq/qty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell)},0);
+      const perEachSell=it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell);
+      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:qty*(perEachSell+decoSell),_sku:it.sku,_name:it.name,_color:it.color};
+    }).filter(Boolean);
+    const sub=lineItems.reduce((a,l)=>a+l.amount,0);
+    const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
+    const total=Math.round((sub+ship)*100)/100;
+    const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
+    const netRemit=Math.round((acct-(+(so._omg_omg_fees??store?._omg_omg_fees)||0)-(+(so._omg_cc_fees??store?._omg_cc_fees)||0))*100)/100;
+    const applied=netRemit>0?Math.min(netRemit,total):0;
+    const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
+    const dateStr=new Date().toLocaleDateString('en-CA');
+    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
+    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
+    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
+    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,
+      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
+      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
+      memo:'Invoice — '+(so.memo||so.id),_rep:so.created_by||cu?.id||null,
+      tax:0,tax_rate:0,tax_exempt:true,shipping:ship,
+      ...(so.po_number?{_po_number:so.po_number}:{}),
+      line_items:lineItems,
+      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
+      payments:applied>0?[{amount:applied,method:'store',ref:'OMG '+saleCode,date:payDate,cc_fee:0}]:[],
+      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
+    setInvs(prev=>[inv,...prev]);
+    logChange('create','Invoice',inv.id,'Auto-created from OMG store '+saleCode+(applied>0?' — $'+applied.toFixed(2)+' store funds applied':''));
+    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from store funds 🏫':applied>0?' — $'+applied.toFixed(2)+' store funds applied, shortfall left open':' — open (Accounting Report not entered yet)'));
+    return inv;
+  };
+
   function rInvoices(){
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -14190,7 +14245,7 @@ export default function App(){
       const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
       if(!openInvs.length){
         if(soInvs.length)return null; // invoiced & fully paid some other way
-        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Ready to invoice — open the SO and create its invoice',so,inv:null,collected:netRemit,teamTab:0,ref};
+        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Funds in hand — one click creates the invoice and settles it',so,inv:null,collected:netRemit,teamTab:0,ref};
       }
       if(openInvs.length>1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:netRemit,teamTab:0,ref};
       const inv=openInvs[0];
@@ -14403,8 +14458,8 @@ export default function App(){
               <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
                 {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeSettlement(p)}>
                   {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
-                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{if(p.act==='invoice'&&p.so)_openSO(p.so);else setPg('omg')}}>
-                  {p.act==='invoice'?'Open SO':'OMG Page'}</button>}
+                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{if(p.act==='invoice'&&p.so)createAndSettleOmgInvoice(p.so);else setPg('omg')}}>
+                  {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}
                 {p.status==='matched'&&p.note&&<span style={{marginLeft:8,fontSize:10,color:'#64748b'}}>{p.note}</span>}
                 {p.status==='action'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>{p.reason}</span>}
                 {p.status==='mismatch'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>⚠ {p.reason}</span>}
@@ -17687,6 +17742,9 @@ export default function App(){
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
+              // OMG funds are already collected, so invoice + settle at port —
+              // paid in full when the net remit covers it, partial otherwise.
+              createAndSettleOmgInvoice(newSO);
               // Link the OMG parent orders (shadow webstore) to this SO so the
               // status-sync trigger drives their tracking from receiving/jobs/SO.
               // Sets sales_orders.webstore_id + each webstore_orders.so_id, keyed
