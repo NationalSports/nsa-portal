@@ -961,8 +961,12 @@ const _matchRestoreItem=(oi,items)=>{
 };
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
-  // Optimistic locking: check version before saving (auto-heal on conflict)
-  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
+  // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
+  // rather than only adopting the server version: a bumped server version means ANOTHER session saved
+  // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
+  // items or deco POs the other session added (the SO-1333 wipe, 2026-06-30).
+  let _versionConflict=null;
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};so._version=vc}}
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
@@ -970,11 +974,26 @@ const _dbSaveSOInner = async (so) => {
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
     // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
-    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).maybeSingle();
+    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
     // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
     // otherwise we could purge a live order's children below.
     const _isNewSO=!existErr&&!existingSO;
+    // deco_pos rides on the SO row, so a whole-row upsert from a stale session silently drops deco POs
+    // added by another session since this tab loaded (how DPO 3521 CMSF vanished on 2026-06-30 — the row
+    // had no guard while the item/pick/PO children all did). When the version check flagged this save as
+    // stale, re-inject any DB deco_pos entry missing from the client's list unless the client deliberately
+    // deleted it this session (_deletedDecoPoIds, a session-only tombstone set by the editor's Delete PO).
+    if(_versionConflict&&existingSO&&Array.isArray(existingSO.deco_pos)&&existingSO.deco_pos.length){
+      const _clientDeco=new Set((Array.isArray(soRowInitial.deco_pos)?soRowInitial.deco_pos:[]).map(d=>d&&d.po_id).filter(Boolean));
+      const _deletedDeco=new Set(Array.isArray(so._deletedDecoPoIds)?so._deletedDecoPoIds:[]);
+      const _missingDeco=existingSO.deco_pos.filter(d=>d&&d.po_id&&!_clientDeco.has(d.po_id)&&!_deletedDeco.has(d.po_id));
+      if(_missingDeco.length){
+        soRowInitial.deco_pos=[...(Array.isArray(soRowInitial.deco_pos)?soRowInitial.deco_pos:[]),..._missingDeco];
+        console.warn('[DB] Restored',_missingDeco.length,'deco PO(s) a stale save would have dropped for',so.id,':',_missingDeco.map(d=>d.po_id).join(', '));
+        if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_missingDeco.length});
+      }
+    }
     let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
@@ -1024,6 +1043,24 @@ const _dbSaveSOInner = async (so) => {
       console.error('[DB] SAFETY: Blocking SO zero-wipe for',so.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+    }
+    // Stale-content guard: another session saved this SO after our copy loaded (_versionConflict), and
+    // the DB holds item rows this client's list doesn't cover (compared as a sku+color multiset). Those
+    // rows are almost certainly the OTHER session's work, not deliberate deletions — and hydration can't
+    // vouch here: a tab left open across someone else's edits was "cleanly hydrated" long ago, so it
+    // passes every hydration gate below (exactly how SO-1333 lost its IND4000 line + S&S PO on
+    // 2026-06-30). Block and prompt a reload; a rep who genuinely wants a line removed just reloads and
+    // removes it again, conflict-free.
+    if(_versionConflict&&oldItemIds.length>0&&_clientSoItemCount>0){
+      const _dbKeyCounts={};_oldSoItems.forEach(r=>{const k=((r.sku||'')+'|'+(r.color||'')).toLowerCase();_dbKeyCounts[k]=(_dbKeyCounts[k]||0)+1});
+      (items||[]).forEach(it=>{const k=((it.sku||'')+'|'+(it.color||'')).toLowerCase();if(_dbKeyCounts[k])_dbKeyCounts[k]--});
+      const _uncovered=Object.entries(_dbKeyCounts).filter(([,n])=>n>0).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
+      if(_uncovered.length){
+        console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
+        if(_dbNotify)_dbNotify('Save blocked — '+so.id+' was changed in another session ('+_uncovered.join(', ')+' would be dropped). Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'stale-version save would drop DB item(s) ['+_uncovered.join(', ')+'] — local v'+_versionConflict.local+' vs server v'+_versionConflict.server});
+        return false;
+      }
     }
     // Sync art_files BEFORE the bgSync item-shrink guard so art changes persist even when a background sync
     // cannot safely rewrite items (e.g. duplicate-item state from an interrupted save). Art has its own
@@ -1364,7 +1401,7 @@ const _dbSaveSOInner = async (so) => {
           if((_verifyCount||0)<allDecoRows.length){
             saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount||0});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount||0,reason:'so_item_decorations: wrote '+allDecoRows.length+', persisted '+(_verifyCount||0)+' — save queued for retry'});
           }
         }
       }
@@ -1378,7 +1415,7 @@ const _dbSaveSOInner = async (so) => {
           if((_verifyPickCount||0)<allPickRows.length){
             saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+(_verifyPickCount||0)+' of '+allPickRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO pick-line insert verification failed — expected',allPickRows.length,'got',_verifyPickCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount||0});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount||0,reason:'so_item_pick_lines: wrote '+allPickRows.length+', persisted '+(_verifyPickCount||0)+' — save queued for retry'});
           }
         }
       }
@@ -1398,7 +1435,7 @@ const _dbSaveSOInner = async (so) => {
           if((_verifyPoCount||0)<allPoRows.length){
             saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: only '+(_verifyPoCount||0)+' of '+allPoRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0,reason:'so_item_po_lines: wrote '+allPoRows.length+', persisted '+(_verifyPoCount||0)+' — save queued for retry'});
           }
         }
       }
