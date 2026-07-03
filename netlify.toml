@@ -39,6 +39,9 @@
 
 [functions]
   directory = "netlify/functions"
+  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js);
+  # make sure the file ships inside the function bundle.
+  included_files = ["src/lib/opsRecap.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -92,6 +95,20 @@
 # Reps with no activity get nothing.
 [functions."rep-daily-digest"]
   schedule = "11 9 * * *"
+
+# Rep daily OPS recap — ~2 AM PT (09:21 UTC, after the store digest). Emails each
+# rep the prior PT day across THEIR orders: shipped, estimates approved, IFs picked
+# (flagging shorts), orders all checked in, ready-to-invoice, newly-past-due
+# invoices, plus deadlines coming up. Links to the in-app "My Day" tab (Sales
+# Tools). Reps with no activity/deadlines get nothing.
+[functions."rep-ops-digest"]
+  schedule = "21 9 * * *"
+
+# Weekly A/R past-due digest — Fridays ~8 AM PT (16:00 UTC). Emails each rep every
+# open, overdue invoice on their accounts, aged, worst-first. Collections companion
+# to the daily digest. Reps with nothing past due get nothing.
+[functions."rep-ar-digest"]
+  schedule = "0 16 * * 5"
 
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas

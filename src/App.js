@@ -23,6 +23,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -4076,7 +4077,10 @@ export default function App(){
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
   // Sales Tools page state (must be at App level to avoid conditional hook calls)
-  const[stTab,setStTab]=useState('quotes');
+  const[stTab,setStTab]=useState('myday');
+  // My Day recap window controls
+  const[stMdWin,setStMdWin]=useState(3);       // activity look-back in days
+  const[stMdDeadline,setStMdDeadline]=useState(14); // deadline look-ahead in days
   const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
   const[qrView,setQrView]=useState(null);
   const[qrSearch,setQrSearch]=useState('');
@@ -5700,8 +5704,11 @@ export default function App(){
       const u=new URL(window.location);let changed=false;
       if(soId&&sos.length>0){
         const so=sos.find(s=>s.id===soId);
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
-        u.searchParams.delete('so');changed=true;
+        // so_tab lets an email deep-link land on a specific SO tab (e.g. the ops digest's
+        // "Create PO" link opens straight to Items for a short-on-pull order).
+        const soTab=p.get('so_tab');
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);if(soTab)setESOTab(soTab);setPg('orders')}
+        u.searchParams.delete('so');u.searchParams.delete('so_tab');changed=true;
       }
       if(poId&&sos.length>0){
         const so=sos.find(s=>(s.items||[]).some(it=>(it.po_lines||[]).some(pl=>pl.po_id===poId))||(s.deco_pos||[]).some(dp=>dp.po_id===poId));
@@ -5737,6 +5744,11 @@ export default function App(){
         const pr=prod.find(x=>x.id===prodId);
         if(pr){setSelP(pr);setPg('products')}
         u.searchParams.delete('prod');changed=true;
+      }
+      // Sales Tools sub-tab deep link (used by the rep ops digest email CTA, e.g. ?pg=sales_tools&st=myday).
+      const stParam=p.get('st');
+      if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
+        setStTab(stParam);u.searchParams.delete('st');changed=true;
       }
       if(changed)window.history.replaceState({},'',u);
     }catch{}
@@ -31655,13 +31667,239 @@ export default function App(){
     const emSell=emP(dcStitches,dcQty,true);const emCost=emP(dcStitches,dcQty,false);
     const npSell=npP(dcQty,dcTwoColor,true);const npCost=npP(dcQty,dcTwoColor,false);
 
+    // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
+    const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+    const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+    const _mdMine=(...ids)=>_mdAdmin||ids.some(id=>id&&id===cu.id);
+    const _mdCustName=(id)=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||'—'};
+    const _mdNow=Date.now();
+    const _mdWinStart=_mdNow-stMdWin*864e5;
+    const _mdInWin=(d)=>{const dt=parseDate(d);if(!dt)return false;const t=dt.getTime();return !isNaN(t)&&t>=_mdWinStart&&t<=_mdNow+6e4};
+    const _mdWhen=d=>{const dt=parseDate(d);if(!dt||isNaN(dt))return'';const days=Math.floor((_mdNow-dt.getTime())/864e5);return days<=0?'Today':days===1?'Yesterday':days+'d ago'};
+
+    // Estimates approved in the window (mine = created it or own the customer)
+    const mdApproved=ests.filter(e=>{
+      if(e.status!=='approved'||e.deleted_at)return false;
+      if(!_mdInWin(e.approved_at||e.updated_at))return false;
+      const cRep=cust.find(x=>x.id===e.customer_id)?.primary_rep_id;
+      return _mdMine(e.created_by,cRep);
+    }).sort((a,b)=>parseDate(b.approved_at||b.updated_at)-parseDate(a.approved_at||a.updated_at));
+
+    // Category rules live in src/lib/opsRecap.js — shared verbatim with the emailed
+    // rep-ops-digest (netlify function) so the tab and the email always agree.
+    const _mdFFCache=new Map();const _mdFF=(so)=>{let f=_mdFFCache.get(so.id);if(!f){f=opsFulfillment(so);_mdFFCache.set(so.id,f)}return f};
+    const _md$=(n)=>'$'+Math.round(safeNum(n)).toLocaleString();
+
+    // IFs picked (pick lines pulled in the window), grouped by pick_id per SO
+    const mdPicked=[];let mdShortCount=0;
+    sos.forEach(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return;
+      const gs=opsPulledGroups(so,_mdInWin);if(!gs.length)return;
+      const short=opsShortOnPull(so);if(short)mdShortCount++;
+      gs.forEach(g=>mdPicked.push({so,pickId:g.pickId,units:g.units,skus:g.skus,latest:g.latest,short}));
+    });
+    mdPicked.sort((a,b)=>parseDate(b.latest)-parseDate(a.latest));
+
+    // Orders all checked in — every unit in, nothing on press yet, not shipped. Explicit
+    // rule (not calcSOStatus==='items_received', which reports fully-received no-deco
+    // orders as 'ready_to_invoice' and would silently skip them here).
+    const mdCheckedIn=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      return opsCheckedIn(so,_mdFF(so))&&_mdInWin(so.updated_at);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Orders shipped (ShipStation, all jobs shipped, delivered, or closed out) — recent
+    const mdShipped=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
+      if(!opsShippedOut(so,_mdFF(so)))return false;
+      return _mdInWin(so._ship_date||so.updated_at);
+    }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
+
+    // Deadlines approaching (open orders due within the look-ahead window, incl. overdue)
+    const _mdDeadlineCut=_mdNow+stMdDeadline*864e5;
+    const mdDeadlines=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      if(opsShippedOut(so,_mdFF(so)))return false;
+      const dt=parseDate(so.expected_date);return dt&&!isNaN(dt)&&dt.getTime()<=_mdDeadlineCut;
+    }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
+      .sort((a,b)=>a.dt-b.dt);
+
+    // Orders ready to invoice (production done) that haven't been invoiced yet.
+    const _mdInvoicedSoIds=new Set(invs.filter(iv=>(iv.status||'').toLowerCase()!=='void'&&iv.so_id).map(iv=>iv.so_id));
+    const mdReadyInv=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
+      return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Past-due invoices for my customers (live view — every currently-overdue open invoice).
+    const _mdTodayYmd=new Date(_mdNow-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPastDue=invs.filter(iv=>{
+      if(!opsOpenInvoice(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const dpd=opsInvoiceDaysPastDue(iv,_mdTodayYmd);return dpd!=null&&dpd>=1;
+    }).map(iv=>({iv,balance:opsInvoiceBalance(iv),dpd:opsInvoiceDaysPastDue(iv,_mdTodayYmd)})).sort((a,b)=>b.dpd-a.dpd);
+
+    // Invoices fully paid within the activity window (most recent payment date in range).
+    const _mdWinStartYmd=new Date(_mdWinStart-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPaid=invs.filter(iv=>{
+      if(!opsFullyPaid(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const ymd=opsPaymentsLatestYmd(iv.payments);return ymd&&ymd>=_mdWinStartYmd&&ymd<=_mdTodayYmd;
+    }).map(iv=>({iv,ymd:opsPaymentsLatestYmd(iv.payments),amount:safeNum(iv.total)})).sort((a,b)=>(b.ymd||'').localeCompare(a.ymd||''));
+
+    const _mdOpenSO=(so,soTab)=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);if(soTab)setESOTab(soTab);setPg('orders')};
+    const _mdOpenInv=(iv)=>{setViewInvoice(iv);setPg('invoices')};
+    const _mdOpenEst=(e)=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')};
+
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
+        {[{id:'myday',label:'My Day',icon:'home'},{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
+
+      {/* ═══ MY DAY — daily ops recap ═══ */}
+      {stTab==='myday'&&(()=>{
+        const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
+        const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
+        const tiles=[
+          {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
+          {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
+          {id:'picked',label:'IFs Picked',icon:'package',color:'#b45309',n:mdPicked.length,sub:mdShortCount>0?mdShortCount+' short on pull':''},
+          {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
+          {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
+          {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
+          {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
+          {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
+        ];
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
+        const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
+          <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
+        </div>;
+        return<>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · All Reps':''}</h2>
+              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
+                <span>Activity in last</span>
+                <select className="form-input" value={stMdWin} onChange={e=>setStMdWin(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[1,3,7,14].map(d=><option key={d} value={d}>{d} day{d>1?'s':''}</option>)}</select>
+                <span>· deadlines next</span>
+                <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+                {(()=>{const me=REPS.find(r=>r.id===cu.id);const off=me?.ops_digest_opt_out===true;
+                  return<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Toggle the daily recap email of this page" onClick={async()=>{
+                    const next=!off;
+                    try{
+                      if(supabase){const{error}=await supabase.from('team_members').update({ops_digest_opt_out:next}).eq('id',cu.id);if(error)throw error}
+                      setREPS(prev=>prev.map(r=>r.id===cu.id?{...r,ops_digest_opt_out:next}:r));
+                      nf(next?'Daily recap email turned off':'Daily recap email turned on');
+                    }catch(e){nf('Could not save email preference: '+e.message,'error')}
+                  }}>{off?'📭 Daily email: Off':'📬 Daily email: On'}</button>})()}
+              </div>
+            </div>
+            <div className="card-body" style={{padding:16}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12}}>
+                {tiles.map(t=><div key={t.id} className="stat-card" style={{borderLeft:'3px solid '+t.color,cursor:'pointer'}} onClick={()=>{const el=document.getElementById('md-'+t.id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}}>
+                  <div className="stat-label"><Icon name={t.icon} size={12}/> {t.label}</div>
+                  <div className="stat-value" style={{color:t.color}}>{t.n}</div>
+                  {t.sub&&<div style={{fontSize:11,color:'#dc2626',fontWeight:700}}>⚠️ {t.sub}</div>}
+                </div>)}
+              </div>
+              {total===0&&<div style={{padding:'24px 8px 4px',textAlign:'center',color:'#94a3b8',fontSize:13}}>Nothing in this window yet. Widen the range, or check back after the day gets going.</div>}
+            </div>
+          </div>
+
+          {mdShipped.length>0&&<Section id="shipped" title="🚚 Orders Shipped" count={mdShipped.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+              <tbody>{mdShipped.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0e7490'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdApproved.length>0&&<Section id="approved" title="✅ Estimates Approved" count={mdApproved.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Estimate</th><th>Customer</th><th>Value</th><th>Approved by</th><th>When</th><th></th></tr></thead>
+              <tbody>{mdApproved.map(e=>{const converted=sos.some(s=>s.estimate_id===e.id);return<tr key={e.id}>
+                <td style={{fontWeight:600}}>{e.id}{e.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{e.memo}</div>}</td>
+                <td>{_mdCustName(e.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(calcOrderMargin(e,ests).rev)}</td>
+                <td style={{color:'#64748b'}}>{e.approved_by||'—'}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(e.approved_at||e.updated_at)}</td>
+                <td>{converted?<span style={{fontSize:10,color:'#059669',fontWeight:700}}>Ordered ✓</span>:<button className="btn btn-sm" style={{fontSize:10,background:'#065f46',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenEst(e)}>Convert to SO</button>}</td>
+              </tr>})}</tbody></table></Section>}
+
+          {mdPicked.length>0&&<Section id="picked" title="📦 IFs Picked" count={mdPicked.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>IF / Order</th><th>Customer</th><th>Units</th><th>Items</th><th>Pulled</th><th></th></tr></thead>
+              <tbody>{mdPicked.map((r,i)=><tr key={r.so.id+':'+(r.pickId||i)} style={r.short?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{r.pickId||r.so.id}<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{r.so.id}{r.short?<span style={{color:'#dc2626',fontWeight:700}}> · ⚠️ Short {r.short.units}: {r.short.detail}</span>:''}</div></td>
+                <td>{_mdCustName(r.so.customer_id)}</td>
+                <td>{r.units}</td>
+                <td style={{fontSize:11,color:'#475569'}}>{r.skus.slice(0,3).join(', ')}{r.skus.length>3?' +'+(r.skus.length-3):''}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(r.latest)}</td>
+                <td style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(r.so,'items')}>Open</button>{r.short&&<button className="btn btn-sm" style={{fontSize:10,background:'#b91c1c',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenSO(r.so,'items')}>Create PO</button>}</td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdCheckedIn.length>0&&<Section id="checkedin" title="🏬 Orders All Checked In" count={mdCheckedIn.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Ready</th><th></th></tr></thead>
+              <tbody>{mdCheckedIn.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#7c3aed'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPaid.length>0&&<Section id="paid" title="💰 Paid" count={mdPaid.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Paid</th><th></th></tr></thead>
+              <tbody>{mdPaid.map(({iv,ymd,amount})=><tr key={iv.id}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(amount)}</td>
+                <td style={{color:'#64748b'}}>{ymd?_mdWhen(ymd):''}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th></th></tr></thead>
+              <tbody>{mdReadyInv.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPastDue.length>0&&<Section id="pastdue" title="💸 Past Due Invoices" count={mdPastDue.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Balance</th><th>Due</th><th>Overdue</th><th></th></tr></thead>
+              <tbody>{mdPastDue.map(({iv,balance,dpd})=><tr key={iv.id} style={dpd>=30?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#b91c1c'}}>{_md$(balance)}</td>
+                <td style={{color:'#64748b'}}>{iv.due_date?String(iv.due_date).slice(0,10):'—'}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:dpd>=60?'#fee2e2':dpd>=30?'#fef3c7':'#fee2e2',color:dpd>=60?'#7f1d1d':dpd>=30?'#92400e':'#991b1b'}}>{dpd}d</span></td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdDeadlines.length>0&&<Section id="deadlines" title="⏰ Deadlines Approaching" count={mdDeadlines.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Due</th><th>Status</th><th></th></tr></thead>
+              <tbody>{mdDeadlines.map(({so,dt,daysOut})=>{const overdue=daysOut<0;const soon=daysOut>=0&&daysOut<=3;return<tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#be123c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:overdue?'#fee2e2':soon?'#fef3c7':'#e0f2fe',color:overdue?'#991b1b':soon?'#92400e':'#075985'}}>{dt.toLocaleDateString()}{' · '}{overdue?Math.abs(daysOut)+'d overdue':daysOut===0?'today':daysOut+'d out'}</span></td>
+                <td style={{fontSize:11,color:'#64748b'}}>{calcSOStatus(so).replace(/_/g,' ')}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>})}</tbody></table></Section>}
+        </>;
+      })()}
 
       {/* ═══ CUSTOMER QUOTE FORMS ═══ */}
       {stTab==='quotes'&&<>
