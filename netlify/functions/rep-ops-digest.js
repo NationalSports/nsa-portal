@@ -32,6 +32,13 @@ const TZ = 'America/Los_Angeles';
 const DEAD_STATUS = new Set(['cancelled', 'deleted', 'void', 'archived']);
 const NEWLY_PAST_DUE_DAYS = 10; // an invoice is "newly past due" the day it crosses this many days overdue
 
+// Extra daily-recipients: an account-team member who should also receive a given
+// rep's daily recap. Keyed by rep team_member id → [extra team_member ids].
+const DAILY_EXTRA_RECIPIENTS = {
+  '00000000-0000-0000-0000-000000000022': ['00000000-0000-0000-0000-000000000031'], // Mike "Merc" Mercuriali → Rachel Najara
+  '00000000-0000-0000-0000-000000000025': ['00000000-0000-0000-0000-000000000030'], // Kelly Bean → Sharon Day-Monroe
+};
+
 const parseDate = (d) => { if (!d) return null; const dt = new Date(d); return isNaN(dt.getTime()) ? null : dt; };
 
 // ── PT day-that-just-ended window (same as rep-daily-digest) ──
@@ -245,21 +252,25 @@ exports.handler = async (event) => {
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
       const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.pastDue.length + b.paid.length;
+      // live=1 sends a real (non-[TEST]) digest — used to roll the recap out on demand.
+      const live = qs.live === '1' || qs.live === 'true';
+      const isCc = String(testTo).toLowerCase() !== String(testRep.email || '').toLowerCase();
       const html = buildOpsHtml({ rep: testRep, b, dayLabel, portal, custName, invTotalBySo,
-        testNote: `Test send to ${testRep.name || testRep.email} · this is ${(testRep.name || '').split(/\s+/)[0] || 'their'}'s own recap for ${dayLabel}${activity === 0 ? ' (no activity or deadlines in this window).' : '.'}` });
+        ccFor: isCc ? testRep.name : null,
+        testNote: live ? null : `Test send to ${testRep.name || testRep.email} · this is ${(testRep.name || '').split(/\s+/)[0] || 'their'}'s own recap for ${dayLabel}${activity === 0 ? ' (no activity or deadlines in this window).' : '.'}` });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
           sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
           to: [{ email: testTo, name: testRep.name || '' }],
-          subject: `[TEST] ${opsSubject(b, b.picked.filter((p) => p.short).length, dayLabel)}`,
+          subject: `${live ? '' : '[TEST] '}${isCc ? testRep.name + ': ' : ''}${opsSubject(b, b.picked.filter((p) => p.short).length, dayLabel)}`,
           htmlContent: html,
         }),
       });
       const ok = res.ok; const errTxt = ok ? '' : await res.text().catch(() => '');
-      console.log(`[ops-digest] TEST → ${testTo}: ${ok ? 'sent' : 'FAILED ' + res.status + ' ' + errTxt}`);
-      return { statusCode: ok ? 200 : 502, body: ok ? `Test digest sent to ${testTo} (${activity} items)` : `Brevo error ${res.status}: ${errTxt}` };
+      console.log(`[ops-digest] ${live ? 'LIVE' : 'TEST'} → ${testTo} (${testRep.name}): ${ok ? 'sent' : 'FAILED ' + res.status + ' ' + errTxt}`);
+      return { statusCode: ok ? 200 : 502, body: ok ? `${live ? 'Live' : 'Test'} digest sent to ${testTo} — ${testRep.name}'s recap (${activity} items)` : `Brevo error ${res.status}: ${errTxt}` };
     }
 
     // ── Send ──
@@ -286,6 +297,23 @@ exports.handler = async (event) => {
         }),
       });
       if (res.ok) sent++; else console.error('[ops-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+
+      // Copy this rep's recap to any configured account-team members.
+      for (const extraId of (DAILY_EXTRA_RECIPIENTS[repId] || [])) {
+        const ex = repById[extraId];
+        if (!ex || !ex.email || ex.is_active === false || ex.ops_digest_opt_out === true || !/.+@.+\..+/.test(ex.email)) continue;
+        const exRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+          body: JSON.stringify({
+            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            to: [{ email: ex.email, name: ex.name || '' }],
+            subject: `${rep.name}: ${opsSubject(b, shortN, dayLabel)}`,
+            htmlContent: buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, ccFor: rep.name }),
+          }),
+        });
+        if (exRes.ok) sent++; else console.error('[ops-digest] brevo(cc)', ex.email, exRes.status, await exRes.text().catch(() => ''));
+      }
     }
     console.log(`[ops-digest] ${dayLabel}: ${orders.length}/${headers.length} orders in working set, ${Object.keys(byRep).length} reps bucketed, ${sent} emailed, ${skippedOptOut} opted out`);
     return { statusCode: 200, body: `Emailed ${sent}` };
@@ -308,7 +336,7 @@ function opsSubject(b, shortN, dayLabel) {
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
 }
 
-function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNote }) {
+function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNote, ccFor }) {
   const NAVY = '#16223F', ACCENT = '#B6985A', INK = '#2A2F3E', SUB = '#6B6256', LINE = '#E7DFD0', CREAM = '#FAF6EF';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
@@ -385,6 +413,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       <div style="font-size:14px;color:rgba(255,255,255,.82);margin-top:4px">Here's what moved on your orders yesterday.</div>
     </div>
     <div style="background:#fff;border:1px solid ${LINE};border-top:none;border-radius:0 0 10px 10px;padding:18px 18px 22px">
+      ${ccFor ? `<div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">📋 You're receiving ${esc(ccFor)}'s daily recap — you're on their account team.</div>` : ''}
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
