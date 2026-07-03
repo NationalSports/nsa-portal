@@ -3236,14 +3236,16 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const TH = { ...BCN, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, fontSize: 12, color: '#5A6075', padding: '12px', userSelect: 'none' };
   const TD = { padding: '13px 12px', verticalAlign: 'middle' };
 
+  // Column is just the close date on top, a short context line underneath — kept to one
+  // line each so row height stays consistent regardless of status.
   const storeWindowText = (s) => {
     const st = storeStatus(s);
-    if (st === 'Draft') return { main: 'Not scheduled', sub: 'Draft', subColor: '#8A93A8' };
-    if (st === 'Scheduled') return { main: fmt(s.open_at), sub: '→ ' + fmt(s.close_at), subColor: '#2A6FDB' };
-    if (st === 'Closed') return { main: (fmt(s.open_at) || '?') + ' – ' + (fmt(s.close_at) || '?'), sub: 'Closed', subColor: '#8A93A8' };
+    if (st === 'Draft') return { main: '—', sub: 'Draft', subColor: '#8A93A8' };
+    if (st === 'Scheduled') return { main: fmt(s.close_at) || '—', sub: 'Opens ' + fmt(s.open_at), subColor: '#2A6FDB' };
+    if (st === 'Closed') return { main: fmt(s.close_at) || '—', sub: 'Closed', subColor: '#8A93A8' };
     const dl = daysLeft(s);
     return {
-      main: s.close_at ? 'Closes ' + fmt(s.close_at) : 'No close date',
+      main: s.close_at ? fmt(s.close_at) : 'No end date',
       sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
       subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
     };
@@ -3322,7 +3324,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
                   <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
-                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Sale Window{sortArrow('window')}</th>
+                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Close{sortArrow('window')}</th>
                   <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
                   <th style={{ ...TH, width: 28 }}></th>
                 </tr>
@@ -3347,12 +3349,12 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         <td style={{ ...TD, textAlign: 'center', color: '#8A93A8', padding: '13px 8px' }}>
                           <span style={{ display: 'inline-block', transition: 'transform .15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 11 }}>▶</span>
                         </td>
-                        <td style={TD}>
-                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {s.name}
-                            {coachReview && <span style={{ fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
+                        <td style={{ ...TD, maxWidth: 260 }}>
+                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                            <span title={s.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{s.name}</span>
+                            {coachReview && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
                           </div>
-                          <div style={{ color: '#8A93A8', fontSize: 12.5 }}>{custName(s.customer_id)}</div>
+                          <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
