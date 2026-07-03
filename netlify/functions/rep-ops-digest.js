@@ -77,7 +77,19 @@ async function loadIn(admin, table, cols, col, ids) {
   return out;
 }
 
-exports.handler = async () => {
+exports.handler = async (event) => {
+  const qs = (event && event.queryStringParameters) || {};
+  const testTo = qs.test ? String(qs.test).trim() : '';
+  // HTTP invocations are allowed ONLY as a single-recipient test to a known team
+  // address; the unattended all-reps send runs solely from the Netlify scheduler
+  // (a scheduled invocation carries no httpMethod). Belt-and-suspenders so hitting
+  // the function URL can never blast the whole team.
+  const isHttp = !!(event && event.httpMethod);
+  const testKey = process.env.OPS_DIGEST_TEST_KEY || '';
+  if (isHttp) {
+    if (!testTo) return { statusCode: 400, body: 'Manual runs must pass ?test=<team email> (single-recipient test). The full send only runs on schedule.' };
+    if (testKey && qs.key !== testKey) return { statusCode: 403, body: 'Missing or bad ?key.' };
+  }
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
   if (!brevoKey) { console.error('[ops-digest] BREVO_API_KEY missing'); return { statusCode: 500, body: 'Not configured' }; }
@@ -175,6 +187,47 @@ exports.handler = async () => {
       invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
     });
 
+    // Single-recipient test send (manual ?test=<email>[&rep=<id|name>]). Renders a
+    // specific rep's own digest — exactly what they'd receive — and delivers only to
+    // the test address, bypassing the skip/opt-out/weekend gates so a test always
+    // sends even on a quiet day. The recipient must be a known team member OR a
+    // company (@nationalsportsapparel.com) address, so the endpoint can't be used to
+    // email arbitrary outsiders. Which rep's data is shown: ?rep if given, else the
+    // team member whose email matches the recipient (exact, then by local-part).
+    if (testTo) {
+      const lc = (s) => String(s || '').toLowerCase();
+      const localPart = lc(testTo).split('@')[0];
+      const knownTo = members.find((m) => lc(m.email) === lc(testTo));
+      if (!knownTo && !/@nationalsportsapparel\.com$/i.test(testTo)) {
+        return { statusCode: 403, body: `Test recipient must be a known team member or an @nationalsportsapparel.com address (got ${testTo}).` };
+      }
+      const repSel = qs.rep ? lc(qs.rep) : '';
+      const testRep = (repSel && members.find((m) => lc(m.id) === repSel || lc(m.name) === repSel || lc(m.name).split(/\s+/)[0] === repSel || lc(m.email) === repSel))
+        || knownTo
+        || members.find((m) => lc(m.email).split('@')[0] === localPart)
+        || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
+      if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's digest to render for ${testTo}. Pass &rep=<name or id>.` };
+      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [] };
+      b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
+      b.deadlines.sort((x, y) => x.due - y.due);
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length;
+      const html = buildOpsHtml({ rep: testRep, b, dayLabel, portal, custName, invTotalBySo,
+        testNote: `Test send to ${testRep.name || testRep.email} · this is ${(testRep.name || '').split(/\s+/)[0] || 'their'}'s own recap for ${dayLabel}${activity === 0 ? ' (no activity or deadlines in this window).' : '.'}` });
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+        body: JSON.stringify({
+          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          to: [{ email: testTo, name: testRep.name || '' }],
+          subject: `[TEST] ${opsSubject(b, b.picked.filter((p) => p.short).length, dayLabel)}`,
+          htmlContent: html,
+        }),
+      });
+      const ok = res.ok; const errTxt = ok ? '' : await res.text().catch(() => '');
+      console.log(`[ops-digest] TEST → ${testTo}: ${ok ? 'sent' : 'FAILED ' + res.status + ' ' + errTxt}`);
+      return { statusCode: ok ? 200 : 502, body: ok ? `Test digest sent to ${testTo} (${activity} items)` : `Brevo error ${res.status}: ${errTxt}` };
+    }
+
     // ── Send ──
     let sent = 0, skippedOptOut = 0;
     for (const [repId, b] of Object.entries(byRep)) {
@@ -218,7 +271,7 @@ function opsSubject(b, shortN, dayLabel) {
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
 }
 
-function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo }) {
+function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNote }) {
   const NAVY = '#16223F', ACCENT = '#B6985A', INK = '#2A2F3E', SUB = '#6B6256', LINE = '#E7DFD0', CREAM = '#FAF6EF';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
@@ -280,6 +333,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo }) {
       <div style="font-size:14px;color:rgba(255,255,255,.82);margin-top:4px">Here's what moved on your orders yesterday.</div>
     </div>
     <div style="background:#fff;border:1px solid ${LINE};border-top:none;border-radius:0 0 10px 10px;padding:18px 18px 22px">
+      ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
       ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${deadlineBlock}
