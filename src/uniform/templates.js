@@ -195,12 +195,12 @@ const TEMPLATES = {
       front: {
         base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
-        anchors: { number: { x: 0.36, y: 0.3, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        anchors: { number: { x: 0.35, y: 0.26, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
-        anchors: { number: { x: 0.5, y: 0.48, size: 190 }, name: { x: 0.5, y: 0.27, size: 70 } },
+        anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
       },
     },
   },
@@ -223,11 +223,11 @@ const TEMPLATES = {
           { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#ff682a' },
           { id: 'collar', label: 'Collar', maskColor: '#afbf00' },
         ],
-        // Kit-standard front layout: small number over the wearer's RIGHT chest
-        // (image-left), leaving the wearer's-left chest (image-right) for the
-        // crest/logo slot — centered defaults stacked the two on top of each
-        // other mid-torso.
-        anchors: { number: { x: 0.36, y: 0.3, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        // Kit-standard front layout (calibrated to pro sublimated kits): small
+        // number high on the wearer's RIGHT chest (image-left), crest/logo slot
+        // mirrored on the wearer's LEFT chest — both up near the collarbone
+        // line, never stacked mid-torso.
+        anchors: { number: { x: 0.35, y: 0.26, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/sahrul-base-back.jpg'), mask: PUB('/uniform/sahrul-mask-back.png'),
@@ -238,7 +238,9 @@ const TEMPLATES = {
           { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#f46a31' },
           { id: 'collar', label: 'Collar', maskColor: '#bfd00a' },
         ],
-        anchors: { number: { x: 0.5, y: 0.48, size: 190 }, name: { x: 0.5, y: 0.27, size: 70 } },
+        // Name rides the shoulder yoke; the number is the hero — big and
+        // centered on the upper-mid back like a real match kit.
+        anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
       },
     },
   },
