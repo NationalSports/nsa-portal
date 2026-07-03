@@ -132,6 +132,16 @@ window._sizeMaps["51"]={"210":"XS","230":"S","250":"M","270":"L","290":"XL","310
 > doesn't recur:** (1) this seed correction (360→ST, 370→MT), and (2) the Step 5 self-heal must
 > also drop stale extended-size **labels** (e.g. a `6XL`/`7XL` row when a labeled tall twin
 > exists), not only raw 3-digit codes.
+>
+> **RECURRED 2026-06-25/26:** that run re-wrote 703 phantom 6XL/7XL rows, ~19.9K raw 3-digit
+> code rows duplicating their labeled twins' stock, and 62 rows with the ~9,999,999 sentinel in
+> `stock_qty` — i.e. the live skill ran with the OLD seed / without loading `adidas_size_maps`
+> (this seed line is a plain assignment, so a stale hardcoded seed clobbers the table's fix).
+> Cleaned by portal migration 00165, which also added a `trg_adidas_inventory_guard` BEFORE
+> trigger on `adidas_inventory`: writes with `size ~ '^[0-9]{3}$'` or `6XL`/`7XL` are silently
+> DROPPED, and `stock_qty >= 1e6` is clamped to 9999. So a broken-map run now loses those sizes'
+> rows instead of writing junk — if the run report shows unexpectedly few rows written or
+> non-empty `_unmappedSeen`, fix the map and re-sync; the DB will not accept the raw codes.
 
 Re-learn a conversionId only when a richer/new example appears (`_convSizes[cid].n` > stored
 size). Learn from the FULL size run via the hidden product-page iframe loader (query
@@ -146,7 +156,9 @@ A map learned from one short-run SKU leaves longer SKUs' extended/tall sizes as 
 Install once; cart rotation + UUID `request-id` + 401-aware stop + per-SKU self-heal. Per SKU:
 1. Default call → EVERY size: `stock_qty=sizes[code].inventory`,
    `future_delivery_date=sizes[code].restockDate` (in stock or not). Sold-out SKU with empty
-   `sizes` → use `deliveryInformation.sizeRun`, stock 0, date null.
+   `sizes` → use `deliveryInformation.sizeRun`, stock 0, date null. The ~9,999,999 "unlimited"
+   sentinel applies to CURRENT stock too (seen on kids' footwear KJ0748/KJ5457): any
+   `stock_qty >= 1e6` → write 9999 (the DB guard clamps it anyway; don't rely on that).
    **Write zero rows** (all-0 SKUs still upsert) so the catalog shows "out of stock — inbound"
    instead of hiding the item.
 2. Collect DISTINCT restock dates among the OUT-OF-STOCK sizes.
