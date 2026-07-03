@@ -209,6 +209,23 @@ function knockoutBackground(canvas) {
   return canvas.toDataURL('image/png');
 }
 
+// ── programs (cuts) ──────────────────────────────────────────────────────────
+// Men's / Women's / Youth are genuinely different silhouettes, each with its
+// own base 3D model. Until the women's + youth cut models arrive from the
+// artists, every program routes to the current men's bases — swapping in the
+// real cuts later is a one-line change per entry here.
+const PROGRAMS = ['mens', 'womens', 'youth'];
+const PROGRAM_LABELS = { mens: "Men's", womens: "Women's", youth: 'Youth' };
+const PROGRAM_GARMENTS = {
+  mens: { vneck: 'sahrul_jersey', crew: 'octa_jersey' },
+  womens: { vneck: 'sahrul_jersey', crew: 'octa_jersey' }, // TODO: women's cut models
+  youth: { vneck: 'sahrul_jersey', crew: 'octa_jersey' },  // TODO: youth cut models
+};
+function garmentFor(cfg) {
+  const byNeck = PROGRAM_GARMENTS[cfg.program] || PROGRAM_GARMENTS.mens;
+  return byNeck[cfg.neckStyle === 'crew' ? 'crew' : 'vneck'];
+}
+
 const SIZES = ['YS', 'YM', 'YL', 'WS', 'WM', 'WL', 'WXL', 'AS', 'AM', 'AL', 'AXL', 'A2XL'];
 const SIZE_LABELS = { YS: 'Youth S', YM: 'Youth M', YL: 'Youth L', WS: "Women's S", WM: "Women's M", WL: "Women's L", WXL: "Women's XL", AS: 'Adult S', AM: 'Adult M', AL: 'Adult L', AXL: 'Adult XL', A2XL: 'Adult 2XL' };
 const UNIT_PRICE = 80;
@@ -230,6 +247,7 @@ const DEFAULT_CONFIG = {
   outlineColor: 'auto', numberSize: 1, nameSize: 1,
   nameArch: 'arched', nameSpacing: 8,
   neckStyle: 'vneck', frontNumber: 'right',
+  program: 'mens',
 };
 
 // ── persistence ──────────────────────────────────────────────────────────────
@@ -303,7 +321,7 @@ function specFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: cfg.neckStyle === 'crew' ? 'octa_jersey' : 'sahrul_jersey', fabric: cfg.fabric || 'sublimated',
+    garmentId: garmentFor(cfg), fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
       sleeveL: zoneOf(S.sleeveL),
@@ -477,6 +495,18 @@ function LabeledInput({ label, value, onChange, maxLength }) {
   );
 }
 
+// Below ~900px the side-by-side stage + rail doesn't fit — the wizard stacks
+// the 3D stage on top with the controls scrolling underneath.
+function useNarrow(bp = 900) {
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.innerWidth < bp);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < bp);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [bp]);
+  return narrow;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProBuilder({ onExit, onCreateOrder }) {
   const [config, setConfig] = useState(restoredConfig);
@@ -500,6 +530,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
   const [fabricGuide, setFabricGuide] = useState(false);
+  const narrow = useNarrow();
 
   // Roster / sizes
   const [selectedSize, setSelectedSize] = useState('AM');
@@ -535,7 +566,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const spec = useMemo(() => specFromConfig(config), [config]);
   // Neck style picks the garment: the commissioned V-neck (crisp sewn panels)
   // or the crew-neck model. More cuts slot in here as the artist delivers them.
-  const tpl = getTemplate(config.neckStyle === 'crew' ? 'octa_jersey' : 'sahrul_jersey');
+  const tpl = getTemplate(garmentFor(config));
 
   // Per-section design: which section the Jersey step is editing, and a helper
   // that patches one section's {color, color2, pattern}.
@@ -973,23 +1004,23 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#fff', display: 'flex', flexDirection: 'column', fontFamily: F_BODY, zIndex: 40 }}>
       {/* TOP BAR */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px', height: 64, borderBottom: '1px solid ' + C.light, flexShrink: 0 }}>
-        <button onClick={onExit} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer' }}>
-          <span style={{ fontSize: 16 }}>←</span> {onExit ? 'Exit Builder' : 'Team Stores'}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: narrow ? '0 14px' : '0 28px', height: narrow ? 56 : 64, borderBottom: '1px solid ' + C.light, flexShrink: 0 }}>
+        <button onClick={onExit} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 16 }}>←</span> {narrow ? 'Exit' : onExit ? 'Exit Builder' : 'Team Stores'}
         </button>
-        <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 18, letterSpacing: 1, color: C.navy, textTransform: 'uppercase' }}>
-          Uniform Builder <span style={{ color: C.textLight, fontWeight: 700, fontSize: 12 }}>National Sports</span>
+        <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 15 : 18, letterSpacing: 1, color: C.navy, textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          Uniform Builder {!narrow && <span style={{ color: C.textLight, fontWeight: 700, fontSize: 12 }}>National Sports</span>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <button onClick={() => setScreen('saved')} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer' }}>My Designs</button>
-          <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Changes save automatically</div>
+          <button onClick={() => setScreen('saved')} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '7px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }}>My Designs</button>
+          {!narrow && <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Changes save automatically</div>}
         </div>
       </div>
 
       {/* MY DESIGNS — browser-local saved designs, reopen or delete */}
       {screen === 'saved' && (
         <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
-          <div style={{ maxWidth: 1080, margin: '0 auto', padding: '32px 28px 60px' }}>
+          <div style={{ maxWidth: 1080, margin: '0 auto', padding: narrow ? '22px 16px 48px' : '32px 28px 60px' }}>
             <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
             <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Saved on This Device</div>
             <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>My Designs</h2>
@@ -1026,7 +1057,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       {/* CATALOG · SPORT PICKER */}
       {screen === 'sports' && (
         <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
-          <div style={{ maxWidth: 980, margin: '0 auto', padding: '40px 28px 60px' }}>
+          <div style={{ maxWidth: 980, margin: '0 auto', padding: narrow ? '26px 16px 48px' : '40px 28px 60px' }}>
             <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Uniform Builder</div>
             <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 34, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick Your Sport</h2>
             <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 26 }}>Choose a sport, start from a design, then make it yours — colors, logos, numbers, and roster.</div>
@@ -1063,11 +1094,26 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       {/* CATALOG · DESIGN GALLERY */}
       {screen === 'designs' && (
         <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
-          <div style={{ maxWidth: 1080, margin: '0 auto', padding: '32px 28px 60px' }}>
+          <div style={{ maxWidth: 1080, margin: '0 auto', padding: narrow ? '22px 16px 48px' : '32px 28px 60px' }}>
             <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
             <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>{SPORT_LABELS[config.sport] || 'Team'} Uniforms</div>
             <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick a Starting Design</h2>
-            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 24 }}>Every design is fully customizable — colors, pattern, trim, lettering, and logos are all yours to change.</div>
+            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 18 }}>Every design is fully customizable — colors, pattern, trim, lettering, and logos are all yours to change.</div>
+            {/* program selector — men's / women's / youth cut */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 22, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.2, color: C.textLight, marginRight: 2 }}>Program</span>
+              {PROGRAMS.map((pg) => {
+                const on = (config.program || 'mens') === pg;
+                return (
+                  <button key={pg} onClick={() => setConfig((c) => ({ ...c, program: pg }))} style={{
+                    padding: '8px 18px', borderRadius: 20, cursor: 'pointer',
+                    border: '1.5px solid ' + (on ? C.navy : C.mid),
+                    background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy,
+                    fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.6,
+                  }}>{PROGRAM_LABELS[pg]}</button>
+                );
+              })}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
               {DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)).map((pz) => (
                 <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
@@ -1094,15 +1140,15 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
       {screen === 'wizard' && (<>
       {/* STEP NAV */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 30, height: 52, borderBottom: '1px solid ' + C.light, flexShrink: 0, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: narrow ? 'flex-start' : 'center', gap: narrow ? 20 : 30, height: narrow ? 46 : 52, padding: narrow ? '0 14px' : 0, borderBottom: '1px solid ' + C.light, flexShrink: 0, overflowX: narrow ? 'auto' : 'visible', flexWrap: narrow ? 'nowrap' : 'wrap' }}>
         {STEPS.map((s, i) => {
           const on = s.key === step; const done = i < stepIdx;
           return (
             <button key={s.key} onClick={() => { if (s.key === 'finalize') { /* allow */ } setStep(s.key); }} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0 6px',
+              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0 6px', flexShrink: 0,
               borderBottom: '3px solid ' + (on ? C.red : 'transparent'),
-              fontFamily: F_DISP, fontWeight: 700, fontSize: 15, textTransform: 'uppercase', letterSpacing: 1,
-              color: on ? C.navy : done ? C.navy : C.textLight,
+              fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: 1,
+              color: on ? C.navy : done ? C.navy : C.textLight, whiteSpace: 'nowrap',
             }}>
               <span style={{ color: on ? C.red : C.mid, marginRight: 7 }}>{i + 1}</span>{s.label}
             </button>
@@ -1111,47 +1157,52 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       </div>
 
       {/* BODY */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: narrow && isBuilderStep ? 'column' : 'row', minHeight: 0 }}>
         {isBuilderStep && (
           <>
             {/* CENTER STAGE — 3D fills the whole stage; info floats over it so the
                 garment gets every available pixel instead of losing rows to a
-                stacked header/footer. */}
-            <div style={{ flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
+                stacked header/footer. On narrow screens the stage takes the top
+                ~45% of the viewport and the rail scrolls underneath. */}
+            <div style={narrow
+              ? { flex: '0 0 auto', height: '44vh', minHeight: 260, position: 'relative', minWidth: 0, background: '#fff' }
+              : { flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
               <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
                   <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.16} />
                 </React.Suspense>
               </div>
               {/* floating info card — top left */}
-              <div style={{ position: 'absolute', top: 18, left: 22, maxWidth: 300, pointerEvents: 'none' }}>
-                <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build</div>
-                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 21, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px', lineHeight: 1.15 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
+              <div style={{ position: 'absolute', top: narrow ? 10 : 18, left: narrow ? 14 : 22, maxWidth: narrow ? 220 : 300, pointerEvents: 'none' }}>
+                <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 10 : 11, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build · {PROGRAM_LABELS[config.program] || "Men's"}</div>
+                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 21, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px', lineHeight: 1.15 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                   {[SX.body.color, SX.sleeveL.color, SX.collar.color].map((c, i) => (
                     <span key={i} style={{ width: 13, height: 13, borderRadius: '50%', background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
                   ))}
-                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>
+                  {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>}
                 </div>
               </div>
               {/* floating shorts chip — bottom left */}
               {bottom.enabled && (
-                <div style={{ position: 'absolute', left: 22, bottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: 52, height: 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 1px 5px rgba(15,23,42,.08)' }}>
+                <div style={{ position: 'absolute', left: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: narrow ? 42 : 52, height: narrow ? 42 : 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 1px 5px rgba(15,23,42,.08)' }}>
                     {bottomPreview ? <img src={bottomPreview} alt="shorts" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: C.textLight }}>…</span>}
                   </div>
-                  <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>+ Matching Shorts{bottom.linked ? '' : ' (custom)'}</span>
+                  {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>+ Matching Shorts{bottom.linked ? '' : ' (custom)'}</span>}
                 </div>
               )}
               {/* floating viewer controls — bottom right */}
-              <div style={{ position: 'absolute', right: 22, bottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>
+              <div style={{ position: 'absolute', right: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+                {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>}
                 <button onClick={() => setSpin((v) => !v)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: spin ? '#fff' : C.navy, background: spin ? C.navy : '#fff', border: '1px solid ' + (spin ? C.navy : C.mid), borderRadius: 4, padding: '5px 11px', cursor: 'pointer' }}>{spin ? 'Pause Spin' : 'Auto-Spin'}</button>
               </div>
             </div>
 
-            {/* RIGHT PANEL */}
-            <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '24px 22px', overflowY: 'auto' }}>
+            {/* RIGHT PANEL — stacks under the stage on narrow screens */}
+            <div style={narrow
+              ? { flex: 1, minHeight: 0, borderTop: '1px solid ' + C.light, padding: '18px 16px 28px', overflowY: 'auto' }
+              : { width: 320, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '24px 22px', overflowY: 'auto' }}>
               {step === 'team' && (
                 <div>
                   <LabeledInput label="Team / Design Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
@@ -1368,7 +1419,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
         {/* ROSTER VIEW */}
         {step === 'roster' && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '28px 40px', background: C.offWhite, overflow: 'auto' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: narrow ? '20px 14px 32px' : '28px 40px', background: C.offWhite, overflow: 'auto' }}>
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Step 4 · Roster &amp; Sizes</div>
               <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 28, textTransform: 'uppercase', color: C.navy, margin: '2px 0 4px' }}>Build Your Team Roster</h2>
@@ -1439,8 +1490,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
         {/* FINALIZE VIEW */}
         {step === 'finalize' && (
-          <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'auto', background: '#fff' }}>
-            <div style={{ flex: 1, minWidth: 0, padding: '34px 40px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: narrow ? 'column' : 'row', minHeight: 0, overflow: 'auto', background: '#fff' }}>
+            <div style={{ flex: narrow ? '0 0 auto' : 1, minWidth: 0, padding: narrow ? '22px 16px' : '34px 40px', display: 'flex', flexDirection: 'column' }}>
               <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Design Complete</div>
               <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 32, textTransform: 'uppercase', color: C.navy, lineHeight: 1, margin: '2px 0 0' }}>{(config.teamName || 'Team').toUpperCase()}</h2>
               <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, margin: '6px 0 24px' }}>{(config.teamName || 'Team')} Home Jersey{bottom.enabled ? ' + Shorts' : ''}</div>
@@ -1463,7 +1514,9 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               </div>
             </div>
             {/* summary */}
-            <div style={{ width: 400, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '32px 32px 40px', display: 'flex', flexDirection: 'column', background: C.offWhite, overflowY: 'auto' }}>
+            <div style={narrow
+              ? { flexShrink: 0, borderTop: '1px solid ' + C.light, padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', background: C.offWhite }
+              : { width: 400, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '32px 32px 40px', display: 'flex', flexDirection: 'column', background: C.offWhite, overflowY: 'auto' }}>
               <h3 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 22, textTransform: 'uppercase', color: C.navy, margin: '0 0 6px' }}>You've Finished Designing</h3>
               <div style={{ fontFamily: F_BODY, fontSize: 13, color: C.text, lineHeight: 1.6, marginBottom: 20 }}>Download your design or continue to place your team order. Your rep confirms every order within 24 hours.</div>
               <div style={{ display: 'flex', gap: 10, marginBottom: 22 }}>
@@ -1594,14 +1647,14 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       )}
 
       {/* BOTTOM BAR */}
-      <div style={{ height: 72, flexShrink: 0, borderTop: '1px solid ' + C.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ display: 'flex', gap: 4 }}>
+      <div style={{ height: narrow ? 62 : 72, flexShrink: 0, borderTop: '1px solid ' + C.light, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: narrow ? '0 14px' : '0 28px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
             {[SX.body.color, SX.sleeveL.color, SX.body.color2].map((c, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: '1px solid ' + C.light }} />)}
           </div>
-          <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>
+          {!narrow && <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
           <button onClick={goPrev} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>{stepIdx === 0 ? 'Designs' : 'Back'}</button>
           {step !== 'finalize' && <button onClick={goNext} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 14, letterSpacing: 0.6, textTransform: 'uppercase', color: '#fff', background: C.red, border: 'none', borderRadius: 4, padding: '12px 26px', cursor: 'pointer' }}>{nextLabel}</button>}
         </div>
