@@ -112,7 +112,7 @@ function effectiveBottomSections(cfg) {
   const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
-    const from = (z) => ({ color: z.color, color2: z.color2, color3: z.color3, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
+    const from = (z) => ({ color: z.color, color2: z.color2, color3: z.color3, color4: z.color4, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
     return { legs: from(S.body), waistband: from(S.collar), stripe: from(S.sleeveL) };
   }
   return { ...defaultBottomSections(), ...(bottom.sections || {}) };
@@ -121,7 +121,7 @@ function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    color3: z.color3,
+    color3: z.color3, color4: z.color4,
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
   });
   return ds.normalizeSpec({
@@ -299,7 +299,7 @@ function specFromConfig(cfg) {
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    color3: z.color3,
+    color3: z.color3, color4: z.color4,
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
   });
   return ds.normalizeSpec({
@@ -449,8 +449,10 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             <QuickColors teamColors={teamColors} hex={active.color2} onPick={(h) => onPatch({ color2: h })} />
             {active.patternTintMode !== 'blend' && (
               <>
-                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent</div>
+                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 1</div>
                 <QuickColors teamColors={teamColors} hex={active.color3 || '#FFFFFF'} onPick={(h) => onPatch({ color3: h })} />
+                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 2</div>
+                <QuickColors teamColors={teamColors} hex={active.color4 || '#FFFFFF'} onPick={(h) => onPatch({ color4: h })} />
               </>
             )}
           </>

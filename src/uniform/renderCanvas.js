@@ -40,7 +40,7 @@ function fillZone(ctx, path, zone, vb, s) {
 
   if (pat === 'custom' && zone.patternImage) {
     let img = patternImgCache[zone.patternImage];
-    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2, ds.toHex(zone.color3, '#ffffff'), zone.patternTintMode);
+    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2, ds.toHex(zone.color3, '#ffffff'), ds.toHex(zone.color4, '#ffffff'), zone.patternTintMode);
     const cp = img ? ctx.createPattern(img, 'repeat') : null;
     if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
       // Fixed ~6 repeats across the view width → consistent physical scale in

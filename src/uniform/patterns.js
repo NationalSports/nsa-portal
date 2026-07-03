@@ -183,10 +183,11 @@ function hx(h) {
 //   'blend' — grayscale luminance lerp color2→color1 (tonal/smoke art).
 // Cached per (src, mode, colors); alpha preserved.
 const _tintCache = new Map();
-export function tintedTile(img, src, color1, color2, color3, mode) {
+export function tintedTile(img, src, color1, color2, color3, color4, mode) {
   const m = mode === 'blend' ? 'blend' : 'solid';
   const c3 = color3 || '#ffffff';
-  const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3;
+  const c4 = color4 || '#ffffff';
+  const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3 + '|' + c4;
   if (_tintCache.has(key)) return _tintCache.get(key);
   const w = img.naturalWidth || img.width || 1, h = img.naturalHeight || img.height || 1;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -194,15 +195,18 @@ export function tintedTile(img, src, color1, color2, color3, mode) {
   x.drawImage(img, 0, 0);
   const id = x.getImageData(0, 0, w, h);
   const d = id.data;
-  const A = hx(color1), B = hx(color2), C3 = hx(c3);
+  const A = hx(color1), B = hx(color2), C3 = hx(c3), C4 = hx(c4);
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
     if (m === 'solid') {
       const sat = Math.max(r, g, b) - Math.min(r, g, b);
       const lum = r * 0.299 + g * 0.587 + b * 0.114;
-      // saturation → accent slot; neutrals split on luminance. AA fringes
-      // between white/black stay neutral, so no accent halos.
-      const S = sat > 60 ? C3 : (lum >= 128 ? A : B);
+      // Saturated pixels are accent markers, split by hue: red-ish → accent 1,
+      // green-ish → accent 2. Neutral pixels split on luminance (light →
+      // primary, dark → secondary). AA fringes stay neutral, so no halos.
+      let S;
+      if (sat > 60) S = (g > r ? C4 : C3);
+      else S = (lum >= 128 ? A : B);
       d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
     } else {
       const t = (r * 0.299 + g * 0.587 + b * 0.114) / 255;

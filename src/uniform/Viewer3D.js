@@ -223,7 +223,7 @@ function applyDesign(st, rawSpec) {
         if (entry._patGen !== gen || !entry.mesh.material) return;
         // Tintable tiles are grayscale: recolor with the zone's colors so one
         // uploaded tile serves every colorway.
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), zs.patternTintMode) : img;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
         const tex = new THREE.CanvasTexture(source);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         const rep = entry.zone === 'body' ? 4 : 2.5;

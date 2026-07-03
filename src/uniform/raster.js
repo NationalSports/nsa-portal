@@ -130,7 +130,7 @@ function tint(lx, zoneSpec, w, h) {
   lx.globalCompositeOperation = 'multiply';
   if (pat === 'custom' && zoneSpec.patternImage) {
     let img = patternImgCache[zoneSpec.patternImage];
-    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2, ds.toHex(zoneSpec.color3, '#ffffff'), zoneSpec.patternTintMode);
+    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2, ds.toHex(zoneSpec.color3, '#ffffff'), ds.toHex(zoneSpec.color4, '#ffffff'), zoneSpec.patternTintMode);
     const cp = img ? lx.createPattern(img, 'repeat') : null;
     // Tile a fixed ~4 times across the garment width so the print reads at the
     // same physical scale as the 3D preview (which repeats the body 4×) and the
