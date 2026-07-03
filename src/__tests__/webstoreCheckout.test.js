@@ -82,6 +82,39 @@ describe('_availForSize — on-hand + vendor + tall twin', () => {
   });
 });
 
+describe('checkSizesRequired — a sized item must carry a size', () => {
+  const store = { id: 's1' };
+  const viewRow = (over) => ({ webstore_product_id: 'wp1', name: 'Team Tee', available_sizes: ['S', 'M', 'L'], sizes_offered: null, ...over });
+  const sb = (row) => fakeSb({ webstore_storefront_products: { data: [row], error: null } });
+
+  test('passes when every single line has a size', async () => {
+    const r = await checkout.checkSizesRequired(sb(viewRow()), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' } }]);
+    expect(r).toBeNull();
+  });
+  test('rejects a sized product added with no size (sold-out-but-addable bug / tampered cart)', async () => {
+    const r = await checkout.checkSizesRequired(sb(viewRow()), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toMatch(/choose a size/i);
+    expect(r).toMatch(/Team Tee/);
+  });
+  test('allows a genuinely one-size item (no scale, no offered sizes)', async () => {
+    const r = await checkout.checkSizesRequired(sb(viewRow({ available_sizes: [], sizes_offered: [] })), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toBeNull();
+  });
+  test('requires a size when only sizes_offered is set (rep-added footwear sizing)', async () => {
+    const r = await checkout.checkSizesRequired(sb(viewRow({ available_sizes: null, sizes_offered: ['8', '9', '10'] })), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toMatch(/choose a size/i);
+  });
+  test('fails open on a lookup error (never blocks checkout on a DB blip)', async () => {
+    const sbErr = fakeSb({ webstore_storefront_products: { data: null, error: { message: 'boom' } } });
+    const r = await checkout.checkSizesRequired(sbErr, store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toBeNull();
+  });
+  test('ignores bundle lines (their component sizes are checked in priceCart)', async () => {
+    const r = await checkout.checkSizesRequired(sb(viewRow()), store, [{ kind: 'bundle', components: [] }]);
+    expect(r).toBeNull();
+  });
+});
+
 describe('priceCart', () => {
   const store = { id: 's1', fundraise_enabled: false };
   const wpTee = { id: 'wp1', store_id: 's1', kind: 'single', retail_price: 20, active: true, takes_name: false, takes_number: false, name_upcharge: 0, display_name: 'Tee', variant_label: null, image_url: null };

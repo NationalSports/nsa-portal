@@ -8,10 +8,23 @@
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => '$' + (Number(n) || 0).toFixed(2);
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// Fundraising the club is owed on an order, net of the coupon discount's share of the pot
+// (checkout applies the % to subtotal + fundraise together, so a discounted order collected
+// proportionally less fundraising). Keeps this close-out summary in step with the in-app
+// payout statement, which uses the same rule.
+const netFundraise = (o) => {
+  const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
+  if (fund <= 0) return 0;
+  const base = sub + fund;
+  if (base <= 0) return round2(fund);
+  const disc = Math.min(Number(o.discount_amt) || 0, base);
+  return Math.max(0, round2(fund - disc * (fund / base)));
+};
 
 async function buildBreakdown(admin, store) {
   const { data: orders } = await admin.from('webstore_orders')
-    .select('id,status,subtotal,fundraise_amt,total').eq('store_id', store.id);
+    .select('id,status,subtotal,fundraise_amt,discount_amt,total').eq('store_id', store.id);
   // Real demand only — drop cancelled / refunded / never-paid carts.
   const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending' && o.status !== 'pending_payment');
   const orderIds = live.map((o) => o.id);
@@ -25,7 +38,7 @@ async function buildBreakdown(admin, store) {
     orderCount: live.length,
     units,
     gross: live.reduce((a, o) => a + (Number(o.total) || 0), 0),
-    fundraise: live.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0),
+    fundraise: round2(live.reduce((a, o) => a + netFundraise(o), 0)),
     delivery: store.delivery_mode === 'deliver_club' ? 'Deliver to club' : (store.delivery_mode === 'ship_home' ? 'Ship to home' : (store.delivery_mode || '—')),
   };
 }
@@ -107,4 +120,4 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   return { notified: true, todoId: todoOk ? todoId : null, emailed, breakdown: b };
 }
 
-module.exports = { notifyStoreClosed, buildBreakdown };
+module.exports = { notifyStoreClosed, buildBreakdown, netFundraise };

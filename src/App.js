@@ -18,11 +18,12 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -4076,7 +4077,10 @@ export default function App(){
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
   // Sales Tools page state (must be at App level to avoid conditional hook calls)
-  const[stTab,setStTab]=useState('quotes');
+  const[stTab,setStTab]=useState('myday');
+  // My Day recap window controls
+  const[stMdWin,setStMdWin]=useState(3);       // activity look-back in days
+  const[stMdDeadline,setStMdDeadline]=useState(14); // deadline look-ahead in days
   const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
   const[qrView,setQrView]=useState(null);
   const[qrSearch,setQrSearch]=useState('');
@@ -5391,6 +5395,9 @@ export default function App(){
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
       const so=sos.find(x=>x.omg_store_id===s.id);
+      // Settlement-aware: if the store's SO is invoiced and every invoice is
+      // already paid, the funds have been applied — no reminder needed.
+      if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
       const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
       const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
       const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
@@ -5399,7 +5406,43 @@ export default function App(){
       toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
     });
     if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
-  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen]);
+  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen,invs]);
+  // Webstore settlement funds — per batched sales order, sum the PREPAID
+  // (Stripe, payment_mode='paid') order totals net of refunds vs the TEAM-TAB
+  // (payment_mode='unpaid') totals still owed. The Invoices settlement queue
+  // uses this to reconcile a webstore SO's collected funds against its invoice.
+  // Membership comes from webstore_orders joined to GENUINE webstores
+  // (source='webstore') — sales_orders.source is 'portal' on every SO in
+  // practice, so it can't be the filter, and the join keeps OMG shadow-store
+  // orders out of this path entirely. Result set = batched orders of real
+  // webstores (tiny), keyed by so_id. Refetches only when the invoice/SO
+  // counts change, never loops.
+  const[webstoreSettle,setWebstoreSettle]=useState({});
+  const _wsSettleKey=React.useRef(null);
+  React.useEffect(()=>{
+    if(!supabase||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    const key=(invs||[]).length+':'+(sos||[]).length;
+    if(key===_wsSettleKey.current)return;
+    _wsSettleKey.current=key;
+    (async()=>{
+      try{
+        const{data,error}=await supabase.from('webstore_orders')
+          .select('so_id,payment_mode,status,total,refunded_amt,webstores!inner(source,name)')
+          .eq('webstores.source','webstore').not('so_id','is',null);
+        if(error){console.warn('[webstore settle] fetch failed:',error.message);return}
+        const agg={};
+        (data||[]).forEach(o=>{
+          if(!o||!o.so_id||o.status==='cancelled')return;
+          const a=agg[o.so_id]||(agg[o.so_id]={prepaid:0,teamTab:0,refunded:0,orders:0,name:o.webstores?.name||''});
+          a.orders++;const refunded=+o.refunded_amt||0;a.refunded+=refunded;
+          if(o.status==='refunded')return; // fully refunded — not collected
+          if(o.payment_mode==='paid')a.prepaid+=Math.max(0,(+o.total||0)-refunded);
+          else if(o.payment_mode==='unpaid')a.teamTab+=(+o.total||0);
+        });
+        setWebstoreSettle(agg);
+      }catch(e){console.warn('[webstore settle] error:',e.message)}
+    })();
+  },[invs,sos]);
   // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
   // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
   // Other keys still cache locally for fast cold-start.
@@ -5700,8 +5743,11 @@ export default function App(){
       const u=new URL(window.location);let changed=false;
       if(soId&&sos.length>0){
         const so=sos.find(s=>s.id===soId);
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
-        u.searchParams.delete('so');changed=true;
+        // so_tab lets an email deep-link land on a specific SO tab (e.g. the ops digest's
+        // "Create PO" link opens straight to Items for a short-on-pull order).
+        const soTab=p.get('so_tab');
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);if(soTab)setESOTab(soTab);setPg('orders')}
+        u.searchParams.delete('so');u.searchParams.delete('so_tab');changed=true;
       }
       if(poId&&sos.length>0){
         const so=sos.find(s=>(s.items||[]).some(it=>(it.po_lines||[]).some(pl=>pl.po_id===poId))||(s.deco_pos||[]).some(dp=>dp.po_id===poId));
@@ -5737,6 +5783,11 @@ export default function App(){
         const pr=prod.find(x=>x.id===prodId);
         if(pr){setSelP(pr);setPg('products')}
         u.searchParams.delete('prod');changed=true;
+      }
+      // Sales Tools sub-tab deep link (used by the rep ops digest email CTA, e.g. ?pg=sales_tools&st=myday).
+      const stParam=p.get('st');
+      if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
+        setStTab(stParam);u.searchParams.delete('st');changed=true;
       }
       if(changed)window.history.replaceState({},'',u);
     }catch{}
@@ -6021,6 +6072,18 @@ export default function App(){
   React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
+  // Share-for-rebuild modal: generates a token + link + packing list from a previous OMG store.
+  const[omgShareOpen,setOmgShareOpen]=useState(false);const[omgShareCopied,setOmgShareCopied]=useState(false);
+  const[omgShareToken,setOmgShareToken]=useState(null);const[omgShareTokenLoading,setOmgShareTokenLoading]=useState(false);
+  // Review-SKUs modal: opens after "Add Store from OMG Report" so staff confirm/correct every style
+  // number BEFORE the store is committed. While under review the store lives only in omgSel (staged) —
+  // nothing persists to omgStores until "Create Store", so a bad paste is discarded with zero footprint.
+  const[omgReviewOpen,setOmgReviewOpen]=useState(false);
+  const _omgReviewSelRef=React.useRef(null);_omgReviewSelRef.current=omgSel;// latest staged store for the commit handler (avoids a blur→click race)
+  // Copy-OMG-Store modal: a clean, standalone entry point (paste report link → review SKUs → create
+  // store). No coach rebuild links — just copies a previous OMG store's items into a new portal store.
+  const[omgCopyOpen,setOmgCopyOpen]=useState(false);const[omgCopyUrl,setOmgCopyUrl]=useState('');
+  const[omgWebstoreLoading,setOmgWebstoreLoading]=useState(false);// "Create Webstore" (OMG store → draft Club Webstore)
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -6335,6 +6398,111 @@ export default function App(){
     } finally {
       setOmgReportLoading(false);
     }
+  };
+
+  // "Copy OMG Store" entry point: paste a report link → create a shell → import + stage it in omgSel →
+  // open the Review-SKUs modal. Nothing is added to omgStores until the user hits "Create Store" there,
+  // so a bad paste leaves no trace. Standalone from the store-detail page and its coach-link tooling.
+  const startOmgCopy = async (urlRaw) => {
+    const urlStr = (urlRaw || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { nf('Invalid report URL — needs a valid OMG report link', 'error'); return; }
+    setOmgReportLoading(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      const report = await resp.json();
+      const saleCode = report.options?.filter?.find(f => f.key === 'sale_code')?.value || '';
+      const storeName = report.details?.title || 'OMG Store ' + saleCode;
+      const storeId = 'OMG-sale_' + saleCode;
+      // Already in the portal? Just open it instead of re-copying.
+      const existing = omgStores.find(s => s.id === storeId);
+      if (existing) { nf('This store is already in the portal — opening it', 'error'); setOmgCopyOpen(false); setOmgSel(existing); setOmgReportLoading(false); return; }
+      const shell = { id: storeId, store_name: storeName, status: 'open', _omg_source: true, _omg_id: 'sale_' + saleCode, _omg_sale_code: saleCode,
+        _last_synced: new Date().toISOString(), products: [], orders: 0, total_sales: 0, fundraise_total: 0, items_sold: 0, unique_buyers: 0,
+        subdomain: '', channel_type: 'pop-up', _report_url: urlStr };
+      // importOMGReport parses + prices and stages the store in omgSel (its setOmgStores map is a no-op
+      // while the shell isn't in the list, so nothing persists yet). Then hand off to the review modal.
+      const updated = await importOMGReport(shell, urlStr);
+      if (updated) { setOmgCopyOpen(false); setOmgCopyUrl(''); setOmgReviewOpen(true); }
+    } catch (e) { nf('Failed: ' + e.message, 'error'); } finally { setOmgReportLoading(false); }
+  };
+
+  // Turn an OMG store into a draft Club Webstore (separate tables: webstores + webstore_products).
+  // Carries over each item's name, SKU, OMG retail price, sizes and decorated mockup image, and links
+  // to the catalog by SKU where it matches (for stock/SO). Creates a DRAFT — the rep sets shipping,
+  // sale dates, packages and launches from the Webstores builder. Guards against a duplicate by sale code.
+  const createWebstoreFromOmg = async (store) => {
+    if (!supabase) { nf('Not connected', 'error'); return; }
+    const prods = (store.products || []).filter(p => p.sku || p.name);
+    if (!prods.length) { nf('This store has no items to build a webstore from', 'error'); return; }
+    setOmgWebstoreLoading(true);
+    try {
+      const wsName = store.store_name || 'Team Store';
+      // Already converted? A same-named Club Webstore almost certainly means this store was already
+      // turned into one — point the user there rather than silently making a duplicate draft.
+      const { data: existing } = await supabase.from('webstores').select('id,name').eq('source', 'webstore').eq('name', wsName).limit(1);
+      if (existing && existing.length) { nf(`A webstore named "${wsName}" already exists — see Webstores → Draft`, 'warn'); setOmgWebstoreLoading(false); return; }
+      // Unique slug from the store name.
+      const base = (store.store_name || 'team-store').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
+      let slug = base;
+      for (let n = 2; n < 60; n++) {
+        const { data: ex } = await supabase.from('webstores').select('id').eq('slug', slug).limit(1);
+        if (!ex || !ex.length) break;
+        slug = `${base}-${n}`;
+      }
+      // Draft store shell. A converted store is a first-class Club Webstore — deliberately NO
+      // omg_sale_code, so it shows in the Webstores list (which hides omg-coded rows) and isn't
+      // treated as an OMG mirror by checkout / order sync. It's a real webstore now, not OMG.
+      const { data: ws, error: wErr } = await supabase.from('webstores').insert({
+        name: wsName, slug, status: 'draft', source: 'webstore', created_via: 'staff',
+        customer_id: store.customer_id || null, rep_id: store.rep_id || null,
+      }).select('id,slug').single();
+      if (wErr || !ws) { nf('Could not create webstore: ' + (wErr?.message || 'unknown error'), 'error'); setOmgWebstoreLoading(false); return; }
+      // In-house art: the OMG mockup shows the finished garment, but production needs the real
+      // art file (OMG only ever hands over the flattened image). Create one "needs file" record
+      // in the customer's art library and reference it from every item by art_id ONLY — no
+      // art_url, so the storefront never composites a logo over the mockup. The art team attaches
+      // the production file to that record; the store→SO conversion then carries the file plus
+      // the mockup proofs (item_mockups) automatically.
+      let pendingArtId = null;
+      if (store.customer_id) {
+        try {
+          const rec = {
+            id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6),
+            name: wsName + ' — team art (attach production file)',
+            kind: 'art', status: 'pending', deco_type: 'screen_print',
+            files: [], color_ways: [], uploaded: new Date().toLocaleDateString(),
+          };
+          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
+          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', store.customer_id);
+          if (!aErr) {
+            // Also drop it into this store's curated art set so the store's Art tab shows it.
+            await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG rebuild' }] }).eq('id', ws.id);
+            pendingArtId = rec.id;
+          }
+        } catch (e) { console.warn('[OMG→Webstore] art record failed (items created without art):', e); }
+      }
+      // Products: OMG price + decorated image + sizes; link to catalog by SKU where possible.
+      const rows = prods.map((p, i) => {
+        const catId = p.product_id || prod.find(cp => (cp.sku || '').toUpperCase() === (p.sku || '').toUpperCase())?.id || null;
+        const sizes = Object.keys(p.sizes || {});
+        return {
+          store_id: ws.id, product_id: catId, sku: p.sku || null, kind: 'single',
+          display_name: p.name || p.sku || 'Item', image_url: p.image_url || null,
+          retail_price: Number(p.retail) || 0, sizes_offered: sizes.length ? sizes : null,
+          sort_order: i, active: true,
+          ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
+        };
+      });
+      const { error: pErr } = await supabase.from('webstore_products').insert(rows);
+      if (pErr) { nf(`Webstore created but items couldn't be added: ${pErr.message}`, 'error'); setOmgWebstoreLoading(false); return; }
+      const linked = rows.filter(r => r.product_id).length;
+      const artNote = pendingArtId ? ' · in-house art queued — attach the production file in the store’s Art tab'
+        : (store.customer_id ? '' : ' · no customer linked, so no art record was queued');
+      nf(`✓ Draft webstore created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${artNote}. Open Webstores → Draft to set shipping, dates & launch.`, 'success');
+    } catch (e) { nf('Create webstore failed: ' + e.message, 'error'); } finally { setOmgWebstoreLoading(false); }
   };
 
   // Re-pull costs for an already-imported store: check each item against the
@@ -6919,12 +7087,15 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
       ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
+      // Club fundraising collected through the store is money owed to the team, not NSA margin.
+      // Booked as an SO-level cost so calcGP excludes it from the GP rep commission pays on.
+      _webstore_fundraise:Math.round((Number(fundraise_cost)||0)*100)/100,
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
@@ -11337,7 +11508,6 @@ export default function App(){
   // Helper: build product search URL — uses Google Images to find the product
   const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
-  const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodPdfDownloading,setProdPdfDownloading]=useState(false);
@@ -13182,7 +13352,7 @@ export default function App(){
 
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
-  const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
+  const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'},{id:'store',label:'Store Funds',icon:'🏫'}];
   const[invF,setInvF]=useState({search:'',status:'open',group:'customer',aging:'all',rep:_initRepF});
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
@@ -13234,6 +13404,61 @@ export default function App(){
     nf('Invoice '+inv.id+' split into '+inv.id+' ($'+totalA.toLocaleString()+') and '+newId+' ($'+totalB.toLocaleString()+')');
     setSplitModal(null);
     setViewInvoice(null);
+  };
+
+  // ── OMG invoice + settlement in one step ─────────────────────────────
+  // OMG money is collected by the platform before the store is even ported,
+  // so the invoice is an internal accounting document against funds already
+  // in hand — there's nothing to wait for. Builds the same full invoice a
+  // manual create would (blended per-size sells + deco sells + flat shipping,
+  // tax-exempt) and stamps the store-funds payment at birth: paid in full
+  // when the net remit (collected − OMG & CC fees) covers the total, else
+  // paid to exactly what was collected so a shortfall stays visible as a
+  // partial balance. If the Accounting Report isn't entered yet the invoice
+  // is created open and the settlement queue keeps flagging the store.
+  // Idempotent: skips SOs that already carry any invoice, and the
+  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert.
+  // Called at store port (createOmgSO) and from the settlement queue.
+  const createAndSettleOmgInvoice=(so)=>{
+    if(!so||!so.omg_store_id)return null;
+    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
+    const store=(omgStores||[]).find(x=>x.id===so.omg_store_id);
+    const c=cust.find(x=>x.id===so.customer_id);
+    const af=safeArt(so);
+    const artQty={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
+    const lineItems=safeItems(so).map(it=>{
+      const _szQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      const qty=_szQty>0?_szQty:safeNum(it.est_qty);
+      if(!qty)return null;
+      const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+(dp2._nq!=null?(qty>0?dp2._nq/qty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell)},0);
+      const perEachSell=it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell);
+      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:qty*(perEachSell+decoSell),_sku:it.sku,_name:it.name,_color:it.color};
+    }).filter(Boolean);
+    const sub=lineItems.reduce((a,l)=>a+l.amount,0);
+    const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
+    const total=Math.round((sub+ship)*100)/100;
+    const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
+    const netRemit=Math.round((acct-(+(so._omg_omg_fees??store?._omg_omg_fees)||0)-(+(so._omg_cc_fees??store?._omg_cc_fees)||0))*100)/100;
+    const applied=netRemit>0?Math.min(netRemit,total):0;
+    const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
+    const dateStr=new Date().toLocaleDateString('en-CA');
+    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
+    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
+    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
+    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,
+      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
+      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
+      memo:'Invoice — '+(so.memo||so.id),_rep:so.created_by||cu?.id||null,
+      tax:0,tax_rate:0,tax_exempt:true,shipping:ship,
+      ...(so.po_number?{_po_number:so.po_number}:{}),
+      line_items:lineItems,
+      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
+      payments:applied>0?[{amount:applied,method:'store',ref:'OMG '+saleCode,date:payDate,cc_fee:0}]:[],
+      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
+    setInvs(prev=>[inv,...prev]);
+    logChange('create','Invoice',inv.id,'Auto-created from OMG store '+saleCode+(applied>0?' — $'+applied.toFixed(2)+' store funds applied':''));
+    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from store funds 🏫':applied>0?' — $'+applied.toFixed(2)+' store funds applied, shortfall left open':' — open (Accounting Report not entered yet)'));
+    return inv;
   };
 
   function rInvoices(){
@@ -13480,7 +13705,7 @@ export default function App(){
                 const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
                 const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
                 if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
-                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:{auto:false,firstDays:3,intervalDays:0,max:4,message:''}});
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -14261,6 +14486,114 @@ export default function App(){
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
       const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
+
+    // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──
+    // Store/webstore orders are paid from funds the store platform already
+    // collected, not billed to a coach. Once the store's sales order is
+    // invoiced, those collected funds should settle the invoice. We only
+    // PROPOSE the match here and let accounting confirm each with one click —
+    // nothing is auto-posted. Idempotent: a store drops off once its invoice
+    // carries a payment with our source-tagged ref ('OMG <sale code>' /
+    // 'WEB <so id>'). Payment method is inert to commissions and QB sync
+    // (neither reads it), so 'store' behaves exactly like a check downstream.
+    const _r2=n=>Math.round((+n||0)*100)/100;
+    // OMG: funds are collected in a lump by the OMG platform, which deducts its
+    // fees before remitting to NSA. The settlement figure is the NET REMIT
+    // (collected − OMG & CC fees). COVERAGE model: the remit also contains the
+    // tax + processing the parents paid, which are deliberately NOT on the
+    // (tax-exempt, product-only) invoice — so remit ≥ balance is the healthy
+    // state, we apply the invoice balance, and the leftover surplus is NSA's
+    // processing revenue plus tax NSA must remit. Only a remit SHORT of the
+    // balance is a real discrepancy. Stores closed with missing data (no
+    // Accounting Report, SO never invoiced) surface as actionable rows instead
+    // of hiding — that's where the pipeline actually stalls.
+    const omgProps=(omgStores||[]).map(s=>{
+      if(!s||!s.id)return null;
+      const grand=+s._omg_grand_total||0, acct=+s._omg_acct_collected||0;
+      const omgFees=+s._omg_omg_fees||0, ccFees=+s._omg_cc_fees||0;
+      const proc=+s._omg_processing||0, tax=+s._omg_tax||0;
+      if(!(grand>0))return null; // Dollar Report is entered at close — before that, nothing is known
+      // Two stores can share a name (e.g. two "Dana Hills Football 2026"), so
+      // always disambiguate with the sale code.
+      const name=(s.store_name||s.id)+(s._omg_sale_code?' · '+s._omg_sale_code:'');
+      const so=(sos||[]).find(x=>x.omg_store_id===s.id);
+      const ref='OMG '+(s._omg_sale_code||(so&&so.id)||s.id);
+      const soInvs=so?enrichedInvs.filter(i=>i.so_id===so.id):[];
+      if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
+      if(!(acct>0))return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'report',reason:'Accounting Report missing — enter it on the OMG page',so:so||null,inv:null,collected:null,teamTab:0};
+      if(Math.abs(acct-grand)>=1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:'Dollar & Accounting reports disagree',so:so||null,inv:null,collected:null,teamTab:0};
+      const netRemit=_r2(acct-omgFees-ccFees);
+      if(!so)return null; // SO not pulled yet — the OMG page gate walks the rep through that
+      const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
+      if(!openInvs.length){
+        if(soInvs.length)return null; // invoiced & fully paid some other way
+        return{key:'omg:'+s.id,source:'omg',name,status:'action',act:'invoice',reason:'Funds in hand — one click creates the invoice and settles it',so,inv:null,collected:netRemit,teamTab:0,ref};
+      }
+      if(openInvs.length>1)return{key:'omg:'+s.id,source:'omg',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:netRemit,teamTab:0,ref};
+      const inv=openInvs[0];
+      const surplus=_r2(netRemit-inv._bal);
+      if(surplus>=-1){ // covered (within $1) → apply the balance, close cleanly to 'paid'
+        return{key:'omg:'+s.id,source:'omg',name,status:'matched',reason:'',
+          note:surplus>1?('+$'+surplus.toFixed(2)+' surplus'+(tax>0?' (incl. $'+tax.toFixed(2)+' collected tax to remit)':proc>0?' (processing revenue)':'')):'',
+          so,inv,collected:netRemit,teamTab:0,surplus,applyAmount:_r2(inv._bal),ref};
+      }
+      // Remit is genuinely short of the invoice — apply what came in so the
+      // shortfall stays visible as an open partial balance to chase.
+      return{key:'omg:'+s.id,source:'omg',name,status:'mismatch',
+        reason:'Collected is $'+Math.abs(surplus).toFixed(2)+' short of the invoice balance',
+        note:'',so,inv,collected:netRemit,teamTab:0,surplus,applyAmount:netRemit,ref};
+    }).filter(Boolean);
+    // Webstore: orders are pre-paid per-order via Stripe at checkout, so the
+    // collected figure is the sum of PREPAID order totals (payment_mode='paid',
+    // net of refunds) — no fee subtraction (Stripe nets its cut before payout).
+    // Team-tab orders (payment_mode='unpaid') were never charged, so we apply
+    // only the prepaid funds and leave the team-tab portion as a real open
+    // balance the team pays later. Keyed off webstoreSettle (batched orders of
+    // genuine source='webstore' stores, fetched async by so_id) — NOT off
+    // sales_orders.source, which is 'portal' on every SO in practice. OMG
+    // shadow-store orders are excluded by the fetch and by the omg_store_id
+    // guard, so a store can never settle through both paths.
+    const webProps=Object.keys(webstoreSettle).map(soId=>{
+      const so=(sos||[]).find(x=>x.id===soId);
+      if(!so||so.omg_store_id)return null; // OMG SOs settle via the OMG path
+      const agg=webstoreSettle[soId];
+      if(!agg)return null;
+      const prepaid=_r2(agg.prepaid), teamTab=_r2(agg.teamTab);
+      if(prepaid<=0.5)return null; // nothing collected via Stripe — normal AR, not a settlement
+      const ref='WEB '+so.id;
+      const soInvs=enrichedInvs.filter(i=>i.so_id===so.id);
+      if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
+      const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
+      if(!openInvs.length)return null;
+      const name=agg.name||(soInvs[0]&&soInvs[0]._cname)||cust.find(c=>c.id===so.customer_id)?.name||so.id;
+      if(openInvs.length>1)return{key:'web:'+so.id,source:'web',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:prepaid,teamTab,ref};
+      const inv=openInvs[0];
+      const accounted=_r2(prepaid+teamTab); // prepaid + still-owed team tab should equal the invoice
+      const delta=_r2(accounted-inv._bal);
+      const hasTab=teamTab>1;
+      if(Math.abs(delta)>1)return{key:'web:'+so.id,source:'web',name,status:'mismatch',
+        reason:'Prepaid + team-tab ($'+accounted.toFixed(2)+') ≠ invoice balance',
+        // Never pre-fill more than the open balance — an over-collection is a
+        // discrepancy to investigate, not extra money to post onto the invoice.
+        note:hasTab?('incl. $'+teamTab.toFixed(2)+' team-tab'):'',so,inv,collected:prepaid,teamTab,applyAmount:Math.min(prepaid,_r2(inv._bal)),ref};
+      // Reconciles. With a team-tab remainder, apply only the prepaid funds (the
+      // team-tab stays owed); otherwise close cleanly at the invoice balance.
+      return{key:'web:'+so.id,source:'web',name,status:'matched',reason:'',
+        note:hasTab?('leaves $'+teamTab.toFixed(2)+' team-tab owed'):'',
+        so,inv,collected:prepaid,teamTab,applyAmount:hasTab?prepaid:_r2(inv._bal),ref};
+    }).filter(Boolean);
+    const storeSettlements=[...omgProps,...webProps];
+    const stMatched=storeSettlements.filter(p=>p.status==='matched');
+    const stAction=storeSettlements.filter(p=>p.status==='action');
+    const stMismatch=storeSettlements.filter(p=>p.status==='mismatch');
+    const stBlocked=storeSettlements.filter(p=>p.status==='blocked');
+    // Pre-fill the existing payment modal; the modal's "Record $X" button is
+    // accounting's one-click confirm (amount stays editable for exceptions).
+    const proposeSettlement=(p)=>{
+      if(!p||!p.inv)return;
+      setPayModal({inv:{...p.inv,_bal:p.inv._bal},amount:_r2(p.applyAmount),method:'store',ref:p.ref});
+    };
+    const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
     // Treat status='paid' as fully paid; anything else leaves total as balance.
     // Derive due_date from invoice_date + customer payment terms so aging buckets,
@@ -14378,6 +14711,45 @@ export default function App(){
             </div>)}
         </div>
       </div></div>
+
+      {/* Store settlements — apply collected store/webstore funds to invoices */}
+      {storeSettlements.length>0&&<div className="card" style={{marginBottom:12,border:'1px solid #c7d2fe'}}><div className="card-body" style={{padding:'12px 16px'}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#4338ca',marginBottom:2,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+          🏫 STORE SETTLEMENTS
+          {stMatched.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534',padding:'1px 7px',borderRadius:10}}>{stMatched.length} ready</span>}
+          {stAction.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af',padding:'1px 7px',borderRadius:10}}>{stAction.length} needs action</span>}
+          {stMismatch.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',padding:'1px 7px',borderRadius:10}}>{stMismatch.length} short</span>}
+          {stBlocked.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#f1f5f9',color:'#64748b',padding:'1px 7px',borderRadius:10}}>{stBlocked.length} blocked</span>}
+        </div>
+        <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>Store &amp; webstore orders are paid from funds the store already collected (not the coach). "Ready" means the collected funds cover the invoice — confirming applies the invoice balance, and the surplus shown is NSA's processing revenue plus collected tax to remit. OMG collected = net remit (collected − OMG &amp; card fees); webstores = prepaid Stripe total, leaving any team-tab balance owed.</div>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
+          <th style={{padding:'4px 8px'}}>SRC</th><th style={{padding:'4px 8px'}}>STORE / CUSTOMER</th><th style={{padding:'4px 8px'}}>SO</th><th style={{padding:'4px 8px'}}>INVOICE</th>
+          <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED</th><th style={{padding:'4px 8px',textAlign:'right'}}>INVOICE BAL</th>
+          <th style={{padding:'4px 8px'}}></th></tr></thead><tbody>
+          {[...stMatched,...stAction,...stMismatch,...stBlocked].map(p=>{
+            const clr=p.status==='matched'?'#166534':p.status==='action'?'#1e40af':p.status==='mismatch'?'#b45309':'#64748b';
+            const bg=p.status==='matched'?'#f0fdf4':p.status==='action'?'#eff6ff':p.status==='mismatch'?'#fffbeb':'#f8fafc';
+            const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+            return<tr key={p.key} style={{background:bg,borderTop:'1px solid #e2e8f0'}}>
+              <td style={{padding:'6px 8px'}}><span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:p.source==='web'?'#e0f2fe':'#ede9fe',color:p.source==='web'?'#0369a1':'#6d28d9'}}>{p.source==='web'?'WEB':'OMG'}</span></td>
+              <td style={{padding:'6px 8px',fontWeight:600}}>{p.name}</td>
+              <td style={{padding:'6px 8px'}}>{p.so?<span style={{color:'#7c3aed',cursor:'pointer',textDecoration:'underline'}} onClick={()=>_openSO(p.so)}>{p.so.id}</span>:'—'}</td>
+              <td style={{padding:'6px 8px'}}>{p.inv?p.inv.id:'—'}</td>
+              <td style={{padding:'6px 8px',textAlign:'right'}}>{p.collected!=null?$(p.collected):'—'}{p.teamTab>1&&<div style={{fontSize:9,color:'#b45309'}}>+{$(p.teamTab)} team-tab</div>}</td>
+              <td style={{padding:'6px 8px',textAlign:'right'}}>{p.inv?$(p.inv._bal):'—'}</td>
+              <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
+                {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeSettlement(p)}>
+                  {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
+                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{if(p.act==='invoice'&&p.so)createAndSettleOmgInvoice(p.so);else setPg('omg')}}>
+                  {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}
+                {p.status==='matched'&&p.note&&<span style={{marginLeft:8,fontSize:10,color:'#64748b'}}>{p.note}</span>}
+                {p.status==='action'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>{p.reason}</span>}
+                {p.status==='mismatch'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>⚠ {p.reason}</span>}
+                {p.status==='blocked'&&<span style={{fontSize:11,color:clr}}>{p.reason}</span>}
+              </td></tr>;
+          })}
+        </tbody></table>
+      </div></div>}
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
@@ -16926,7 +17298,9 @@ export default function App(){
       const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
       const inboundFreight=safeNum(so._inbound_freight||0);
-      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+      // Club fundraising passthrough (webstore SOs) — money owed to the team, not rep margin.
+      const fundraiseCost=safeNum(so._webstore_fundraise||0);
+      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
@@ -17009,7 +17383,8 @@ export default function App(){
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
-        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+        const fundraiseCost=safeNum(so._webstore_fundraise||0);// club fundraising passthrough, not rep margin
+        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
         const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
         const soStatus=calcSOStatus(so);
         const expRate=0.30;// assume on-time since not yet invoiced
@@ -17652,6 +18027,9 @@ export default function App(){
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
+              // OMG funds are already collected, so invoice + settle at port —
+              // paid in full when the net remit covers it, partial otherwise.
+              createAndSettleOmgInvoice(newSO);
               // Link the OMG parent orders (shadow webstore) to this SO so the
               // status-sync trigger drives their tracking from receiving/jobs/SO.
               // Sets sales_orders.webstore_id + each webstore_orders.so_id, keyed
@@ -17765,6 +18143,17 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
                 <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
+                {(s.products||[]).length>0&&<button onClick={async()=>{
+                  setOmgShareOpen(true);setOmgShareCopied(false);setOmgShareToken(null);setOmgShareTokenLoading(true);
+                  try{
+                    const items=(s.products||[]).filter(p=>p.sku).map(p=>({sku:p.sku,name:p.name||'',image_url:p.image_url||''}));
+                    const{data,error}=await supabase.from('omg_rebuild_tokens').insert({store_name:s.store_name||'',sale_code:s._omg_sale_code||'',items}).select('token').single();
+                    if(!error&&data?.token)setOmgShareToken(data.token);
+                  }catch(e){console.warn('[OMG Rebuild token]',e);}
+                  setOmgShareTokenLoading(false);
+                }} title="Copy a rebuild link (with decorated mockup images) and print a packing list — share with a coach to kick off a new webstore with the same items" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
+                {(s.products||[]).length>0&&<button onClick={()=>setOmgReviewOpen(true)} title="Review & correct every style number for this store — an edited SKU re-sources its cost & vendor automatically" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>🔍 Review SKUs</button>}
+                {(s.products||[]).length>0&&<button disabled={omgWebstoreLoading} onClick={()=>createWebstoreFromOmg(s)} title="Create a draft Club Webstore from this store's items — carries over SKUs, OMG prices, sizes and mockup images, and links to the catalog where SKUs match" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #bbf7d0',background:'#f0fdf4',color:'#166534',cursor:omgWebstoreLoading?'wait':'pointer'}}>{omgWebstoreLoading?'⏳ Creating…':'🌐 Create Webstore'}</button>}
               </div>
             </div>
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
@@ -18281,6 +18670,181 @@ export default function App(){
           </div>
         </div>
 
+        {/* Share-for-Rebuild modal — rebuild link + printable packing list */}
+        {omgShareOpen&&(()=>{
+          const prods=s.products||[];
+          const skuStr=prods.map(p=>p.sku).filter(Boolean).join(',');
+          const rebuildUrl=omgShareToken
+            ?'https://nationalsportsapparel.com/team-stores?rebuild='+omgShareToken
+            :'https://nationalsportsapparel.com/team-stores?skus='+encodeURIComponent(skuStr);
+          const SZ_ORD=['4XS','3XS','2XS','XS/S','XS','S/M','YXS','YS','S','YM','M/L','M','YL','L/XL','L','YXL','XL/XXL','XL','2XL','3XL','4XL','5XL','OS'];
+          const allSizes=[...new Set(prods.flatMap(p=>Object.keys(p.sizes||{})))].sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)});
+          const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
+          const copyLink=()=>{
+            navigator.clipboard.writeText(rebuildUrl).then(()=>{setOmgShareCopied(true);setTimeout(()=>setOmgShareCopied(false),2500)}).catch(()=>prompt('Copy this link:',rebuildUrl));
+          };
+          const printPackingList=()=>{
+            const szHead=allSizes.map(sz=>`<th style="text-align:center;padding:6px 5px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">${sz}</th>`).join('');
+            const rows=prods.map(p=>{
+              const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);
+              const szCells=allSizes.map(sz=>`<td style="text-align:center;padding:5px 4px;border-bottom:1px solid #eef1f5;font-size:11px">${(p.sizes||{})[sz]||''}</td>`).join('');
+              return`<tr><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:600;font-size:11px">${p.name||p.sku}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-family:monospace;font-size:10px;color:#1e40af">${p.sku||''}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;color:#64748b;font-size:11px">${p.color||''}</td>${szCells}<td style="text-align:center;padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:700;font-size:11px">${tot}</td></tr>`;
+            }).join('');
+            const w=window.open('','_blank');
+            w.document.write(`<!doctype html><html><head><title>Packing List — ${s.store_name}</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#0f172a;max-width:960px;margin:28px auto;padding:0 20px}h1{font-size:17px;margin:0 0 2px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;font-weight:700}@media print{body{margin:0}}</style></head><body><h1>Packing List — ${s.store_name}</h1><div style="color:#64748b;font-size:11px;margin-bottom:12px">${s._omg_sale_code?'Sale code: '+s._omg_sale_code+' · ':''} ${prods.length} items · ${totalUnits} units</div><table><thead><tr><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Product</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">SKU</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Color</th>${szHead}<th style="text-align:center;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Total</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="${3+allSizes.length}" style="text-align:right;padding:9px 8px;font-weight:800;border-top:2px solid #0f172a;font-size:12px">Grand Total</td><td style="text-align:center;padding:9px 8px;font-weight:900;border-top:2px solid #0f172a;font-size:13px">${totalUnits}</td></tr></tfoot></table></body></html>`);
+            w.document.close();w.focus();setTimeout(()=>w.print(),350);
+          };
+          return<div className="modal-overlay" onClick={()=>setOmgShareOpen(false)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+              <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h2 style={{margin:0}}>📤 Share for Rebuild</h2>
+                <button onClick={()=>setOmgShareOpen(false)} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+              </div>
+              <div className="modal-body" style={{overflowY:'auto',padding:'16px 20px 20px'}}>
+                <div style={{marginBottom:18}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:5}}>Rebuild link</div>
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Send this to a coach or rep. Opening it in the new webstore builder pre-selects all <b>{prods.length} items</b> from this store. They can adjust, add branding, and submit a new store request.</div>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <input readOnly value={omgShareTokenLoading?'Generating link with images…':rebuildUrl} onClick={e=>e.target.select()} style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,background:'#f8fafc',color:omgShareTokenLoading?'#94a3b8':'#0f172a',cursor:'text'}}/>
+                    <button onClick={copyLink} disabled={omgShareTokenLoading||!omgShareToken&&!skuStr} style={{fontSize:12,fontWeight:700,padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',background:omgShareCopied?'#166534':omgShareTokenLoading?'#f1f5f9':'',color:omgShareCopied?'#fff':omgShareTokenLoading?'#94a3b8':'#2563eb',cursor:omgShareTokenLoading?'not-allowed':'pointer',whiteSpace:'nowrap',transition:'all 0.2s',minWidth:90}}>{omgShareCopied?'✓ Copied!':omgShareTokenLoading?'Wait…':'Copy link'}</button>
+                  </div>
+                  {omgShareToken&&<div style={{fontSize:11,color:'#0e7490',marginTop:6,display:'flex',alignItems:'center',gap:4}}>🖼 Decorated mockup images included — {prods.filter(p=>p.image_url).length} of {prods.length} items have images</div>}
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Packing list · {prods.length} items · {totalUnits} units</div>
+                  <button onClick={printPackingList} style={{fontSize:11,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#374151',cursor:'pointer'}}>🖨 Print</button>
+                </div>
+                <div style={{overflowX:'auto',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                    <thead><tr style={{background:'#f8fafc'}}>
+                      <th style={{textAlign:'left',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700,whiteSpace:'nowrap'}}>Product</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>SKU</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Color</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'7px 5px',borderBottom:'2px solid #e2e8f0',fontWeight:700,fontSize:11}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {prods.map((p,i)=>{const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);return<tr key={i} style={{background:i%2?'#fafbfc':'#fff'}}>
+                        <td style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={p.name||p.sku}>{p.name||p.sku}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontFamily:'monospace',fontSize:11,color:'#1e40af'}}>{p.sku||'—'}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:'#64748b',whiteSpace:'nowrap'}}>{p.color||'—'}</td>
+                        {allSizes.map(sz=><td key={sz} style={{textAlign:'center',padding:'6px 5px',borderBottom:'1px solid #f1f5f9',color:(p.sizes||{})[sz]?'#0f172a':'#e2e8f0'}}>{(p.sizes||{})[sz]||''}</td>)}
+                        <td style={{textAlign:'center',padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{tot}</td>
+                      </tr>})}
+                    </tbody>
+                    <tfoot><tr style={{background:'#f8fafc'}}>
+                      <td colSpan={3+allSizes.length} style={{textAlign:'right',padding:'8px 10px',fontWeight:800,borderTop:'2px solid #0f172a'}}>Grand Total</td>
+                      <td style={{textAlign:'center',padding:'8px 10px',fontWeight:900,borderTop:'2px solid #0f172a'}}>{totalUnits}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
+
+        {/* Review-SKUs modal — confirm/correct every style number before an OMG-report store is committed (staging), or re-review a saved store. */}
+        {omgReviewOpen&&omgSel&&(()=>{
+          const rv=omgSel;
+          const prods=rv.products||[];
+          const staging=!omgStores.some(st=>st.id===rv.id);// add-flow (not yet committed) vs reopened on a saved store
+          const badSkus=prods.filter(p=>_skuLooksInvalid(p.sku));
+          // A line is "linked" when its cost came from a real catalog/API/manual source — not just the
+          // OMG-reported number. A "WOMENS" section-header SKU resolves to nothing and stays unlinked.
+          const _LINKED_SRC=['catalog','sanmar','ss','richardson','momentec','api','manual'];
+          const isLinked=(p)=>Number(p.cost)>0&&_LINKED_SRC.includes(p._cost_source);
+          const notLinked=prods.filter(p=>!isLinked(p));
+          const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
+          const chip=(bg,fg)=>({fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:bg,color:fg});
+          const th=(align)=>({textAlign:align||'center',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700,fontSize:11,whiteSpace:'nowrap'});
+          // Typing a SKU updates the staged store live (setOmgSel); leaving the field re-sources cost+vendor.
+          const onSkuChange=(i,v)=>setOmgSel(prev=>(prev&&prev.id===rv.id)?{...prev,products:(prev.products||[]).map((pr,j)=>j===i?{...pr,sku:v}:pr)}:prev);
+          // Drop a line ("don't bring it over"). While staging this only touches omgSel; for a saved
+          // store it also writes omgStores so the removal persists.
+          const removeRow=(i)=>{const base=_omgReviewSelRef.current;if(!base)return;const upd={...base,products:(base.products||[]).filter((_,j)=>j!==i)};setOmgSel(upd);if(!staging)setOmgStores(prev=>prev.map(st=>st.id===upd.id?upd:st));};
+          const commit=()=>{
+            const cur=_omgReviewSelRef.current;if(!cur){setOmgReviewOpen(false);return}
+            // Adding the store to omgStores is what persists it (the save effect watches omgStores).
+            setOmgStores(prev=>prev.some(st=>st.id===cur.id)?prev.map(st=>st.id===cur.id?cur:st):[cur,...prev]);
+            setOmgReviewOpen(false);
+            const bad=(cur.products||[]).filter(p=>_skuLooksInvalid(p.sku)).length;
+            nf(`Store added — ${(cur.products||[]).length} product${(cur.products||[]).length===1?'':'s'}${bad?` · ${bad} SKU${bad===1?'':'s'} still need fixing`:''}`,bad?'warn':'success');
+          };
+          const cancel=()=>{setOmgReviewOpen(false);if(staging)setOmgSel(null)};// discard the staged store on cancel — nothing was persisted
+          return<div className="modal-overlay" onClick={cancel}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+              <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h2 style={{margin:0,fontSize:17}}>🔍 Review SKUs — {rv.store_name}</h2>
+                <button onClick={cancel} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+              </div>
+              <div className="modal-body" style={{overflowY:'auto',padding:'16px 20px 20px'}}>
+                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Confirm each style number before {staging?'creating the store':'continuing'}. Fix any that are wrong — the cost and vendor <b>re-source automatically</b> from the catalog and supplier APIs. Getting SKUs right here keeps the Sales Order and the rebuild link matched to the real products.</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>
+                  <span style={chip('#eef2ff','#4338ca')}>{prods.length} item{prods.length===1?'':'s'} · {totalUnits} units</span>
+                  {badSkus.length>0&&<span style={chip('#fef2f2','#b91c1c')}>⚠ {badSkus.length} invalid SKU{badSkus.length===1?'':'s'}</span>}
+                  {notLinked.length>0&&<span style={chip('#fffbeb','#92400e')}>⚠ {notLinked.length} not linked to catalog/API</span>}
+                  {badSkus.length===0&&notLinked.length===0&&<span style={chip('#f0fdf4','#166534')}>✓ all linked &amp; valid</span>}
+                  {omgPriceLoading&&<span style={chip('#f1f5f9','#64748b')}>⏳ re-sourcing…</span>}
+                </div>
+                <div style={{overflowX:'auto',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                    <thead><tr style={{background:'#f8fafc'}}>
+                      <th style={th('center')}></th>
+                      <th style={th('left')}>Product</th>
+                      <th style={th('left')}>SKU</th>
+                      <th style={th('left')}>Color</th>
+                      <th style={th('center')}>Units</th>
+                      <th style={th('right')}>Cost · source</th>
+                      <th style={th('left')}>Vendor</th>
+                      <th style={th('center')}></th>
+                    </tr></thead>
+                    <tbody>
+                      {prods.map((p,i)=>{
+                        const units=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);
+                        const invalid=_skuLooksInvalid(p.sku);
+                        const vName=vend.find(v=>v.id===p.vendor_id)?.name||'';
+                        return<tr key={i} style={{background:invalid?'#fef2f2':i%2?'#fafbfc':'#fff'}}>
+                          <td style={{padding:4,borderBottom:'1px solid #f1f5f9',width:44,textAlign:'center'}}>{p.image_url?<img src={p.image_url} alt="" style={{width:36,height:36,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:16}}>📦</span>}</td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontWeight:600,maxWidth:170,overflow:'hidden'}} title={p.name}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.name||'—'}</div><div style={{fontSize:9,color:'#94a3b8'}}>{p.manufacturer||''}</div></td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9'}}>
+                            <input type="text" value={p.sku||''} title="Edit the style number — leaving the field re-sources the cost & vendor across the catalog and supplier APIs."
+                              onChange={e=>onSkuChange(i,e.target.value)}
+                              onFocus={e=>{e.target.dataset.orig=p.sku||''}}
+                              onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                              onBlur={e=>{const orig=e.target.dataset.orig||'';if((e.target.value||'').trim()!==orig.trim())omgResolveRowSku(rv,i,e.target.value,orig)}}
+                              style={{fontFamily:'monospace',fontWeight:700,color:invalid?'#b91c1c':'#1e40af',fontSize:12,width:100,padding:'4px 6px',border:'1px solid '+(invalid?'#fca5a5':'#cbd5e1'),borderRadius:4,background:'#fff'}}/>
+                            {invalid&&<div style={{fontSize:8,fontWeight:800,color:'#b91c1c',marginTop:2,whiteSpace:'nowrap'}}>⚠ fix this SKU</div>}
+                          </td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:'#64748b',maxWidth:120,overflow:'hidden'}} title={p.color}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.color||'—'}</div></td>
+                          <td style={{textAlign:'center',padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{units}</td>
+                          <td style={{textAlign:'right',padding:'6px 8px',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap'}}>
+                            <div style={{color:Number(p.cost)>0?'#166534':'#b91c1c',fontWeight:700}}>{Number(p.cost)>0?'$'+Number(p.cost).toFixed(2):'—'}</div>
+                            {(()=>{const L={catalog:['✓ Catalog','#15803d','#dcfce7'],sanmar:['✓ SanMar','#1d4ed8','#dbeafe'],ss:['✓ S&S','#6d28d9','#ede9fe'],richardson:['✓ Richardson','#b45309','#fef3c7'],momentec:['✓ Momentec','#0e7490','#cffafe'],api:['✓ API','#475569','#e2e8f0'],manual:['✎ Manual','#475569','#f1f5f9']};
+                              const hit=isLinked(p)&&L[p._cost_source];
+                              return hit?<span style={{fontSize:8,fontWeight:800,color:hit[1],background:hit[2],padding:'1px 5px',borderRadius:8,display:'inline-block',marginTop:2}}>{hit[0]}</span>
+                                :<span title="This SKU didn't match the catalog or any supplier API — the cost shown is the OMG-reported number. Fix the SKU to link it, or remove the line." style={{fontSize:8,fontWeight:800,color:'#b45309',background:'#fef3c7',padding:'1px 5px',borderRadius:8,display:'inline-block',marginTop:2}}>⚠ not linked</span>;
+                            })()}
+                          </td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:vName?'#0f172a':'#94a3b8',fontSize:11,maxWidth:110,overflow:'hidden'}} title={vName}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{vName||'—'}</div></td>
+                          <td style={{padding:'6px 4px',borderBottom:'1px solid #f1f5f9',textAlign:'center'}}><button onClick={()=>removeRow(i)} title="Don't bring this item over — remove it from the store" style={{background:'none',border:'none',color:'#cbd5e1',fontSize:16,lineHeight:1,cursor:'pointer',padding:2}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button></td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {badSkus.length>0&&<div style={{marginTop:12,padding:'8px 12px',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,fontSize:11,color:'#b91c1c'}}>⚠ {badSkus.length} item{badSkus.length===1?'':'s'} still {badSkus.length===1?'has':'have'} an invalid SKU (blank or a compound like <span style={{fontFamily:'monospace'}}>IP9746//IS1111</span>). You can still {staging?'create the store':'continue'}, but the Sales Order stays blocked until every SKU is a single valid style number.</div>}
+                {notLinked.length>0&&<div style={{marginTop:12,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>{notLinked.length} item{notLinked.length===1?'':'s'} {notLinked.length===1?'isn’t':'aren’t'} linked to a catalog or supplier-API item — the cost shown is the OMG-reported number, not a verified one. Fixing the SKU re-sources it live (catalog → S&S / SanMar / Richardson / Momentec); or use ✕ to leave it out.</div>}
+              </div>
+              <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <button onClick={cancel} style={{fontSize:12,fontWeight:600,padding:'8px 16px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:'pointer'}}>{staging?'Cancel — don’t add':'Close'}</button>
+                {staging
+                  ?<button onClick={commit} disabled={prods.length===0} style={{fontSize:13,fontWeight:800,padding:'8px 22px',borderRadius:6,border:'none',background:prods.length===0?'#94a3b8':'#166534',color:'#fff',cursor:prods.length===0?'not-allowed':'pointer',boxShadow:'0 1px 2px rgba(0,0,0,0.15)'}}>✓ Create Store · {prods.length} item{prods.length===1?'':'s'}</button>
+                  :<button onClick={()=>setOmgReviewOpen(false)} style={{fontSize:13,fontWeight:800,padding:'8px 22px',borderRadius:6,border:'none',background:'#2563eb',color:'#fff',cursor:'pointer'}}>Done</button>}
+              </div>
+            </div>
+          </div>;
+        })()}
+
         {/* Step-by-step help modal */}
         {omgGuideOpen&&<div className="modal-overlay" onClick={()=>setOmgGuideOpen(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
@@ -18328,45 +18892,31 @@ export default function App(){
       }
     };
     return(<>
-      {/* Add Store from Report */}
-      <div className="card" style={{marginBottom:12,border:'2px solid #166534'}}>
-        <div style={{padding:16}}>
-          <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>Add Store from OMG Report</div>
-          <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Paste the shared report link from OMG to create a new store with products, sizes, and artwork.</div>
-          <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl} onChange={e=>setOmgReportUrl(e.target.value)}
-              style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
-            <button className="btn btn-primary" disabled={omgReportLoading||!omgReportUrl.trim()} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={async()=>{
-              // Create a new store shell, then import the report into it
-              const urlStr=omgReportUrl.trim();
-              const uuidMatch=urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
-              if(!uuidMatch){nf('Invalid report URL — needs a valid OMG report link','error');return}
-              setOmgReportLoading(true);
-              try{
-                const resp=await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
-                if(!resp.ok)throw new Error('Report fetch failed: '+resp.status);
-                const report=await resp.json();
-                const saleCode=report.options?.filter?.find(f=>f.key==='sale_code')?.value||'';
-                const storeName=report.details?.title||'OMG Store '+saleCode;
-                const storeId='OMG-sale_'+saleCode;
-                // Check if store already exists
-                if(omgStores.find(s=>s.id===storeId)){
-                  nf('Store already exists — opening it','error');
-                  setOmgSel(omgStores.find(s=>s.id===storeId));setOmgReportLoading(false);return;
-                }
-                // Create shell store
-                const shell={id:storeId,store_name:storeName,status:'open',_omg_source:true,_omg_id:'sale_'+saleCode,_omg_sale_code:saleCode,
-                  _last_synced:new Date().toISOString(),products:[],orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,
-                  subdomain:'',channel_type:'pop-up',_report_url:urlStr};
-                setOmgStores(prev=>[shell,...prev]);
-                // Now import report into it
-                const updated=await importOMGReport(shell,urlStr);
-                if(updated){setOmgSel(updated);setOmgReportUrl('')}
-              }catch(e){nf('Failed: '+e.message,'error')}finally{setOmgReportLoading(false)}
-            }}>{omgReportLoading?'⏳ Importing…':'+ Add Store'}</button>
+      {/* Copy OMG Store — standalone entry: paste report link → review SKUs → create store. */}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,flexWrap:'wrap'}}>
+        <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgCopyUrl('');setOmgCopyOpen(true)}} title="Paste an OMG report link to copy its items into a new store — review & fix SKUs, then create it">📋 Copy OMG Store</button>
+        <span style={{fontSize:12,color:'#64748b'}}>Copy a previous OMG store's items into a new store — you'll review &amp; fix SKUs, then it's created.</span>
+      </div>
+
+      {/* Copy OMG Store modal */}
+      {omgCopyOpen&&<div className="modal-overlay" onClick={()=>{if(!omgReportLoading)setOmgCopyOpen(false)}}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2 style={{margin:0,fontSize:17}}>📋 Copy OMG Store</h2>
+            <button onClick={()=>{if(!omgReportLoading)setOmgCopyOpen(false)}} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:'16px 20px 20px'}}>
+            <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Paste the shared OMG report link. It copies every product, size, color and mockup image, then opens a review so you can confirm and fix SKUs — the store is created when you finish.</div>
+            <input type="text" autoFocus placeholder="https://report.ordermygear.com/..." value={omgCopyUrl} onChange={e=>setOmgCopyUrl(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'&&omgCopyUrl.trim()&&!omgReportLoading)startOmgCopy(omgCopyUrl)}}
+              style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace',boxSizing:'border-box'}}/>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',justifyContent:'flex-end',gap:10}}>
+            <button onClick={()=>setOmgCopyOpen(false)} disabled={omgReportLoading} style={{fontSize:12,fontWeight:600,padding:'8px 16px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:omgReportLoading?'not-allowed':'pointer'}}>Cancel</button>
+            <button onClick={()=>startOmgCopy(omgCopyUrl)} disabled={omgReportLoading||!omgCopyUrl.trim()} style={{fontSize:13,fontWeight:800,padding:'8px 20px',borderRadius:6,border:'none',background:(omgReportLoading||!omgCopyUrl.trim())?'#94a3b8':'#166534',color:'#fff',cursor:(omgReportLoading||!omgCopyUrl.trim())?'not-allowed':'pointer'}}>{omgReportLoading?'⏳ Importing…':'Import & Review'}</button>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
@@ -21733,16 +22283,20 @@ export default function App(){
         // blocks a numbers/names job.
         if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before marking it complete','error');return false;}
         const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
-        const missing=afs.filter(a=>!artProdFilesReady(a));
-        if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
+        // STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) —
+        // a stray PDF in prod_files must not satisfy the board move when every button path
+        // requires confirmation (same gate the Approve buttons use).
+        const missing=afs.filter(a=>!artProdFilesConfirmed(a));
+        if(missing.length){nf('Confirm production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
-        // Re-submitting a mockup for approval supersedes any prior coach rejection — clear the flag so the
-        // workboard status and coach_rejected stay consistent (rejections[] keeps the history).
-        if(newStatus==='waiting_approval')upd.coach_rejected=false;
+        // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
+        // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
+        // it set with art_status ahead is the SO-1199 contradictory shape.
+        if(newStatus==='waiting_approval'||newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))upd.coach_rejected=false;
         if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
           upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
         }
@@ -22311,9 +22865,9 @@ export default function App(){
                   const key=gi.item_idx;
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null});}
-                    else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
-                    else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const cwObj2B=d.reversible&&d.color_way_id_b&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id_b):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null,colorWayIdB:d.reversible?(d.color_way_id_b||null):null,cwLabelB:cwObj2B?.garment_color||''});}
+                    else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||'',reversible:d.reversible||false,printColorB:d.print_color_b||''});
+                    else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
                   });
                 });
                 // ── Mock links ── default is one mock per garment; a garment can be linked to USE
@@ -22355,9 +22909,17 @@ export default function App(){
                   // Slot keys are computed identically to the artist modal so uploads from either side line up.
                   const _repSkBase=_mockKey(gi.sku,gi.color);
                   const _repSlots=[];
-                  effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
-                  numDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
-                  nameDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  // A reversible garment prints on both color ways, so each reversible deco gets TWO
+                  // mockup panels (Side A / Side B). Slot keys come from mockSlotKeys (safeHelpers) —
+                  // the single source shared with the artist modal and the approval gate — so uploads
+                  // and the send-for-approval check always line up.
+                  mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
+                    if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
+                      _repSlots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                    else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
+                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                    else{const d=nameDecos[sd.idx];
+                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                   if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
@@ -22559,14 +23121,16 @@ export default function App(){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
               const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+              // Reversible art carries a second color way (Side B) — resolve it so the mockup grid can show both sides.
+              const cwObjB=d.reversible&&d.color_way_id_b&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id_b):null;
               const dColors=cwObj?cwObj.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
               const cwLabel=cwObj?.garment_color||'';
-              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null});
+              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null,colorWayIdB:d.reversible?(d.color_way_id_b||null):null,cwLabelB:cwObjB?.garment_color||''});
             }else if(d.kind==='numbers'){
               _perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                 numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
                 numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,reversible:d.reversible||false,
-                printColor:d.print_color||''});
+                printColor:d.print_color||'',printColorB:d.print_color_b||''});
             }else if(d.kind==='names'){
               _perItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
             }
@@ -22984,9 +23548,17 @@ export default function App(){
                       // numbers/names each get their own labeled box. The first art deco keeps the bare sku|color
                       // key (backward-compatible + drives the approval gate); others get a suffixed key.
                       const _slots=[];
-                      _effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
-                      _numDecos.forEach((d,i)=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
-                      _nameDecos.forEach((d,i)=>_slots.push({key:_skBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      // Reversible garments print on both color ways → two mockup panels per reversible deco
+                      // (Side A / Side B). Slot keys come from mockSlotKeys (safeHelpers) — the single source
+                      // shared with the rep grid and the approval gate — so uploads and the send-for-approval
+                      // check always line up.
+                      mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
+                        if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
+                          _slots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                        else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
+                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                        else{const d=_nameDecos[sd.idx];
+                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
@@ -23464,74 +24036,6 @@ export default function App(){
         </div></div>
       })()}
 
-      {/* ═══ SEND FOR APPROVAL NOTIFICATION MODAL ═══ */}
-      {approvalNotifyModal&&(()=>{
-        const{job:aj,so:aso,contact:ac,portalUrl:apu,method:am,message:amsg,artMessages:aam}=approvalNotifyModal;
-        const doSend=(notifyMethod)=>{
-          const missing=skusMissingMockups(aj,aso);
-          if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
-          if(!_confirmResendIfRejected(aj))return;
-          // 1. Move art status to waiting_approval
-          moveArtStatus(aj,'waiting_approval');
-          const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
-          const updMsgs=[...(aam||[]),sysMsg];
-          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval',coach_rejected:false}:jj);
-          savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
-          // 2. Handle notification
-          if(notifyMethod==='email'&&ac.email){
-            const _label=(aso.memo&&aso.memo.trim())||aj.art_name;
-            const subj=encodeURIComponent('Artwork ready for approval — '+_label);
-            const body=encodeURIComponent(approvalNotifyModal.message);
-            window.open('mailto:'+ac.email+'?subject='+subj+'&body='+body,'_blank');
-          }else if(notifyMethod==='text'&&ac.phone){
-            const smsBody=encodeURIComponent(approvalNotifyModal.message);
-            window.open('sms:'+ac.phone+'?body='+smsBody,'_blank');
-          }
-          setArtJobDetailModal(aj.art_status!=='waiting_approval'?{...aj,art_messages:updMsgs,art_status:'waiting_approval'}:null);
-          setApprovalNotifyModal(null);
-          nf('Sent for approval!'+(notifyMethod!=='none'?' '+notifyMethod+' notification opened.':''));
-        };
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setApprovalNotifyModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-          <div className="modal-header" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white'}}>
-            <h2 style={{color:'white',margin:0}}>Send for Approval</h2>
-            <button className="modal-close" style={{color:'white'}} onClick={()=>setApprovalNotifyModal(null)}>×</button>
-          </div>
-          <div className="modal-body">
-            <div style={{padding:'10px 14px',background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:14}}>
-              <div style={{fontSize:13,fontWeight:700,color:'#6d28d9'}}>{aj.art_name}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{aj.customer} · {aso.id}</div>
-            </div>
-
-            <div style={{marginBottom:14}}>
-              <div className="form-label">Notify Coach</div>
-              <div style={{display:'flex',gap:8,marginBottom:8}}>
-                <button className={`btn btn-sm ${am==='email'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'email'}))}>Email{ac.email?' — '+ac.email:' (no email)'}</button>
-                <button className={`btn btn-sm ${am==='text'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'text'}))}>Text{ac.phone?' — '+ac.phone:' (no phone)'}</button>
-              </div>
-            </div>
-
-            {apu&&<div style={{marginBottom:14}}>
-              <div className="form-label">Portal Link</div>
-              <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <input className="form-input" readOnly value={apu} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard.writeText(apu).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',apu)})}}>Copy</button>
-              </div>
-            </div>}
-
-            <div style={{marginBottom:12}}>
-              <div className="form-label">Message to Coach</div>
-              <textarea className="form-input" rows={6} value={amsg} onChange={e=>setApprovalNotifyModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
-            </div>
-          </div>
-          <div className="modal-footer" style={{display:'flex',gap:8}}>
-            <button className="btn btn-secondary" onClick={()=>setApprovalNotifyModal(null)}>Cancel</button>
-            <button className="btn btn-secondary" onClick={()=>doSend('none')}>Send Without Notifying</button>
-            <button className="btn" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',fontWeight:700,padding:'8px 20px'}} disabled={am==='email'&&!ac.email||am==='text'&&!ac.phone} onClick={()=>doSend(am)}>
-              {am==='text'?'Send & Text Coach':'Send & Email Coach'}
-            </button>
-          </div>
-        </div></div>
-      })()}
     </>);
   };
 
@@ -29346,9 +29850,9 @@ export default function App(){
         const totalValue=totalQty*safeNum(p.nsa_cost);
         // Sanitize the name QB will display — strip control chars QB chokes on,
         // collapse whitespace, trim, cap at 100. Same for description.
-        const cleanName=String(p.name||'').replace(/[ -]/g,' ').replace(/\s+/g,' ').trim();
+        const cleanName=String(p.name||'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim();
         const itemName=(p.sku+' '+cleanName).slice(0,100).trim();
-        const cleanColor=String(p.color||'').replace(/[ -]/g,' ').trim();
+        const cleanColor=String(p.color||'').replace(/[\x00-\x1f\x7f]/g,' ').trim();
         // Match existing QB item by name or stored ID
         let qbId=existingQBId;let syncToken=null;let existingType=null;
         if(qbId){
@@ -31724,13 +32228,239 @@ export default function App(){
     const emSell=emP(dcStitches,dcQty,true);const emCost=emP(dcStitches,dcQty,false);
     const npSell=npP(dcQty,dcTwoColor,true);const npCost=npP(dcQty,dcTwoColor,false);
 
+    // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
+    const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+    const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+    const _mdMine=(...ids)=>_mdAdmin||ids.some(id=>id&&id===cu.id);
+    const _mdCustName=(id)=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||'—'};
+    const _mdNow=Date.now();
+    const _mdWinStart=_mdNow-stMdWin*864e5;
+    const _mdInWin=(d)=>{const dt=parseDate(d);if(!dt)return false;const t=dt.getTime();return !isNaN(t)&&t>=_mdWinStart&&t<=_mdNow+6e4};
+    const _mdWhen=d=>{const dt=parseDate(d);if(!dt||isNaN(dt))return'';const days=Math.floor((_mdNow-dt.getTime())/864e5);return days<=0?'Today':days===1?'Yesterday':days+'d ago'};
+
+    // Estimates approved in the window (mine = created it or own the customer)
+    const mdApproved=ests.filter(e=>{
+      if(e.status!=='approved'||e.deleted_at)return false;
+      if(!_mdInWin(e.approved_at||e.updated_at))return false;
+      const cRep=cust.find(x=>x.id===e.customer_id)?.primary_rep_id;
+      return _mdMine(e.created_by,cRep);
+    }).sort((a,b)=>parseDate(b.approved_at||b.updated_at)-parseDate(a.approved_at||a.updated_at));
+
+    // Category rules live in src/lib/opsRecap.js — shared verbatim with the emailed
+    // rep-ops-digest (netlify function) so the tab and the email always agree.
+    const _mdFFCache=new Map();const _mdFF=(so)=>{let f=_mdFFCache.get(so.id);if(!f){f=opsFulfillment(so);_mdFFCache.set(so.id,f)}return f};
+    const _md$=(n)=>'$'+Math.round(safeNum(n)).toLocaleString();
+
+    // IFs picked (pick lines pulled in the window), grouped by pick_id per SO
+    const mdPicked=[];let mdShortCount=0;
+    sos.forEach(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return;
+      const gs=opsPulledGroups(so,_mdInWin);if(!gs.length)return;
+      const short=opsShortOnPull(so);if(short)mdShortCount++;
+      gs.forEach(g=>mdPicked.push({so,pickId:g.pickId,units:g.units,skus:g.skus,latest:g.latest,short}));
+    });
+    mdPicked.sort((a,b)=>parseDate(b.latest)-parseDate(a.latest));
+
+    // Orders all checked in — every unit in, nothing on press yet, not shipped. Explicit
+    // rule (not calcSOStatus==='items_received', which reports fully-received no-deco
+    // orders as 'ready_to_invoice' and would silently skip them here).
+    const mdCheckedIn=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      return opsCheckedIn(so,_mdFF(so))&&_mdInWin(so.updated_at);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Orders shipped (ShipStation, all jobs shipped, delivered, or closed out) — recent
+    const mdShipped=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
+      if(!opsShippedOut(so,_mdFF(so)))return false;
+      return _mdInWin(so._ship_date||so.updated_at);
+    }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
+
+    // Deadlines approaching (open orders due within the look-ahead window, incl. overdue)
+    const _mdDeadlineCut=_mdNow+stMdDeadline*864e5;
+    const mdDeadlines=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      if(opsShippedOut(so,_mdFF(so)))return false;
+      const dt=parseDate(so.expected_date);return dt&&!isNaN(dt)&&dt.getTime()<=_mdDeadlineCut;
+    }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
+      .sort((a,b)=>a.dt-b.dt);
+
+    // Orders ready to invoice (production done) that haven't been invoiced yet.
+    const _mdInvoicedSoIds=new Set(invs.filter(iv=>(iv.status||'').toLowerCase()!=='void'&&iv.so_id).map(iv=>iv.so_id));
+    const mdReadyInv=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
+      return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Past-due invoices for my customers (live view — every currently-overdue open invoice).
+    const _mdTodayYmd=new Date(_mdNow-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPastDue=invs.filter(iv=>{
+      if(!opsOpenInvoice(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const dpd=opsInvoiceDaysPastDue(iv,_mdTodayYmd);return dpd!=null&&dpd>=1;
+    }).map(iv=>({iv,balance:opsInvoiceBalance(iv),dpd:opsInvoiceDaysPastDue(iv,_mdTodayYmd)})).sort((a,b)=>b.dpd-a.dpd);
+
+    // Invoices fully paid within the activity window (most recent payment date in range).
+    const _mdWinStartYmd=new Date(_mdWinStart-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPaid=invs.filter(iv=>{
+      if(!opsFullyPaid(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const ymd=opsPaymentsLatestYmd(iv.payments);return ymd&&ymd>=_mdWinStartYmd&&ymd<=_mdTodayYmd;
+    }).map(iv=>({iv,ymd:opsPaymentsLatestYmd(iv.payments),amount:safeNum(iv.total)})).sort((a,b)=>(b.ymd||'').localeCompare(a.ymd||''));
+
+    const _mdOpenSO=(so,soTab)=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);if(soTab)setESOTab(soTab);setPg('orders')};
+    const _mdOpenInv=(iv)=>{setViewInvoice(iv);setPg('invoices')};
+    const _mdOpenEst=(e)=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')};
+
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
+        {[{id:'myday',label:'My Day',icon:'home'},{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
+
+      {/* ═══ MY DAY — daily ops recap ═══ */}
+      {stTab==='myday'&&(()=>{
+        const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
+        const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
+        const tiles=[
+          {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
+          {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
+          {id:'picked',label:'IFs Picked',icon:'package',color:'#b45309',n:mdPicked.length,sub:mdShortCount>0?mdShortCount+' short on pull':''},
+          {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
+          {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
+          {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
+          {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
+          {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
+        ];
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
+        const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
+          <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
+        </div>;
+        return<>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · All Reps':''}</h2>
+              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
+                <span>Activity in last</span>
+                <select className="form-input" value={stMdWin} onChange={e=>setStMdWin(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[1,3,7,14].map(d=><option key={d} value={d}>{d} day{d>1?'s':''}</option>)}</select>
+                <span>· deadlines next</span>
+                <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+                {(()=>{const me=REPS.find(r=>r.id===cu.id);const off=me?.ops_digest_opt_out===true;
+                  return<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Toggle the daily recap email of this page" onClick={async()=>{
+                    const next=!off;
+                    try{
+                      if(supabase){const{error}=await supabase.from('team_members').update({ops_digest_opt_out:next}).eq('id',cu.id);if(error)throw error}
+                      setREPS(prev=>prev.map(r=>r.id===cu.id?{...r,ops_digest_opt_out:next}:r));
+                      nf(next?'Daily recap email turned off':'Daily recap email turned on');
+                    }catch(e){nf('Could not save email preference: '+e.message,'error')}
+                  }}>{off?'📭 Daily email: Off':'📬 Daily email: On'}</button>})()}
+              </div>
+            </div>
+            <div className="card-body" style={{padding:16}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12}}>
+                {tiles.map(t=><div key={t.id} className="stat-card" style={{borderLeft:'3px solid '+t.color,cursor:'pointer'}} onClick={()=>{const el=document.getElementById('md-'+t.id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}}>
+                  <div className="stat-label"><Icon name={t.icon} size={12}/> {t.label}</div>
+                  <div className="stat-value" style={{color:t.color}}>{t.n}</div>
+                  {t.sub&&<div style={{fontSize:11,color:'#dc2626',fontWeight:700}}>⚠️ {t.sub}</div>}
+                </div>)}
+              </div>
+              {total===0&&<div style={{padding:'24px 8px 4px',textAlign:'center',color:'#94a3b8',fontSize:13}}>Nothing in this window yet. Widen the range, or check back after the day gets going.</div>}
+            </div>
+          </div>
+
+          {mdShipped.length>0&&<Section id="shipped" title="🚚 Orders Shipped" count={mdShipped.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+              <tbody>{mdShipped.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0e7490'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdApproved.length>0&&<Section id="approved" title="✅ Estimates Approved" count={mdApproved.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Estimate</th><th>Customer</th><th>Value</th><th>Approved by</th><th>When</th><th></th></tr></thead>
+              <tbody>{mdApproved.map(e=>{const converted=sos.some(s=>s.estimate_id===e.id);return<tr key={e.id}>
+                <td style={{fontWeight:600}}>{e.id}{e.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{e.memo}</div>}</td>
+                <td>{_mdCustName(e.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(calcOrderMargin(e,ests).rev)}</td>
+                <td style={{color:'#64748b'}}>{e.approved_by||'—'}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(e.approved_at||e.updated_at)}</td>
+                <td>{converted?<span style={{fontSize:10,color:'#059669',fontWeight:700}}>Ordered ✓</span>:<button className="btn btn-sm" style={{fontSize:10,background:'#065f46',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenEst(e)}>Convert to SO</button>}</td>
+              </tr>})}</tbody></table></Section>}
+
+          {mdPicked.length>0&&<Section id="picked" title="📦 IFs Picked" count={mdPicked.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>IF / Order</th><th>Customer</th><th>Units</th><th>Items</th><th>Pulled</th><th></th></tr></thead>
+              <tbody>{mdPicked.map((r,i)=><tr key={r.so.id+':'+(r.pickId||i)} style={r.short?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{r.pickId||r.so.id}<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{r.so.id}{r.short?<span style={{color:'#dc2626',fontWeight:700}}> · ⚠️ Short {r.short.units}: {r.short.detail}</span>:''}</div></td>
+                <td>{_mdCustName(r.so.customer_id)}</td>
+                <td>{r.units}</td>
+                <td style={{fontSize:11,color:'#475569'}}>{r.skus.slice(0,3).join(', ')}{r.skus.length>3?' +'+(r.skus.length-3):''}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(r.latest)}</td>
+                <td style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(r.so,'items')}>Open</button>{r.short&&<button className="btn btn-sm" style={{fontSize:10,background:'#b91c1c',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenSO(r.so,'items')}>Create PO</button>}</td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdCheckedIn.length>0&&<Section id="checkedin" title="🏬 Orders All Checked In" count={mdCheckedIn.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Ready</th><th></th></tr></thead>
+              <tbody>{mdCheckedIn.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#7c3aed'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPaid.length>0&&<Section id="paid" title="💰 Paid" count={mdPaid.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Paid</th><th></th></tr></thead>
+              <tbody>{mdPaid.map(({iv,ymd,amount})=><tr key={iv.id}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(amount)}</td>
+                <td style={{color:'#64748b'}}>{ymd?_mdWhen(ymd):''}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th></th></tr></thead>
+              <tbody>{mdReadyInv.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPastDue.length>0&&<Section id="pastdue" title="💸 Past Due Invoices" count={mdPastDue.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Balance</th><th>Due</th><th>Overdue</th><th></th></tr></thead>
+              <tbody>{mdPastDue.map(({iv,balance,dpd})=><tr key={iv.id} style={dpd>=30?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#b91c1c'}}>{_md$(balance)}</td>
+                <td style={{color:'#64748b'}}>{iv.due_date?String(iv.due_date).slice(0,10):'—'}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:dpd>=60?'#fee2e2':dpd>=30?'#fef3c7':'#fee2e2',color:dpd>=60?'#7f1d1d':dpd>=30?'#92400e':'#991b1b'}}>{dpd}d</span></td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdDeadlines.length>0&&<Section id="deadlines" title="⏰ Deadlines Approaching" count={mdDeadlines.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Due</th><th>Status</th><th></th></tr></thead>
+              <tbody>{mdDeadlines.map(({so,dt,daysOut})=>{const overdue=daysOut<0;const soon=daysOut>=0&&daysOut<=3;return<tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#be123c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:overdue?'#fee2e2':soon?'#fef3c7':'#e0f2fe',color:overdue?'#991b1b':soon?'#92400e':'#075985'}}>{dt.toLocaleDateString()}{' · '}{overdue?Math.abs(daysOut)+'d overdue':daysOut===0?'today':daysOut+'d out'}</span></td>
+                <td style={{fontSize:11,color:'#64748b'}}>{calcSOStatus(so).replace(/_/g,' ')}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>})}</tbody></table></Section>}
+        </>;
+      })()}
 
       {/* ═══ CUSTOMER QUOTE FORMS ═══ */}
       {stTab==='quotes'&&<>
