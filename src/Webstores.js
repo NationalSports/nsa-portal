@@ -1870,8 +1870,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const round2 = (n) => Math.round(n * 100) / 100;
     const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
     const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
-    const total = round2(Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0));
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
+    // Processing fee and sales tax are both levied on the product subtotal, so they scale
+    // with it. Re-derive each from THIS order's own stored ratio (fee/subtotal, tax/subtotal)
+    // and re-apply to the new subtotal: a size-only edit (subtotal unchanged) leaves the total
+    // exactly as charged, while a qty/removal edit scales the fee + tax to match. Dropping
+    // them — the old behavior — pushed the DB total below what the card actually paid and
+    // broke the refund cap (which reads `total`). Mirrors webstore-checkout's preTax + tax.
+    const oldSub = Number(order.subtotal) || 0;
+    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
+    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
+    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - (Number(order.discount_amt) || 0)));
+    const total = round2(preTax + tax);
+    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
   }, [sel, detail, flash, loadDetail]);
@@ -2117,6 +2127,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
     const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
     const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
+    // Club fundraising is a passthrough NSA owes the team, not rep margin. Its dollars are
+    // baked into each garment's unit_sell (so the SO total reconciles to what was collected),
+    // so we carry the same amount as an SO-level COST (_webstore_fundraise): calcGP subtracts
+    // it, keeping fundraising out of the GP that rep commission is paid on. Scaled by discRatio
+    // to match the fundraise embedded in the (already discount-scaled) unit_sells.
+    const batchFundraiseGross = open.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+    const fundraiseCost = r2(batchFundraiseGross * discRatio);
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
     // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
@@ -2250,7 +2267,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
@@ -8511,12 +8528,33 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
-  const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
+  // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
+  // together, so a discounted order collected proportionally less fundraising, and a 100%-off
+  // order collected none — paying the club the gross fundraise_amt overpaid them on every
+  // discounted order.
+  const netFundraise = (o) => {
+    const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
+    if (fund <= 0) return 0;
+    const base = sub + fund;
+    if (base <= 0) return r2f(fund);
+    const disc = Math.min(Number(o.discount_amt) || 0, base);
+    return Math.max(0, r2f(fund - disc * (fund / base)));
+  };
+  const fundGross = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
   const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
   const shipNet = shipCollected - shipCost;
-  const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const fundPending = fundraise - fundPaid;
+  // "Collected & owed" counts fundraising on every card-paid order through its whole
+  // lifecycle (paid → batched → shipped → complete), NOT just status==='paid' — the old test
+  // dropped every batched order and cratered the payout right after the rep batched the store.
+  // Team-tab / unpaid orders bill on the club invoice, so their fundraising is still "pending".
+  // Fully-refunded orders (status 'refunded') owe nothing.
+  const nonRefunded = orders.filter((o) => o.status !== 'refunded');
+  const fundOwed = r2f(nonRefunded.reduce((a, o) => a + netFundraise(o), 0));
+  const fundPaid = r2f(nonRefunded.filter((o) => o.payment_mode === 'paid').reduce((a, o) => a + netFundraise(o), 0));
+  const fundPending = r2f(Math.max(0, fundOwed - fundPaid));
   const paid = orders.filter((o) => o.payment_mode === 'paid');
 
   // ── Accounting ledger — every dollar in and out of the store ──
@@ -8606,7 +8644,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundOwed), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
           ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
@@ -8634,7 +8672,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.5 }}>Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
       </div></div>
 
-      {fundraise > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      {fundGross > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontSize: 11, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Club fundraising payout</div>
           <div style={{ fontSize: 26, fontWeight: 900, color: '#166534' }}>{money(fundPaid)}</div>
