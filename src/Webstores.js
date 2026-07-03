@@ -3,9 +3,9 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
-import { shipStationCall } from './vendorApis';
+import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
-import { NSA, pantoneHex } from './constants';
+import { NSA, pantoneHex, SZ_NORM } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
@@ -986,6 +986,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
   const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
 
+  // "Create from OMG" — the single unified entry point for turning an OMG report link into a
+  // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
+  // 'link' = paste-URL step, 'review' = editable SKU/price/name table before the store is created.
+  const [omgStep, setOmgStep] = useState(null); // null | 'link' | 'review'
+  const [omgUrl, setOmgUrl] = useState('');
+  const [omgFetching, setOmgFetching] = useState(false);
+  const [omgItems, setOmgItems] = useState([]); // [{sku,name,color,sizes,retail,image_url,manufacturer,cost,vendor_id,_cost_source,product_id,_removed,_resolving}]
+  const [omgName, setOmgName] = useState('');
+  const [omgCustomerId, setOmgCustomerId] = useState('');
+  const [omgCreating, setOmgCreating] = useState(false);
+  const [omgStock, setOmgStock] = useState(null); // Map from fetchStockMap, keyed by product_id | 'omgtmp:'+i
+  const [omgVendList, setOmgVendList] = useState([]); // cached at fetch time, reused on per-row SKU re-resolve
+  const [omgMomentecDiscount, setOmgMomentecDiscount] = useState(0.15);
+
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
 
   const custName = useCallback((id) => cust.find((c) => c.id === id)?.name || '—', [cust]);
@@ -1226,6 +1240,230 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setStores((prev) => [data, ...prev]);
     flash('Store created'); return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
+
+  // ── "Create from OMG" — the one place to turn a shared OMG report link into a Club Webstore.
+  // Self-contained (no dependency on the OMG Stores shadow-tracking tables): fetch → parse →
+  // resolve each SKU against the catalog/supplier APIs → review (edit name/price/SKU, drop items,
+  // check live stock) → create. Mirrors the OMG Stores section's own SKU resolution chain so a
+  // corrected SKU here behaves identically to everywhere else in the app.
+  const _omgSkuInvalid = (sku) => {
+    const s = String(sku || '').trim();
+    if (!s) return true;
+    if (/[\/\\|,;]|\s/.test(s)) return true; // separators → compound / multi-token
+    return false;
+  };
+  const _omgVendorCostSrc = (vendor = '') => ({ sanmar: 'sanmar', 's&s': 'ss', richardson: 'richardson', momentec: 'momentec' })[String(vendor).toLowerCase()] || 'api';
+  // Manufacturer → NSA vendor (who we actually buy the blank from), for items an exact SKU
+  // match didn't already resolve. Mirrors the OMG Stores section's own mapping.
+  const _omgMfgToVendor = (mfg, vendList) => {
+    if (!mfg) return null;
+    const m = mfg.toLowerCase();
+    const find = (re) => vendList.find((v) => re.test(v.name || ''))?.id || null;
+    if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m)) return find(/sanmar/i);
+    if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m)) return find(/s.s\s*active/i);
+    if (/richardson/i.test(m)) return find(/richardson/i);
+    if (/otto/i.test(m)) return find(/otto/i) || find(/s.s\s*active/i);
+    if (/adidas/i.test(m)) return find(/adidas/i);
+    if (/under\s*armou?r/i.test(m)) return find(/under\s*armou?r/i);
+    if (/badger/i.test(m)) return find(/momentec/i);
+    if (/momentec/i.test(m)) return find(/momentec/i);
+    return null;
+  };
+  // Parse the raw OMG report JSON into flat product rows (name/sku/color/sizes/retail/image).
+  // Pure — no DB or vendor calls.
+  const _parseOmgReport = (report) => {
+    const products = [];
+    // Pull a SKU out of "Black/White (KB9093)" → KB9093. Requires a digit so a colour
+    // descriptor like "(Solid)"/"(Heather)" is never mistaken for a style number.
+    const extractSku = (str) => {
+      const m = (str || '').match(/\(([A-Za-z0-9]{2,12})\)/);
+      if (!m) return '';
+      const tok = m[1];
+      if (!/\d/.test(tok)) return '';
+      return tok.toUpperCase();
+    };
+    // OMG appends an internal variant index, e.g. "KF5972 - 7" — the real catalog SKU is
+    // the first whitespace-delimited token (NSA SKUs never contain a space).
+    const cleanSku = (str) => ((str || '').trim().split(/\s+/)[0] || '').toUpperCase();
+    (report.reports || []).forEach((r) => {
+      (r.sections || []).forEach((section) => {
+        const meta = section.meta || {};
+        const rows = section.rows || [];
+        const artworkList = meta.artwork || [];
+        const sectionSku = meta.sku || '';
+        const cleanSectionSku = cleanSku(sectionSku);
+        const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
+        // One line per distinct colorway — colors sharing a style number can't be told
+        // apart by SKU alone, so group by the per-row color SKU (falling back to color text).
+        const groups = {};
+        rows.forEach((row) => {
+          const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/, '');
+          const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz) ? 'OSFA' : rawSz);
+          const qty = row.quantity || 0;
+          const colorSku = extractSku(row.color);
+          const rowColor = (row.color || '').trim();
+          const rowSku = colorSku || (sectionSkuOk ? cleanSectionSku : '');
+          const key = colorSku || rowColor || '__nosku__';
+          if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+          const g = groups[key];
+          g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+          g.qty += qty;
+          g.paid += (row.paid || 0);
+          if (row.color) g.colors.add(row.color);
+        });
+        Object.values(groups).forEach((g) => {
+          if (g.qty === 0) return; // no one ordered it
+          let sku = g.sku;
+          if (!sku) {
+            const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+            sku = fromText || (sectionSkuOk ? cleanSectionSku : cleanSku(sectionSku));
+          }
+          // Prefer a COLOR match for the mockup (colors sharing a style number can't be
+          // told apart by SKU), then a SKU match, then the section's first artwork.
+          const _artText = (a) => `${a.caption || ''} ${a.color || ''} ${a.name || ''} ${a.label || ''}`.toUpperCase();
+          const _colorUp = ([...g.colors][0] || '').toUpperCase();
+          const matchedByColor = _colorUp ? artworkList.filter((a) => _artText(a).includes(_colorUp) || (a.color || '').toUpperCase() === _colorUp) : [];
+          const matchedBySku = sku ? artworkList.filter((a) => _artText(a).includes(sku)) : [];
+          const artForSku = matchedByColor.length ? matchedByColor : (matchedBySku.length ? matchedBySku : artworkList);
+          const artwork = artForSku[0];
+          products.push({
+            sku, name: meta.name || '', manufacturer: meta.manufacturer || '', color: [...g.colors].join(', '),
+            retail: meta.base_price || 0, sizes: g.sizes, image_url: artwork?.link || artwork?.thumbnail || '',
+          });
+        });
+      });
+    });
+    return products;
+  };
+  // Resolve one item's SKU against the catalog, then (if still $0) the supplier APIs — the same
+  // chain the OMG Stores SKU editor uses, so an edited SKU here re-sources identically.
+  const _omgResolveOne = useCallback(async (p, vendList, momentecDiscount) => {
+    const skuClean = (p.sku || '').trim().toUpperCase();
+    if (!skuClean) return { ...p, sku: skuClean, product_id: null, vendor_id: null, cost: 0, _cost_source: '' };
+    let product_id = null, vendor_id = null, cost = 0, _cost_source = '';
+    const { data: rows } = await supabase.from('products').select('id,sku,brand,vendor_id,nsa_cost').ilike('sku', skuClean).limit(1);
+    const catMatch = rows && rows[0];
+    if (catMatch) {
+      product_id = catMatch.id;
+      if (catMatch.vendor_id) vendor_id = catMatch.vendor_id;
+      const catCost = parseFloat(catMatch.nsa_cost) || 0;
+      if (catCost > 0) { cost = catCost; _cost_source = 'catalog'; }
+    }
+    if (!vendor_id) vendor_id = _omgMfgToVendor(p.manufacturer, vendList);
+    if (cost === 0) {
+      const vendorName = (vendList.find((v) => v.id === vendor_id)?.name || p.manufacturer || '').toLowerCase();
+      let hit = null;
+      try {
+        if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(skuClean);
+        else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(skuClean);
+        else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(skuClean);
+        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(skuClean, { discount: momentecDiscount });
+        else hit = await resolveSkuAcrossVendors(skuClean);
+      } catch (e) { /* API lookup miss — leave cost at 0, staff can enter manually */ }
+      if (hit?.rate > 0) {
+        cost = hit.rate; _cost_source = _omgVendorCostSrc(hit.vendor);
+        const vid = vendList.find((v) => new RegExp(hit.vendor, 'i').test(v.name || ''))?.id;
+        if (vid) vendor_id = vid;
+      }
+    }
+    return { ...p, sku: skuClean, product_id, vendor_id, cost, _cost_source };
+  }, []);
+
+  // Step 1 → 2: fetch the OMG report, parse it, resolve every item's cost/vendor + live stock,
+  // and hand off to the review table. Nothing is written to the database yet.
+  const omgFetchReport = useCallback(async (urlRaw) => {
+    const urlStr = (urlRaw || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { flash('Invalid report URL — needs a valid OMG report link'); return; }
+    setOmgFetching(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      const report = await resp.json();
+      if (!report?.reports?.length) throw new Error('Report JSON has no data');
+      const saleCode = report.options?.filter?.find((f) => f.key === 'sale_code')?.value || '';
+      const storeName = report.details?.title || ('OMG Store ' + saleCode);
+      const rawItems = _parseOmgReport(report);
+      if (!rawItems.length) throw new Error('No items with sales found in this report');
+      const { data: vendList } = await supabase.from('vendors').select('id,name,api_provider,api_price_discount');
+      const vl = vendList || [];
+      const discount = vl.find((v) => v.api_provider === 'momentec' || /momentec/i.test(v.name))?.api_price_discount ?? 0.15;
+      setOmgVendList(vl); setOmgMomentecDiscount(discount);
+      const resolved = await Promise.all(rawItems.map((p) => _omgResolveOne(p, vl, discount)));
+      let stock = new Map();
+      try { stock = await fetchStockMap(resolved.map((p, i) => ({ id: p.product_id || ('omgtmp:' + i), sku: p.sku }))); } catch { /* show without stock */ }
+      setOmgItems(resolved.map((p) => ({ ...p, _included: true })));
+      setOmgStock(stock);
+      setOmgName(storeName);
+      setOmgCustomerId('');
+      setOmgStep('review');
+    } catch (e) { flash('Failed: ' + e.message); } finally { setOmgFetching(false); }
+  }, [flash, _omgResolveOne]);
+
+  // A staff-edited SKU re-sources cost/vendor and re-checks live stock for that one row.
+  const omgResolveRow = useCallback(async (index, newSku) => {
+    const skuClean = (newSku || '').trim().toUpperCase();
+    setOmgItems((prev) => prev.map((p, i) => (i === index ? { ...p, sku: skuClean, _resolving: true } : p)));
+    const cur = omgItems[index];
+    if (!cur) return;
+    const resolved = await _omgResolveOne({ ...cur, sku: skuClean }, omgVendList, omgMomentecDiscount);
+    setOmgItems((prev) => prev.map((p, i) => (i === index ? { ...resolved, _included: p._included, _resolving: false } : p)));
+    try {
+      const st = await fetchStockMap([{ id: resolved.product_id || ('omgtmp:' + index), sku: resolved.sku }]);
+      const key = resolved.product_id || ('omgtmp:' + index);
+      const hit = st.get(key);
+      if (hit) setOmgStock((prevStock) => { const m = new Map(prevStock || []); m.set(key, hit); return m; });
+    } catch { /* keep old stock display */ }
+  }, [omgItems, omgVendList, omgMomentecDiscount, _omgResolveOne]);
+
+  // Step 2 → done: create the draft webstore + its products, queue in-house art if a customer
+  // is linked, then jump straight into the new store (same place "+ New Store" lands).
+  const omgCreateStore = useCallback(async () => {
+    const included = omgItems.filter((p) => p._included !== false && (p.sku || p.name));
+    if (!included.length) { flash('Select at least one item'); return; }
+    const wsName = (omgName || 'Team Store').trim() || 'Team Store';
+    setOmgCreating(true);
+    try {
+      const base = wsName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
+      let slug = base;
+      for (let n = 2; n < 60; n++) {
+        const { data: ex } = await supabase.from('webstores').select('id').eq('slug', slug).limit(1);
+        if (!ex || !ex.length) break;
+        slug = `${base}-${n}`;
+      }
+      const form = { ...BLANK, name: wsName, slug, customer_id: omgCustomerId || null, rep_id: null, csr_id: null, open_at: null, close_at: null, status: 'draft', source: 'webstore', created_via: 'staff', decoration_mode: 'in_house' };
+      const r = await saveStore(form, null);
+      if (r.error) { flash('Could not create store: ' + r.error.message); setOmgCreating(false); return; }
+      const newStore = r.data;
+      // In-house art: the OMG mockup shows the finished garment, but OMG never hands over the
+      // real production file. Queue one "needs file" record (art_id only, no art_url — the
+      // storefront never composites a logo over the mockup) so it lands in the art queue instead
+      // of silently looking done.
+      let pendingArtId = null;
+      if (omgCustomerId) {
+        try {
+          const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'pending', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
+          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', omgCustomerId).maybeSingle();
+          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', omgCustomerId);
+          if (!aErr) { await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG import' }] }).eq('id', newStore.id); pendingArtId = rec.id; }
+        } catch (e) { /* items still get created without the art queue */ }
+      }
+      const rows = included.map((p, i) => ({
+        store_id: newStore.id, product_id: p.product_id || null, sku: p.sku || null, kind: 'single',
+        display_name: (p.name || p.sku || 'Item').trim(), image_url: p.image_url || null,
+        retail_price: Number(p.retail) || 0, sizes_offered: Object.keys(p.sizes || {}).length ? Object.keys(p.sizes || {}) : null,
+        sort_order: i, active: true,
+        ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
+      }));
+      const { error: pErr } = await supabase.from('webstore_products').insert(rows);
+      if (pErr) { flash('Store created but items failed to add: ' + pErr.message); setOmgStep(null); await openStore(newStore); setOmgCreating(false); return; }
+      const linked = rows.filter((r2) => r2.product_id).length;
+      flash(`✓ ${wsName} created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${pendingArtId ? ' · in-house art queued' : ''}`);
+      setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId('');
+      await openStore(newStore);
+    } catch (e) { flash('Create failed: ' + e.message); } finally { setOmgCreating(false); }
+  }, [omgItems, omgName, omgCustomerId, saveStore, openStore, flash]);
 
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
@@ -2444,7 +2682,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
           onCancel={() => { setPendingStartTpl(null); setEditing(null); }}
-          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }} />
+          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }}
+          onImportFromOmg={editing === 'new' ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
@@ -2458,9 +2697,168 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
+
+      {omgStep && <OmgImportWizard
+        step={omgStep} url={omgUrl} setUrl={setOmgUrl} fetching={omgFetching} onFetch={omgFetchReport}
+        items={omgItems} stock={omgStock} name={omgName} setName={setOmgName} vendList={omgVendList}
+        customerId={omgCustomerId} setCustomerId={setOmgCustomerId} cust={cust}
+        onSkuChange={(i, v) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, sku: v } : p)))}
+        onSkuBlur={omgResolveRow}
+        onFieldChange={(i, key, v) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, [key]: v } : p)))}
+        onToggleIncluded={(i) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, _included: p._included === false } : p)))}
+        onCreate={omgCreateStore} creating={omgCreating}
+        onClose={() => { setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId(''); }}
+      />}
     </>
+  );
+}
+
+// "Create from OMG" wizard — paste a report link, review/fix every item (SKU, name, price,
+// live stock), then create the draft Club Webstore. Step 1: URL. Step 2: review table.
+function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, name, setName, vendList = [], customerId, setCustomerId, cust, onSkuChange, onSkuBlur, onFieldChange, onToggleIncluded, onCreate, creating, onClose }) {
+  const skuInvalid = (sku) => { const s = String(sku || '').trim(); return !s || /[\/\\|,;]|\s/.test(s); };
+  const LINKED_SRC = ['catalog', 'sanmar', 'ss', 'richardson', 'momentec', 'api'];
+  const isLinked = (p) => Number(p.cost) > 0 && LINKED_SRC.includes(p._cost_source);
+  if (step === 'link') {
+    return (
+      <div className="modal-overlay" onClick={() => { if (!fetching) onClose(); }}>
+        <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+          <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, fontSize: 17 }}>📥 Create from OMG</h2>
+            <button onClick={() => { if (!fetching) onClose(); }} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+          </div>
+          <div className="modal-body" style={{ padding: '16px 20px 20px' }}>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Paste the shared OMG report link. It pulls in every product, size, color and decorated mockup image, then lets you review and fix SKUs, prices and names before the store is created.</div>
+            <input type="text" autoFocus placeholder="https://report.ordermygear.com/..." value={url} onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && url.trim() && !fetching) onFetch(url); }}
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontFamily: 'monospace', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button onClick={onClose} disabled={fetching} style={{ fontSize: 12, fontWeight: 600, padding: '8px 16px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: fetching ? 'not-allowed' : 'pointer' }}>Cancel</button>
+            <button onClick={() => onFetch(url)} disabled={fetching || !url.trim()} style={{ fontSize: 13, fontWeight: 800, padding: '8px 20px', borderRadius: 6, border: 'none', background: (fetching || !url.trim()) ? '#94a3b8' : '#166534', color: '#fff', cursor: (fetching || !url.trim()) ? 'not-allowed' : 'pointer' }}>{fetching ? '⏳ Fetching…' : 'Fetch & Review'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  // step === 'review'
+  const badSkus = items.filter((p) => skuInvalid(p.sku));
+  const notLinked = items.filter((p) => p._included !== false && !isLinked(p));
+  const included = items.filter((p) => p._included !== false);
+  const totalUnits = included.reduce((a, p) => a + Object.values(p.sizes || {}).reduce((a2, v) => a2 + (Number(v) || 0), 0), 0);
+  const chip = (bg, fg) => ({ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: bg, color: fg });
+  const th = (align) => ({ textAlign: align || 'center', padding: '7px 8px', borderBottom: '2px solid #e2e8f0', fontWeight: 700, fontSize: 11, whiteSpace: 'nowrap' });
+  const sortedCust = [...(cust || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>📥 Review before creating the store</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+        </div>
+        <div className="modal-body" style={{ overflowY: 'auto', padding: '16px 20px 20px' }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 260px' }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 4 }}>Store name</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ flex: '1 1 260px' }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 4 }}>Customer (for art library + CSR — can set later)</label>
+              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13, background: '#fff' }}>
+                <option value="">— No customer yet —</option>
+                {sortedCust.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Fix any SKU that's wrong — the cost and vendor <b>re-source automatically</b> from the catalog and supplier APIs. Uncheck an item to leave it out entirely.</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            <span style={chip('#eef2ff', '#4338ca')}>{included.length} item{included.length === 1 ? '' : 's'} · {totalUnits} units</span>
+            {badSkus.length > 0 && <span style={chip('#fef2f2', '#b91c1c')}>⚠ {badSkus.length} invalid SKU{badSkus.length === 1 ? '' : 's'}</span>}
+            {notLinked.length > 0 && <span style={chip('#fffbeb', '#92400e')}>⚠ {notLinked.length} not linked to catalog/API</span>}
+            {badSkus.length === 0 && notLinked.length === 0 && <span style={chip('#f0fdf4', '#166534')}>✓ all linked &amp; valid</span>}
+          </div>
+          <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: '#f8fafc' }}>
+                <th style={th('center')}></th>
+                <th style={th('center')}></th>
+                <th style={th('left')}>Name</th>
+                <th style={th('left')}>SKU</th>
+                <th style={th('left')}>Color / stock</th>
+                <th style={th('right')}>Price</th>
+                <th style={th('right')}>Cost · source</th>
+                <th style={th('left')}>Vendor</th>
+              </tr></thead>
+              <tbody>
+                {items.map((p, i) => {
+                  const invalid = skuInvalid(p.sku);
+                  const included2 = p._included !== false;
+                  const key = p.product_id || ('omgtmp:' + i);
+                  const st = stock && stock.get(key);
+                  const regSizes = foldScale(Object.keys(p.sizes || {}));
+                  const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
+                  const sizeRows = regSizes.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
+                  const totalStock = sizeRows.reduce((a, s) => a + s.q, 0);
+                  return (
+                    <tr key={i} style={{ background: !included2 ? '#f8fafc' : invalid ? '#fef2f2' : i % 2 ? '#fafbfc' : '#fff', opacity: included2 ? 1 : 0.55 }}>
+                      <td style={{ padding: 4, borderBottom: '1px solid #f1f5f9', textAlign: 'center' }}>
+                        <input type="checkbox" checked={included2} onChange={() => onToggleIncluded(i)} title="Bring this item over" style={{ cursor: 'pointer' }} />
+                      </td>
+                      <td style={{ padding: 4, borderBottom: '1px solid #f1f5f9', width: 44, textAlign: 'center' }}>
+                        {p.image_url ? <img src={p.image_url} alt="" style={{ width: 36, height: 36, objectFit: 'contain', borderRadius: 4, border: '1px solid #e2e8f0' }} /> : <span style={{ color: '#cbd5e1', fontSize: 16 }}>📦</span>}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="text" value={p.name || ''} disabled={!included2} onChange={(e) => onFieldChange(i, 'name', e.target.value)} style={{ width: 160, fontSize: 12, fontWeight: 600, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff' }} />
+                        <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>{p.manufacturer || ''}</div>
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="text" value={p.sku || ''} disabled={!included2} title="Edit the style number — leaving the field re-sources the cost & vendor across the catalog and supplier APIs."
+                          onChange={(e) => onSkuChange(i, e.target.value)}
+                          onFocus={(e) => { e.target.dataset.orig = p.sku || ''; }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                          onBlur={(e) => { const orig = e.target.dataset.orig || ''; if ((e.target.value || '').trim() !== orig.trim()) onSkuBlur(i, e.target.value); }}
+                          style={{ fontFamily: 'monospace', fontWeight: 700, color: invalid ? '#b91c1c' : '#1e40af', fontSize: 12, width: 100, padding: '4px 6px', border: '1px solid ' + (invalid ? '#fca5a5' : '#cbd5e1'), borderRadius: 4, background: '#fff' }} />
+                        {p._resolving && <div style={{ fontSize: 8, color: '#64748b', marginTop: 2 }}>⏳ resolving…</div>}
+                        {!p._resolving && invalid && <div style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', marginTop: 2, whiteSpace: 'nowrap' }}>⚠ fix this SKU</div>}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#64748b', maxWidth: 140 }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: 3 }}>{p.color || '—'}</div>
+                        {sizeRows.length ? (
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {sizeRows.map(({ sz, q }) => <span key={sz} title={`${q} available`} style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 20, background: q > 0 ? '#dcfce7' : '#fef2f2', color: q > 0 ? '#166534' : '#b91c1c' }}>{sz} {q}</span>)}
+                          </div>
+                        ) : <span style={{ fontSize: 9, color: '#94a3b8' }}>{p.product_id ? 'no stock data' : 'not linked to catalog'}</span>}
+                        {totalStock === 0 && sizeRows.length > 0 && <div style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', marginTop: 2 }}>⚠ out of stock</div>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="number" step="0.01" value={p.retail || 0} disabled={!included2} onChange={(e) => onFieldChange(i, 'retail', parseFloat(e.target.value) || 0)} style={{ width: 72, textAlign: 'right', fontSize: 12, fontWeight: 700, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }} />
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' }}>
+                        <div style={{ color: Number(p.cost) > 0 ? '#166534' : '#b91c1c', fontWeight: 700 }}>{Number(p.cost) > 0 ? '$' + Number(p.cost).toFixed(2) : '—'}</div>
+                        {(() => {
+                          const L = { catalog: ['✓ Catalog', '#15803d', '#dcfce7'], sanmar: ['✓ SanMar', '#1d4ed8', '#dbeafe'], ss: ['✓ S&S', '#6d28d9', '#ede9fe'], richardson: ['✓ Richardson', '#b45309', '#fef3c7'], momentec: ['✓ Momentec', '#0e7490', '#cffafe'], api: ['✓ API', '#475569', '#e2e8f0'] };
+                          const hit = isLinked(p) && L[p._cost_source];
+                          return hit ? <span style={{ fontSize: 8, fontWeight: 800, color: hit[1], background: hit[2], padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>{hit[0]}</span>
+                            : <span title="This SKU didn't match the catalog or any supplier API." style={{ fontSize: 8, fontWeight: 800, color: '#b45309', background: '#fef3c7', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>⚠ not linked</span>;
+                        })()}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontSize: 11, maxWidth: 100, overflow: 'hidden' }}><div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{vendList.find((v) => v.id === p.vendor_id)?.name || '—'}</div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {badSkus.length > 0 && <div style={{ marginTop: 12, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, fontSize: 11, color: '#b91c1c' }}>⚠ {badSkus.length} item{badSkus.length === 1 ? '' : 's'} still {badSkus.length === 1 ? 'has' : 'have'} an invalid SKU. You can still create the store, but the Sales Order stays blocked until every SKU is a single valid style number.</div>}
+        </div>
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <button onClick={onClose} disabled={creating} style={{ fontSize: 12, fontWeight: 600, padding: '8px 16px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: creating ? 'not-allowed' : 'pointer' }}>Cancel — don’t create</button>
+          <button onClick={onCreate} disabled={creating || included.length === 0} style={{ fontSize: 13, fontWeight: 800, padding: '8px 22px', borderRadius: 6, border: 'none', background: (creating || included.length === 0) ? '#94a3b8' : '#166534', color: '#fff', cursor: (creating || included.length === 0) ? 'not-allowed' : 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' }}>{creating ? '⏳ Creating…' : `✓ Create Store · ${included.length} item${included.length === 1 ? '' : 's'}`}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2660,7 +3058,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -2838,14 +3236,16 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const TH = { ...BCN, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, fontSize: 12, color: '#5A6075', padding: '12px', userSelect: 'none' };
   const TD = { padding: '13px 12px', verticalAlign: 'middle' };
 
+  // Column is just the close date on top, a short context line underneath — kept to one
+  // line each so row height stays consistent regardless of status.
   const storeWindowText = (s) => {
     const st = storeStatus(s);
-    if (st === 'Draft') return { main: 'Not scheduled', sub: 'Draft', subColor: '#8A93A8' };
-    if (st === 'Scheduled') return { main: fmt(s.open_at), sub: '→ ' + fmt(s.close_at), subColor: '#2A6FDB' };
-    if (st === 'Closed') return { main: (fmt(s.open_at) || '?') + ' – ' + (fmt(s.close_at) || '?'), sub: 'Closed', subColor: '#8A93A8' };
+    if (st === 'Draft') return { main: '—', sub: 'Draft', subColor: '#8A93A8' };
+    if (st === 'Scheduled') return { main: fmt(s.close_at) || '—', sub: 'Opens ' + fmt(s.open_at), subColor: '#2A6FDB' };
+    if (st === 'Closed') return { main: fmt(s.close_at) || '—', sub: 'Closed', subColor: '#8A93A8' };
     const dl = daysLeft(s);
     return {
-      main: s.close_at ? 'Closes ' + fmt(s.close_at) : 'No close date',
+      main: s.close_at ? fmt(s.close_at) : 'No end date',
       sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
       subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
     };
@@ -2868,6 +3268,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
             ))}
           </div>
           {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
+          {onCreateFromOmg && <button className="btn btn-secondary" onClick={onCreateFromOmg} title="Turn a shared OMG report link into a new Club Webstore — review & fix SKUs, prices and names first" style={{ borderColor: '#bbf7d0', background: '#f0fdf4', color: '#166534' }}>📥 Create from OMG</button>}
           <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
         </div>
       </div>
@@ -2923,7 +3324,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
                   <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
-                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Sale Window{sortArrow('window')}</th>
+                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Close{sortArrow('window')}</th>
                   <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
                   <th style={{ ...TH, width: 28 }}></th>
                 </tr>
@@ -2948,12 +3349,12 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         <td style={{ ...TD, textAlign: 'center', color: '#8A93A8', padding: '13px 8px' }}>
                           <span style={{ display: 'inline-block', transition: 'transform .15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 11 }}>▶</span>
                         </td>
-                        <td style={TD}>
-                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {s.name}
-                            {coachReview && <span style={{ fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
+                        <td style={{ ...TD, maxWidth: 260 }}>
+                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                            <span title={s.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{s.name}</span>
+                            {coachReview && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
                           </div>
-                          <div style={{ color: '#8A93A8', fontSize: 12.5 }}>{custName(s.customer_id)}</div>
+                          <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
@@ -3380,7 +3781,7 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg }) {
   const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer.
@@ -3563,10 +3964,13 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
           <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? "Update this store's setup." : "Set it up here — add products and artwork after it's created."}</div>
         </div>
-        <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
-          {['team', 'club'].map((t) => (
-            <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {onImportFromOmg && <button type="button" onClick={onImportFromOmg} title="Skip this blank form — paste a shared OMG report link instead and build the store from its items" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>📥 Import from OMG instead</button>}
+          <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
+            {['team', 'club'].map((t) => (
+              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
+            ))}
+          </div>
         </div>
       </div>
       {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
