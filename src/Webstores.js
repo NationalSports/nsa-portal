@@ -1447,7 +1447,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     let pendingArtId = null;
     if (customerId) {
       try {
-        const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'pending', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
+        // status 'waiting_for_art' is the canonical "needs artist attention" state — it puts this
+        // record in the customer Artwork Library's Waiting-for-Art queue and on the Art Dashboard,
+        // so the separations request can't be missed. ('pending' isn't a real art status.)
+        const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'waiting_for_art', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
         const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
         const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
         const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', customerId);
