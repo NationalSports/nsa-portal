@@ -195,7 +195,7 @@ const TEMPLATES = {
       front: {
         base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
-        anchors: { number: { x: 0.35, y: 0.26, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        anchors: { number: { x: 0.33, y: 0.2, size: 88 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
@@ -227,7 +227,7 @@ const TEMPLATES = {
         // number high on the wearer's RIGHT chest (image-left), crest/logo slot
         // mirrored on the wearer's LEFT chest — both up near the collarbone
         // line, never stacked mid-torso.
-        anchors: { number: { x: 0.35, y: 0.26, size: 95 }, name: { x: 0.5, y: 0.3, size: 58 } },
+        anchors: { number: { x: 0.33, y: 0.2, size: 88 }, name: { x: 0.5, y: 0.3, size: 58 } },
       },
       back: {
         base: PUB('/uniform/sahrul-base-back.jpg'), mask: PUB('/uniform/sahrul-mask-back.png'),

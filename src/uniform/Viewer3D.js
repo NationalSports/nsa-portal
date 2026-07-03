@@ -349,6 +349,18 @@ function updateDecals(st, rawSpec) {
   const tpl = getTemplate(spec.garmentId);
   const raycaster = new THREE.Raycaster();
 
+  // Chest/back decorations must map to the TORSO, not the whole model — the full
+  // bounding box includes the outstretched sleeves, which squeezes x toward the
+  // center (number + crest end up stacked mid-chest) and drops y too low. Build
+  // the torso box from the body panel(s) and place body decorations within it.
+  const torsoBox = new THREE.Box3();
+  for (const m of st.meshes) if (m.zone === 'body' && m.mesh) torsoBox.expandByObject(m.mesh);
+  const hasTorso = !torsoBox.isEmpty();
+  const torsoW = hasTorso ? (torsoBox.max.x - torsoBox.min.x) : size.x;
+  const torsoH = hasTorso ? (torsoBox.max.y - torsoBox.min.y) : size.y;
+  const torsoCx = hasTorso ? (torsoBox.min.x + torsoBox.max.x) / 2 : 0;
+  const torsoTop = hasTorso ? torsoBox.max.y : size.y * 0.5;
+
   const placeOne = (el, role, view) => {
     if (!el || !(el.value || '').trim()) return;
     const canvas = decalTextCanvas(el); if (!canvas) return;
@@ -359,8 +371,8 @@ function updateDecals(st, rawSpec) {
     const yFrac = Number.isFinite(el.y) ? el.y : anchor.y;
     const front = view === 'front';
     const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
-    const wx = (front ? (xFrac - 0.5) : (0.5 - xFrac)) * size.x;
-    const wy = (0.5 - yFrac) * size.y;
+    const wx = torsoCx + (front ? (xFrac - 0.5) : (0.5 - xFrac)) * torsoW;
+    const wy = torsoTop - yFrac * torsoH;
     const origin = new THREE.Vector3(wx, wy, front ? size.z * 3 : -size.z * 3);
     raycaster.set(origin, dir);
     // Raycast the whole model, not just the body mesh: garments built from real
@@ -402,8 +414,15 @@ function updateDecals(st, rawSpec) {
     const aspect = (logo.aspect && logo.aspect > 0) ? logo.aspect : (cv._aspect || 1);
     const front = view === 'front';
     const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
-    const wx = (front ? (logo.x - 0.5) : (0.5 - logo.x)) * size.x;
-    const wy = (0.5 - logo.y) * size.y;
+    // Chest/back logos map to the torso; sleeve logos need the full model width
+    // to reach out over the sleeve meshes.
+    const sleeve = logo.slot === 'leftSleeve' || logo.slot === 'rightSleeve';
+    const boxW = sleeve ? size.x : torsoW;
+    const boxH = sleeve ? size.y : torsoH;
+    const cx = sleeve ? 0 : torsoCx;
+    const topY = sleeve ? size.y * 0.5 : torsoTop;
+    const wx = cx + (front ? (logo.x - 0.5) : (0.5 - logo.x)) * boxW;
+    const wy = topY - logo.y * boxH;
     const origin = new THREE.Vector3(wx, wy, front ? size.z * 3 : -size.z * 3);
     raycaster.set(origin, dir);
     // Raycast the whole model so a logo attaches to whatever panel it's over

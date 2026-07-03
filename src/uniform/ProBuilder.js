@@ -143,7 +143,7 @@ const LOGO_SLOTS = [
   // Crest default: wearer's LEFT chest = image-right, mirroring the front
   // number's spot on the wearer's right chest — both high, on the collarbone
   // line, like a pro kit.
-  { key: 'chest', label: 'Chest', view: 'front', x: 0.65, y: 0.26, scale: 0.52 },
+  { key: 'chest', label: 'Chest', view: 'front', x: 0.67, y: 0.2, scale: 0.46 },
   { key: 'leftSleeve', label: 'L Sleeve', view: 'front', x: 0.17, y: 0.33, scale: 0.5 },
   { key: 'rightSleeve', label: 'R Sleeve', view: 'front', x: 0.83, y: 0.33, scale: 0.5 },
   { key: 'back', label: 'Back', view: 'back', x: 0.5, y: 0.16, scale: 0.7 },
@@ -341,7 +341,7 @@ function specFromConfig(cfg) {
         number: (cfg.frontNumber === 'none')
           ? { value: '' }
           : { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 3, size: 0.95 * numScale,
-              ...(cfg.frontNumber === 'left' ? { x: 0.65, y: 0.26 } : cfg.frontNumber === 'center' ? { x: 0.5, y: 0.3 } : {}) },
+              ...(cfg.frontNumber === 'left' ? { x: 0.67, y: 0.2 } : cfg.frontNumber === 'center' ? { x: 0.5, y: 0.24 } : {}) },
         name: { value: '', font: 'saira' },
       },
       back: {
