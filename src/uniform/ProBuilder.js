@@ -1313,14 +1313,14 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                 </React.Suspense>
               </div>
               {/* floating info card — top left */}
-              <div style={{ position: 'absolute', top: narrow ? 10 : 18, left: narrow ? 14 : 22, maxWidth: narrow ? 220 : 300, pointerEvents: 'none' }}>
-                <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 10 : 11, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>Custom Build · {PROGRAM_LABELS[config.program] || "Men's"}</div>
-                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 21, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px', lineHeight: 1.15 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <div style={{ position: 'absolute', top: narrow ? 10 : 20, left: narrow ? 14 : 24, maxWidth: narrow ? 220 : 300, pointerEvents: 'none' }}>
+                <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 10 : 11, textTransform: 'uppercase', letterSpacing: 1.5, color: C.red }}>Custom Build · {PROGRAM_LABELS[config.program] || "Men's"}</div>
+                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 20, textTransform: 'uppercase', color: C.navy, margin: '3px 0 9px', lineHeight: 1.06 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}Jersey</h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {[SX.body.color, SX.sleeveL.color, SX.collar.color].map((c, i) => (
-                    <span key={i} style={{ width: 13, height: 13, borderRadius: '50%', background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
+                    <span key={i} style={{ width: 11, height: 11, borderRadius: 2, background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
                   ))}
-                  {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>}
+                  {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginLeft: 2 }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>}
                 </div>
               </div>
               {/* floating shorts chip — bottom left */}
