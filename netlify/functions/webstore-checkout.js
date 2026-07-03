@@ -299,13 +299,58 @@ exports.handler = async (event) => {
   }
 };
 
+// ── place_order idempotency (migration 00170) ───────────────────────
+// The client sends a per-attempt clientRef; if an order already exists for it
+// (double-click, network retry after a lost response), we return THAT order
+// instead of creating a duplicate. Degrades gracefully pre-migration: a missing
+// client_ref column just disables dedup, never blocks checkout.
+const validClientRef = (v) => (typeof v === 'string' && /^[0-9a-zA-Z_-]{16,64}$/.test(v) ? v : null);
+const isMissingColumnErr = (e) => !!e && /client_ref/.test(e.message || '') && /(column|schema)/i.test(e.message || '');
+
+async function findOrderByClientRef(sb, clientRef) {
+  if (!clientRef) return null;
+  const { data, error } = await sb.from('webstore_orders').select('*').eq('client_ref', clientRef).limit(1);
+  if (error) return null; // pre-migration (or transient) — treat as no match; the unique index still backstops the insert
+  return (data && data[0]) || null;
+}
+
+// Rebuild the place_order response for an order that already exists. For a card
+// order still awaiting payment, re-derive the clientSecret from its own
+// PaymentIntent so the buyer can resume paying the SAME order.
+async function replayOrder(order) {
+  const totals = {
+    subtotal: order.subtotal, fundraise: order.fundraise_amt, shipping: order.shipping_fee,
+    processing: order.processing_fee, discount: order.discount_amt, tax: order.tax, total: order.total,
+  };
+  if (order.status === 'pending_payment' && order.stripe_pi_id) {
+    const sk = process.env.STRIPE_SECRET_KEY;
+    if (!sk) return bad(500, 'Card payment isn’t configured.');
+    let pi;
+    try { pi = await stripe(sk).paymentIntents.retrieve(order.stripe_pi_id); }
+    catch (e) { return bad(502, 'Could not resume your payment — please try again: ' + e.message); }
+    if (pi && pi.status === 'succeeded') {
+      // Paid between the two submits — finalize/webhook will flip it; tell the client to skip the card form.
+      return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, intentId: pi.id, replayed: true, alreadyPaid: true }) };
+    }
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, clientSecret: pi.client_secret, intentId: pi.id, replayed: true }) };
+  }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, replayed: true }) };
+}
+
 async function placeOrder(sb, body) {
   const { storeSlug, cart, buyer, ship, payMode, couponCode, expectedTotalCents } = body;
+  const clientRef = validClientRef(body.clientRef);
 
   const { data: stores, error: stErr } = await sb.from('webstores').select('*').eq('slug', String(storeSlug || '')).limit(1);
   if (stErr) return bad(500, stErr.message);
   const store = stores && stores[0];
   if (!store) return bad(404, 'Store not found');
+
+  // Same attempt already produced an order? Return it — even if the store has
+  // since closed, the buyer's original submit was accepted.
+  const dup = await findOrderByClientRef(sb, clientRef);
+  if (dup) return replayOrder(dup);
+
   if (store.status !== 'open') return bad(409, 'This store isn’t open for orders right now.');
 
   if (!buyer || !String(buyer.name || '').trim() || !/.+@.+\..+/.test(String(buyer.email || ''))) return bad(400, 'Please provide your name and a valid email.');
@@ -356,14 +401,27 @@ async function placeOrder(sb, body) {
   if (mode === 'paid' && Math.round(total * 100) < 50) return bad(409, 'Card payments must be at least $0.50 — use the team tab for this order.');
 
   // ── Insert order + items + number claims, rolling back everything on failure ──
-  const { data: order, error: ordErr } = await sb.from('webstore_orders').insert({
+  const orderRow = {
     store_id: store.id, status: mode === 'paid' ? 'pending_payment' : 'unpaid', payment_mode: mode, order_kind: 'individual',
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
-  }).select().single();
+  };
+  let ins = await sb.from('webstore_orders').insert(clientRef ? { ...orderRow, client_ref: clientRef } : orderRow).select().single();
+  if (ins.error && clientRef) {
+    if (isMissingColumnErr(ins.error)) {
+      // Migration 00170 not applied yet — place the order without the token.
+      ins = await sb.from('webstore_orders').insert(orderRow).select().single();
+    } else if (/duplicate|unique/i.test(ins.error.message || '')) {
+      // Concurrent double-submit lost the insert race — return the winner's order.
+      const winner = await findOrderByClientRef(sb, clientRef);
+      if (winner) return replayOrder(winner);
+      return bad(502, 'Could not create the order: ' + ins.error.message);
+    }
+  }
+  const { data: order, error: ordErr } = ins;
   if (ordErr) return bad(502, 'Could not create the order: ' + ordErr.message);
 
   const rollback = async () => {
@@ -681,6 +739,7 @@ async function updateShip(sb, body) {
 // Exported only so the unit tests can exercise the pricing/stock math in
 // isolation. Netlify invokes `handler`; these extra exports are inert in prod.
 module.exports.priceCart = priceCart;
+module.exports.placeOrder = placeOrder;
 module.exports.checkStock = checkStock;
 module.exports.checkNumberRange = checkNumberRange;
 module.exports.couponDiscount = couponDiscount;

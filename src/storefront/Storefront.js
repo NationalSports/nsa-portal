@@ -1437,6 +1437,24 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [_shipKey, _cartKey, coupon && coupon.code, store.slug]);
 
+  // place_order idempotency: one clientRef per distinct checkout payload. An identical
+  // resubmit (double-click, retry after a lost response) reuses the ref, so the server
+  // returns the SAME order instead of creating a duplicate (migration 00170); any change
+  // to the cart, buyer, coupon, or pay mode mints a fresh ref. Cleared on completion.
+  const _orderRefState = useRef({ key: '', ref: '' });
+  const orderRefFor = (payMode) => {
+    const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null,
+      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.components || null])]);
+    if (_orderRefState.current.key !== key) {
+      const uuid = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : 'ref' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+      _orderRefState.current = { key, ref: uuid };
+    }
+    return _orderRefState.current.ref;
+  };
+  const clearOrderRef = () => { _orderRefState.current = { key: '', ref: '' }; };
+
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
@@ -1457,9 +1475,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const submitUnpaid = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid') });
     setBusy(false);
     if (r.error) { setErr(r.error.message); return; }
+    clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
   };
 
@@ -1470,8 +1489,16 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const startCard = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid') });
     if (r.error) { setErr(r.error.message); setBusy(false); return; }
+    if (r.alreadyPaid) {
+      // Replay of an order whose payment already went through — finalize and land
+      // on the confirmation instead of showing a card form for a settled intent.
+      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      clearOrderRef();
+      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      return;
+    }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
     setPendingOrder(r.order);
     setClientSecret(r.clientSecret);
@@ -1485,6 +1512,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
     await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
