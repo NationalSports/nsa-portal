@@ -2316,9 +2316,38 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Live-inventory panel (Reporting view): per-store stock for every item.
+  const [invStoreId, setInvStoreId] = useState('');
+  const [invItems, setInvItems] = useState([]);
+  const [invStock, setInvStock] = useState(null); // Map: product_id | 'wp:'+id → { units, sizeStock, ... }
+  const [invLoading, setInvLoading] = useState(false);
 
   const templates = stores.filter((s) => s.is_template);
   const nonTemplates = stores.filter((s) => !s.is_template);
+
+  // Load a store's items + live availability (vendor by SKU + in-house by product_id), same source
+  // of truth as every store builder so the numbers match. Unlinked items get a synthetic key so
+  // several manual items never collide on a null product id.
+  const loadInventory = useCallback(async (storeId) => {
+    if (!storeId) { setInvItems([]); setInvStock(null); return; }
+    setInvLoading(true);
+    try {
+      const { data: items } = await supabase.from('webstore_products')
+        .select('id,product_id,sku,display_name,image_url,sizes_offered,kind,active')
+        .eq('store_id', storeId).eq('active', true).eq('kind', 'single').order('sort_order');
+      const rows = items || [];
+      const stockRows = rows.map((p) => ({ id: p.product_id || ('wp:' + p.id), sku: p.sku }));
+      let stock = new Map();
+      try { stock = await fetchStockMap(stockRows); } catch { /* show without stock */ }
+      setInvItems(rows); setInvStock(stock);
+    } finally { setInvLoading(false); }
+  }, []);
+  // First time the Reporting view opens, default the picker to the first store.
+  useEffect(() => {
+    if (view === 'reporting' && !invStoreId && nonTemplates.length) {
+      const first = nonTemplates[0].id; setInvStoreId(first); loadInventory(first);
+    }
+  }, [view, invStoreId, nonTemplates, loadInventory]);
 
   const money = (n) => '$' + Math.round(n || 0).toLocaleString();
   const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
@@ -2702,6 +2731,96 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                 <div style={{ ...BCN, fontWeight: 800, fontSize: 30, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{k.value}</div>
               </div>
             ))}
+          </div>
+
+          {/* Live Inventory — per-store stock for every item */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853' }}>Live Inventory</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <select value={invStoreId} onChange={(e) => { setInvStoreId(e.target.value); loadInventory(e.target.value); }}
+                  style={{ padding: '7px 10px', border: '1px solid #C3CAD8', borderRadius: 7, fontSize: 13, fontWeight: 600, color: '#192853', background: '#fff', maxWidth: 300 }}>
+                  <option value="">Choose a store…</option>
+                  {nonTemplates.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <button onClick={() => loadInventory(invStoreId)} disabled={!invStoreId || invLoading} title="Refresh live stock"
+                  style={{ padding: '7px 12px', border: '1px solid #C3CAD8', borderRadius: 7, background: '#fff', fontSize: 12.5, fontWeight: 700, color: '#2A2F3E', cursor: (!invStoreId || invLoading) ? 'default' : 'pointer' }}>{invLoading ? '…' : '↻ Refresh'}</button>
+              </div>
+            </div>
+            {!invStoreId ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Pick a store to see live stock for every item.</div>
+            ) : invLoading ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Checking live stock…</div>
+            ) : invItems.length === 0 ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>No items on this store.</div>
+            ) : (() => {
+              const pill = (bg, fg) => ({ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 20, background: bg, color: fg, whiteSpace: 'nowrap' });
+              let inStock = 0, out = 0, unlinked = 0;
+              const rowData = invItems.map((p) => {
+                const key = p.product_id || ('wp:' + p.id);
+                const st = invStock && invStock.get(key);
+                const offered = foldScale(Array.isArray(p.sizes_offered) ? p.sizes_offered : []);
+                const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
+                const list = offered.length ? offered : (st ? st.sizes : []);
+                const sizeRows = list.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
+                const total = sizeRows.reduce((a, s) => a + s.q, 0);
+                const linked = !!p.product_id;
+                if (!linked && !(st && st.units)) unlinked++;
+                else if (total > 0) inStock++;
+                else out++;
+                return { p, sizeRows, total, linked };
+              });
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 12.5, color: '#5A6075', flexWrap: 'wrap' }}>
+                    <span><b style={{ color: '#1B7F4B' }}>{inStock}</b> in stock</span>
+                    <span><b style={{ color: '#962C32' }}>{out}</b> out</span>
+                    {unlinked > 0 && <span><b style={{ color: '#9A6B00' }}>{unlinked}</b> not linked to catalog</span>}
+                    <span style={{ color: '#8A93A8' }}>· {invItems.length} item{invItems.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead><tr style={{ color: '#8A93A8', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Item</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Sizes — live stock</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'right' }}>Total</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Status</th>
+                      </tr></thead>
+                      <tbody>
+                        {rowData.map(({ p, sizeRows, total, linked }) => (
+                          <tr key={p.id}>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                {p.image_url ? <img src={p.image_url} alt="" style={{ width: 34, height: 34, objectFit: 'contain', borderRadius: 5, border: '1px solid #EEF1F6' }} /> : <div style={{ width: 34, height: 34, borderRadius: 5, background: '#F4F6FA' }} />}
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, color: '#192853', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 230 }}>{p.display_name || p.sku || 'Item'}</div>
+                                  <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#8A93A8' }}>{p.sku || '—'}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {sizeRows.length ? (
+                                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                  {sizeRows.map(({ sz, q }) => (
+                                    <span key={sz} title={`${q} available`} style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: q > 0 ? '#E7F5EE' : '#FBEBEC', color: q > 0 ? '#1B7F4B' : '#962C32', border: `1px solid ${q > 0 ? '#BFE6D0' : '#F3C7CB'}` }}>{sz}&nbsp;{q}</span>
+                                  ))}
+                                </div>
+                              ) : <span style={{ color: '#8A93A8', fontSize: 12 }}>{linked ? 'No stock data' : 'Not linked — add a catalog SKU'}</span>}
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA', textAlign: 'right', fontWeight: 800, color: total > 0 ? '#192853' : '#962C32' }}>{total}</td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {!linked ? <span style={pill('#FDF3DA', '#9A6B00')}>⚠ not linked</span>
+                                : total > 0 ? <span style={pill('#E7F5EE', '#1B7F4B')}>In stock</span>
+                                  : <span style={pill('#FBEBEC', '#962C32')}>Out of stock</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* Sales by Rep */}
